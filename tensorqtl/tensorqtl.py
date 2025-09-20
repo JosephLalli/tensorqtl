@@ -14,7 +14,7 @@ import importlib.metadata
 sys.path.insert(1, os.path.dirname(__file__))
 from core import *
 from post import *
-import genotypeio, cis, trans, susie
+import genotypeio, cis, trans, susie, nbqtl
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
     parser.add_argument('prefix', help='Prefix for output file names')
-    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie'],
+    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score'],
                         help='Mapping mode. Default: cis')
     parser.add_argument('--covariates', default=None, help='Covariates file, tab-delimited (covariates x samples)')
     parser.add_argument('--paired_covariate', default=None, help='Single phenotype-specific covariate, tab-delimited (phenotypes x samples)')
@@ -49,6 +49,14 @@ def main():
     parser.add_argument('--fdr', default=0.05, type=np.float64, help='FDR for cis-QTLs')
     parser.add_argument('--qvalue_lambda', default=None, type=np.float64, help='lambda parameter for pi0est in qvalue.')
     parser.add_argument('--seed', default=None, type=int, help='Seed for permutations.')
+    # nbQTL-specific arguments
+    parser.add_argument('--variance-file', default=None, type=str, help='Path to observation-specific variance file (H5/NPY/TSV) for nbqtl-score mode')
+    parser.add_argument('--variance-from', default=None, type=str, choices=['nb2', 'trended'], help='Method for variance estimation if --variance-file not provided (nbqtl-score mode)')
+    parser.add_argument('--offset-file', default=None, type=str, help='Path to log offset file (size factors) for nbqtl-score mode')
+    parser.add_argument('--robust', action='store_true', help='Use robust (sandwich) standard errors for nbqtl-score mode')
+    parser.add_argument('--dtype', default='float64', type=str, choices=['float32', 'float64'], help='Data type for computation (nbqtl-score mode). Default: float64')
+    parser.add_argument('--batch-size-features', default=10000, type=int, help='Number of features per batch for nbqtl-score mode')
+    parser.add_argument('--batch-size-snps', default=16000, type=int, help='Number of SNPs per block for nbqtl-score mode')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     args = parser.parse_args()
 
@@ -349,6 +357,45 @@ def main():
             b_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.trans_qtl_beta.parquet'))
             b_se_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.trans_qtl_beta_se.parquet'))
             af_s.to_frame().to_parquet(os.path.join(args.output_dir, f'{args.prefix}.trans_qtl_af.parquet'))
+
+    elif args.mode == 'nbqtl-score':
+        logger.write('nbQTL score test mapping mode')
+
+        # Validation for nbqtl mode
+        if not args.phenotypes.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')):
+            raise ValueError("nbqtl-score mode requires phenotypes in BED format")
+
+        # Check that we have either variance file or estimation method
+        if args.variance_file is None and args.variance_from is None:
+            logger.write("  * no variance file provided, will estimate using nb2 method")
+            variance_from = 'nb2'
+        else:
+            variance_from = args.variance_from
+
+        # Set device based on availability
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Run nbQTL score test mapping
+        results_df = nbqtl.run_nbqtl_score(
+            phenotype_bed=args.phenotypes,
+            genotype_pgen=args.genotype_path,
+            covariates_file=args.covariates,
+            variance_file=args.variance_file,
+            variance_from=variance_from,
+            offset_file=args.offset_file,
+            cis_mode=True,  # Currently only support cis mode
+            window=args.window,
+            robust=args.robust,
+            batch_size_features=args.batch_size_features,
+            batch_size_snps=args.batch_size_snps,
+            device=device,
+            dtype=args.dtype,
+            out_prefix=os.path.join(args.output_dir, args.prefix),
+            logger=logger,
+            verbose=True
+        )
+
+        logger.write(f'  * nbQTL mapping completed with {len(results_df)} associations')
 
     logger.write(f'[{datetime.now().strftime("%b %d %H:%M:%S")}] Finished mapping')
 
