@@ -74,7 +74,7 @@ class TestCLIModeSelection:
 
     def test_mode_options(self):
         """Test that different modes are recognized."""
-        valid_modes = ['cis', 'cis_nominal', 'cis_independent', 'trans']
+        valid_modes = ['cis', 'cis_nominal', 'cis_independent', 'trans', 'hapmixqtl_nominal']
 
         for mode in valid_modes:
             result = subprocess.run([
