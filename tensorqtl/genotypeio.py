@@ -108,11 +108,23 @@ def parse_genotypes(x, field='GT'):
 
 
 def parse_phased_haplotypes(x):
-    """Convert phased GT strings to haplotype matrix (samples x 2)."""
+    """
+    Convert phased GT strings to haplotype matrix.
+
+    Parameters
+    ----------
+    x : list[str]
+        Sample GT strings (e.g., '0|1', '1|0', '.|.').
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape (n_samples, 2) with haplotype allele calls.
+    """
     h = np.empty([len(x), 2], dtype=np.float32)
     for i, gt in enumerate(x):
         gt0 = gt.split(':')[0]
-        if gt0 in ['.|.', './.']:
+        if gt0 == '.|.':
             h[i] = [np.nan, np.nan]
             continue
         if '|' not in gt0:
@@ -284,7 +296,12 @@ def load_genotypes(genotype_path, select_samples=None, dosages=False):
 
 
 def get_vcf_region(region_str, vcfpath, field='GT', sample_ids=None, select_samples=None, impute_missing=True, split_phased=False):
-    """Load VCF region (str: 'chr:start-end') as DataFrame (requires tabix)"""
+    """
+    Load VCF region (str: 'chr:start-end') as DataFrame (requires tabix).
+
+    If split_phased=True, phased GT values are split into per-haplotype
+    columns named <sample>_L and <sample>_R.
+    """
     s = subprocess.check_output(f'tabix {vcfpath} {region_str}', shell=True)
     s = s.decode().strip().split('\n')
     s = [i.split('\t') for i in s]
@@ -298,7 +315,7 @@ def get_vcf_region(region_str, vcfpath, field='GT', sample_ids=None, select_samp
     if split_phased:
         if field != 'GT':
             raise ValueError("split_phased is only supported with field='GT'.")
-        g = np.array([parse_phased_haplotypes([i.split(':')[ix] for i in line[9:]]).reshape(-1) for line in s])
+        g = np.vstack([parse_phased_haplotypes([i.split(':')[ix] for i in line[9:]]).reshape(-1) for line in s])
         hap_sample_ids = [f'{sid}_{h}' for sid in sample_ids for h in ['L', 'R']]
         df = pd.DataFrame(g, index=variant_ids, columns=hap_sample_ids)
     else:
@@ -352,7 +369,23 @@ def get_vcf_variants(variant_ids, vcfpath, field='GT', sample_ids=None):
 
 
 def get_vcf_variants_phased(variant_ids, vcfpath, sample_ids=None):
-    """Load phased GT variants and split each sample into L/R haplotype columns."""
+    """
+    Load phased GT variants and split each sample into L/R haplotype columns.
+
+    Parameters
+    ----------
+    variant_ids : list-like
+        Variant IDs to query.
+    vcfpath : str
+        bgzipped and tabix-indexed VCF path.
+    sample_ids : list-like or None
+        Optional explicit sample order. If None, inferred from VCF header.
+
+    Returns
+    -------
+    pd.DataFrame
+        Variants x (2*samples) matrix with columns <sample>_L, <sample>_R.
+    """
     variant_id_set = set(variant_ids)
     with tempfile.NamedTemporaryFile() as regions_file:
         df = pd.DataFrame([i.split('_')[:2] for i in variant_id_set], columns=['chr', 'pos'])
@@ -366,7 +399,7 @@ def get_vcf_variants_phased(variant_ids, vcfpath, sample_ids=None):
         sample_ids = get_sample_ids(vcfpath)
 
     ix = _get_field_ix(s[0], 'GT')
-    g = np.array([parse_phased_haplotypes([i.split(':')[ix] for i in line[9:]]).reshape(-1) for line in s], dtype=np.float32)
+    g = np.vstack([parse_phased_haplotypes([i.split(':')[ix] for i in line[9:]]).reshape(-1) for line in s]).astype(np.float32)
     returned_variant_ids = [i[2] for i in s]
     ix = [k for k, i in enumerate(returned_variant_ids) if i in variant_id_set]
     g = np.array([g[i] for i in ix])

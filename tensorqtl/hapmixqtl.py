@@ -47,6 +47,23 @@ def summarize_nonstandard_haplotype_inputs(phenotype_df, mapping_overdispersion_
     The expected input layout is:
       phenotype_df.iloc[i, 2*f + h], h in {0,1}
       mapping_overdispersion_df has the same shape/layout as phenotype_df.
+
+    Negative expression values are clipped to 0 before log transforms.
+
+    Parameters
+    ----------
+    phenotype_df : pd.DataFrame
+        Matrix with samples in rows and paired haplotype feature columns
+        in L/R order.
+    mapping_overdispersion_df : pd.DataFrame
+        Tau matrix with the same shape/order as phenotype_df.
+    kappa : float
+        Pseudocount used in log transforms.
+
+    Returns
+    -------
+    tuple
+        (A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df), each features x samples.
     """
     if not phenotype_df.index.equals(mapping_overdispersion_df.index):
         raise ValueError('phenotype_df and mapping_overdispersion_df sample indexes must match.')
@@ -78,6 +95,7 @@ def summarize_nonstandard_haplotype_inputs(phenotype_df, mapping_overdispersion_
             feature_id = f'feature_{f}'
         feature_ids.append(feature_id)
 
+        # Guard log transforms from invalid negative values in upstream inputs.
         yL = np.clip(yL, a_min=0.0, a_max=None)
         yR = np.clip(yR, a_min=0.0, a_max=None)
         A_rows.append(np.log(yL + kappa) - np.log(yR + kappa))
@@ -369,6 +387,11 @@ def map_nominal_nonstandard(genotype_df, variant_df, phenotype_df, mapping_overd
     Wrapper for non-standard haplotype input layout:
       phenotype_df: samples x (2*features) with paired L/R columns.
       mapping_overdispersion_df: same shape/order as phenotype_df with tau values.
+
+    Returns
+    -------
+    None
+        Writes nominal hapmixqtl parquet outputs to output_dir.
     """
     A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df = summarize_nonstandard_haplotype_inputs(
         phenotype_df, mapping_overdispersion_df, kappa=kappa
