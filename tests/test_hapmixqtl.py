@@ -96,3 +96,29 @@ def test_reader_enforces_sample_alignment(tmp_path):
 
     with pytest.raises(ValueError, match='Sample order mismatch'):
         hapmixqtl.read_hapmix_inputs(str(a), str(t), str(va), str(vt), str(tl), str(tr))
+
+
+def test_nonstandard_haplotype_input_conversion():
+    phenotype_df = pd.DataFrame(
+        [[10.0, 5.0, 8.0, 8.0], [12.0, 6.0, 5.0, 7.0]],
+        index=['S1', 'S2'],
+        columns=['gene1_L', 'gene1_R', 'gene2_L', 'gene2_R'],
+    )
+    mapping_overdispersion_df = pd.DataFrame(
+        [[1.5, 1.2, 2.0, 1.8], [1.4, 1.1, 2.2, 1.7]],
+        index=['S1', 'S2'],
+        columns=['gene1_L', 'gene1_R', 'gene2_L', 'gene2_R'],
+    )
+
+    A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df = hapmixqtl.summarize_nonstandard_haplotype_inputs(
+        phenotype_df, mapping_overdispersion_df, kappa=1.0
+    )
+
+    assert list(A_df.index) == ['gene1', 'gene2']
+    assert list(A_df.columns) == ['S1', 'S2']
+    assert np.isclose(A_df.loc['gene1', 'S1'], np.log(11.0) - np.log(6.0))
+    assert np.isclose(T_df.loc['gene1', 'S1'], np.log((10.0 + 5.0) / 2.0 + 1.0))
+    assert np.allclose(Va_df.values, 1.0)
+    assert np.allclose(Vt_df.values, 1.0)
+    assert np.isclose(tauL_df.loc['gene2', 'S2'], 2.2)
+    assert np.isclose(tauR_df.loc['gene2', 'S2'], 1.7)

@@ -39,6 +39,66 @@ def read_hapmix_inputs(A_path, T_path, Va_path, Vt_path, tauL_path, tauR_path):
     return A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, pos_df
 
 
+def summarize_nonstandard_haplotype_inputs(phenotype_df, mapping_overdispersion_df, kappa=1.0):
+    """
+    Convert non-standard haplotype matrices (samples x 2*features) into
+    hapmix summary matrices (features x samples).
+
+    The expected input layout is:
+      phenotype_df.iloc[i, 2*f + h], h in {0,1}
+      mapping_overdispersion_df has the same shape/layout as phenotype_df.
+    """
+    if not phenotype_df.index.equals(mapping_overdispersion_df.index):
+        raise ValueError('phenotype_df and mapping_overdispersion_df sample indexes must match.')
+    if not phenotype_df.columns.equals(mapping_overdispersion_df.columns):
+        raise ValueError('phenotype_df and mapping_overdispersion_df columns must match.')
+    if phenotype_df.shape[1] % 2 != 0:
+        raise ValueError('Non-standard haplotype inputs must have 2 columns per feature.')
+
+    A_rows = []
+    T_rows = []
+    Va_rows = []
+    Vt_rows = []
+    tauL_rows = []
+    tauR_rows = []
+    feature_ids = []
+    sample_ids = phenotype_df.index
+
+    for f in range(phenotype_df.shape[1] // 2):
+        cL = phenotype_df.columns[2 * f]
+        cR = phenotype_df.columns[2 * f + 1]
+        yL = phenotype_df.iloc[:, 2 * f].astype(np.float32).values
+        yR = phenotype_df.iloc[:, 2 * f + 1].astype(np.float32).values
+        tauL = mapping_overdispersion_df.iloc[:, 2 * f].astype(np.float32).values
+        tauR = mapping_overdispersion_df.iloc[:, 2 * f + 1].astype(np.float32).values
+
+        if str(cL).endswith('_L') and str(cR) == str(cL)[:-2] + '_R':
+            feature_id = str(cL)[:-2]
+        else:
+            feature_id = f'feature_{f}'
+        feature_ids.append(feature_id)
+
+        yL = np.clip(yL, a_min=0.0, a_max=None)
+        yR = np.clip(yR, a_min=0.0, a_max=None)
+        A_rows.append(np.log(yL + kappa) - np.log(yR + kappa))
+        T_rows.append(np.log((yL + yR) / 2.0 + kappa))
+        # Non-standard input does not include Gibbs-draw inferential variances.
+        # Use a neutral baseline variance of 1.0 per sample; tau still controls
+        # relative weighting via variance inflation in downstream WLS.
+        Va_rows.append(np.ones_like(yL, dtype=np.float32))
+        Vt_rows.append(np.ones_like(yL, dtype=np.float32))
+        tauL_rows.append(tauL)
+        tauR_rows.append(tauR)
+
+    A_df = pd.DataFrame(np.vstack(A_rows), index=feature_ids, columns=sample_ids)
+    T_df = pd.DataFrame(np.vstack(T_rows), index=feature_ids, columns=sample_ids)
+    Va_df = pd.DataFrame(np.vstack(Va_rows), index=feature_ids, columns=sample_ids)
+    Vt_df = pd.DataFrame(np.vstack(Vt_rows), index=feature_ids, columns=sample_ids)
+    tauL_df = pd.DataFrame(np.vstack(tauL_rows), index=feature_ids, columns=sample_ids)
+    tauR_df = pd.DataFrame(np.vstack(tauR_rows), index=feature_ids, columns=sample_ids)
+    return A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df
+
+
 def _check_haplotype_sample_alignment(genotype_columns, samples):
     if len(genotype_columns) != 2 * len(samples):
         raise ValueError('Haplotype genotype input must contain exactly 2 columns per sample (L/R).')
@@ -300,3 +360,23 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
 
         out_file = os.path.join(output_dir, f'{prefix}.hapmixqtl_pairs.{chrom}.parquet')
         pd.DataFrame(chr_res).to_parquet(out_file, index=False)
+
+
+def map_nominal_nonstandard(genotype_df, variant_df, phenotype_df, mapping_overdispersion_df, phenotype_pos_df, prefix,
+                            covariates_df=None, maf_threshold=0, window=1000000, min_hets_ase=5, kappa=1.0,
+                            output_dir='.', logger=None, verbose=True):
+    """
+    Wrapper for non-standard haplotype input layout:
+      phenotype_df: samples x (2*features) with paired L/R columns.
+      mapping_overdispersion_df: same shape/order as phenotype_df with tau values.
+    """
+    A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df = summarize_nonstandard_haplotype_inputs(
+        phenotype_df, mapping_overdispersion_df, kappa=kappa
+    )
+    if not A_df.index.equals(phenotype_pos_df.index):
+        raise ValueError('phenotype_pos_df index must match derived feature IDs from non-standard phenotype_df columns.')
+    return map_nominal(
+        genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, prefix,
+        covariates_df=covariates_df, maf_threshold=maf_threshold, window=window,
+        min_hets_ase=min_hets_ase, kappa=kappa, output_dir=output_dir, logger=logger, verbose=verbose
+    )
