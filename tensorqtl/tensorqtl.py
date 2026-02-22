@@ -64,6 +64,7 @@ def main():
     parser.add_argument('--hap_tauL', default=None, type=str, help='Hapmix summary matrix tauL (BED/parquet)')
     parser.add_argument('--hap_tauR', default=None, type=str, help='Hapmix summary matrix tauR (BED/parquet)')
     parser.add_argument('--min_hets_ase', default=5, type=int, help='Minimum number of informative heterozygous samples for ASE channel')
+    parser.add_argument('--kappa', default=1.0, type=np.float64, help='Pseudocount used for hapmix summary transformation')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     args = parser.parse_args()
 
@@ -83,16 +84,19 @@ def main():
     if args.seed is not None:
         logger.write(f'  * using seed {args.seed}')
 
+    def _log_cis_window(pos_df):
+        if pos_df.columns[1] == 'pos':
+            logger.write(f"  * cis-window detected as position ± {args.window:,}")
+        else:
+            logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
+
     # load inputs
     logger.write(f'  * reading phenotypes ({args.phenotypes})')
     # for cis modes, require BED input with position information
     if args.mode.startswith('cis'):
         assert args.phenotypes.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')), "For cis modes, phenotypes must be in BED format."
         phenotype_df, phenotype_pos_df = read_phenotype_bed(args.phenotypes)
-        if phenotype_pos_df.columns[1] == 'pos':
-            logger.write(f"  * cis-window detected as position ± {args.window:,}")
-        else:
-            logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
+        _log_cis_window(phenotype_pos_df)
     elif args.mode == 'hapmixqtl_nominal':
         for f in [args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR]:
             if f is None:
@@ -100,10 +104,7 @@ def main():
         phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df = hapmixqtl.read_hapmix_inputs(
             args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR
         )
-        if phenotype_pos_df.columns[1] == 'pos':
-            logger.write(f"  * cis-window detected as position ± {args.window:,}")
-        else:
-            logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
+        _log_cis_window(phenotype_pos_df)
     elif args.mode.startswith('trans'):
         if args.phenotypes.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')):
             phenotype_df, phenotype_pos_df = read_phenotype_bed(args.phenotypes)
@@ -420,7 +421,7 @@ def main():
             raise NotImplementedError("hapmixqtl_nominal currently requires loading genotypes in-memory (no --chunk_size).")
         hapmixqtl.map_nominal(
             genotype_df, variant_df, phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, args.prefix,
-            covariates_df=covariates_df, maf_threshold=maf_threshold, window=args.window, min_hets_ase=args.min_hets_ase,
+            covariates_df=covariates_df, maf_threshold=maf_threshold, window=args.window, min_hets_ase=args.min_hets_ase, kappa=args.kappa,
             output_dir=args.output_dir, logger=logger, verbose=True
         )
 

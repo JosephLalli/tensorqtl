@@ -10,6 +10,9 @@ import torch
 sys.path.insert(1, os.path.dirname(__file__))
 from core import *
 
+EPSILON = 1e-12
+MISSING_GENOTYPE = -9
+
 
 def _read_summary_matrix(path):
     if path.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')):
@@ -56,6 +59,11 @@ def _weighted_channel_ols_vectorized(X_t, y_t, w_t, covariates_t=None):
         z = torch.full([X_t.shape[0]], np.nan, device=X_t.device)
         return z, z.clone(), z.clone(), n_eff, np.nan
 
+    # Standard weighted least-squares identity:
+    #   min sum_i w_i (y_i - x_i b)^2
+    # is equivalent to OLS on transformed variables:
+    #   y*_i = sqrt(w_i) y_i, x*_i = sqrt(w_i) x_i.
+    # This lets us reuse tensorQTL's fast OLS/residualization machinery.
     sw_t = torch.sqrt(w_t[m_t])
     y_star_t = y_t[m_t] * sw_t
     X_star_t = X_t[:, m_t] * sw_t
@@ -86,6 +94,7 @@ def _weighted_channel_ols_single(x_t, y_t, w_t, covariates_t=None):
     if n_eff <= (n_cov + 2):
         return np.nan, np.nan, np.nan, n_eff, np.nan
 
+    # Same sqrt(weight) WLS transform as above, for single-variant ASE fits.
     sw_t = torch.sqrt(w_t[m_t])
     y_star_t = y_t[m_t] * sw_t
     x_star_t = x_t[m_t] * sw_t
@@ -132,7 +141,19 @@ def _combine_channels(beta_a, se_a, beta_t, se_t):
 
 
 def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, prefix,
-                covariates_df=None, maf_threshold=0, window=1000000, min_hets_ase=5, output_dir='.', logger=None, verbose=True):
+                covariates_df=None, maf_threshold=0, window=1000000, min_hets_ase=5, kappa=1.0,
+                output_dir='.', logger=None, verbose=True):
+    """
+    Nominal cis mapping for haplotype-aware two-channel QTL model (Method A).
+
+    Channel models:
+      ASE channel:   a_i ~ beta * s_i + covariates,   s_i = xL_i - xR_i
+      Total channel: t_i ~ beta * (g_i / 2) + covariates, g_i = xL_i + xR_i
+
+    The total-channel regressor uses g/2 (not g) so both channels estimate the
+    same log-aFC beta scale. Channel estimates are combined by inverse-variance
+    meta-analysis.
+    """
     import genotypeio
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if logger is None:
@@ -185,12 +206,26 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             tauL_t = torch.tensor(tauL_df.values[i], dtype=torch.float32).to(device)
             tauR_t = torch.tensor(tauR_df.values[i], dtype=torch.float32).to(device)
 
+            # Tau is a technical inferential-uncertainty inflation factor.
+            # We defensively clamp to >=1 and replace missing with 1.
             tauL_t = torch.nan_to_num(torch.clamp(tauL_t, min=1.0), nan=1.0)
             tauR_t = torch.nan_to_num(torch.clamp(tauR_t, min=1.0), nan=1.0)
             alpha_a_t = 0.5 * (tauL_t + tauR_t)
-            alpha_t_t = 0.5 * (tauL_t + tauR_t)
-            w_a_base_t = 1.0 / torch.clamp(alpha_a_t * Va_t, min=1e-12)
-            w_t_t = 1.0 / torch.clamp(alpha_t_t * Vt_t, min=1e-12)
+
+            # Total-channel tau mapping requires haplotype expression means.
+            # Inputs are A=E[log(yL+k)-log(yR+k)] and T=E[log((yL+yR)/2+k)].
+            # We reconstruct approximate mean components from A/T summaries:
+            # ratio ~= (yL+k)/(yR+k), sum ~= yL+yR.
+            ratio_t = torch.exp(torch.clamp(A_t, min=-20.0, max=20.0))
+            ysum_t = torch.clamp(2.0 * (torch.exp(torch.clamp(T_t, min=-20.0, max=20.0)) - kappa), min=0.0)
+            ratio_adjustment_t = (ratio_t - 1.0) * kappa
+            yR_mean_t = (ysum_t - ratio_adjustment_t) / (ratio_t + 1.0)
+            yR_mean_t = torch.clamp(yR_mean_t, min=0.0)
+            yL_mean_t = torch.clamp(ysum_t - yR_mean_t, min=0.0)
+            alpha_t_t = (tauL_t * yL_mean_t + tauR_t * yR_mean_t) / (yL_mean_t + yR_mean_t + EPSILON)
+            alpha_t_t = torch.nan_to_num(alpha_t_t, nan=1.0)
+            w_a_base_t = 1.0 / torch.clamp(alpha_a_t * Va_t, min=EPSILON)
+            w_t_t = 1.0 / torch.clamp(alpha_t_t * Vt_t, min=EPSILON)
 
             g_hap_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             xL_t = g_hap_t[:, 0::2]
@@ -198,7 +233,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             phase_known_t = torch.isfinite(xL_t) & torch.isfinite(xR_t) & (xL_t >= 0) & (xR_t >= 0)
             s_t = xL_t - xR_t
             g_t = xL_t + xR_t
-            g_t = torch.where(phase_known_t, g_t, torch.full_like(g_t, -9))
+            g_t = torch.where(phase_known_t, g_t, torch.full_like(g_t, MISSING_GENOTYPE))
             impute_mean(g_t)
             s_t = torch.where(phase_known_t, s_t, torch.zeros_like(s_t))
 
@@ -221,6 +256,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             pval = np.empty(nvar, dtype=np.float64)
 
             for j in range(nvar):
+                # ASE is only informative in phased heterozygotes. Homozygotes
+                # (s=0) and unphased samples are assigned zero ASE weight.
                 ase_mask_t = (s_t[j] != 0) & phase_known_t[j]
                 w_a_t = torch.where(ase_mask_t, w_a_base_t, torch.zeros_like(w_a_base_t))
                 if int(ase_mask_t.sum().item()) < min_hets_ase:
