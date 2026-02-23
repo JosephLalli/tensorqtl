@@ -53,6 +53,8 @@ def _adjust_ase_variance_with_covariance(Va_t, covLR_t, yL_mean_t, yR_mean_t, ka
       covariance contribution = 2*(dA/dyL)*(dA/dyR)*Cov(yL,yR)
                              = -2*Cov(yL,yR)/((yL+k)(yR+k)).
     Therefore negative Cov(yL,yR) increases Var(A), while positive Cov reduces it.
+    This adjustment assumes Va_t reflects ASE log-variance before adding
+    the L/R covariance contribution.
     """
     denL = torch.clamp(yL_mean_t + kappa, min=EPSILON)
     denR = torch.clamp(yR_mean_t + kappa, min=EPSILON)
@@ -332,8 +334,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             alpha_t_t = (tauL_t * yL_mean_t + tauR_t * yR_mean_t) / (yL_mean_t + yR_mean_t + EPSILON)
             alpha_t_t = torch.nan_to_num(alpha_t_t, nan=1.0)
 
-            # --- NEW: Delta-method-informed ASE inflation factor ---
-            # Var(log(y)) approx Var(y) / (y + kappa)^2, so the ASE variance
+            # Delta-method-informed ASE inflation factor:
+            # Var(log(y+k)) approx Var(y) / (y + kappa)^2, so the ASE variance
             # contribution from each haplotype scales with 1/(y+kappa)^2.
             # Combine tauL/tauR as a dL/dR-weighted average to produce alpha_a_t.
             denL = torch.clamp(yL_mean_t + kappa, min=EPSILON)
