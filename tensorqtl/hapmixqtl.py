@@ -288,7 +288,6 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             # We defensively clamp to >=1 and replace missing with 1.
             tauL_t = torch.nan_to_num(torch.clamp(tauL_t, min=1.0), nan=1.0)
             tauR_t = torch.nan_to_num(torch.clamp(tauR_t, min=1.0), nan=1.0)
-            alpha_a_t = 0.5 * (tauL_t + tauR_t)
 
             # Total-channel tau mapping requires haplotype expression means.
             # Inputs are A=E[log(yL+k)-log(yR+k)] and T=E[log((yL+yR)/2+k)].
@@ -302,6 +301,18 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             yL_mean_t = torch.clamp(ysum_t - yR_mean_t, min=0.0)
             alpha_t_t = (tauL_t * yL_mean_t + tauR_t * yR_mean_t) / (yL_mean_t + yR_mean_t + EPSILON)
             alpha_t_t = torch.nan_to_num(alpha_t_t, nan=1.0)
+
+            # --- NEW: Delta-method-informed ASE inflation factor ---
+            # Var(log(y)) approx Var(y) / (y + kappa)^2, so the ASE variance
+            # contribution from each haplotype scales with 1/(y+kappa)^2.
+            # Combine tauL/tauR as a dL/dR-weighted average to produce alpha_a_t.
+            denL = torch.clamp(yL_mean_t + kappa, min=EPSILON)
+            denR = torch.clamp(yR_mean_t + kappa, min=EPSILON)
+            dL = 1.0 / (denL * denL)
+            dR = 1.0 / (denR * denR)
+            alpha_a_t = (tauL_t * dL + tauR_t * dR) / torch.clamp(dL + dR, min=EPSILON)
+            alpha_a_t = torch.nan_to_num(alpha_a_t, nan=1.0)
+
             w_a_base_t = 1.0 / torch.clamp(alpha_a_t * Va_t, min=EPSILON)
             w_t_t = 1.0 / torch.clamp(alpha_t_t * Vt_t, min=EPSILON)
 
