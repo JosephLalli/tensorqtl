@@ -20,23 +20,46 @@ def _read_summary_matrix(path):
     raise ValueError(f'Unsupported matrix format: {path}')
 
 
-def read_hapmix_inputs(A_path, T_path, Va_path, Vt_path, tauL_path, tauR_path):
+def read_hapmix_inputs(A_path, T_path, Va_path, Vt_path, tauL_path, tauR_path, covLR_path=None):
     A_df, pos_df = _read_summary_matrix(A_path)
     T_df, T_pos_df = _read_summary_matrix(T_path)
     Va_df, Va_pos_df = _read_summary_matrix(Va_path)
     Vt_df, Vt_pos_df = _read_summary_matrix(Vt_path)
     tauL_df, tauL_pos_df = _read_summary_matrix(tauL_path)
     tauR_df, tauR_pos_df = _read_summary_matrix(tauR_path)
+    if covLR_path is not None:
+        covLR_df, covLR_pos_df = _read_summary_matrix(covLR_path)
+    else:
+        covLR_df = pd.DataFrame(np.zeros_like(A_df.values, dtype=np.float32), index=A_df.index, columns=A_df.columns)
+        covLR_pos_df = pos_df
 
-    for name, df in [('T', T_df), ('Va', Va_df), ('Vt', Vt_df), ('tauL', tauL_df), ('tauR', tauR_df)]:
+    for name, df in [('T', T_df), ('Va', Va_df), ('Vt', Vt_df), ('tauL', tauL_df), ('tauR', tauR_df), ('covLR', covLR_df)]:
         if not A_df.columns.equals(df.columns):
             raise ValueError(f'Sample order mismatch between A and {name} matrices.')
         if not A_df.index.equals(df.index):
             raise ValueError(f'Feature order mismatch between A and {name} matrices.')
-    for name, x in [('T', T_pos_df), ('Va', Va_pos_df), ('Vt', Vt_pos_df), ('tauL', tauL_pos_df), ('tauR', tauR_pos_df)]:
+    for name, x in [('T', T_pos_df), ('Va', Va_pos_df), ('Vt', Vt_pos_df), ('tauL', tauL_pos_df), ('tauR', tauR_pos_df), ('covLR', covLR_pos_df)]:
         if not pos_df.equals(x):
             raise ValueError(f'Feature position mismatch between A and {name} matrices.')
-    return A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, pos_df
+    return A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, covLR_df, pos_df
+
+
+def _adjust_ase_variance_with_covariance(Va_t, covLR_t, yL_mean_t, yR_mean_t, kappa):
+    """
+    Apply delta-method covariance correction to ASE variance.
+
+    For A = log(yL+k) - log(yR+k):
+      dA/dyL = 1/(yL+k), dA/dyR = -1/(yR+k),
+      covariance contribution = 2*(dA/dyL)*(dA/dyR)*Cov(yL,yR)
+                             = -2*Cov(yL,yR)/((yL+k)(yR+k)).
+    Therefore negative Cov(yL,yR) increases Var(A), while positive Cov reduces it.
+    """
+    denL = torch.clamp(yL_mean_t + kappa, min=EPSILON)
+    denR = torch.clamp(yR_mean_t + kappa, min=EPSILON)
+    covLR_t = torch.nan_to_num(covLR_t, nan=0.0)
+    cov_term_t = -2.0 * covLR_t / torch.clamp(denL * denR, min=EPSILON)
+    Va_adj_t = torch.clamp(Va_t + cov_term_t, min=EPSILON)
+    return Va_adj_t
 
 
 def summarize_nonstandard_haplotype_inputs(phenotype_df, mapping_overdispersion_df, kappa=1.0):
@@ -219,6 +242,7 @@ def _combine_channels(beta_a, se_a, beta_t, se_t):
 
 
 def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, prefix,
+                covLR_df=None,
                 covariates_df=None, maf_threshold=0, window=1000000, min_hets_ase=5, kappa=1.0,
                 output_dir='.', logger=None, verbose=True):
     """
@@ -239,6 +263,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
 
     if covariates_df is not None and not A_df.columns.equals(covariates_df.index):
         raise ValueError('Covariates must be aligned to hapmix input samples.')
+    if covLR_df is not None and not (A_df.index.equals(covLR_df.index) and A_df.columns.equals(covLR_df.columns)):
+        raise ValueError('covLR_df must be aligned to A_df.')
     _check_haplotype_sample_alignment(genotype_df.columns, A_df.columns)
 
     logger.write('hapmixQTL nominal mapping')
@@ -283,6 +309,10 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             Vt_t = torch.tensor(Vt_df.values[i], dtype=torch.float32).to(device)
             tauL_t = torch.tensor(tauL_df.values[i], dtype=torch.float32).to(device)
             tauR_t = torch.tensor(tauR_df.values[i], dtype=torch.float32).to(device)
+            if covLR_df is not None:
+                covLR_t = torch.tensor(covLR_df.values[i], dtype=torch.float32).to(device)
+            else:
+                covLR_t = torch.zeros_like(Va_t)
 
             # Tau is a technical inferential-uncertainty inflation factor.
             # We defensively clamp to >=1 and replace missing with 1.
@@ -313,7 +343,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             alpha_a_t = (tauL_t * dL + tauR_t * dR) / torch.clamp(dL + dR, min=EPSILON)
             alpha_a_t = torch.nan_to_num(alpha_a_t, nan=1.0)
 
-            w_a_base_t = 1.0 / torch.clamp(alpha_a_t * Va_t, min=EPSILON)
+            Va_adj_t = _adjust_ase_variance_with_covariance(Va_t, covLR_t, yL_mean_t, yR_mean_t, kappa)
+            w_a_base_t = 1.0 / torch.clamp(alpha_a_t * Va_adj_t, min=EPSILON)
             w_t_t = 1.0 / torch.clamp(alpha_t_t * Vt_t, min=EPSILON)
 
             g_hap_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
@@ -411,6 +442,6 @@ def map_nominal_nonstandard(genotype_df, variant_df, phenotype_df, mapping_overd
         raise ValueError('phenotype_pos_df index must match derived feature IDs from non-standard phenotype_df columns.')
     return map_nominal(
         genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, prefix,
-        covariates_df=covariates_df, maf_threshold=maf_threshold, window=window,
+        covLR_df=None, covariates_df=covariates_df, maf_threshold=maf_threshold, window=window,
         min_hets_ase=min_hets_ase, kappa=kappa, output_dir=output_dir, logger=logger, verbose=verbose
     )

@@ -63,6 +63,7 @@ def main():
     parser.add_argument('--hap_Vt', default=None, type=str, help='Hapmix summary matrix Vt (BED/parquet)')
     parser.add_argument('--hap_tauL', default=None, type=str, help='Hapmix summary matrix tauL (BED/parquet)')
     parser.add_argument('--hap_tauR', default=None, type=str, help='Hapmix summary matrix tauR (BED/parquet)')
+    parser.add_argument('--hap_covLR', default=None, type=str, help='Hapmix summary matrix Cov(yL,yR) (BED/parquet)')
     parser.add_argument('--min_hets_ase', default=5, type=int, help='Minimum number of informative heterozygous samples for ASE channel')
     parser.add_argument('--kappa', default=1.0, type=np.float64, help='Pseudocount used for hapmix summary transformation')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
@@ -101,8 +102,8 @@ def main():
         for f in [args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR]:
             if f is None:
                 raise ValueError("hapmixqtl_nominal requires --hap_A --hap_T --hap_Va --hap_Vt --hap_tauL --hap_tauR")
-        phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df = hapmixqtl.read_hapmix_inputs(
-            args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR
+        phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, covLR_df, phenotype_pos_df = hapmixqtl.read_hapmix_inputs(
+            args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR, covLR_path=args.hap_covLR
         )
         _log_cis_window(phenotype_pos_df)
     elif args.mode.startswith('trans'):
@@ -421,7 +422,7 @@ def main():
             raise NotImplementedError("hapmixqtl_nominal currently requires loading genotypes in-memory (no --chunk_size).")
         hapmixqtl.map_nominal(
             genotype_df, variant_df, phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, args.prefix,
-            covariates_df=covariates_df, maf_threshold=maf_threshold, window=args.window, min_hets_ase=args.min_hets_ase, kappa=args.kappa,
+            covLR_df=covLR_df, covariates_df=covariates_df, maf_threshold=maf_threshold, window=args.window, min_hets_ase=args.min_hets_ase, kappa=args.kappa,
             output_dir=args.output_dir, logger=logger, verbose=True
         )
 

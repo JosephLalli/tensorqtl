@@ -122,3 +122,45 @@ def test_nonstandard_haplotype_input_conversion():
     assert np.allclose(Vt_df.values, 1.0)
     assert np.isclose(tauL_df.loc['gene2', 'S2'], 2.2)
     assert np.isclose(tauR_df.loc['gene2', 'S2'], 1.7)
+
+
+def test_ase_covariance_adjustment_sign_and_nan_handling():
+    Va = torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32)
+    yL = torch.tensor([10.0, 10.0, 10.0], dtype=torch.float32)
+    yR = torch.tensor([8.0, 8.0, 8.0], dtype=torch.float32)
+    cov = torch.tensor([-4.0, 0.0, float('nan')], dtype=torch.float32)
+
+    Va_adj = hapmixqtl._adjust_ase_variance_with_covariance(Va, cov, yL, yR, kappa=1.0)
+    assert float(Va_adj[0]) > float(Va[0])  # negative covariance increases ASE variance
+    assert np.isclose(float(Va_adj[1]), float(Va[1]), atol=1e-8)  # zero covariance is no-op
+    assert np.isclose(float(Va_adj[2]), float(Va[2]), atol=1e-8)  # NaN covariance treated as zero
+
+
+def test_reader_covlr_defaults_to_zero(tmp_path):
+    def write_bed(path, sample_cols):
+        df = pd.DataFrame({
+            '#chr': ['chr1'],
+            'start': [0],
+            'end': [1],
+            'pid': ['f1'],
+            sample_cols[0]: [1.0],
+            sample_cols[1]: [2.0],
+        })
+        df.to_csv(path, sep='\t', index=False)
+
+    a = tmp_path / 'A.bed'
+    t = tmp_path / 'T.bed'
+    va = tmp_path / 'Va.bed'
+    vt = tmp_path / 'Vt.bed'
+    tl = tmp_path / 'tauL.bed'
+    tr = tmp_path / 'tauR.bed'
+    write_bed(a, ['S1', 'S2'])
+    write_bed(t, ['S1', 'S2'])
+    write_bed(va, ['S1', 'S2'])
+    write_bed(vt, ['S1', 'S2'])
+    write_bed(tl, ['S1', 'S2'])
+    write_bed(tr, ['S1', 'S2'])
+
+    hapmix_inputs = hapmixqtl.read_hapmix_inputs(str(a), str(t), str(va), str(vt), str(tl), str(tr))
+    covLR_df = hapmix_inputs[6]
+    assert np.allclose(covLR_df.values, 0.0)
