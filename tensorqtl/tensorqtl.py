@@ -14,7 +14,7 @@ import importlib.metadata
 sys.path.insert(1, os.path.dirname(__file__))
 from core import *
 from post import *
-import genotypeio, cis, trans, susie, nbqtl
+import genotypeio, cis, trans, susie, nbqtl, hapmixqtl
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
     parser.add_argument('prefix', help='Prefix for output file names')
-    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score'],
+    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal'],
                         help='Mapping mode. Default: cis')
     parser.add_argument('--covariates', default=None, help='Covariates file, tab-delimited (covariates x samples)')
     parser.add_argument('--paired_covariate', default=None, help='Single phenotype-specific covariate, tab-delimited (phenotypes x samples)')
@@ -57,6 +57,15 @@ def main():
     parser.add_argument('--dtype', default='float64', type=str, choices=['float32', 'float64'], help='Data type for computation (nbqtl-score mode). Default: float64')
     parser.add_argument('--batch-size-features', default=10000, type=int, help='Number of features per batch for nbqtl-score mode')
     parser.add_argument('--batch-size-snps', default=16000, type=int, help='Number of SNPs per block for nbqtl-score mode')
+    parser.add_argument('--hap_A', default=None, type=str, help='Hapmix summary matrix A (BED/parquet)')
+    parser.add_argument('--hap_T', default=None, type=str, help='Hapmix summary matrix T (BED/parquet)')
+    parser.add_argument('--hap_Va', default=None, type=str, help='Hapmix summary matrix Va (BED/parquet)')
+    parser.add_argument('--hap_Vt', default=None, type=str, help='Hapmix summary matrix Vt (BED/parquet)')
+    parser.add_argument('--hap_tauL', default=None, type=str, help='Hapmix summary matrix tauL (BED/parquet)')
+    parser.add_argument('--hap_tauR', default=None, type=str, help='Hapmix summary matrix tauR (BED/parquet)')
+    parser.add_argument('--hap_covLR', default=None, type=str, help='Hapmix summary matrix Cov(yL,yR) (BED/parquet)')
+    parser.add_argument('--min_hets_ase', default=5, type=int, help='Minimum number of informative heterozygous samples for ASE channel')
+    parser.add_argument('--kappa', default=1.0, type=np.float64, help='Pseudocount used for hapmix summary transformation')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     args = parser.parse_args()
 
@@ -76,16 +85,27 @@ def main():
     if args.seed is not None:
         logger.write(f'  * using seed {args.seed}')
 
+    def _log_cis_window(pos_df):
+        if pos_df.columns[1] == 'pos':
+            logger.write(f"  * cis-window detected as position ± {args.window:,}")
+        else:
+            logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
+
     # load inputs
     logger.write(f'  * reading phenotypes ({args.phenotypes})')
     # for cis modes, require BED input with position information
     if args.mode.startswith('cis'):
         assert args.phenotypes.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')), "For cis modes, phenotypes must be in BED format."
         phenotype_df, phenotype_pos_df = read_phenotype_bed(args.phenotypes)
-        if phenotype_pos_df.columns[1] == 'pos':
-            logger.write(f"  * cis-window detected as position ± {args.window:,}")
-        else:
-            logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
+        _log_cis_window(phenotype_pos_df)
+    elif args.mode == 'hapmixqtl_nominal':
+        for f in [args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR]:
+            if f is None:
+                raise ValueError("hapmixqtl_nominal requires --hap_A --hap_T --hap_Va --hap_Vt --hap_tauL --hap_tauR")
+        phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, covLR_df, phenotype_pos_df = hapmixqtl.read_hapmix_inputs(
+            args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_tauL, args.hap_tauR, covLR_path=args.hap_covLR
+        )
+        _log_cis_window(phenotype_pos_df)
     elif args.mode.startswith('trans'):
         if args.phenotypes.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')):
             phenotype_df, phenotype_pos_df = read_phenotype_bed(args.phenotypes)
@@ -153,7 +173,8 @@ def main():
     # load genotypes
     if args.chunk_size is None:  # load all genotypes into memory
         logger.write(f'  * loading genotype dosages' if args.dosages else f'  * loading genotypes')
-        genotype_df, variant_df = genotypeio.load_genotypes(args.genotype_path, select_samples=phenotype_df.columns, dosages=args.dosages)
+        select_samples = None if args.mode == 'hapmixqtl_nominal' else phenotype_df.columns
+        genotype_df, variant_df = genotypeio.load_genotypes(args.genotype_path, select_samples=select_samples, dosages=args.dosages)
         if variant_df is None:
             assert not args.mode.startswith('cis'), f"Genotype data without variant positions is only supported for mode='trans'."
     else:
@@ -396,6 +417,14 @@ def main():
         )
 
         logger.write(f'  * nbQTL mapping completed with {len(results_df)} associations')
+    elif args.mode == 'hapmixqtl_nominal':
+        if args.chunk_size is not None:
+            raise NotImplementedError("hapmixqtl_nominal currently requires loading genotypes in-memory (no --chunk_size).")
+        hapmixqtl.map_nominal(
+            genotype_df, variant_df, phenotype_df, T_df, Va_df, Vt_df, tauL_df, tauR_df, phenotype_pos_df, args.prefix,
+            covLR_df=covLR_df, covariates_df=covariates_df, maf_threshold=maf_threshold, window=args.window, min_hets_ase=args.min_hets_ase, kappa=args.kappa,
+            output_dir=args.output_dir, logger=logger, verbose=True
+        )
 
     logger.write(f'[{datetime.now().strftime("%b %d %H:%M:%S")}] Finished mapping')
 

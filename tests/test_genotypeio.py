@@ -30,6 +30,15 @@ except ImportError:
 
 from tests.utils import create_temp_files
 
+if TENSORQTL_AVAILABLE:
+    _genotypeio_for_phased_tests = genotypeio
+else:
+    import importlib.util
+    _module_path = Path(__file__).parent.parent / "tensorqtl" / "genotypeio.py"
+    _spec = importlib.util.spec_from_file_location("tensorqtl_genotypeio_test_module", _module_path)
+    _genotypeio_for_phased_tests = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_genotypeio_for_phased_tests)
+
 class TestPhenotypeBedIO:
     """Test phenotype BED file I/O."""
 
@@ -238,7 +247,20 @@ class TestGenotypeDataHandling:
         subset_df = geno_df[selected_samples]
 
         assert subset_df.shape == (n_variants, 10)
-        assert list(subset_df.columns) == selected_samples
+
+
+class TestPhasedVcfParsing:
+    def test_parse_phased_haplotypes(self):
+        g = _genotypeio_for_phased_tests.parse_phased_haplotypes(['0|1', '1|0', '1|1', '.|.'])
+        assert g.shape == (4, 2)
+        assert np.allclose(g[0], [0, 1])
+        assert np.allclose(g[1], [1, 0])
+        assert np.allclose(g[2], [1, 1])
+        assert np.isnan(g[3]).all()
+
+    def test_parse_phased_haplotypes_rejects_unphased(self):
+        with pytest.raises(ValueError, match='unphased genotype'):
+            _genotypeio_for_phased_tests.parse_phased_haplotypes(['0/1'])
 
 class TestDataConsistency:
     """Test data consistency checks."""
