@@ -53,8 +53,9 @@ def _adjust_ase_variance_with_covariance(Va_t, covLR_t, yL_mean_t, yR_mean_t, ka
       covariance contribution = 2*(dA/dyL)*(dA/dyR)*Cov(yL,yR)
                              = -2*Cov(yL,yR)/((yL+k)(yR+k)).
     Therefore negative Cov(yL,yR) increases Var(A), while positive Cov reduces it.
-    This adjustment assumes Va_t reflects ASE log-variance before adding
-    the L/R covariance contribution.
+    Retained for diagnostic use. Not called in the production weight path
+    because Va from Gibbs draws is treated as already containing full
+    inferential uncertainty (including L/R covariance).
     """
     denL = torch.clamp(yL_mean_t + kappa, min=EPSILON)
     denR = torch.clamp(yR_mean_t + kappa, min=EPSILON)
@@ -89,6 +90,13 @@ def summarize_nonstandard_haplotype_inputs(phenotype_df, mapping_overdispersion_
     -------
     tuple
         (A_df, T_df, Va_df, Vt_df, tauL_df, tauR_df), each features x samples.
+
+    Warning
+    -------
+    This fallback sets Va=Vt=1 for all feature-sample entries (equal weighting).
+    It is valid when inferential variances are unavailable, but typically less
+    powerful than Gibbs-derived Va/Vt because sample-specific uncertainty is not
+    reflected in the weights.
     """
     if not phenotype_df.index.equals(mapping_overdispersion_df.index):
         raise ValueError('phenotype_df and mapping_overdispersion_df sample indexes must match.')
@@ -299,6 +307,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
         chr_res['af'] = np.empty(n, dtype=np.float32)
         chr_res['ma_samples'] = np.empty(n, dtype=np.int32)
         chr_res['ma_count'] = np.empty(n, dtype=np.int32)
+        chr_res['tauL_median'] = np.empty(n, dtype=np.float32)
+        chr_res['tauR_median'] = np.empty(n, dtype=np.float32)
         for c in ['beta', 'beta_se', 'pval', 'beta_a', 'beta_a_se', 'pval_a', 'beta_t', 'beta_t_se', 'pval_t']:
             chr_res[c] = np.empty(n, dtype=np.float64 if c.startswith('pval') else np.float32)
 
@@ -315,39 +325,16 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
                 covLR_t = torch.tensor(covLR_df.values[i], dtype=torch.float32).to(device)
             else:
                 covLR_t = torch.zeros_like(Va_t)
+            # covLR_t is retained for diagnostics/backward compatibility only;
+            # production weight computation uses Va_t/Vt_t directly.
 
-            # Tau is a technical inferential-uncertainty inflation factor.
-            # We defensively clamp to >=1 and replace missing with 1.
-            tauL_t = torch.nan_to_num(torch.clamp(tauL_t, min=1.0), nan=1.0)
-            tauR_t = torch.nan_to_num(torch.clamp(tauR_t, min=1.0), nan=1.0)
+            # Production weights use Gibbs-draw summary variances directly.
+            w_a_base_t = 1.0 / torch.clamp(Va_t, min=EPSILON)
+            w_t_t = 1.0 / torch.clamp(Vt_t, min=EPSILON)
 
-            # Total-channel tau mapping requires haplotype expression means.
-            # Inputs are A=E[log(yL+k)-log(yR+k)] and T=E[log((yL+yR)/2+k)].
-            # We reconstruct approximate mean components from A/T summaries:
-            # ratio ~= (yL+k)/(yR+k), sum ~= yL+yR.
-            ratio_t = torch.exp(torch.clamp(A_t, min=-20.0, max=20.0))
-            ysum_t = torch.clamp(2.0 * (torch.exp(torch.clamp(T_t, min=-20.0, max=20.0)) - kappa), min=0.0)
-            ratio_adjustment_t = (ratio_t - 1.0) * kappa
-            yR_mean_t = (ysum_t - ratio_adjustment_t) / (ratio_t + 1.0)
-            yR_mean_t = torch.clamp(yR_mean_t, min=0.0)
-            yL_mean_t = torch.clamp(ysum_t - yR_mean_t, min=0.0)
-            alpha_t_t = (tauL_t * yL_mean_t + tauR_t * yR_mean_t) / (yL_mean_t + yR_mean_t + EPSILON)
-            alpha_t_t = torch.nan_to_num(alpha_t_t, nan=1.0)
-
-            # Delta-method-informed ASE inflation factor:
-            # Var(log(y+k)) approx Var(y) / (y + kappa)^2, so the ASE variance
-            # contribution from each haplotype scales with 1/(y+kappa)^2.
-            # Combine tauL/tauR as a dL/dR-weighted average to produce alpha_a_t.
-            denL = torch.clamp(yL_mean_t + kappa, min=EPSILON)
-            denR = torch.clamp(yR_mean_t + kappa, min=EPSILON)
-            dL = 1.0 / (denL * denL)
-            dR = 1.0 / (denR * denR)
-            alpha_a_t = (tauL_t * dL + tauR_t * dR) / torch.clamp(dL + dR, min=EPSILON)
-            alpha_a_t = torch.nan_to_num(alpha_a_t, nan=1.0)
-
-            Va_adj_t = _adjust_ase_variance_with_covariance(Va_t, covLR_t, yL_mean_t, yR_mean_t, kappa)
-            w_a_base_t = 1.0 / torch.clamp(alpha_a_t * Va_adj_t, min=EPSILON)
-            w_t_t = 1.0 / torch.clamp(alpha_t_t * Vt_t, min=EPSILON)
+            # Tau tensors are retained for QC outputs only.
+            tauL_median = float(torch.nanmedian(tauL_t).item())
+            tauR_median = float(torch.nanmedian(tauR_t).item())
 
             g_hap_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             xL_t = g_hap_t[:, 0::2]
@@ -409,6 +396,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, tauL_df, tauR
             chr_res['af'][start:end] = af_t.cpu().numpy()
             chr_res['ma_samples'][start:end] = ma_samples_t.cpu().numpy()
             chr_res['ma_count'][start:end] = ma_count_t.cpu().numpy()
+            chr_res['tauL_median'][start:end] = tauL_median
+            chr_res['tauR_median'][start:end] = tauR_median
             chr_res['beta_t'][start:end] = beta_t_t.cpu().numpy()
             chr_res['beta_t_se'][start:end] = beta_t_se_t.cpu().numpy()
             chr_res['pval_t'][start:end] = pval_t
