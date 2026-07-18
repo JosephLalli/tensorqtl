@@ -246,3 +246,19 @@ res_df = hapmixqtl.map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                            covariates_df=covariates_df)
 ```
 
+**SuSiE fine-mapping** identifies credible sets of candidate causal variants from the combined ASE + total evidence. Because both channels estimate the same shared effect (log aFC), the two sqrt-weighted, covariate-residualized channels are stacked into a single whitened design and passed to tensorQTL's existing [SuSiE](https://rss.onlinelibrary.wiley.com/doi/full/10.1111/rssb.12388) implementation (`tensorqtl.susie.susie`) unchanged, so any improvements to the core SuSiE code are inherited automatically. The sqrt-weight transform whitens each channel to unit-variance noise using the known Gibbs inferential variances, so `estimate_residual_variance` defaults to `False` (consistent with the known-variance standard errors used elsewhere in hapmixQTL); set it to `True` to instead let SuSiE re-estimate a scalar dispersion. Outputs mirror `cis_susie`: a credible-set summary parquet (`${prefix}.hapmixqtl_SuSiE_summary.parquet`) and a pickle of the full per-phenotype SuSiE results.
+```
+python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
+    --mode hapmixqtl_susie \
+    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
+    --phase_xL ${xL_file} --phase_xR ${xR_file} \
+    --covariates ${covariates_file} --max_effects 10
+```
+In Python:
+```
+summary_df, susie_res = hapmixqtl.map_susie(
+    genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+    phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
+    covariates_df=covariates_df, L=10, summary_only=False)
+```
+

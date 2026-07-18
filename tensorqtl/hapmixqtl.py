@@ -38,6 +38,7 @@ from collections import OrderedDict
 
 sys.path.insert(1, os.path.dirname(__file__))
 import genotypeio
+import susie
 from core import *
 
 
@@ -915,3 +916,249 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     logger.write(f'  Time elapsed: {(time.time() - start_time) / 60:.2f} min')
     logger.write('done.')
     return res_df.astype(output_dtype_dict).infer_objects()
+
+
+# ---------------------------------------------------------------------------
+#  SuSiE fine-mapping
+# ---------------------------------------------------------------------------
+
+def _build_stacked_design(genotypes_t, sign_t, a_t, t_t,
+                          sqrt_wa_t, sqrt_wt_t,
+                          residualizer_a, residualizer_t):
+    """
+    Build the stacked, whitened, covariate-residualized design for SuSiE.
+
+    hapmixQTL's Method A shares a single effect ``beta`` (the log allelic fold
+    change) across two channels: the ASE channel regresses ``a`` on the signed
+    het indicator ``s``, and the total channel regresses ``t`` on the half
+    dosage ``g/2``. The sqrt-weight transform (multiply response and predictors
+    by ``sqrt(w_i)`` with ``w_i = 1/(v_inf_i + tau)``) whitens each channel to
+    unit-variance, homoskedastic noise -- exactly the model SuSiE assumes
+    (``estimate_residual_variance=False, residual_variance=1``).
+
+    Because the two channels estimate the *same* per-variant effect, we can
+    stack them into one regression with 2N pseudo-samples and a single design
+    matrix. ``WeightedResidualizer`` has already projected out the weighted
+    intercept and covariates from each channel, so the stacked responses and
+    predictors are covariate-free (SuSiE is then called with
+    ``intercept=False``).
+
+    Returns:
+        X_aug_t: [2N, p] stacked predictors (variants as columns)
+        y_aug_t: [2N, 1] stacked response
+    """
+    # ASE channel (sqrt-weighted + residualized)
+    s_star_res = residualizer_a.transform(sign_t * sqrt_wa_t.unsqueeze(0))      # p x N
+    a_star_res = residualizer_a.transform((a_t * sqrt_wa_t).unsqueeze(0))       # 1 x N
+    # Total channel (sqrt-weighted + residualized)
+    g_half_star_res = residualizer_t.transform((genotypes_t / 2) * sqrt_wt_t.unsqueeze(0))  # p x N
+    t_star_res = residualizer_t.transform((t_t * sqrt_wt_t).unsqueeze(0))       # 1 x N
+
+    # Stack the two channels along the sample axis -> 2N pseudo-samples.
+    X_aug_t = torch.cat([s_star_res, g_half_star_res], dim=1).T                 # (2N) x p
+    y_aug_t = torch.cat([a_star_res, t_star_res], dim=1).reshape(-1, 1)         # (2N) x 1
+    return X_aug_t, y_aug_t
+
+
+def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+              phenotype_pos_df, xL_df=None, xR_df=None,
+              covariates_df=None, L=10, scaled_prior_variance=0.2,
+              estimate_residual_variance=False, estimate_prior_variance=True,
+              coverage=0.95, min_abs_corr=0.5, maf_threshold=0,
+              tau_mode='zero', max_iter=500, window=1000000, tol=1e-3,
+              summary_only=True, logger=None, verbose=True,
+              warn_monomorphic=False):
+    """
+    hapmixQTL SuSiE fine-mapping.
+
+    For each phenotype, fine-maps the shared log-aFC effect using the combined
+    ASE + total evidence. The two sqrt-weighted, covariate-residualized
+    channels are stacked into a single whitened design and passed to
+    ``tensorqtl.susie.susie`` unchanged, so any improvement to the core SuSiE
+    implementation is inherited automatically.
+
+    ``estimate_residual_variance`` defaults to ``False`` (with an implied
+    residual variance of 1): the sqrt-weight transform already whitens the
+    noise to unit variance using the *known* Gibbs inferential variances, which
+    is consistent with the known-variance GLS standard errors used elsewhere in
+    this module. Set it to ``True`` to let SuSiE re-estimate a scalar
+    dispersion instead (matching the default individual-level ``susie.map``).
+
+    Args mirror ``susie.map``; hapmixQTL-specific inputs (A/T/Va/Vt and the
+    optional phase matrices xL/xR) match ``map_cis``.
+
+    Returns:
+        summary_df (if summary_only) or (summary_df, susie_res dict), analogous
+        to ``susie.map``.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if logger is None:
+        logger = SimpleLogger()
+
+    samples = A_df.columns
+    N = len(samples)
+    assert A_df.columns.equals(T_df.columns)
+    assert A_df.index.equals(T_df.index)
+
+    logger.write('hapmixQTL SuSiE fine-mapping')
+    logger.write(f'  * {N} samples')
+    logger.write(f'  * {A_df.shape[0]} phenotypes')
+
+    if covariates_df is not None:
+        assert covariates_df.index.equals(A_df.columns), \
+            'Sample names in phenotype columns and covariate rows must match'
+        logger.write(f'  * {covariates_df.shape[1]} covariates')
+        covariates_t = torch.tensor(covariates_df.values, dtype=torch.float32).to(device)
+    else:
+        covariates_t = None
+
+    has_phase = xL_df is not None and xR_df is not None
+    if has_phase:
+        logger.write('  * phase genotypes available (ASE + total channels)')
+    else:
+        logger.write('  * no phase genotypes (total channel only)')
+
+    logger.write(f'  * {variant_df.shape[0]} variants')
+    if maf_threshold > 0:
+        logger.write(f'  * applying in-sample MAF >= {maf_threshold} filter')
+    logger.write(f'  * cis-window: ±{window:,}')
+    logger.write(f'  * max effects (L): {L}')
+
+    genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
+    genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
+
+    igc = genotypeio.InputGeneratorCis(
+        genotype_df, variant_df, T_df, phenotype_pos_df, window=window,
+    )
+    if igc.n_phenotypes == 0:
+        raise ValueError('No valid phenotypes found.')
+    pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
+
+    copy_keys = ['pip', 'sets', 'converged', 'elbo', 'niter', 'lbf_variable']
+    susie_summary = []
+    susie_res = {} if not summary_only else None
+
+    start_time = time.time()
+    logger.write('  * fine-mapping')
+    for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
+        igc.generate_data(verbose=verbose), 1
+    ):
+        if phenotype_id not in pheno_ix:
+            continue
+
+        pidx = pheno_ix[phenotype_id]
+        a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
+        t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+
+        if tau_mode == 'estimate':
+            tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
+            tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
+            sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+            sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
+        else:
+            sqrt_wa_t = torch.sqrt(1.0 / va_t)
+            sqrt_wt_t = torch.sqrt(1.0 / vt_t)
+
+        residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
+        residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+
+        genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
+        genotypes_t = genotypes_t[:, genotype_ix_t]
+        impute_mean(genotypes_t)
+
+        variant_ids = variant_df.index[genotype_range[0]:genotype_range[-1] + 1].rename('variant_id')
+
+        # Build phase-derived sign over the contiguous window before filtering,
+        # so masks apply identically to genotypes and phase (see map_cis).
+        if has_phase:
+            xL_vals = xL_df.values[genotype_range[0]:genotype_range[-1] + 1]
+            xR_vals = xR_df.values[genotype_range[0]:genotype_range[-1] + 1]
+            xL_t = torch.tensor(xL_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+            xR_t = torch.tensor(xR_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+            sign_t = xL_t - xR_t
+        else:
+            sign_t = torch.zeros_like(genotypes_t)
+
+        # filter monomorphic (and optionally low-MAF) variants
+        mask_t = ~(genotypes_t == genotypes_t[:, [0]]).all(1)
+        if warn_monomorphic and (~mask_t).any():
+            logger.write(f'    * WARNING: excluding {int((~mask_t).sum())} monomorphic variants')
+        if maf_threshold > 0:
+            maf_t = calculate_maf(genotypes_t)
+            mask_t &= maf_t >= maf_threshold
+        if not mask_t.all():
+            genotypes_t = genotypes_t[mask_t]
+            sign_t = sign_t[mask_t]
+            mask = mask_t.cpu().numpy().astype(bool)
+            variant_ids = variant_ids[mask]
+
+        if genotypes_t.shape[0] == 0:
+            logger.write(f'WARNING: skipping {phenotype_id} (no valid variants)')
+            continue
+
+        X_aug_t, y_aug_t = _build_stacked_design(
+            genotypes_t, sign_t, a_t, t_t,
+            sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc,
+        )
+
+        # susie() applies torch operations to residual_variance, so it must be
+        # a tensor. When estimating it, pass None (susie initializes it to
+        # var(y)); otherwise fix it to 1 (the channels are whitened to unit
+        # variance by the sqrt-weight transform).
+        if estimate_residual_variance:
+            resvar = None
+        else:
+            resvar = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+        res = susie.susie(
+            X_aug_t, y_aug_t, L=L,
+            scaled_prior_variance=scaled_prior_variance,
+            intercept=False,  # channels already covariate-residualized
+            estimate_residual_variance=estimate_residual_variance,
+            estimate_prior_variance=estimate_prior_variance,
+            residual_variance=resvar,
+            coverage=coverage, min_abs_corr=min_abs_corr,
+            tol=tol, max_iter=max_iter,
+        )
+
+        af_t = genotypes_t.sum(1) / (2 * genotypes_t.shape[1])
+        res['pip'] = pd.DataFrame(
+            {'pip': res['pip'], 'af': af_t.cpu().numpy()}, index=variant_ids
+        )
+        if res['sets']['cs'] is not None:
+            if res['converged']:
+                for c in sorted(res['sets']['cs'], key=lambda x: int(x.replace('L', ''))):
+                    cs = res['sets']['cs'][c]
+                    p = res['pip'].iloc[cs].copy().reset_index()
+                    p['cs_id'] = c.replace('L', '')
+                    p.insert(0, 'phenotype_id', phenotype_id)
+                    susie_summary.append(p)
+                res['lbf_variable'] = res['lbf_variable'][res['sets']['cs_index']]
+            else:
+                logger.write(f'    * WARNING: {phenotype_id} did not converge')
+
+        if not summary_only:
+            susie_res[phenotype_id] = {key: res[key] for key in copy_keys}
+
+    logger.write(f'  Time elapsed: {(time.time() - start_time) / 60:.2f} min')
+    logger.write('done.')
+
+    if susie_summary:
+        susie_summary = pd.concat(susie_summary, axis=0).rename(
+            columns={'snp': 'variant_id'}
+        ).reset_index(drop=True)
+    else:
+        susie_summary = pd.DataFrame(
+            columns=['phenotype_id', 'variant_id', 'pip', 'af', 'cs_id']
+        )
+
+    if summary_only:
+        return susie_summary
+    else:
+        drop_ids = [key for key in susie_res if susie_res[key]['sets']['cs'] is None]
+        for key in drop_ids:
+            del susie_res[key]
+        return susie_summary, susie_res

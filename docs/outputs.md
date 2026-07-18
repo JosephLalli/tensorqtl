@@ -93,3 +93,14 @@ Column | Description
 
 #### Mode `hapmixqtl`
 The columns match `cis` (top association per phenotype with permutation and Beta-approximated p-values), where `slope`/`slope_se`/`pval_nominal` are the combined ASE + total estimates and `slope` is interpretable as the log allelic fold change per ALT allele. Written to `${prefix}.hapmixqtl.txt.gz`.
+
+#### Mode `hapmixqtl_susie`
+SuSiE fine-mapping of the combined ASE + total signal. Two files are written: a credible-set summary parquet `${prefix}.hapmixqtl_SuSiE_summary.parquet` and a pickle `${prefix}.hapmixqtl_SuSiE.pickle` with the full per-phenotype SuSiE results (PIPs, credible sets, log Bayes factors, ELBO, convergence).
+Summary columns:
+Column | Description
+--- | ---
+`phenotype_id` | Phenotype ID
+`variant_id` | Variant ID (member of the credible set)
+`pip` | Posterior inclusion probability
+`af` | In-sample ALT allele frequency of the variant
+`cs_id` | Credible-set index (the SuSiE single-effect `L` this variant belongs to)

@@ -36,6 +36,7 @@ from tensorqtl.hapmixqtl import (
     read_hapmixqtl_inputs,
     map_nominal,
     map_cis,
+    map_susie,
 )
 
 
@@ -781,6 +782,57 @@ class TestMapCis:
         assert row['variant_id'] == d['causal_variant']
         # Filtered-out variants must never be selected as the top hit.
         assert row['variant_id'] not in {g.index[5], g.index[7]}
+
+
+class TestMapSusie:
+
+    def test_map_susie_recovers_causal_in_cs(self):
+        """SuSiE fine-mapping places the causal variant in a credible set."""
+        d = _make_dataset(seed=120, n_samples=120, n_variants=20)
+        summary_df, res = map_susie(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            L=5, window=1000000, max_iter=200,
+            summary_only=False, verbose=False,
+        )
+        # Causal phenotype should have at least one credible set containing
+        # the causal variant.
+        assert d['causal_pheno'] in res
+        sub = summary_df[summary_df['phenotype_id'] == d['causal_pheno']]
+        assert d['causal_variant'] in set(sub['variant_id'])
+        # The causal variant should carry high PIP.
+        pip = sub.loc[sub['variant_id'] == d['causal_variant'], 'pip'].max()
+        assert pip > 0.5, f"causal PIP {pip}"
+
+    def test_map_susie_summary_only_columns(self):
+        """summary_only=True returns a tidy credible-set table."""
+        d = _make_dataset(seed=121, n_samples=100, n_variants=15)
+        summary_df = map_susie(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            L=5, window=1000000, max_iter=200,
+            summary_only=True, verbose=False,
+        )
+        for col in ['phenotype_id', 'variant_id', 'pip', 'af', 'cs_id']:
+            assert col in summary_df.columns
+        # PIPs are valid probabilities.
+        assert (summary_df['pip'] >= 0).all() and (summary_df['pip'] <= 1).all()
+
+    def test_map_susie_no_phase_runs(self):
+        """Without phase, SuSiE fine-maps the total channel alone."""
+        d = _make_dataset(seed=122, n_samples=100, n_variants=15)
+        summary_df = map_susie(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=None, xR_df=None,
+            L=5, window=1000000, max_iter=200,
+            summary_only=True, verbose=False,
+        )
+        # Still recovers the causal variant from the total channel.
+        sub = summary_df[summary_df['phenotype_id'] == d['causal_pheno']]
+        assert d['causal_variant'] in set(sub['variant_id'])
 
 
 # ---------------------------------------------------------------------------
