@@ -834,6 +834,34 @@ class TestMapSusie:
         sub = summary_df[summary_df['phenotype_id'] == d['causal_pheno']]
         assert d['causal_variant'] in set(sub['variant_id'])
 
+    def test_map_susie_purity_uses_genotype_ld(self):
+        """
+        Credible-set purity must be measured on genotype LD, not on the
+        stacked/whitened design SuSiE is fit on. Build two variants in near
+        perfect genotype LD (one causal); a single credible set covering both
+        must be reported as pure (they are genuinely indistinguishable), which
+        only holds if purity is computed from the dosage correlation.
+        """
+        d = _make_dataset(seed=130, n_samples=150, n_variants=12)
+        g = d['genotype_df']
+        # Make variant 1 an almost-perfect copy of the causal variant 0.
+        g.iloc[1, :] = g.iloc[0, :]
+        g.iloc[1, 0] = 2 if g.iloc[0, 0] != 2 else 0  # break perfect identity slightly
+        # Mirror the phase so the sign indicator is consistent for variant 1.
+        d['xL_df'].iloc[1, :] = d['xL_df'].iloc[0, :]
+        d['xR_df'].iloc[1, :] = d['xR_df'].iloc[0, :]
+
+        summary_df = map_susie(
+            g, d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            L=5, min_abs_corr=0.5, window=1000000, max_iter=200,
+            summary_only=True, verbose=False,
+        )
+        sub = summary_df[summary_df['phenotype_id'] == d['causal_pheno']]
+        # The causal variant is in a reported (pure) credible set.
+        assert d['causal_variant'] in set(sub['variant_id'])
+
 
 # ---------------------------------------------------------------------------
 #  I/O round-trip

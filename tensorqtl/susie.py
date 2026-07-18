@@ -27,10 +27,16 @@ def get_x_attributes(X_t, center=True, scale=True):
     # set sd = 1 when the column has variance 0
     csd_t[csd_t == 0] = 1
 
+    # honor center/scale flags (matches susieR compute_colstats with
+    # center=FALSE -> cm=0, scale=FALSE -> csd=1). NOTE: the previous code
+    # assigned to unused locals cm/csd instead of cm_t/csd_t, so center=False
+    # and scale=False were silently ignored. This only affects callers that
+    # pass intercept=False or standardize=False (e.g. hapmixqtl.map_susie);
+    # the default intercept=True/standardize=True path is unchanged.
     if not center:
-        cm = torch.zeros(X_t.shape[1])
+        cm_t = torch.zeros(X_t.shape[1], dtype=X_t.dtype, device=X_t.device)
     if not scale:
-        csd = torch.ones(X_t.shape[1])
+        csd_t = torch.ones(X_t.shape[1], dtype=X_t.dtype, device=X_t.device)
 
     x_std_t = (X_t - cm_t) / csd_t
     xattr = {

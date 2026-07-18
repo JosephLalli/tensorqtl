@@ -1010,8 +1010,13 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             'Sample names in phenotype columns and covariate rows must match'
         logger.write(f'  * {covariates_df.shape[1]} covariates')
         covariates_t = torch.tensor(covariates_df.values, dtype=torch.float32).to(device)
+        # Unweighted residualizer for genotype LD used in credible-set purity
+        # (see below): purity should reflect genotype correlation, not the
+        # sqrt-weighted stacked design that SuSiE is fit on.
+        ld_residualizer = Residualizer(covariates_t)
     else:
         covariates_t = None
+        ld_residualizer = None
 
     has_phase = xL_df is not None and xR_df is not None
     if has_phase:
@@ -1122,6 +1127,22 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             residual_variance=resvar,
             coverage=coverage, min_abs_corr=min_abs_corr,
             tol=tol, max_iter=max_iter,
+        )
+
+        # Recompute credible sets using genotype LD for the purity filter.
+        # susie() measured purity as correlation across the stacked, whitened,
+        # 2N-row design (X_aug_t) -- that is not genotype LD, and min_abs_corr
+        # is conventionally a genotype-correlation threshold (in the no-phase
+        # case the ASE half is all zeros, which especially distorts it). Pass
+        # the (covariate-residualized) dosage correlation as Xcorr instead so
+        # the purity threshold means what users expect.
+        if ld_residualizer is not None:
+            geno_ld_t = ld_residualizer.transform(genotypes_t)
+        else:
+            geno_ld_t = genotypes_t
+        Xcorr_t = susie.corrcoef(geno_ld_t)
+        res['sets'] = susie.susie_get_cs(
+            res, Xcorr=Xcorr_t, coverage=coverage, min_abs_corr=min_abs_corr,
         )
 
         af_t = genotypes_t.sum(1) / (2 * genotypes_t.shape[1])
