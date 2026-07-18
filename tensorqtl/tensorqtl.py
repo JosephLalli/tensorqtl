@@ -14,7 +14,7 @@ import importlib.metadata
 sys.path.insert(1, os.path.dirname(__file__))
 from core import *
 from post import *
-import genotypeio, cis, trans, susie, nbqtl
+import genotypeio, cis, trans, susie, nbqtl, hapmixqtl
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
     parser.add_argument('prefix', help='Prefix for output file names')
-    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score'],
+    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl'],
                         help='Mapping mode. Default: cis')
     parser.add_argument('--covariates', default=None, help='Covariates file, tab-delimited (covariates x samples)')
     parser.add_argument('--paired_covariate', default=None, help='Single phenotype-specific covariate, tab-delimited (phenotypes x samples)')
@@ -57,6 +57,16 @@ def main():
     parser.add_argument('--dtype', default='float64', type=str, choices=['float32', 'float64'], help='Data type for computation (nbqtl-score mode). Default: float64')
     parser.add_argument('--batch-size-features', default=10000, type=int, help='Number of features per batch for nbqtl-score mode')
     parser.add_argument('--batch-size-snps', default=16000, type=int, help='Number of SNPs per block for nbqtl-score mode')
+    # hapmixQTL-specific arguments
+    parser.add_argument('--hap_A', default=None, type=str, help='Allelic contrast BED file (hapmixqtl modes)')
+    parser.add_argument('--hap_T', default=None, type=str, help='Log total expression BED file (hapmixqtl modes)')
+    parser.add_argument('--hap_Va', default=None, type=str, help='Inferential variance for allelic contrast BED file (hapmixqtl modes)')
+    parser.add_argument('--hap_Vt', default=None, type=str, help='Inferential variance for total expression BED file (hapmixqtl modes)')
+    parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional)')
+    parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
+    parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
+    parser.add_argument('--tau_mode', default='zero', type=str, choices=['zero', 'estimate'], help='Overdispersion handling: zero (default) or estimate per phenotype')
+    parser.add_argument('--se_mode', default='model', type=str, choices=['model', 'robust'], help='SE mode: model-based (default) or robust/sandwich')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     args = parser.parse_args()
 
@@ -77,7 +87,8 @@ def main():
         logger.write(f'  * using seed {args.seed}')
 
     # load inputs
-    logger.write(f'  * reading phenotypes ({args.phenotypes})')
+    if not args.mode.startswith('hapmixqtl'):
+        logger.write(f'  * reading phenotypes ({args.phenotypes})')
     # for cis modes, require BED input with position information
     if args.mode.startswith('cis'):
         assert args.phenotypes.lower().endswith(('.bed', '.bed.gz', '.bed.parquet')), "For cis modes, phenotypes must be in BED format."
@@ -95,8 +106,26 @@ def main():
             else:  # assume tab-delimited
                 phenotype_df = pd.read_csv(args.phenotypes, sep='\t', index_col=0)
             phenotype_pos_df = None
+    elif args.mode.startswith('hapmixqtl'):
+        for f in [args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt]:
+            if f is None:
+                raise ValueError("hapmixqtl modes require --hap_A, --hap_T, --hap_Va, --hap_Vt")
+        logger.write('  * reading hapmixQTL inputs')
+        hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df, hap_Cat_df, phenotype_pos_df = \
+            hapmixqtl.read_hapmixqtl_inputs(args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_Cat)
+        phenotype_df = hap_T_df  # use T_df for sample alignment
+        if phenotype_pos_df.columns[1] == 'pos':
+            logger.write(f"  * cis-window detected as position ± {args.window:,}")
+        else:
+            logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
 
-    if args.covariates is not None:
+    if args.mode.startswith('hapmixqtl'):
+        covariates_df = None
+        if args.covariates is not None:
+            logger.write(f'  * reading covariates ({args.covariates})')
+            covariates_df = pd.read_csv(args.covariates, sep='\t', index_col=0).T
+            assert phenotype_df.columns.equals(covariates_df.index)
+    elif args.covariates is not None:
         logger.write(f'  * reading covariates ({args.covariates})')
         covariates_df = pd.read_csv(args.covariates, sep='\t', index_col=0).T
         assert phenotype_df.columns.equals(covariates_df.index)
@@ -155,7 +184,8 @@ def main():
         logger.write(f'  * loading genotype dosages' if args.dosages else f'  * loading genotypes')
         genotype_df, variant_df = genotypeio.load_genotypes(args.genotype_path, select_samples=phenotype_df.columns, dosages=args.dosages)
         if variant_df is None:
-            assert not args.mode.startswith('cis'), f"Genotype data without variant positions is only supported for mode='trans'."
+            assert not (args.mode.startswith('cis') or args.mode.startswith('hapmixqtl')), \
+                f"Genotype data without variant positions is only supported for mode='trans'."
     else:
         if not all([os.path.exists(f"{args.genotype_path}.{ext}") for ext in ['pgen', 'psam', 'pvar']]):
             raise ValueError("Processing in chunks requires PLINK 2 pgen/psam/pvar files.")
@@ -396,6 +426,44 @@ def main():
         )
 
         logger.write(f'  * nbQTL mapping completed with {len(results_df)} associations')
+
+    elif args.mode == 'hapmixqtl_nominal':
+        # Load phase genotypes if provided
+        xL_df, xR_df = None, None
+        if args.phase_xL is not None and args.phase_xR is not None:
+            logger.write(f'  * reading phase genotypes')
+            xL_df = pd.read_csv(args.phase_xL, sep='\t', index_col=0)
+            xR_df = pd.read_csv(args.phase_xR, sep='\t', index_col=0)
+
+        hapmixqtl.map_nominal(
+            genotype_df, variant_df, hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df,
+            phenotype_pos_df, xL_df=xL_df, xR_df=xR_df, prefix=args.prefix,
+            covariates_df=covariates_df, maf_threshold=maf_threshold,
+            window=args.window, tau_mode=args.tau_mode, se_mode=args.se_mode,
+            output_dir=args.output_dir, logger=logger, verbose=True,
+        )
+
+    elif args.mode == 'hapmixqtl':
+        xL_df, xR_df = None, None
+        if args.phase_xL is not None and args.phase_xR is not None:
+            logger.write(f'  * reading phase genotypes')
+            xL_df = pd.read_csv(args.phase_xL, sep='\t', index_col=0)
+            xR_df = pd.read_csv(args.phase_xR, sep='\t', index_col=0)
+
+        res_df = hapmixqtl.map_cis(
+            genotype_df, variant_df, hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df,
+            phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
+            covariates_df=covariates_df, maf_threshold=maf_threshold,
+            nperm=args.permutations, window=args.window,
+            tau_mode=args.tau_mode, se_mode=args.se_mode,
+            beta_approx=not args.disable_beta_approx,
+            logger=logger, seed=args.seed, verbose=True,
+        )
+        logger.write('  * writing output')
+        if has_rpy2:
+            calculate_qvalues(res_df, fdr=args.fdr, qvalue_lambda=args.qvalue_lambda, logger=logger)
+        out_file = os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl.txt.gz')
+        res_df.to_csv(out_file, sep='\t', float_format='%.6g')
 
     logger.write(f'[{datetime.now().strftime("%b %d %H:%M:%S")}] Finished mapping')
 

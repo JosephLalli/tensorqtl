@@ -179,3 +179,70 @@ python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode trans
 ```
 
+#### hapmixQTL: *cis*-QTL mapping with haplotype-resolved expression and inferential uncertainty
+hapmixQTL is a generalization of [mixQTL](https://www.nature.com/articles/s41467-022-29123-9) that maps *cis*-QTLs using haplotype-resolved expression posteriors — e.g. [Salmon](https://combine-lab.github.io/salmon/) Gibbs draws obtained by quantifying reads against a personalized diploid transcriptome. The inferential (measurement) uncertainty captured by the Gibbs draws is propagated directly into the effect size and its standard error.
+
+For each sample *i* and feature *f*, two information channels are combined:
+
+1. **Allelic contrast (ASE)** channel, using the posterior-mean expression of each haplotype (`L`, `R`) with pseudocount `κ`:
+   `a_i = log(yL_i + κ) − log(yR_i + κ)`, regressed on the **signed heterozygote indicator** `s_i = xL_i − xR_i ∈ {−1, 0, +1}` (from phased genotypes; `s_i = 0` if unphased/homozygous).
+2. **Total expression** channel:
+   `t_i = log((yL_i + yR_i)/2 + κ)`, regressed on the **half dosage** `g_i/2` so that both channels estimate the same quantity — the log allelic fold change (log aFC).
+
+Per-sample inferential variances are computed across the `B` Gibbs draws:
+`v_a_i = Var_b(a_i^(b))`, `v_t_i = Var_b(t_i^(b))`. These are treated as **known** measurement variances and enter each channel's weighted regression as absolute precisions `w = 1/(v_inf + τ)` (default `τ = 0`). Weighting is implemented via the sqrt-weight transform (`y* = √w · y`, `x* = √w · x`), which turns weighted least squares into ordinary dot products that vectorize across all *cis* variants on the GPU. Because the variances are known, the standard error is the known-variance GLS SE (`se = √(1/xx)`), so inflating a channel's inferential variance genuinely widens its SE and down-weights it in the combination — an ordinary estimated-dispersion WLS would instead absorb that scale and ignore it.
+
+The two channel estimates are merged by inverse-variance meta-analysis:
+```
+beta = (beta_a/se_a² + beta_t/se_t²) / (1/se_a² + 1/se_t²)
+se   = sqrt(1 / (1/se_a² + 1/se_t²))
+```
+`beta` is interpretable as the log allelic fold change per ALT allele. When phase is unavailable (`s_i = 0` for all samples) the ASE channel is uninformative and the result reduces to the total-expression channel alone.
+
+**Inputs.** hapmixQTL consumes five phenotype-like matrices (phenotypes × samples, in the same BED format as `read_phenotype_bed`), plus phased haplotype genotypes:
+
+| Argument | Description |
+| --- | --- |
+| `--hap_A` | Allelic contrast `a_i` (BED) |
+| `--hap_T` | Log total expression `t_i` (BED) |
+| `--hap_Va` | Inferential variance of `a_i` (BED) |
+| `--hap_Vt` | Inferential variance of `t_i` (BED) |
+| `--hap_Cat` | Inferential covariance of `a_i,t_i` (optional; unused by the default method) |
+| `--phase_xL` | ALT allele on haplotype L (0/1), variants × samples, tab-delimited (optional) |
+| `--phase_xR` | ALT allele on haplotype R (0/1), variants × samples, tab-delimited (optional) |
+| `--tau_mode` | `zero` (default) or `estimate` (per-phenotype moment estimator of overdispersion) |
+| `--se_mode` | `model` (default, known-variance GLS) or `robust` (HC1 sandwich) |
+
+The summary matrices can be precomputed from Gibbs draws with `hapmixqtl.compute_summaries_from_gibbs(yL, yR, kappa=0.5)`, where `yL`/`yR` are `[features, samples, draws]` arrays. The positional `${expression_bed}` argument is still required by the CLI but ignored in hapmixQTL modes (all phenotype inputs come from the `--hap_*` flags).
+
+**Nominal mapping** (all *cis* variant–phenotype pairs) writes one parquet per chromosome, `${output_dir}/${prefix}.hapmixqtl_pairs.${chr}.parquet`, with the combined `slope`/`slope_se`/`pval_nominal` plus the per-channel `slope_a`/`slope_a_se`/`pval_a` and `slope_t`/`slope_t_se`/`pval_t`:
+```
+python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
+    --mode hapmixqtl_nominal \
+    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
+    --phase_xL ${xL_file} --phase_xR ${xR_file} \
+    --covariates ${covariates_file}
+```
+In Python:
+```
+from tensorqtl import hapmixqtl
+hapmixqtl.map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+                      phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
+                      prefix=prefix, covariates_df=covariates_df, output_dir='.')
+```
+
+**Permutation mapping** (top association per phenotype with empirical/beta-approximated p-values), analogous to `cis`, writes `${output_dir}/${prefix}.hapmixqtl.txt.gz`:
+```
+python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
+    --mode hapmixqtl \
+    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
+    --phase_xL ${xL_file} --phase_xR ${xR_file} \
+    --covariates ${covariates_file}
+```
+In Python:
+```
+res_df = hapmixqtl.map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+                           phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
+                           covariates_df=covariates_df)
+```
+

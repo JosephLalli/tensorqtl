@@ -69,3 +69,27 @@ Column | Description
 `b_se` | Standard error of the regression slope
 `r2` | Squared residual genotype-phenotype correlation (only generated if `map_trans(..., return_r2=True)`)
 `af` | In-sample ALT allele frequency of the variant
+
+#### Mode `hapmixqtl_nominal`
+One parquet per chromosome, `${prefix}.hapmixqtl_pairs.${chr}.parquet`.
+Column | Description
+--- | ---
+`phenotype_id` | Phenotype ID
+`variant_id` | Variant ID
+`start_distance` | Distance between the variant and phenotype start position (e.g., TSS)
+`end_distance` | Distance between the variant and phenotype end position (only present if different from start position)
+`af` | In-sample ALT allele frequency of the variant
+`ma_samples` | Number of samples carrying at least one minor allele
+`ma_count` | Number of minor alleles
+`pval_nominal` | Nominal p-value of the combined (ASE + total) association
+`slope` | Combined effect size (log allelic fold change per ALT allele)
+`slope_se` | Standard error of the combined effect size
+`pval_a` | Nominal p-value of the allelic-contrast (ASE) channel
+`slope_a` | Effect size from the ASE channel
+`slope_a_se` | Standard error of `slope_a`
+`pval_t` | Nominal p-value of the total-expression channel
+`slope_t` | Effect size from the total-expression channel
+`slope_t_se` | Standard error of `slope_t`
+
+#### Mode `hapmixqtl`
+The columns match `cis` (top association per phenotype with permutation and Beta-approximated p-values), where `slope`/`slope_se`/`pval_nominal` are the combined ASE + total estimates and `slope` is interpretable as the log allelic fold change per ALT allele. Written to `${prefix}.hapmixqtl.txt.gz`.

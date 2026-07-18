@@ -1,0 +1,917 @@
+"""
+hapmixQTL: cis-QTL mapping using haplotype-resolved expression posteriors.
+
+Combines two information channels via inverse-variance meta-analysis:
+  1. Allelic contrast (ASE): log(yL + kappa) - log(yR + kappa), weighted by
+     inferential uncertainty from Gibbs draws
+  2. Total expression: log((yL + yR)/2 + kappa), similarly weighted
+
+Method A performs separate WLS regressions per channel (ASE on signed het
+indicator s, total on g/2) and combines via inverse-variance meta-analysis.
+The slope estimates log allelic fold change (log aFC).
+
+WLS is implemented via the sqrt-weight transform: multiplying both response
+and predictors by sqrt(w_i) converts WLS into OLS, enabling efficient
+GPU-vectorized computation across all cis variants simultaneously.
+
+Inferential variances from Gibbs draws propagate into weights as
+w_i = 1 / (v_inf_i + tau), where v_inf_i is the across-draw variance of
+the transformed expression for sample i, and tau is an optional
+overdispersion parameter.
+
+Phase determines the signed heterozygote indicator s_i = xL_i - xR_i:
+  s = +1 if ALT allele is on haplotype L
+  s = -1 if ALT allele is on haplotype R
+  s =  0 if homozygous (or phase unknown)
+When phase is unavailable (s=0 for all samples), the ASE channel contributes
+nothing and results match total-channel-only regression.
+"""
+
+import torch
+import numpy as np
+import pandas as pd
+import scipy.stats as stats
+import sys
+import os
+import time
+from collections import OrderedDict
+
+sys.path.insert(1, os.path.dirname(__file__))
+import genotypeio
+from core import *
+
+
+# ---------------------------------------------------------------------------
+#  I/O utilities
+# ---------------------------------------------------------------------------
+
+def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
+    """
+    Load precomputed hapmixQTL summary matrices in BED-like format.
+
+    Each file follows the tensorQTL phenotype BED convention:
+    chr, start, end, phenotype_id, sample1, sample2, ...
+
+    Returns:
+        A_df:   allelic contrast a_i [phenotypes x samples]
+        T_df:   log total t_i [phenotypes x samples]
+        Va_df:  inferential variance of a [phenotypes x samples]
+        Vt_df:  inferential variance of t [phenotypes x samples]
+        Cat_df: inferential covariance a,t [phenotypes x samples] (or None)
+        pos_df: phenotype positions [phenotypes x (chr, pos|start,end)]
+    """
+    A_df, pos_df = read_phenotype_bed(a_bed)
+    T_df, _ = read_phenotype_bed(t_bed)
+    Va_df, _ = read_phenotype_bed(va_bed)
+    Vt_df, _ = read_phenotype_bed(vt_bed)
+
+    assert A_df.index.equals(T_df.index), "Phenotype IDs must match across A and T"
+    assert A_df.index.equals(Va_df.index), "Phenotype IDs must match across A and Va"
+    assert A_df.index.equals(Vt_df.index), "Phenotype IDs must match across A and Vt"
+    assert A_df.columns.equals(T_df.columns), "Sample IDs must match across A and T"
+    assert A_df.columns.equals(Va_df.columns), "Sample IDs must match across A and Va"
+    assert A_df.columns.equals(Vt_df.columns), "Sample IDs must match across A and Vt"
+
+    Cat_df = None
+    if cat_bed is not None:
+        Cat_df, _ = read_phenotype_bed(cat_bed)
+        assert A_df.index.equals(Cat_df.index)
+        assert A_df.columns.equals(Cat_df.columns)
+
+    return A_df, T_df, Va_df, Vt_df, Cat_df, pos_df
+
+
+def compute_summaries_from_gibbs(yL, yR, kappa=0.5):
+    """
+    Compute hapmixQTL summary statistics from Gibbs draws.
+
+    Args:
+        yL: haplotype L expression [features, samples, draws]
+        yR: haplotype R expression [features, samples, draws]
+        kappa: pseudocount (default 0.5)
+
+    Returns:
+        A:   allelic contrast mean [features, samples]
+        T:   log total mean [features, samples]
+        Va:  inferential variance of a [features, samples]
+        Vt:  inferential variance of t [features, samples]
+        Cat: inferential covariance of a,t [features, samples]
+    """
+    a_draws = np.log(yL + kappa) - np.log(yR + kappa)
+    t_draws = np.log((yL + yR) / 2 + kappa)
+
+    A = a_draws.mean(axis=2)
+    T = t_draws.mean(axis=2)
+    Va = a_draws.var(axis=2, ddof=0)
+    Vt = t_draws.var(axis=2, ddof=0)
+    Cat = ((a_draws - a_draws.mean(axis=2, keepdims=True)) *
+           (t_draws - t_draws.mean(axis=2, keepdims=True))).mean(axis=2)
+
+    return A, T, Va, Vt, Cat
+
+
+# ---------------------------------------------------------------------------
+#  WeightedResidualizer
+# ---------------------------------------------------------------------------
+
+class WeightedResidualizer:
+    """
+    Residualizer for weighted least squares via sqrt-weight transform.
+
+    In standard OLS the intercept is handled by centering. In WLS after the
+    sqrt-weight transform, a constant intercept alpha becomes alpha*sqrt(w_i),
+    which varies across samples. This class includes sqrt(w) as an explicit
+    column in the design matrix so the QR projection removes it correctly.
+    """
+
+    def __init__(self, C_t, sqrt_w_t):
+        """
+        Args:
+            C_t: covariates [N, n_cov] (without intercept), or None
+            sqrt_w_t: sqrt per-sample weights [N]
+        """
+        N = sqrt_w_t.shape[0]
+        intercept = sqrt_w_t.unsqueeze(1)
+        if C_t is not None and C_t.numel() > 0 and C_t.shape[1] > 0:
+            C_star = sqrt_w_t.unsqueeze(1) * C_t
+            design = torch.cat([intercept, C_star], dim=1)
+        else:
+            design = intercept
+        self.Q_t, _ = torch.linalg.qr(design)
+        self.dof = N - 1 - design.shape[1]
+
+    def transform(self, M_t):
+        """Project out weighted covariates from rows of M_t [features, N]."""
+        return M_t - torch.mm(torch.mm(M_t, self.Q_t), self.Q_t.t())
+
+
+# ---------------------------------------------------------------------------
+#  Core regression
+# ---------------------------------------------------------------------------
+
+def _wls_regression(y_star_t, x_star_t, residualizer, robust=False):
+    """
+    Known-variance GLS on sqrt-weight-transformed data.
+
+    The Gibbs inferential variances are treated as *known* measurement
+    variances: Var(error_i) = v_inf_i + tau. Under the sqrt-weight transform
+    (y* = sqrt(w) y, x* = sqrt(w) x, w_i = 1/(v_inf_i + tau)), the estimator
+    reduces to ordinary dot products, but the standard error is the
+    known-variance GLS SE
+
+        Var(beta_hat) = (x*' x*)^-1 = 1 / xx
+
+    rather than the estimated-dispersion WLS SE sqrt(sigma2_hat / xx). This is
+    the key difference from standard WLS and is what lets the inferential
+    uncertainty propagate into beta_se in absolute terms: uniformly inflating
+    all v_inf shrinks the weights, shrinks xx, and inflates the SE (an
+    estimated-dispersion SE would instead absorb the scale into sigma2_hat and
+    be invariant to it, so a channel with huge inferential variance could never
+    be down-weighted -- see the huge-Va test).
+
+    Args:
+        y_star_t: [1, N] sqrt(w) * phenotype
+        x_star_t: [V, N] sqrt(w) * predictors
+        residualizer: WeightedResidualizer
+        robust: if True use sandwich (HC1) standard errors instead, which are
+            robust to misspecification of the known variance scale
+
+    Returns:
+        slope_t: [V] estimated slopes
+        slope_se_t: [V] standard errors (inf where predictor has zero variance)
+    """
+    y_res = residualizer.transform(y_star_t)
+    x_res = residualizer.transform(x_star_t)
+
+    xy = (x_res * y_res).sum(1)
+    xx = (x_res * x_res).sum(1)
+
+    # A predictor lying (nearly) in the design span leaves only rounding noise
+    # after residualization. Gate on the residual variance relative to the
+    # original predictor scale so degenerate predictors (e.g. s=0, or a column
+    # collinear with the covariates) are treated as zero-variance in float32.
+    xx_pre = (x_star_t * x_star_t).sum(1)
+    valid = xx > 1e-12 * xx_pre.clamp(min=1e-30)
+    slope = torch.zeros_like(xy)
+    slope_se = torch.full_like(xy, float('inf'))
+
+    if valid.any():
+        slope[valid] = xy[valid] / xx[valid]
+        if not robust:
+            # Known-variance GLS: Var(beta_hat) = 1 / xx (weights are absolute
+            # precisions, so no residual-based dispersion is estimated).
+            slope_se[valid] = torch.sqrt(1.0 / xx[valid])
+        else:
+            # Heteroskedasticity-robust (HC1) sandwich SE, valid even if the
+            # supplied known variances are only correct up to an unknown scale.
+            e = y_res - slope.unsqueeze(1) * x_res
+            N = x_res.shape[1]
+            meat = (x_res * x_res * e * e).sum(1)
+            correction = float(N) / max(residualizer.dof, 1)
+            var_robust = meat / (xx * xx) * correction
+            slope_se[valid] = torch.sqrt(var_robust[valid])
+
+    return slope, slope_se
+
+
+def _estimate_tau(y_t, v_inf_t, covariates_t, device):
+    """
+    Estimate overdispersion parameter tau using moment estimator.
+
+    Under the model Var(error_i) = v_inf_i + tau, the weighted
+    residuals (with w_i = 1/v_inf_i) have expected variance
+    1 + tau * mean(1/v_inf). This function solves for tau from
+    the observed residual variance.
+    """
+    sqrt_w = torch.sqrt(1.0 / v_inf_t.clamp(min=1e-8))
+    res = WeightedResidualizer(covariates_t, sqrt_w)
+    y_star = (y_t * sqrt_w).unsqueeze(0)
+    y_res = res.transform(y_star).squeeze()
+
+    rss = (y_res * y_res).sum()
+    dof_null = y_t.shape[0] - res.Q_t.shape[1]
+    sigma2_hat = rss / max(dof_null, 1)
+
+    mean_inv_v = (1.0 / v_inf_t.clamp(min=1e-8)).mean()
+    tau = torch.clamp((sigma2_hat - 1.0) / mean_inv_v, min=0.0)
+    return tau
+
+
+# ---------------------------------------------------------------------------
+#  Association tests
+# ---------------------------------------------------------------------------
+
+def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
+                                 sqrt_wa_t, sqrt_wt_t,
+                                 residualizer_a, residualizer_t,
+                                 robust=False):
+    """
+    hapmixQTL association test for all variants in a cis window (Method A).
+
+    Runs two separate WLS regressions (ASE on s, total on g/2) and
+    combines via inverse-variance meta-analysis. Using g/2 as the total
+    channel predictor makes its slope estimate the same quantity as the
+    ASE channel slope: the full log allelic fold change (log aFC).
+
+    Args:
+        genotypes_t: [V, N] dosage (0/1/2)
+        sign_t:      [V, N] signed het indicator s = xL - xR
+        a_t:         [N]    allelic contrast
+        t_t:         [N]    log total expression
+        sqrt_wa_t:   [N]    sqrt ASE weights
+        sqrt_wt_t:   [N]    sqrt total weights
+        residualizer_a: WeightedResidualizer for ASE channel
+        residualizer_t: WeightedResidualizer for total channel
+        robust: if True use sandwich SEs
+
+    Returns:
+        tstat_t:      [V] combined t-statistic
+        slope_t:      [V] combined slope (log aFC)
+        slope_se_t:   [V] combined SE
+        slope_a_t:    [V] ASE channel slope
+        slope_a_se_t: [V] ASE channel SE
+        slope_tc_t:   [V] total channel slope
+        slope_tc_se_t:[V] total channel SE
+    """
+    # ASE channel: a = beta * s + covariates + error
+    a_star = (a_t * sqrt_wa_t).unsqueeze(0)
+    s_star = sign_t * sqrt_wa_t.unsqueeze(0)
+    slope_a, se_a = _wls_regression(a_star, s_star, residualizer_a, robust=robust)
+
+    # Total channel: t = beta * (g/2) + covariates + error
+    t_star = (t_t * sqrt_wt_t).unsqueeze(0)
+    g_half_star = (genotypes_t / 2) * sqrt_wt_t.unsqueeze(0)
+    slope_tc, se_tc = _wls_regression(t_star, g_half_star, residualizer_t, robust=robust)
+
+    # Inverse-variance meta-analysis
+    inv_var_a = torch.where(
+        torch.isfinite(se_a) & (se_a > 0),
+        1.0 / (se_a * se_a),
+        torch.zeros_like(se_a),
+    )
+    inv_var_t = torch.where(
+        torch.isfinite(se_tc) & (se_tc > 0),
+        1.0 / (se_tc * se_tc),
+        torch.zeros_like(se_tc),
+    )
+
+    total_inv_var = inv_var_a + inv_var_t
+    slope_combined = torch.where(
+        total_inv_var > 0,
+        (slope_a * inv_var_a + slope_tc * inv_var_t) / total_inv_var,
+        torch.zeros_like(slope_a),
+    )
+    se_combined = torch.where(
+        total_inv_var > 0,
+        torch.sqrt(1.0 / total_inv_var),
+        torch.full_like(slope_a, float('inf')),
+    )
+    tstat_combined = slope_combined / se_combined
+
+    return tstat_combined, slope_combined, se_combined, slope_a, se_a, slope_tc, se_tc
+
+
+def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
+                                      sqrt_wa_t, sqrt_wt_t,
+                                      residualizer_a, residualizer_t,
+                                      permutation_ix_t):
+    """
+    Compute nominal and permutation statistics for hapmixQTL.
+
+    Uses fixed weights across permutations (approximate permutation):
+    only phenotype values (a, t) are shuffled while weights remain in
+    original sample order. This enables efficient batch computation via
+    matrix multiplication. The approximation is very good when inferential
+    variances are similar across samples.
+
+    Returns:
+        r_nominal:  signed correlation for best variant (scalar)
+        std_ratio:  sqrt(pheno_var/geno_var) for best variant (scalar)
+        best_ix:    index of best variant (scalar)
+        r2_perm_t:  max r^2 per permutation [nperm]
+        g_best:     genotype vector for best variant [N]
+    """
+    dof = residualizer_a.dof
+
+    # --- Pre-transform and residualize fixed predictors ---
+    # ASE
+    s_star = sign_t * sqrt_wa_t.unsqueeze(0)
+    s_star_res = residualizer_a.transform(s_star)
+    xx_a = (s_star_res * s_star_res).sum(1)
+
+    # Total
+    g_half_star = (genotypes_t / 2) * sqrt_wt_t.unsqueeze(0)
+    g_half_star_res = residualizer_t.transform(g_half_star)
+    xx_t = (g_half_star_res * g_half_star_res).sum(1)
+
+    # --- Nominal statistics ---
+    a_star = (a_t * sqrt_wa_t).unsqueeze(0)
+    a_star_res = residualizer_a.transform(a_star)
+    t_star = (t_t * sqrt_wt_t).unsqueeze(0)
+    t_star_res = residualizer_t.transform(t_star)
+
+    xy_a_nom = (s_star_res * a_star_res).sum(1)
+    yy_a_nom = (a_star_res * a_star_res).sum()
+    xy_t_nom = (g_half_star_res * t_star_res).sum(1)
+    yy_t_nom = (t_star_res * t_star_res).sum()
+
+    tstat2_nom = _combined_tstat2(xy_a_nom, xx_a, yy_a_nom,
+                                  xy_t_nom, xx_t, yy_t_nom, dof)
+
+    tstat2_nom_clean = tstat2_nom.clone()
+    tstat2_nom_clean[torch.isnan(tstat2_nom_clean)] = -1
+    best_ix = tstat2_nom_clean.argmax()
+
+    # Known-variance combine for the best variant (inverse variances are xx).
+    iva = torch.where(xx_a[best_ix] > 1e-30, xx_a[best_ix], torch.zeros_like(xx_a[best_ix]))
+    ivt = torch.where(xx_t[best_ix] > 1e-30, xx_t[best_ix], torch.zeros_like(xx_t[best_ix]))
+    xy_a_b = torch.where(xx_a[best_ix] > 1e-30, xy_a_nom[best_ix], torch.zeros_like(xy_a_nom[best_ix]))
+    xy_t_b = torch.where(xx_t[best_ix] > 1e-30, xy_t_nom[best_ix], torch.zeros_like(xy_t_nom[best_ix]))
+    slope_nom = (xy_a_b + xy_t_b) / (iva + ivt + 1e-30)
+
+    # Map the combined statistic to a correlation-like r for the empirical
+    # p-value. tstat2 already equals slope_nom^2 * total_inv; convert with the
+    # usual r^2 = t^2/(t^2+dof) so nominal and permutation values are directly
+    # comparable (the mapping is monotonic, so ranks -- and thus the empirical
+    # p-value -- are preserved regardless of the exact scaling).
+    tstat2_best = tstat2_nom[best_ix]
+    r2_nominal = tstat2_best / (tstat2_best + dof)
+    r_nominal = torch.sign(slope_nom) * torch.sqrt(r2_nominal.clamp(min=0))
+
+    pheno_var = yy_a_nom / a_star_res.shape[1] + yy_t_nom / t_star_res.shape[1]
+    geno_var = xx_a[best_ix] / s_star_res.shape[1] + xx_t[best_ix] / g_half_star_res.shape[1]
+    std_ratio = torch.sqrt(pheno_var / (geno_var + 1e-30))
+
+    # --- Permutation statistics ---
+    nperm = permutation_ix_t.shape[0]
+
+    a_perms = a_t[permutation_ix_t]
+    t_perms = t_t[permutation_ix_t]
+
+    a_star_perms = a_perms * sqrt_wa_t.unsqueeze(0)
+    t_star_perms = t_perms * sqrt_wt_t.unsqueeze(0)
+
+    a_star_res_perms = residualizer_a.transform(a_star_perms)
+    t_star_res_perms = residualizer_t.transform(t_star_perms)
+
+    xy_a_perm = torch.mm(s_star_res, a_star_res_perms.t())
+    yy_a_perm = (a_star_res_perms * a_star_res_perms).sum(1)
+    xy_t_perm = torch.mm(g_half_star_res, t_star_res_perms.t())
+    yy_t_perm = (t_star_res_perms * t_star_res_perms).sum(1)
+
+    tstat2_perm = _combined_tstat2(xy_a_perm, xx_a, yy_a_perm,
+                                    xy_t_perm, xx_t, yy_t_perm, dof)
+
+    tstat2_perm[torch.isnan(tstat2_perm)] = 0
+    r2_perm = tstat2_perm / (tstat2_perm + dof)
+    max_r2_perm, _ = r2_perm.max(0)
+
+    return r_nominal, std_ratio, best_ix, max_r2_perm, genotypes_t[best_ix]
+
+
+def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
+    """
+    Compute combined (known-variance) statistic squared from dot-product
+    summaries, matching the inverse-variance meta-analysis in
+    ``calculate_hapmixqtl_nominal``.
+
+    Under known-variance GLS the per-channel inverse variance of the slope is
+    just ``xx`` (since se^2 = 1/xx), so the combined statistic simplifies to
+
+        beta_c   = (xy_a + xy_t) / (xx_a + xx_t)          [both channels valid]
+        stat^2   = beta_c^2 * (xx_a + xx_t)
+
+    ``yy_a``/``yy_t`` are unused for the SE here (kept in the signature for
+    symmetry with an estimated-dispersion variant and for callers that also
+    want residual sums of squares). Works for both scalar (nominal) and 2D
+    (permutation) ``xy`` by broadcasting.
+    """
+    is_perm = xy_a.dim() == 2
+
+    if is_perm:
+        xx_a_e = xx_a.unsqueeze(1)
+        xx_t_e = xx_t.unsqueeze(1)
+    else:
+        xx_a_e = xx_a
+        xx_t_e = xx_t
+
+    # Known-variance inverse variances of the per-channel slopes are xx itself;
+    # a degenerate predictor (xx ~ 0) contributes zero weight.
+    inv_var_a = torch.where(xx_a_e > 1e-30, xx_a_e, torch.zeros_like(xx_a_e))
+    inv_var_t = torch.where(xx_t_e > 1e-30, xx_t_e, torch.zeros_like(xx_t_e))
+
+    xy_a_eff = torch.where(xx_a_e > 1e-30, xy_a, torch.zeros_like(xy_a))
+    xy_t_eff = torch.where(xx_t_e > 1e-30, xy_t, torch.zeros_like(xy_t))
+
+    total_inv = inv_var_a + inv_var_t
+    # beta_c * total_inv = slope_a*inv_var_a + slope_t*inv_var_t
+    #                    = xy_a + xy_t (since slope = xy/xx and inv_var = xx)
+    numer = xy_a_eff + xy_t_eff
+    slope_comb = torch.where(
+        total_inv > 0,
+        numer / (total_inv + 1e-30),
+        torch.zeros_like(numer),
+    )
+    tstat2 = slope_comb * slope_comb * total_inv
+    return tstat2
+
+
+# ---------------------------------------------------------------------------
+#  Nominal mapping
+# ---------------------------------------------------------------------------
+
+def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+                phenotype_pos_df, xL_df=None, xR_df=None, prefix='',
+                covariates_df=None, maf_threshold=0, window=1000000,
+                tau_mode='zero', se_mode='model',
+                output_dir='.', logger=None, verbose=True):
+    """
+    hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
+
+    Writes per-chromosome parquet files in the format:
+        <output_dir>/<prefix>.hapmixqtl_pairs.<chr>.parquet
+
+    Args:
+        genotype_df:      genotypes [variants x samples]
+        variant_df:       variant positions (chrom, pos)
+        A_df:             allelic contrast [phenotypes x samples]
+        T_df:             log total expression [phenotypes x samples]
+        Va_df:            inferential variance for a [phenotypes x samples]
+        Vt_df:            inferential variance for t [phenotypes x samples]
+        phenotype_pos_df: phenotype positions [phenotypes x (chr, pos)]
+        xL_df:            haplotype L ALT allele (0/1) [variants x samples] or None
+        xR_df:            haplotype R ALT allele (0/1) [variants x samples] or None
+        prefix:           output file prefix
+        covariates_df:    covariates [samples x covariates] or None
+        maf_threshold:    minimum minor allele frequency
+        window:           cis-window size in bases
+        tau_mode:         'zero' (default) or 'estimate'
+        se_mode:          'model' (default) or 'robust' (sandwich)
+        output_dir:       output directory
+        logger:           SimpleLogger instance
+        verbose:          print progress
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if logger is None:
+        logger = SimpleLogger()
+
+    samples = A_df.columns
+    N = len(samples)
+    assert A_df.columns.equals(T_df.columns), "Sample mismatch between A and T"
+    assert A_df.columns.equals(Va_df.columns), "Sample mismatch between A and Va"
+    assert A_df.columns.equals(Vt_df.columns), "Sample mismatch between A and Vt"
+    assert A_df.index.equals(T_df.index), "Phenotype mismatch between A and T"
+    assert A_df.index.equals(Va_df.index), "Phenotype mismatch between A and Va"
+    assert A_df.index.equals(Vt_df.index), "Phenotype mismatch between A and Vt"
+
+    logger.write('hapmixQTL mapping: nominal associations for all variant-phenotype pairs')
+    logger.write(f'  * {N} samples')
+    logger.write(f'  * {A_df.shape[0]} phenotypes')
+
+    robust = se_mode == 'robust'
+
+    if covariates_df is not None:
+        assert np.all(samples == covariates_df.index), \
+            "Covariate samples must match phenotype samples"
+        logger.write(f'  * {covariates_df.shape[1]} covariates')
+        covariates_t = torch.tensor(covariates_df.values, dtype=torch.float32).to(device)
+        n_cov = covariates_df.shape[1]
+    else:
+        covariates_t = None
+        n_cov = 0
+
+    has_phase = xL_df is not None and xR_df is not None
+    if has_phase:
+        logger.write('  * phase genotypes available (ASE + total channels)')
+        assert (xL_df.index == genotype_df.index).all(), \
+            "xL variant IDs must match genotype variant IDs"
+        assert (xR_df.index == genotype_df.index).all(), \
+            "xR variant IDs must match genotype variant IDs"
+    else:
+        logger.write('  * no phase genotypes (total channel only)')
+
+    logger.write(f'  * {variant_df.shape[0]} variants')
+    logger.write(f'  * tau mode: {tau_mode}')
+    logger.write(f'  * SE mode: {se_mode}')
+    if maf_threshold > 0:
+        logger.write(f'  * applying in-sample {maf_threshold} MAF filter')
+    logger.write(f'  * cis-window: ±{window:,}')
+
+    dof = N - 2 - n_cov
+
+    genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
+    genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
+
+    # Use T_df as phenotype for InputGeneratorCis (less likely to be constant)
+    igc = genotypeio.InputGeneratorCis(
+        genotype_df, variant_df, T_df, phenotype_pos_df, window=window,
+    )
+    pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
+
+    start_time = time.time()
+    k = 0
+    logger.write('  * Computing associations')
+    for chrom in igc.chrs:
+        logger.write(f'    Mapping chromosome {chrom}')
+
+        n = 0
+        for pid in igc.phenotype_pos_df[igc.phenotype_pos_df['chr'] == chrom].index:
+            if pid in igc.cis_ranges:
+                j = igc.cis_ranges[pid]
+                n += j[1] - j[0] + 1
+
+        chr_res = OrderedDict()
+        chr_res['phenotype_id'] = []
+        chr_res['variant_id'] = []
+        chr_res['start_distance'] = np.empty(n, dtype=np.int32)
+        if 'pos' not in phenotype_pos_df:
+            chr_res['end_distance'] = np.empty(n, dtype=np.int32)
+        chr_res['af'] = np.empty(n, dtype=np.float32)
+        chr_res['ma_samples'] = np.empty(n, dtype=np.int32)
+        chr_res['ma_count'] = np.empty(n, dtype=np.int32)
+        chr_res['pval_nominal'] = np.empty(n, dtype=np.float64)
+        chr_res['slope'] = np.empty(n, dtype=np.float32)
+        chr_res['slope_se'] = np.empty(n, dtype=np.float32)
+        chr_res['pval_a'] = np.empty(n, dtype=np.float64)
+        chr_res['slope_a'] = np.empty(n, dtype=np.float32)
+        chr_res['slope_a_se'] = np.empty(n, dtype=np.float32)
+        chr_res['pval_t'] = np.empty(n, dtype=np.float64)
+        chr_res['slope_t'] = np.empty(n, dtype=np.float32)
+        chr_res['slope_t_se'] = np.empty(n, dtype=np.float32)
+
+        start = 0
+        for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
+            igc.generate_data(chrom=chrom, verbose=verbose), k + 1
+        ):
+            if phenotype_id not in pheno_ix:
+                continue
+
+            pidx = pheno_ix[phenotype_id]
+            a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
+            t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
+            va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+            vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+
+            if tau_mode == 'estimate':
+                tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
+                tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
+                sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+                sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
+            else:
+                sqrt_wa_t = torch.sqrt(1.0 / va_t)
+                sqrt_wt_t = torch.sqrt(1.0 / vt_t)
+
+            residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
+            residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+
+            genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
+            genotypes_t = genotypes_t[:, genotype_ix_t]
+            impute_mean(genotypes_t)
+
+            if has_phase:
+                xL_vals = xL_df.values[genotype_range[0]:genotype_range[-1] + 1]
+                xR_vals = xR_df.values[genotype_range[0]:genotype_range[-1] + 1]
+                xL_t = torch.tensor(xL_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+                xR_t = torch.tensor(xR_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+                sign_t = xL_t - xR_t
+            else:
+                sign_t = torch.zeros_like(genotypes_t)
+
+            variant_ids = variant_df.index[genotype_range[0]:genotype_range[-1] + 1]
+            start_distance = np.int32(
+                variant_df['pos'].values[genotype_range[0]:genotype_range[-1] + 1]
+                - igc.phenotype_start[phenotype_id]
+            )
+            if 'pos' not in phenotype_pos_df:
+                end_distance = np.int32(
+                    variant_df['pos'].values[genotype_range[0]:genotype_range[-1] + 1]
+                    - igc.phenotype_end[phenotype_id]
+                )
+
+            if maf_threshold > 0:
+                maf_t = calculate_maf(genotypes_t)
+                mask_t = maf_t >= maf_threshold
+                genotypes_t = genotypes_t[mask_t]
+                sign_t = sign_t[mask_t]
+                mask = mask_t.cpu().numpy().astype(bool)
+                variant_ids = variant_ids[mask]
+                start_distance = start_distance[mask]
+                if 'pos' not in phenotype_pos_df:
+                    end_distance = end_distance[mask]
+
+            if genotypes_t.shape[0] == 0:
+                continue
+
+            res = calculate_hapmixqtl_nominal(
+                genotypes_t, sign_t, a_t, t_t,
+                sqrt_wa_t, sqrt_wt_t,
+                residualizer_a, residualizer_tc,
+                robust=robust,
+            )
+            (tstat, slope, slope_se, slope_a, se_a,
+             slope_tc, se_tc) = [r.cpu().numpy() for r in res]
+
+            tstat_a = np.where(np.isfinite(se_a) & (se_a > 0),
+                               slope_a / se_a, 0.0)
+            tstat_tc = np.where(np.isfinite(se_tc) & (se_tc > 0),
+                                slope_tc / se_tc, 0.0)
+
+            af_t, ma_samples_t, ma_count_t = get_allele_stats(genotypes_t)
+            af, ma_samples, ma_count = [
+                x.cpu().numpy() for x in [af_t, ma_samples_t, ma_count_t]
+            ]
+
+            nv = len(variant_ids)
+            chr_res['phenotype_id'].extend([phenotype_id] * nv)
+            chr_res['variant_id'].extend(variant_ids)
+            chr_res['start_distance'][start:start + nv] = start_distance
+            if 'pos' not in phenotype_pos_df:
+                chr_res['end_distance'][start:start + nv] = end_distance
+            chr_res['af'][start:start + nv] = af
+            chr_res['ma_samples'][start:start + nv] = ma_samples
+            chr_res['ma_count'][start:start + nv] = ma_count
+            chr_res['pval_nominal'][start:start + nv] = tstat
+            chr_res['slope'][start:start + nv] = slope
+            chr_res['slope_se'][start:start + nv] = slope_se
+            chr_res['pval_a'][start:start + nv] = tstat_a
+            chr_res['slope_a'][start:start + nv] = slope_a
+            chr_res['slope_a_se'][start:start + nv] = se_a
+            chr_res['pval_t'][start:start + nv] = tstat_tc
+            chr_res['slope_t'][start:start + nv] = slope_tc
+            chr_res['slope_t_se'][start:start + nv] = se_tc
+            start += nv
+
+        logger.write(f'    time elapsed: {(time.time() - start_time) / 60:.2f} min')
+
+        if start < n:
+            for x in chr_res:
+                chr_res[x] = chr_res[x][:start]
+
+        if start == 0:
+            continue
+
+        chr_res_df = pd.DataFrame(chr_res)
+        m = chr_res_df['pval_nominal'].notnull()
+        m = m[m].index
+        chr_res_df.loc[m, 'pval_nominal'] = get_t_pval(
+            chr_res_df.loc[m, 'pval_nominal'], dof
+        )
+        chr_res_df.loc[m, 'pval_a'] = get_t_pval(
+            chr_res_df.loc[m, 'pval_a'], dof
+        )
+        chr_res_df.loc[m, 'pval_t'] = get_t_pval(
+            chr_res_df.loc[m, 'pval_t'], dof
+        )
+        print('    * writing output')
+        chr_res_df.to_parquet(
+            os.path.join(output_dir, f'{prefix}.hapmixqtl_pairs.{chrom}.parquet')
+        )
+
+    logger.write('done.')
+
+
+# ---------------------------------------------------------------------------
+#  Permutation-based mapping (empirical p-values)
+# ---------------------------------------------------------------------------
+
+def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+            phenotype_pos_df, xL_df=None, xR_df=None,
+            covariates_df=None, maf_threshold=0, beta_approx=True,
+            nperm=10000, window=1000000, tau_mode='zero', se_mode='model',
+            logger=None, seed=None, verbose=True, warn_monomorphic=True):
+    """
+    hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
+
+    For each phenotype, finds the best cis variant and computes empirical
+    p-values by permuting sample labels. Uses approximate permutation with
+    fixed weights for computational efficiency.
+
+    Returns:
+        DataFrame with one row per phenotype, analogous to cis.map_cis output.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if logger is None:
+        logger = SimpleLogger()
+
+    samples = A_df.columns
+    N = len(samples)
+    assert A_df.columns.equals(T_df.columns)
+    assert A_df.index.equals(T_df.index)
+
+    logger.write('hapmixQTL mapping: empirical p-values for phenotypes')
+    logger.write(f'  * {N} samples')
+    logger.write(f'  * {A_df.shape[0]} phenotypes')
+
+    robust = se_mode == 'robust'
+
+    if covariates_df is not None:
+        assert covariates_df.index.equals(A_df.columns), \
+            'Sample names in phenotype columns and covariate rows must match'
+        logger.write(f'  * {covariates_df.shape[1]} covariates')
+        covariates_t = torch.tensor(covariates_df.values, dtype=torch.float32).to(device)
+        n_cov = covariates_df.shape[1]
+    else:
+        covariates_t = None
+        n_cov = 0
+
+    has_phase = xL_df is not None and xR_df is not None
+    if has_phase:
+        logger.write('  * phase genotypes available (ASE + total channels)')
+    else:
+        logger.write('  * no phase genotypes (total channel only)')
+
+    logger.write(f'  * {variant_df.shape[0]} variants')
+    if maf_threshold > 0:
+        logger.write(f'  * applying in-sample {maf_threshold} MAF filter')
+    logger.write(f'  * cis-window: ±{window:,}')
+
+    dof = N - 2 - n_cov
+
+    genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
+    genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
+
+    n_samples = N
+    ix = np.arange(n_samples)
+    if seed is not None:
+        logger.write(f'  * using seed {seed}')
+        np.random.seed(seed)
+    permutation_ix_t = torch.LongTensor(
+        np.array([np.random.permutation(ix) for _ in range(nperm)])
+    ).to(device)
+
+    igc = genotypeio.InputGeneratorCis(
+        genotype_df, variant_df, T_df, phenotype_pos_df, window=window,
+    )
+    if igc.n_phenotypes == 0:
+        raise ValueError('No valid phenotypes found.')
+    pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
+
+    res_df = []
+    start_time = time.time()
+    logger.write('  * computing permutations')
+    for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
+        igc.generate_data(verbose=verbose), 1
+    ):
+        if phenotype_id not in pheno_ix:
+            continue
+
+        pidx = pheno_ix[phenotype_id]
+        a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
+        t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+
+        if tau_mode == 'estimate':
+            tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
+            tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
+            sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+            sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
+        else:
+            sqrt_wa_t = torch.sqrt(1.0 / va_t)
+            sqrt_wt_t = torch.sqrt(1.0 / vt_t)
+
+        residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
+        residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+
+        genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
+        genotypes_t = genotypes_t[:, genotype_ix_t]
+        impute_mean(genotypes_t)
+
+        # Build the signed het indicator for the full (contiguous) cis window
+        # BEFORE any filtering, so that every subsequent mask applies to
+        # genotypes and phase identically (genotype_range is contiguous here).
+        if has_phase:
+            xL_vals = xL_df.values[genotype_range[0]:genotype_range[-1] + 1]
+            xR_vals = xR_df.values[genotype_range[0]:genotype_range[-1] + 1]
+            xL_t = torch.tensor(xL_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+            xR_t = torch.tensor(xR_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+            sign_t = xL_t - xR_t
+        else:
+            sign_t = torch.zeros_like(genotypes_t)
+
+        if maf_threshold > 0:
+            maf_t = calculate_maf(genotypes_t)
+            mask_t = maf_t >= maf_threshold
+            genotypes_t = genotypes_t[mask_t]
+            sign_t = sign_t[mask_t]
+            genotype_range = genotype_range[mask_t.cpu().numpy().astype(bool)]
+
+        mono_t = (genotypes_t == genotypes_t[:, [0]]).all(1)
+        if mono_t.any():
+            genotypes_t = genotypes_t[~mono_t]
+            sign_t = sign_t[~mono_t]
+            genotype_range = genotype_range[~mono_t.cpu().numpy().astype(bool)]
+            if warn_monomorphic:
+                logger.write(
+                    f'    * WARNING: excluding {mono_t.sum()} monomorphic variants'
+                )
+
+        if genotypes_t.shape[0] == 0:
+            logger.write(f'WARNING: skipping {phenotype_id} (no valid variants)')
+            continue
+
+        res = calculate_hapmixqtl_permutations(
+            genotypes_t, sign_t, a_t, t_t,
+            sqrt_wa_t, sqrt_wt_t,
+            residualizer_a, residualizer_tc,
+            permutation_ix_t,
+        )
+        r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
+        var_ix = genotype_range[var_ix]
+
+        variant_id = variant_df.index[var_ix]
+        start_distance = variant_df['pos'].values[var_ix] - igc.phenotype_start[phenotype_id]
+        end_distance = variant_df['pos'].values[var_ix] - igc.phenotype_end[phenotype_id]
+
+        r2_nominal = r_nominal * r_nominal
+        pval_perm = (np.sum(r2_perm >= r2_nominal) + 1) / (nperm + 1)
+
+        slope = r_nominal * std_ratio
+        tstat2 = dof * r2_nominal / (1 - r2_nominal) if r2_nominal < 1 else np.inf
+        slope_se = np.abs(slope) / np.sqrt(tstat2) if tstat2 > 0 else np.inf
+
+        n2 = 2 * len(g)
+        af = np.sum(g) / n2
+        if af <= 0.5:
+            ma_samples = np.sum(g > 0.5)
+            ma_count = np.sum(g[g > 0.5])
+        else:
+            ma_samples = np.sum(g < 1.5)
+            ma_count = n2 - np.sum(g[g > 0.5])
+
+        res_s = pd.Series(OrderedDict([
+            ('num_var', genotypes_t.shape[0]),
+            ('beta_shape1', np.nan),
+            ('beta_shape2', np.nan),
+            ('true_df', np.nan),
+            ('pval_true_df', np.nan),
+            ('variant_id', variant_id),
+            ('start_distance', start_distance),
+            ('end_distance', end_distance),
+            ('ma_samples', ma_samples),
+            ('ma_count', ma_count),
+            ('af', af),
+            ('pval_nominal', pval_from_corr(r2_nominal, dof)),
+            ('slope', slope),
+            ('slope_se', slope_se),
+            ('pval_perm', pval_perm),
+            ('pval_beta', np.nan),
+        ]), name=phenotype_id)
+
+        if beta_approx:
+            try:
+                res_s[['pval_beta', 'beta_shape1', 'beta_shape2',
+                       'true_df', 'pval_true_df']] = \
+                    calculate_beta_approx_pval(r2_perm, r2_nominal, dof)
+            except Exception:
+                pass
+
+        res_df.append(res_s)
+
+    res_df = pd.concat(res_df, axis=1, sort=False).T
+    res_df.index.name = 'phenotype_id'
+    logger.write(f'  Time elapsed: {(time.time() - start_time) / 60:.2f} min')
+    logger.write('done.')
+    return res_df.astype(output_dtype_dict).infer_objects()
