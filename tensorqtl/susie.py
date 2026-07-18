@@ -745,6 +745,192 @@ def map(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
         return susie_summary, susie_res
 
 
+def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
+                  fdr=0.05, n_knockoffs=5, knockoff='gaussian', shrink=0.05,
+                  w_stat='pip', knockoff_offset=1, seed=0, permute_null=False,
+                  paired_covariate_df=None, L=10, scaled_prior_variance=0.2,
+                  estimate_residual_variance=True, estimate_prior_variance=True,
+                  tol=1e-3, coverage=0.95, min_abs_corr=0.5,
+                  maf_threshold=0, max_iter=200, window=1000000,
+                  logger=None, verbose=True, warn_monomorphic=False):
+    """
+    SuSiE fine-mapping with knockoff-calibrated credible-set FDR control.
+
+    Per-gene knockoffs are generated and SuSiE is fit on the augmented [X, X_ko]
+    design; a credible-set-level statistic W = sum(PIP_orig) - sum(PIP_knockoff)
+    is computed per CS. Because a single gene yields too few CSs to certify a
+    small FDR (knockoff+ detection floor 1/k), the W statistics are POOLED across
+    all genes and a single genome-wide knockoff q-value is assigned per CS. This
+    is valid despite cross-gene W-scale heterogeneity because the guarantee rests
+    on sign-symmetry of null statistics, not their magnitude. See
+    docs/knockoff_susie_design.md.
+
+    Args (knockoff-specific; the rest mirror susie.map):
+        fdr: target genome-wide CS-level FDR (the sensitivity dial).
+        n_knockoffs: M knockoff draws per gene; each CS's W is averaged over
+            draws (matched by original-member set) to reduce selection variance.
+        knockoff: 'gaussian' (default). 'hmm' reserved for a later phase.
+        shrink: covariance shrinkage for the Gaussian generator (mandatory > 0
+            at small N).
+        w_stat: 'pip' or 'max_alpha' importance.
+        knockoff_offset: 1 for knockoff+ (recommended).
+        permute_null: if True, permute each phenotype across samples before
+            fitting (destroys all association) -- for the calibration harness:
+            every selected CS is then a known false discovery.
+
+    Returns:
+        (summary_df, diagnostics): summary_df has one row per credible-set member
+        (as susie.map's summary) plus columns cs_W, knockoff_qval, selected.
+        diagnostics is a dict with the pooled W distribution and per-gene counts.
+    """
+    import knockoffs as ko
+
+    assert phenotype_df.columns.equals(covariates_df.index)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if logger is None:
+        logger = SimpleLogger()
+
+    logger.write('SuSiE fine-mapping with knockoff FDR calibration')
+    logger.write(f'  * {phenotype_df.shape[1]} samples')
+    logger.write(f'  * {phenotype_df.shape[0]} phenotypes')
+    logger.write(f'  * {covariates_df.shape[1]} covariates')
+    logger.write(f'  * target FDR: {fdr}')
+    logger.write(f'  * knockoffs: {knockoff}, {n_knockoffs} draw(s), shrink={shrink}')
+    if permute_null:
+        logger.write('  * PERMUTE-NULL mode (calibration): phenotypes shuffled')
+    logger.write(f'  * cis-window: ±{window:,}')
+
+    rng = np.random.RandomState(seed)
+
+    residualizer = Residualizer(torch.tensor(covariates_df.values, dtype=torch.float32).to(device))
+
+    genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in phenotype_df.columns])
+    genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
+
+    igc = genotypeio.InputGeneratorCis(genotype_df, variant_df, phenotype_df, phenotype_pos_df, window=window)
+    if igc.n_phenotypes == 0:
+        raise ValueError('No valid phenotypes found.')
+
+    L_aug = 2 * L  # augmented design has 2p columns
+
+    start_time = time.time()
+    logger.write('  * PASS 1: per-gene knockoff fits')
+    # each element: dict(phenotype_id, cs_id, W, member_df) -- member_df carries
+    # the original-variant rows (variant_id, pip, af) for the summary output.
+    cs_records = []
+    n_genes_used = 0
+    for k, (phenotype, genotypes, genotype_range, phenotype_id) in enumerate(igc.generate_data(verbose=verbose), 1):
+        genotypes_t = torch.tensor(genotypes, dtype=torch.float).to(device)
+        genotypes_t = genotypes_t[:, genotype_ix_t]
+        impute_mean(genotypes_t)
+
+        variant_ids = variant_df.index[genotype_range[0]:genotype_range[-1]+1].rename('variant_id')
+
+        mask_t = ~(genotypes_t == genotypes_t[:, [0]]).all(1)
+        if maf_threshold > 0:
+            maf_t = calculate_maf(genotypes_t)
+            mask_t &= maf_t >= maf_threshold
+        if mask_t.any():
+            genotypes_t = genotypes_t[mask_t]
+            mask = mask_t.cpu().numpy().astype(bool)
+            variant_ids = variant_ids[mask]
+        if genotypes_t.shape[0] == 0:
+            logger.write(f'WARNING: skipping {phenotype_id} (no valid variants)')
+            continue
+
+        if paired_covariate_df is None or phenotype_id not in paired_covariate_df:
+            iresidualizer = residualizer
+        else:
+            iresidualizer = Residualizer(torch.tensor(np.c_[covariates_df, paired_covariate_df[phenotype_id]],
+                                                      dtype=torch.float32).to(device))
+
+        phenotype = np.asarray(phenotype, dtype=np.float64)
+        if permute_null:
+            phenotype = phenotype[rng.permutation(phenotype.shape[0])]
+        phenotype_t = torch.tensor(phenotype, dtype=torch.float).to(device)
+        genotypes_res_t = iresidualizer.transform(genotypes_t)          # variants x samples
+        phenotype_res_t = iresidualizer.transform(phenotype_t.reshape(1, -1))  # 1 x samples
+
+        X_t = genotypes_res_t.T                                          # samples x variants
+        y_t = phenotype_res_t.T                                         # samples x 1
+        af_t = genotypes_t.sum(1) / (2 * genotypes_t.shape[1])
+        af_np = af_t.cpu().numpy()
+        p = X_t.shape[1]
+
+        # M knockoff draws; accumulate each CS's W keyed by its original-member set
+        from collections import defaultdict as _dd
+        acc_W = _dd(list)
+        acc_members = {}
+        for r in range(n_knockoffs):
+            gen = torch.Generator(device='cpu').manual_seed(seed * 100003 + k * 101 + r)
+            if knockoff == 'gaussian':
+                Xk_t = ko.gaussian_knockoff(X_t.cpu(), shrink=shrink, generator=gen).to(device)
+            else:
+                raise NotImplementedError(f"knockoff='{knockoff}' not yet implemented")
+            res, _ = ko.augmented_susie_fit(
+                susie, X_t, y_t, Xk_t, L_aug,
+                scaled_prior_variance=scaled_prior_variance,
+                coverage=coverage, min_abs_corr=min_abs_corr,
+                estimate_residual_variance=estimate_residual_variance,
+                estimate_prior_variance=estimate_prior_variance,
+                tol=tol, max_iter=max_iter)
+            if not res.get('converged', False):
+                continue
+            for c in ko.cs_level_W(res, p, stat=w_stat):
+                key = frozenset(c['orig_idx'].tolist())
+                acc_W[key].append(c['W'])
+                acc_members[key] = c['orig_idx']
+
+        if not acc_W:
+            continue
+        n_genes_used += 1
+        for key, ws in acc_W.items():
+            orig_idx = acc_members[key]
+            member_df = pd.DataFrame({
+                'variant_id': [variant_ids[i] for i in orig_idx],
+                'af': af_np[orig_idx],
+            })
+            cs_records.append({
+                'phenotype_id': phenotype_id,
+                'W': float(np.mean(ws)),          # mean-W aggregation over draws
+                'n_draws': len(ws),
+                'members': member_df,
+            })
+
+    logger.write(f'  * {n_genes_used} genes with credible sets; {len(cs_records)} CSs total')
+    logger.write(f'  * PASS 2: pooling W genome-wide and assigning knockoff q-values')
+
+    W_all = np.array([r['W'] for r in cs_records], dtype=np.float64)
+    qvals = ko.pooled_cs_qvalues(W_all, offset=knockoff_offset) if len(W_all) else np.array([])
+
+    rows = []
+    for rec, q in zip(cs_records, qvals):
+        m = rec['members'].copy()
+        m.insert(0, 'phenotype_id', rec['phenotype_id'])
+        m['cs_W'] = rec['W']
+        m['knockoff_qval'] = q
+        m['selected'] = bool(q <= fdr)
+        rows.append(m)
+    summary_df = pd.concat(rows, axis=0).reset_index(drop=True) if rows else \
+        pd.DataFrame(columns=['phenotype_id', 'variant_id', 'af', 'cs_W', 'knockoff_qval', 'selected'])
+
+    n_sel_cs = sum(1 for r, q in zip(cs_records, qvals) if q <= fdr)
+    logger.write(f'  * {n_sel_cs} credible sets selected at FDR <= {fdr}')
+    logger.write(f'  Time elapsed: {(time.time()-start_time)/60:.2f} min')
+    logger.write('done.')
+
+    diagnostics = {
+        'W_all': W_all,
+        'qvals': np.asarray(qvals),
+        'n_genes_used': n_genes_used,
+        'n_cs_total': len(cs_records),
+        'n_cs_selected': n_sel_cs,
+        'fdr': fdr,
+    }
+    return summary_df, diagnostics
+
+
 def get_summary(res_dict, verbose=True):
     """
 

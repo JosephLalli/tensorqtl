@@ -305,6 +305,83 @@ def filter_credible_sets(res, p, q=0.1, stat='pip', offset=1):
     return {'kept': kept, 'all': cs, 'tau': tau, 'estimated_fdp': est_fdp}
 
 
+def pooled_cs_qvalues(W_all, offset=1):
+    """
+    Genome-wide knockoff q-value for each credible set from the POOLED W.
+
+    Per-gene knockoffs are generated separately, but FDR is controlled by
+    pooling the CS-level statistics across all genes and thresholding once (see
+    docs/knockoff_susie_design.md). This is valid despite wildly different W
+    magnitudes across genes because the knockoff guarantee depends only on the
+    sign-symmetry of null statistics, not on their scale: each gene's null CSs
+    are independently sign-symmetric, so the pooled null set is too.
+
+    The q-value for a CS with statistic W_k is the smallest achievable knockoff+
+    FDP estimate over all thresholds t <= W_k:
+
+        qval(W_k) = min_{t <= W_k} (offset + #{W_all <= -t}) / max(1, #{W_all >= t})
+
+    monotonized so q is non-increasing in W. Selecting CSs with qval <= q yields
+    a set with genome-wide FDR <= q. Non-positive W (knockoff beats original)
+    gets qval = 1.
+
+    Args:
+        W_all: array [m] of CS-level statistics pooled across ALL genes.
+        offset: 1 for knockoff+ (recommended), 0 for basic knockoff.
+
+    Returns:
+        qval: array [m], the knockoff q-value aligned to W_all.
+    """
+    W = np.asarray(W_all, dtype=np.float64)
+    m = W.shape[0]
+    fdp_at = np.ones(m, dtype=np.float64)
+    if m == 0:
+        return fdp_at
+
+    # qval(W_k) = min over thresholds t <= W_k of FDP(t). As W_k grows, the set
+    # {t <= W_k} grows, so the achievable min FDP can only decrease -> q is
+    # non-increasing in W. Sweep positive thresholds from SMALLEST to LARGEST,
+    # keeping a running min of FDP, and assign each CS the running min at t=W_k.
+    pos_idx = np.where(W > 0)[0]
+    order = pos_idx[np.argsort(W[pos_idx])]  # ascending W among positives
+    best = np.inf
+    for idx in order:
+        t = W[idx]
+        num = offset + np.sum(W <= -t)
+        den = max(1, np.sum(W >= t))
+        fdp = num / den
+        best = min(best, fdp)
+        fdp_at[idx] = min(best, 1.0)
+    # non-positive W (knockoff beats original) keep qval = 1
+    return fdp_at
+
+
+def augmented_susie_fit(susie_fn, X_t, y_t, Xk_t, L, **susie_kwargs):
+    """
+    Fit SuSiE on the augmented design [X, X_knockoff] and return (res, p).
+
+    Originals occupy columns 0:p, knockoffs p:2p (same variant order), which is
+    the layout cs_level_W / pip_importance expect. The column space is doubled,
+    so callers typically pass a larger L (e.g. 2*L) via this function's L arg.
+
+    Args:
+        susie_fn: the susie.susie callable (injected to avoid an import cycle).
+        X_t:  [N, p] original design (residualized).
+        y_t:  [N, 1] response.
+        Xk_t: [N, p] knockoff design (same rows/samples as X_t).
+        L: number of single effects for the augmented fit.
+        susie_kwargs: forwarded to susie_fn.
+
+    Returns:
+        (res, p): the SuSiE result dict and the original-variant count p.
+    """
+    assert X_t.shape == Xk_t.shape, "knockoff must match original shape"
+    p = X_t.shape[1]
+    X_aug = torch.cat([X_t, Xk_t], dim=1)
+    res = susie_fn(X_aug, y_t, L=L, **susie_kwargs)
+    return res, p
+
+
 # ---------------------------------------------------------------------------
 #  Derandomization (Ren & Barber 2024, e-value aggregation)
 # ---------------------------------------------------------------------------
