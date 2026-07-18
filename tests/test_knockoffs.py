@@ -263,6 +263,81 @@ class TestNullCalibration:
             f"null over-selection: {total_selected} discoveries"
 
 
+class TestSwapEquivariance:
+    """
+    The critical model-X validity test (recommended by external review): swap
+    every original with its knockoff and check that each statistic maps to its
+    negation via a deterministic hypothesis correspondence. A statistic that
+    passes is a valid knockoff statistic; one that fails cannot support an FDR
+    claim, because its pooled negatives are not valid negative controls.
+
+    These tests use a real SuSiE fit (not a surrogate), since the whole question
+    is whether the *fit + extraction* procedure is swap-equivariant.
+    """
+
+    def _fit_pair(self, seed=0):
+        import tensorqtl.susie as susie
+        torch.manual_seed(seed)
+        N, p = 300, 20
+        Z = torch.randn(N, 4)
+        load = torch.zeros(p, 4)
+        for j in range(p):
+            load[j, j % 4] = 1.0
+        X = Z @ load.t() + 0.4 * torch.randn(N, p)
+        X = X - X.mean(0, keepdim=True)
+        y = (1.5 * X[:, 5] + torch.randn(N)).reshape(-1, 1)
+        y = y - y.mean()
+        Xk = ko.gaussian_knockoff(X, shrink=0.05,
+                                  generator=torch.Generator().manual_seed(seed + 1))
+
+        def fit(Xa):
+            return susie.susie(Xa, y, L=8, intercept=False,
+                               estimate_residual_variance=False,
+                               residual_variance=torch.tensor(1.0), max_iter=100)
+        res = fit(torch.cat([X, Xk], 1))          # [orig, knock]
+        res_s = fit(torch.cat([Xk, X], 1))        # swapped: [knock, orig]
+        return res, res_s, p
+
+    def test_variable_level_W_is_antisymmetric(self):
+        """W_j = PIP_j - PIP_knockoff(j) negates exactly under the full swap."""
+        res, res_s, p = self._fit_pair(seed=0)
+        W = ko.pip_importance(res['pip'], p)
+        W_s = ko.pip_importance(res_s['pip'], p)
+        assert np.allclose(W_s, -W, atol=1e-3), \
+            "variable-level W must be swap-antisymmetric"
+
+    def test_gene_level_W_is_antisymmetric(self):
+        """W_g = max PIP(orig) - max PIP(knock) negates exactly under swap.
+
+        This is the VALID statistic used by the eGene-FDR path (Path A): the
+        hypothesis 'gene has no cis signal' is fixed before seeing the data.
+        """
+        res, res_s, p = self._fit_pair(seed=0)
+        Wg = ko.gene_level_W(res['pip'], p, kind='max')
+        Wg_s = ko.gene_level_W(res_s['pip'], p, kind='max')
+        assert np.isclose(Wg_s, -Wg, atol=1e-3), \
+            "gene-level W_g must be swap-antisymmetric"
+
+    def test_cs_level_statistic_is_NOT_antisymmetric(self):
+        """
+        Documents WHY CS-level FDR is invalid: the original-only CS statistic
+        does not map to its negation under swap -- the credible set for a real
+        signal disappears (moves into the 'knockoff' block) rather than negating.
+        This is the failure that invalidated the CS-level FDR claim.
+        """
+        res, res_s, p = self._fit_pair(seed=0)
+        cs = {tuple(sorted(c['orig_idx'])): c['W'] for c in ko.cs_level_W(res, p)}
+        cs_s = {tuple(sorted(c['orig_idx'])): c['W'] for c in ko.cs_level_W(res_s, p)}
+        # For a valid statistic, every CS present before the swap would have a
+        # corresponding CS after the swap with negated W. Here the real-signal
+        # CS vanishes under the swap -> no such correspondence -> invalid.
+        antisymmetric = bool(cs) and all(
+            k in cs_s and np.isclose(cs_s[k], -v, atol=1e-3)
+            for k, v in cs.items())
+        assert not antisymmetric, \
+            "CS-level statistic unexpectedly antisymmetric -- revisit the FDR claim"
+
+
 if __name__ == '__main__':
     import pytest
     sys.exit(pytest.main([__file__, '-v']))

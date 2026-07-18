@@ -184,6 +184,40 @@ def pip_importance(pip_t, p):
     return pip[:p] - pip[p:]
 
 
+def gene_level_W(pip_t, p, kind='max'):
+    """
+    Gene-level knockoff statistic from a SuSiE fit on [X, X_knockoff].
+
+    This tests a FIXED hypothesis -- H_g: gene g has no cis signal (Y_g is
+    conditionally independent of every cis variant) -- which does NOT depend on
+    which credible sets SuSiE happens to form. That fixedness is what makes the
+    statistic a valid model-X knockoff statistic: swapping every original with
+    its knockoff exchanges the two blocks, so W_g -> -W_g exactly. (This is the
+    property the CS-level statistic fails; see the swap test in the test suite.)
+
+        W_g = f(PIP over original block) - f(PIP over knockoff block)
+
+    with f = max (default; the strongest single cis signal) or sum.
+
+    Args:
+        pip_t: length-2p PIPs (originals 0:p, knockoffs p:2p, same order).
+        p: number of original variants.
+        kind: 'max' or 'sum'.
+
+    Returns:
+        W_g: float, antisymmetric gene-level statistic.
+    """
+    pip = np.asarray(pip_t, dtype=np.float64)
+    assert pip.shape[0] == 2 * p, f"expected 2p={2*p} PIPs, got {pip.shape[0]}"
+    orig, knock = pip[:p], pip[p:]
+    if kind == 'max':
+        return float(orig.max() - knock.max())
+    elif kind == 'sum':
+        return float(orig.sum() - knock.sum())
+    else:
+        raise ValueError(f"unknown kind: {kind}")
+
+
 def knockoff_threshold(W, q=0.1, offset=1):
     """
     Knockoff / knockoff+ threshold for target FDR q.
@@ -223,15 +257,23 @@ def selected_variants(W, q=0.1, offset=1):
 
 def cs_level_W(res, p, stat='pip'):
     """
-    Compute a per-credible-set knockoff statistic from a SuSiE fit on the
-    augmented [X, X_knockoff] design.
+    EXPERIMENTAL -- NOT a valid FDR-controlled knockoff statistic. Do not use
+    for FDR claims. Retained as a calibration/exploration score only.
 
-    For each SuSiE credible set (whose members are indices into 0..2p-1), we
-    consider only its *original* members (index < p) and contrast their summed
-    importance against that of their knockoff counterparts. Treating the CS as
-    the unit of control (rather than the variant) is both what an eQTL analyst
-    reports and more powerful under tight cis-window LD, where a single variant
-    and its knockoff are hard to separate but the CS as a whole is not.
+    Why it is invalid: this contrasts a credible set's *original* members
+    against their knockoff counterparts, but credible sets are constructed from
+    the observed data and the specific knockoff draw and the original/knockoff
+    blocks are treated asymmetrically (original-only extraction). Under the
+    model-X swap (exchange every X_j with its knockoff), a valid statistic must
+    map to its negation via a deterministic hypothesis correspondence; this one
+    does not -- the credible set for a real signal *disappears* rather than
+    negating (see tests/test_knockoffs.py::TestSwapEquivariance). Hence the
+    pooled negatives are not valid negative controls and any FDR derived from
+    them is unjustified. Use gene_level_W (Path A) for a valid statistic.
+
+    Compute a per-credible-set contrast from a SuSiE fit on the augmented
+    [X, X_knockoff] design: for each credible set, contrast its original members'
+    importance against that of their knockoff counterparts.
 
     Args:
         res: SuSiE result dict (from susie.susie on the augmented design). Must
@@ -360,9 +402,15 @@ def augmented_susie_fit(susie_fn, X_t, y_t, Xk_t, L, **susie_kwargs):
     """
     Fit SuSiE on the augmented design [X, X_knockoff] and return (res, p).
 
-    Originals occupy columns 0:p, knockoffs p:2p (same variant order), which is
-    the layout cs_level_W / pip_importance expect. The column space is doubled,
-    so callers typically pass a larger L (e.g. 2*L) via this function's L arg.
+    Originals occupy columns 0:p, knockoffs p:2p (same variant order), the layout
+    gene_level_W / pip_importance expect.
+
+    NOTE on L: pass the intended number of biological effects, NOT 2*L. Adding
+    knockoff columns doubles the *candidate* variables, not the true number of
+    effects; original and knockoff variables are meant to compete for the same L
+    single-effect slots. (An earlier draft doubled L; external review correctly
+    flagged that this is not implied by knockoff theory and may encourage the
+    model to spend components duplicating a signal across the two blocks.)
 
     Args:
         susie_fn: the susie.susie callable (injected to avoid an import cycle).
@@ -380,6 +428,66 @@ def augmented_susie_fit(susie_fn, X_t, y_t, Xk_t, L, **susie_kwargs):
     X_aug = torch.cat([X_t, Xk_t], dim=1)
     res = susie_fn(X_aug, y_t, L=L, **susie_kwargs)
     return res, p
+
+
+# ---------------------------------------------------------------------------
+#  eGene-level FDR (Path A): valid knockoff selection of genes
+# ---------------------------------------------------------------------------
+
+def select_egenes(gene_ids, W_per_draw, q=0.1, offset=1):
+    """
+    Select eGenes at target FDR q from gene-level knockoff statistics, with
+    Ren-Barber (2024) e-value derandomization across knockoff draws.
+
+    Each gene has a FIXED hypothesis H_g (no cis signal), so its statistic W_g
+    (from gene_level_W) is a valid antisymmetric knockoff statistic. With a
+    single draw the knockoff+ filter controls FDR directly; with multiple draws
+    we must NOT average the W's (that can break the null sign distribution and
+    the threshold estimator -- external review's point 7). Instead, per
+    Ren-Barber, convert each draw's knockoff+ selection into a per-gene e-value
+    and average the e-values, then apply e-BH. This provably controls FDR while
+    removing run-to-run selection variance.
+
+    Args:
+        gene_ids: list of m gene identifiers.
+        W_per_draw: array [n_draws, m] of gene-level statistics, one row per
+            knockoff draw (columns aligned to gene_ids).
+        q: target FDR.
+        offset: knockoff+ offset (1 recommended).
+
+    Returns:
+        dict with:
+          'selected': list of selected gene_ids,
+          'evalues': array [m] averaged e-values (aligned to gene_ids),
+          'n_draws': number of draws.
+    """
+    W_per_draw = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
+    n_draws, m = W_per_draw.shape
+    assert m == len(gene_ids), "W columns must align to gene_ids"
+
+    # Per-draw e-values (knockoff-as-eBH construction, Ren & Barber 2024):
+    #   for draw with knockoff+ threshold tau, a gene's e-value is
+    #   m * 1{W_g >= tau} / (offset + #{W <= -tau}); 0 if no finite tau.
+    E = np.zeros((n_draws, m), dtype=np.float64)
+    for d in range(n_draws):
+        W = W_per_draw[d]
+        tau = knockoff_threshold(W, q=q, offset=offset)
+        if not np.isfinite(tau):
+            continue
+        n_neg = offset + np.sum(W <= -tau)
+        sel = W >= tau
+        E[d, sel] = m / n_neg
+    ebar = E.mean(axis=0)  # average e-values across draws
+
+    # e-BH at level q: sort e-values descending, find largest k with
+    # e_(k) >= m / (q k), select the top k.
+    order = np.argsort(-ebar)
+    selected_idx = []
+    for k, idx in enumerate(order, start=1):
+        if ebar[idx] >= m / (q * k):
+            selected_idx = order[:k]
+    selected = [gene_ids[i] for i in selected_idx]
+    return {'selected': selected, 'evalues': ebar, 'n_draws': n_draws}
 
 
 # ---------------------------------------------------------------------------
@@ -449,37 +557,50 @@ def derandomize_cs(per_draw_cs, q, offset=1):
 #  Calibration harness (the empirical FDR check that must gate any use)
 # ---------------------------------------------------------------------------
 
-def calibration_report(realized_false, realized_total, q):
+def calibration_report(V_per_replicate, R_per_replicate, q):
     """
-    Summarize a null-permutation calibration run.
+    Estimate empirical FDR correctly from many independent simulation replicates.
 
-    Under a null (phenotype permuted so no variant is causal), every reported CS
-    is by definition false, so the realized false-discovery *count* per gene,
-    averaged over genes and permutations, estimates the achieved FDR. This is
-    the only evidence that the target q holds at a given N; the model-X theory
-    guarantees it only with a correctly estimated knockoff distribution, which
-    at small N is not automatic.
+    FDR is the EXPECTATION of the realized false-discovery proportion, so it must
+    be estimated as the mean per-replicate FDP (external review, point 8):
+
+        FDR_hat = (1/B) sum_b  V_b / max(R_b, 1)
+
+    NOT as the discovery-weighted pooled ratio sum_b V_b / sum_b R_b, which
+    estimates a different quantity. Each element of the inputs is ONE replicate
+    (e.g. one whole null-permutation of the dataset), not one gene.
+
+    For a COMPLETE null (every discovery false, V_b == R_b), FDP_b is 1 whenever
+    R_b > 0 and 0 otherwise, so FDR = P(R > 0); this is also reported as
+    'prob_any_discovery' and requires many replicates to estimate -- a single
+    null run cannot.
 
     Args:
-        realized_false: array of per-gene false-CS counts across null runs
-        realized_total: array of per-gene reported-CS counts across null runs
-        q: the target FDR that was requested
+        V_per_replicate: array [B] of false-discovery counts, one per replicate.
+        R_per_replicate: array [B] of total-discovery counts, one per replicate.
+        q: target FDR.
 
     Returns:
-        dict with the empirical FDR (mean false / mean reported), the target,
-        and a boolean 'calibrated' (empirical <= q within Poisson noise).
+        dict with the mean-FDP estimate, its standard error across replicates,
+        P(any discovery), and a 'calibrated' flag (mean FDP <= q within 2 SE).
     """
-    realized_false = np.asarray(realized_false, dtype=np.float64)
-    realized_total = np.asarray(realized_total, dtype=np.float64)
-    tot = realized_total.sum()
-    emp_fdr = realized_false.sum() / tot if tot > 0 else 0.0
-    # crude Poisson-ish tolerance on the false count
-    se = np.sqrt(max(realized_false.sum(), 1.0)) / tot if tot > 0 else 0.0
+    V = np.asarray(V_per_replicate, dtype=np.float64)
+    R = np.asarray(R_per_replicate, dtype=np.float64)
+    assert V.shape == R.shape, "V and R must have one entry per replicate"
+    B = V.shape[0]
+    if B == 0:
+        return {'target_fdr': q, 'empirical_fdr': 0.0, 'se': 0.0,
+                'prob_any_discovery': 0.0, 'n_replicates': 0, 'calibrated': True}
+
+    fdp = V / np.maximum(R, 1.0)               # per-replicate realized FDP
+    emp_fdr = float(fdp.mean())
+    se = float(fdp.std(ddof=1) / np.sqrt(B)) if B > 1 else float('nan')
     return {
         'target_fdr': q,
-        'empirical_fdr': emp_fdr,
-        'reported_cs_total': float(tot),
-        'false_cs_total': float(realized_false.sum()),
+        'empirical_fdr': emp_fdr,               # mean per-replicate FDP
         'se': se,
-        'calibrated': bool(emp_fdr <= q + 2 * se),
+        'prob_any_discovery': float((R > 0).mean()),
+        'n_replicates': B,
+        'mean_discoveries': float(R.mean()),
+        'calibrated': bool(emp_fdr <= q + 2 * (se if np.isfinite(se) else 0.0)),
     }

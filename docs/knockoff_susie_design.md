@@ -1,11 +1,58 @@
 # Knockoff-calibrated SuSiE for tensorQTL — integration spec
 
-Status: design, for review. Target branch: `claude/susie-knockoff-calibration-IQ6Za`.
-Depends on: `tensorqtl/knockoffs.py` (core, already committed).
+Status: design. Target branch: `claude/susie-knockoff-calibration-IQ6Za`.
+Depends on: `tensorqtl/knockoffs.py`.
 
-This spec covers the **standard (non-ASE) eQTL** path only: `susie.map` on a
-dosage matrix + a single expression phenotype. The hapmixQTL two-channel path is
-a later phase and is out of scope here.
+---
+
+## ⚠️ REVISION NOTICE (supersedes the CS-level design below)
+
+External expert review found the **credible-set-level FDR** procedure originally
+specified here (§§2–4 below) to be **not a valid knockoff procedure**. The core
+defect, now confirmed empirically
+(`tests/test_knockoffs.py::TestSwapEquivariance`):
+
+> The CS-level statistic extracts credible sets from the **original columns
+> only** of an augmented `[X, X̃]` fit. Under the model-X swap (exchange every
+> `X_j` with `X̃_j`), a valid statistic must map to its negation via a
+> deterministic hypothesis correspondence. This one does **not** — the credible
+> set for a real signal *disappears* into the "knockoff" block rather than
+> negating. So the pooled negatives are **not** valid negative controls, and
+> `knockoff_qval ≤ fdr` does **not** control FDR.
+
+Also invalid as originally written: mean-W derandomization (must use Ren–Barber
+e-values), the calibration estimator (`ΣV/ΣR` → must be mean per-replicate FDP),
+doubling `L`, and describing KFc as rigorous CS-level precedent.
+
+**What is valid and now implemented as v1 — Path A, eGene-level FDR.** The
+gene-level statistic `W_g = max PIP(orig block) − max PIP(knockoff block)` tests
+the FIXED hypothesis "gene g has no cis signal" and IS swap-antisymmetric
+(verified). Genes are selected at genome-wide FDR via knockoff+ with e-value
+derandomization; ordinary SuSiE then localizes signal *within* selected genes.
+The reported unit is the **gene**, not the credible set. Implemented in
+`susie.map_egenes_knockoffs`.
+
+The CS-level code (`knockoffs.cs_level_W`, `pooled_cs_qvalues`,
+`susie.map_knockoffs`) is **retained but relabeled experimental / NOT
+FDR-controlled** — an exploratory calibration score only.
+
+Corrections applied to the shared core regardless of path:
+- `augmented_susie_fit`: pass `L` (not `2L`).
+- `select_egenes`: Ren–Barber e-value derandomization (no W-averaging).
+- `calibration_report`: mean per-replicate FDP `(1/B)Σ Vb/max(Rb,1)` + the
+  complete-null `P(R>0)`.
+- Gaussian generator explicitly documented as *approximate* (pipeline
+  development / benchmarking), not a basis for exact FDR on genotype data; an
+  HMM / reference-panel haplotype generator is likely required for real-data
+  credibility.
+
+Still-open items flagged by review, not yet resolved: overlapping-gene joint
+sign property (multitask knockoffs), covariate-aware (Freedman–Lane) permutation
+for the calibration harness, real wall-time/convergence benchmarking, and the
+harder genuinely-CS-level target (review's Path C: sample-splitting).
+
+The sections below are **retained as the record of the original CS-level design
+and why it failed**; they do not describe a valid procedure.
 
 ---
 

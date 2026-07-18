@@ -754,16 +754,23 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
                   maf_threshold=0, max_iter=200, window=1000000,
                   logger=None, verbose=True, warn_monomorphic=False):
     """
-    SuSiE fine-mapping with knockoff-calibrated credible-set FDR control.
+    EXPERIMENTAL -- knockoff-INFORMED calibration score, NOT FDR-controlled.
 
-    Per-gene knockoffs are generated and SuSiE is fit on the augmented [X, X_ko]
-    design; a credible-set-level statistic W = sum(PIP_orig) - sum(PIP_knockoff)
-    is computed per CS. Because a single gene yields too few CSs to certify a
-    small FDR (knockoff+ detection floor 1/k), the W statistics are POOLED across
-    all genes and a single genome-wide knockoff q-value is assigned per CS. This
-    is valid despite cross-gene W-scale heterogeneity because the guarantee rests
-    on sign-symmetry of null statistics, not their magnitude. See
-    docs/knockoff_susie_design.md.
+    This computes a credible-set-level statistic from the ORIGINAL columns of an
+    augmented [X, X_ko] SuSiE fit and pools it genome-wide. External review
+    established (and tests/test_knockoffs.py::TestSwapEquivariance confirms) that
+    this CS-level statistic is NOT swap-antisymmetric -- under the model-X swap a
+    real signal's credible set disappears rather than negating -- so the pooled
+    negatives are not valid negative controls and the resulting 'knockoff_qval'
+    does NOT control FDR. It is retained only as an exploratory calibration
+    score. For a valid, FDR-controlled procedure use map_egenes_knockoffs
+    (eGene-level FDR, Path A).
+
+    Additional known issues vs. a rigorous procedure (see design doc):
+      - uses L (not 2L) now, but still fits an augmented design;
+      - averages W across draws (invalid derandomization; e-values would be
+        required);
+      - member-set matching of dynamically-formed CSs is unstable in real LD.
 
     Args (knockoff-specific; the rest mirror susie.map):
         fdr: target genome-wide CS-level FDR (the sensitivity dial).
@@ -929,6 +936,174 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
         'fdr': fdr,
     }
     return summary_df, diagnostics
+
+
+def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
+                         fdr=0.1, n_knockoffs=10, knockoff='gaussian', shrink=0.05,
+                         gene_stat='max', knockoff_offset=1, seed=0, permute_null=False,
+                         paired_covariate_df=None, L=10, scaled_prior_variance=0.2,
+                         estimate_residual_variance=True, estimate_prior_variance=True,
+                         tol=1e-3, coverage=0.95, min_abs_corr=0.5,
+                         maf_threshold=0, max_iter=200, window=1000000,
+                         localize=True, logger=None, verbose=True):
+    """
+    eGene discovery with knockoff FDR control (Path A), then SuSiE localization.
+
+    This is the VALID knockoff procedure (external review, Path A). For each gene
+    it fits SuSiE on the augmented [X, X_knockoff] design and computes the
+    gene-level statistic
+
+        W_g = max PIP(original block) - max PIP(knockoff block)   (gene_stat='max')
+
+    which tests the FIXED hypothesis H_g: gene g has no cis signal. Because H_g
+    does not depend on which credible sets SuSiE forms, W_g is swap-antisymmetric
+    (verified in tests) and is a valid model-X knockoff statistic. Genes are then
+    selected at genome-wide FDR q via the knockoff+ filter, with Ren-Barber
+    e-value derandomization across the n_knockoffs draws (mean-W averaging is NOT
+    used -- it does not preserve FDR control).
+
+    The reported unit is the GENE: "these genes have cis signal at FDR <= q." It
+    does NOT claim per-credible-set FDR. If localize=True, ordinary SuSiE is run
+    on the original genotypes of each selected gene to produce credible sets that
+    localize the signal within the (FDR-controlled) selected genes.
+
+    IMPORTANT: L is the intended number of biological effects, not 2L; original
+    and knockoff variables compete for the same L slots.
+
+    Args (knockoff-specific; rest mirror susie.map):
+        fdr: target genome-wide eGene FDR.
+        n_knockoffs: number of knockoff draws for e-value derandomization.
+        knockoff: 'gaussian' (approximate; suitable for development/benchmarking,
+            not a basis for exact FDR claims on genotype data -- an HMM/reference-
+            panel generator is likely needed for real-data credibility).
+        gene_stat: 'max' or 'sum' for gene_level_W.
+        permute_null: permute phenotypes (calibration harness).
+        localize: if True, fine-map selected genes with ordinary SuSiE.
+
+    Returns:
+        (egene_df, localize_summary_df, diagnostics)
+        egene_df: one row per gene: phenotype_id, evalue, selected.
+        localize_summary_df: SuSiE credible-set members for selected genes
+            (as susie.map's summary), or None if localize=False.
+        diagnostics: dict (W_per_draw matrix, selected genes, etc.).
+    """
+    import knockoffs as ko
+
+    assert phenotype_df.columns.equals(covariates_df.index)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if logger is None:
+        logger = SimpleLogger()
+
+    logger.write('Knockoff eGene discovery (Path A: gene-level FDR)')
+    logger.write(f'  * {phenotype_df.shape[1]} samples, {phenotype_df.shape[0]} phenotypes')
+    logger.write(f'  * target eGene FDR: {fdr}')
+    logger.write(f'  * knockoffs: {knockoff}, {n_knockoffs} draws (e-value derandomized), shrink={shrink}')
+    if permute_null:
+        logger.write('  * PERMUTE-NULL mode (calibration)')
+    logger.write(f'  * cis-window: ±{window:,}')
+
+    rng = np.random.RandomState(seed)
+    residualizer = Residualizer(torch.tensor(covariates_df.values, dtype=torch.float32).to(device))
+    genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in phenotype_df.columns])
+    genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
+
+    igc = genotypeio.InputGeneratorCis(genotype_df, variant_df, phenotype_df, phenotype_pos_df, window=window)
+    if igc.n_phenotypes == 0:
+        raise ValueError('No valid phenotypes found.')
+
+    start_time = time.time()
+    logger.write('  * PASS 1: per-gene augmented fits, gene-level W per knockoff draw')
+
+    gene_ids = []
+    W_rows = []  # one row per gene: [W_draw_0, ..., W_draw_{M-1}]
+    for k, (phenotype, genotypes, genotype_range, phenotype_id) in enumerate(igc.generate_data(verbose=verbose), 1):
+        genotypes_t = torch.tensor(genotypes, dtype=torch.float).to(device)
+        genotypes_t = genotypes_t[:, genotype_ix_t]
+        impute_mean(genotypes_t)
+
+        mask_t = ~(genotypes_t == genotypes_t[:, [0]]).all(1)
+        if maf_threshold > 0:
+            maf_t = calculate_maf(genotypes_t)
+            mask_t &= maf_t >= maf_threshold
+        if mask_t.any():
+            genotypes_t = genotypes_t[mask_t]
+        if genotypes_t.shape[0] == 0:
+            continue
+
+        if paired_covariate_df is None or phenotype_id not in paired_covariate_df:
+            iresidualizer = residualizer
+        else:
+            iresidualizer = Residualizer(torch.tensor(np.c_[covariates_df, paired_covariate_df[phenotype_id]],
+                                                      dtype=torch.float32).to(device))
+
+        phenotype = np.asarray(phenotype, dtype=np.float64)
+        if permute_null:
+            phenotype = phenotype[rng.permutation(phenotype.shape[0])]
+        phenotype_t = torch.tensor(phenotype, dtype=torch.float).to(device)
+        X_t = iresidualizer.transform(genotypes_t).T
+        y_t = iresidualizer.transform(phenotype_t.reshape(1, -1)).T
+        p = X_t.shape[1]
+
+        draw_W = []
+        for r in range(n_knockoffs):
+            gen = torch.Generator(device='cpu').manual_seed(seed * 100003 + k * 101 + r)
+            if knockoff == 'gaussian':
+                Xk_t = ko.gaussian_knockoff(X_t.cpu(), shrink=shrink, generator=gen).to(device)
+            else:
+                raise NotImplementedError(f"knockoff='{knockoff}' not yet implemented")
+            res, _ = ko.augmented_susie_fit(
+                susie, X_t, y_t, Xk_t, L,
+                scaled_prior_variance=scaled_prior_variance,
+                coverage=coverage, min_abs_corr=min_abs_corr,
+                estimate_residual_variance=estimate_residual_variance,
+                estimate_prior_variance=estimate_prior_variance,
+                tol=tol, max_iter=max_iter)
+            draw_W.append(ko.gene_level_W(res['pip'], p, kind=gene_stat))
+        gene_ids.append(phenotype_id)
+        W_rows.append(draw_W)
+
+    if not gene_ids:
+        raise ValueError('No genes produced statistics.')
+    W_per_draw = np.array(W_rows, dtype=np.float64).T   # [n_draws, n_genes]
+
+    logger.write(f'  * PASS 2: e-value eGene selection at FDR <= {fdr}')
+    sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr, offset=knockoff_offset)
+    selected_genes = set(sel['selected'])
+    logger.write(f'  * {len(selected_genes)}/{len(gene_ids)} genes selected as eGenes')
+
+    egene_df = pd.DataFrame({
+        'phenotype_id': gene_ids,
+        'evalue': sel['evalues'],
+        'selected': [g in selected_genes for g in gene_ids],
+    })
+
+    localize_summary_df = None
+    if localize and selected_genes:
+        logger.write('  * PASS 3: SuSiE localization within selected eGenes')
+        sub_pheno = phenotype_df.loc[[g for g in phenotype_df.index if g in selected_genes]]
+        sub_pos = phenotype_pos_df.loc[sub_pheno.index]
+        localize_summary_df = map(
+            genotype_df, variant_df, sub_pheno, sub_pos, covariates_df,
+            paired_covariate_df=paired_covariate_df, L=L,
+            scaled_prior_variance=scaled_prior_variance,
+            estimate_residual_variance=estimate_residual_variance,
+            estimate_prior_variance=estimate_prior_variance,
+            tol=tol, coverage=coverage, min_abs_corr=min_abs_corr,
+            summary_only=True, maf_threshold=maf_threshold, max_iter=max_iter,
+            window=window, logger=logger, verbose=verbose)
+
+    logger.write(f'  Time elapsed: {(time.time()-start_time)/60:.2f} min')
+    logger.write('done.')
+
+    diagnostics = {
+        'gene_ids': gene_ids,
+        'W_per_draw': W_per_draw,
+        'evalues': sel['evalues'],
+        'n_genes': len(gene_ids),
+        'n_selected': len(selected_genes),
+        'fdr': fdr,
+    }
+    return egene_df, localize_summary_df, diagnostics
 
 
 def get_summary(res_dict, verbose=True):
