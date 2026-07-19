@@ -490,6 +490,62 @@ def select_egenes(gene_ids, W_per_draw, q=0.1, offset=1):
     return {'selected': selected, 'evalues': ebar, 'n_draws': n_draws}
 
 
+def select_egenes_qvalue(gene_ids, W_per_draw, q=0.1, offset=0, aggregate='median'):
+    """
+    Select eGenes by a CALIBRATED per-gene knockoff q-value (default path).
+
+    Validation phase 3 (docs/knockoff_susie_design.md) showed that the e-value
+    (e-BH) derandomization in select_egenes is over-conservative and unstable
+    near the detection floor -- it collapses power to zero when individual draws
+    select nothing. The single-draw knockoff q-value, in contrast, is roughly
+    CALIBRATED (realized FDR ~ nominal q at operating q), which is the project's
+    goal (calibration, not merely control). This function is that calibrated
+    path, with an optional gentle multi-draw stabilizer that aggregates the
+    CALIBRATED quantity (the per-gene q-value) across draws -- NOT e-values --
+    so seed-stability does not cost calibration.
+
+    offset defaults to 0 (plain knockoff): FDP_hat = #{W<=-t}/#{W>=t} is an
+    approximately unbiased FDP estimate. offset=1 (knockoff+) instead guarantees
+    FDR<=q at the cost of conservatism.
+
+    Per draw d, the genome-wide-pooled q-value for gene g is
+        q_g^(d) = pooled_cs_qvalues(W^(d))[g]
+    (the same pooled monotone knockoff q-value used elsewhere, here over the
+    per-gene W vector). Across draws these are combined by:
+        aggregate='median' : q_g = median_d q_g^(d)   (default; robust stabilizer)
+        aggregate='mean'   : q_g = mean_d q_g^(d)
+        aggregate='none'   : use draw 0 only (pure single-draw)
+    A gene is selected iff its aggregated q-value <= q.
+
+    Args:
+        gene_ids: list of m gene identifiers.
+        W_per_draw: array [n_draws, m] of gene-level statistics.
+        q: target FDR.
+        offset: 0 (calibrated, default) or 1 (knockoff+ control).
+        aggregate: 'median' | 'mean' | 'none'.
+
+    Returns:
+        dict: 'selected' (list of gene_ids), 'qvalues' (array [m], aligned),
+              'n_draws'.
+    """
+    W_per_draw = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
+    n_draws, m = W_per_draw.shape
+    assert m == len(gene_ids), "W columns must align to gene_ids"
+
+    if aggregate == 'none':
+        qmat = pooled_cs_qvalues(W_per_draw[0], offset=offset)[None, :]
+    else:
+        qmat = np.vstack([pooled_cs_qvalues(W_per_draw[d], offset=offset)
+                          for d in range(n_draws)])
+    if aggregate == 'mean':
+        qagg = qmat.mean(axis=0)
+    else:  # 'median' or 'none' (single row)
+        qagg = np.median(qmat, axis=0)
+
+    selected = [gene_ids[i] for i in range(m) if qagg[i] <= q]
+    return {'selected': selected, 'qvalues': qagg, 'n_draws': n_draws}
+
+
 # ---------------------------------------------------------------------------
 #  Derandomization (Ren & Barber 2024, e-value aggregation)
 # ---------------------------------------------------------------------------

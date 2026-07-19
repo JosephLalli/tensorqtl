@@ -152,6 +152,29 @@ class TestKnockoffFilter:
         # knockoff+ (offset=1) is at least as conservative
         assert tau1 >= tau0
 
+    def test_select_egenes_qvalue_single_draw(self):
+        """Calibrated q-value selection picks strong genes; offset=0 selects at
+        least as many as offset=1 (knockoff+ is more conservative)."""
+        gene_ids = [f"g{i}" for i in range(12)]
+        # 6 strong positive genes, 6 null-ish
+        W = np.array([[3, 2.8, 2.5, 2.2, 2.0, 1.8, 0.2, -0.3, 0.1, -0.4, -0.5, 0.05]])
+        r0 = ko.select_egenes_qvalue(gene_ids, W, q=0.2, offset=0, aggregate='none')
+        r1 = ko.select_egenes_qvalue(gene_ids, W, q=0.2, offset=1, aggregate='none')
+        assert set(gene_ids[:6]).issubset(set(r0['selected']))
+        assert len(r0['selected']) >= len(r1['selected'])  # offset=0 less conservative
+        assert (r0['qvalues'] >= 0).all() and (r0['qvalues'] <= 1).all()
+
+    def test_select_egenes_qvalue_median_aggregation(self):
+        """Median q-value across draws is a valid probability and stabilizes."""
+        gene_ids = [f"g{i}" for i in range(8)]
+        rng = np.random.RandomState(0)
+        # 3 consistently-strong genes, noisy across draws
+        base = np.array([3.0, 2.5, 2.0, 0.1, -0.2, 0.0, -0.3, 0.2])
+        W = base[None, :] + 0.3 * rng.randn(4, 8)
+        r = ko.select_egenes_qvalue(gene_ids, W, q=0.34, offset=0, aggregate='median')
+        assert set(gene_ids[:3]).issubset(set(r['selected']))
+        assert r['n_draws'] == 4
+
     def test_pip_importance_split(self):
         p = 4
         pip = np.array([0.9, 0.1, 0.8, 0.05,   # originals

@@ -939,8 +939,9 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
 
 
 def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
-                         fdr=0.1, n_knockoffs=10, knockoff='gaussian', shrink=0.05,
-                         gene_stat='max', knockoff_offset=1, seed=0, permute_null=False,
+                         fdr=0.1, n_knockoffs=1, knockoff='gaussian', shrink=0.05,
+                         gene_stat='max', knockoff_offset=0, selection='qvalue',
+                         aggregate='median', seed=0, permute_null=False,
                          paired_covariate_df=None, L=10, scaled_prior_variance=0.2,
                          estimate_residual_variance=True, estimate_prior_variance=True,
                          tol=1e-3, coverage=0.95, min_abs_corr=0.5,
@@ -957,32 +958,47 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
 
     which tests the FIXED hypothesis H_g: gene g has no cis signal. Because H_g
     does not depend on which credible sets SuSiE forms, W_g is swap-antisymmetric
-    (verified in tests) and is a valid model-X knockoff statistic. Genes are then
-    selected at genome-wide FDR q via the knockoff+ filter, with Ren-Barber
-    e-value derandomization across the n_knockoffs draws (mean-W averaging is NOT
-    used -- it does not preserve FDR control).
+    (verified in tests) and is a valid model-X knockoff statistic.
+
+    Selection (validated defaults, docs/knockoff_susie_design.md phase 3):
+    genes are selected by a genome-wide-pooled, CALIBRATED knockoff q-value
+    (selection='qvalue', knockoff_offset=0). This tracks realized FDR ~ nominal q
+    at operating q -- the project's goal (calibration, not merely conservative
+    control). The default n_knockoffs=1 is a single draw; n_knockoffs>1 with
+    aggregate='median' gently stabilizes seed-dependence by taking the median of
+    the CALIBRATED per-gene q-value across draws (NOT e-values). The alternative
+    selection='ebh' uses Ren-Barber e-value derandomization (knockoff+ control),
+    which is provably FDR<=q but empirically over-conservative and unstable near
+    the detection floor -- retained as an option, not the default.
 
     The reported unit is the GENE: "these genes have cis signal at FDR <= q." It
     does NOT claim per-credible-set FDR. If localize=True, ordinary SuSiE is run
     on the original genotypes of each selected gene to produce credible sets that
-    localize the signal within the (FDR-controlled) selected genes.
+    localize the signal within the selected genes.
 
     IMPORTANT: L is the intended number of biological effects, not 2L; original
     and knockoff variables compete for the same L slots.
 
     Args (knockoff-specific; rest mirror susie.map):
         fdr: target genome-wide eGene FDR.
-        n_knockoffs: number of knockoff draws for e-value derandomization.
+        n_knockoffs: number of knockoff draws (1 = single draw, default).
         knockoff: 'gaussian' (approximate; suitable for development/benchmarking,
             not a basis for exact FDR claims on genotype data -- an HMM/reference-
             panel generator is likely needed for real-data credibility).
         gene_stat: 'max' or 'sum' for gene_level_W.
-        permute_null: permute phenotypes (calibration harness).
+        knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
+            control, conservative).
+        selection: 'qvalue' (calibrated pooled q-value, default) or 'ebh'
+            (Ren-Barber e-value derandomization / knockoff+ control).
+        aggregate: for selection='qvalue' with n_knockoffs>1: 'median' (default)
+            | 'mean' | 'none' (draw 0 only).
+        permute_null: Freedman-Lane residual permutation (calibration harness).
         localize: if True, fine-map selected genes with ordinary SuSiE.
 
     Returns:
         (egene_df, localize_summary_df, diagnostics)
-        egene_df: one row per gene: phenotype_id, evalue, selected.
+        egene_df: one row per gene: phenotype_id, qvalue (or evalue for ebh),
+            selected.
         localize_summary_df: SuSiE credible-set members for selected genes
             (as susie.map's summary), or None if localize=False.
         diagnostics: dict (W_per_draw matrix, selected genes, etc.).
@@ -997,7 +1013,8 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
     logger.write('Knockoff eGene discovery (Path A: gene-level FDR)')
     logger.write(f'  * {phenotype_df.shape[1]} samples, {phenotype_df.shape[0]} phenotypes')
     logger.write(f'  * target eGene FDR: {fdr}')
-    logger.write(f'  * knockoffs: {knockoff}, {n_knockoffs} draws (e-value derandomized), shrink={shrink}')
+    logger.write(f'  * knockoffs: {knockoff}, {n_knockoffs} draw(s), shrink={shrink}; '
+                 f'selection={selection} (offset={knockoff_offset})')
     if permute_null:
         logger.write('  * PERMUTE-NULL mode (calibration)')
     logger.write(f'  * cis-window: ±{window:,}')
@@ -1081,14 +1098,23 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         raise ValueError('No genes produced statistics.')
     W_per_draw = np.array(W_rows, dtype=np.float64).T   # [n_draws, n_genes]
 
-    logger.write(f'  * PASS 2: e-value eGene selection at FDR <= {fdr}')
-    sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr, offset=knockoff_offset)
-    selected_genes = set(sel['selected'])
+    if selection == 'ebh':
+        logger.write(f'  * PASS 2: e-value (knockoff+) eGene selection at FDR <= {fdr}')
+        sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr, offset=(knockoff_offset or 1))
+        selected_genes = set(sel['selected'])
+        score_col, score_vals = 'evalue', sel['evalues']
+    else:  # 'qvalue' (default, calibrated)
+        logger.write(f'  * PASS 2: calibrated q-value eGene selection at FDR <= {fdr} '
+                     f'(offset={knockoff_offset}, aggregate={aggregate})')
+        sel = ko.select_egenes_qvalue(gene_ids, W_per_draw, q=fdr,
+                                      offset=knockoff_offset, aggregate=aggregate)
+        selected_genes = set(sel['selected'])
+        score_col, score_vals = 'qvalue', sel['qvalues']
     logger.write(f'  * {len(selected_genes)}/{len(gene_ids)} genes selected as eGenes')
 
     egene_df = pd.DataFrame({
         'phenotype_id': gene_ids,
-        'evalue': sel['evalues'],
+        score_col: score_vals,
         'selected': [g in selected_genes for g in gene_ids],
     })
 
@@ -1113,7 +1139,8 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
     diagnostics = {
         'gene_ids': gene_ids,
         'W_per_draw': W_per_draw,
-        'evalues': sel['evalues'],
+        'scores': score_vals,
+        'selection': selection,
         'n_genes': len(gene_ids),
         'n_selected': len(selected_genes),
         'fdr': fdr,
