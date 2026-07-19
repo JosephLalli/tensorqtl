@@ -110,7 +110,7 @@ def run_replicate(n_snps=400, N=300, n_genes=120, window=100_000,
                   n_causal_genes=30, causal_effect=2.0, rho=0.5,
                   shared_signal=True, knockoff_mode='per_gene',
                   n_knockoffs=5, fdr=0.1, shrink=0.1, seed=0, L=5,
-                  max_iter=80, verbose=False):
+                  max_iter=80, verbose=False, knockoff_offset=1):
     """
     One replicate. knockoff_mode: 'per_gene' (independent per gene, current
     default) or 'shared' (one chromosome-wide knockoff reused by all genes).
@@ -142,7 +142,8 @@ def run_replicate(n_snps=400, N=300, n_genes=120, window=100_000,
         eg, _, _ = susie.map_egenes_knockoffs(
             genotype_df, variant_df, phenotype_df, pos_df, cov_df,
             fdr=fdr, n_knockoffs=n_knockoffs, shrink=shrink, window=window,
-            L=L, max_iter=max_iter, verbose=verbose, seed=seed, localize=False)
+            L=L, max_iter=max_iter, verbose=verbose, seed=seed, localize=False,
+            knockoff_offset=knockoff_offset)
 
     sel = set(eg[eg['selected']]['phenotype_id'])
     V = len(sel - causal_gene_ids)
