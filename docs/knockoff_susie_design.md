@@ -470,3 +470,36 @@ Caveats unchanged: Gaussian-friendly simulated genotypes (real haplotypes untest
 one scale/effect regime, the overlapping-gene joint-sign reduction still open. Near
 the detection floor (few genes / weak signal) discovery remains unstable regardless
 of offset.
+
+---
+
+## HMM-genotype calibration (validation phase 4): no inflation, but not yet the hardest regime
+
+Calibration curve on HMM (fastPHASE) vs Gaussian-factor genotypes, single-draw
+offset=0, 150 genes / 40 causal, B=12:
+
+| q | genotypes | realized FDR | se | power |
+|---|---|---|---|---|
+| 0.05 | gaussian | 0.068 | 0.017 | 0.96 |
+| 0.05 | hmm      | 0.061 | 0.008 | 0.99 |
+| 0.10 | gaussian | 0.084 | 0.017 | 0.98 |
+| 0.10 | hmm      | 0.072 | 0.006 | 0.99 |
+| 0.20 | gaussian | 0.135 | 0.017 | 0.99 |
+| 0.20 | hmm      | 0.075 | 0.007 | 0.99 |
+
+Finding: the GAUSSIAN knockoff generator did NOT inflate FDR on realistic
+discrete genotypes (rare variants + recombination hotspots). HMM realized FDR is
+at or below Gaussian's at every q, well controlled. The reviewer's central
+real-data failure mode (Gaussian exchangeability breaking on non-Gaussian
+genotypes) did not materialize here.
+
+Caveat (do not over-claim): the HMM simulator's LD is modest (short-range
+r^2 ~ 0.1). The regime where Gaussian knockoffs are theoretically most fragile is
+STRONG LD (r^2 > 0.5) + VERY rare variants (MAF < 0.01) with a near-singular
+covariance -- which this simulator does not strongly reach. HMM realized FDR also
+saturates at ~0.075 because power is ~0.99 (recall saturated -> no more nulls to
+admit), so part of the "good control" reflects an easy fine-mapping task, not
+only generator robustness. So this rules out GROSS Gaussian failure on discrete/
+rare/hotspot data; it does not yet test the hardest corner. Next: crank LD
+strength + rare-variant fraction in the simulator, and/or add an HMM knockoff
+GENERATOR (SNPknock) to compare against the Gaussian generator in that corner.
