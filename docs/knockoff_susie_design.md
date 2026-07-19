@@ -367,3 +367,34 @@ doubles a design that, in hapmixQTL, is already a 2N-row whitened stack — the
 exchangeability argument there needs the haplotype-level knockoffs (`s̃`), per
 the earlier design discussion.
 ```
+
+---
+
+## Overlap calibration study — first results (record, not validation)
+
+Setting: 150 genes, N=300, 300 SNPs, overlapping cis windows (±120 kb), 40 causal
+genes, 3 knockoff draws, target FDR q=0.10, B=8 replicates. Estimator = mean
+per-replicate FDP. Genotypes are Gaussian-factor dosages (favorable to the
+Gaussian generator; NOT real haplotypes).
+
+| ρ (cross-gene pheno corr) | mode | FDR̂ | se | power | P(R>0) |
+|---|---|---|---|---|---|
+| 0.0 | per_gene | 0.021 | 0.008 | 0.82 | 0.88 |
+| 0.0 | shared   | 0.030 | 0.012 | 0.73 | 0.75 |
+| 0.9 | per_gene | 0.039 | 0.027 | 0.74 | 0.75 |
+| 0.9 | shared   | 0.050 | 0.044 | 0.73 | 0.75 |
+
+Read: under overlap + near-duplicated phenotypes (ρ=0.9), per-gene knockoffs did
+NOT inflate FDR (0.039 < q=0.10); shared knockoffs did not improve on per-gene
+(0.050, within noise) and gave slightly lower power. No empirical case here for
+preferring the expensive shared/chromosome-wide construction on overlap grounds.
+
+Caveats (this is evidence, not a theorem — cf. review): one setting only, not the
+stacked-adversarial regime; large SEs at B=8; Gaussian-friendly genotypes (real
+haplotypes / rare variants untested); uniformly conservative (e-BH + detection
+floor). The overlapping-gene joint-sign reduction remains the open problem;
+status stays "empirically calibrated", not theorem-backed.
+
+TODO for a real validation: >=50 replicates; HMM/real-haplotype genotypes;
+stacked adversarial factors (unequal signals, low-freq variants, structure,
+covariance misspecification); FDP quantiles not just the mean.
