@@ -222,11 +222,15 @@ def calibration_study(B=20, rho_grid=(0.0, 0.5, 0.9), modes=('per_gene', 'shared
                 Vs.append(out['V']); Rs.append(out['R']); powers.append(out['power'])
             V = np.array(Vs, float); R = np.array(Rs, float)
             fdp = V / np.maximum(R, 1)
+            se = fdp.std(ddof=1) / np.sqrt(B) if B > 1 else float('nan')
+            # FDP quantiles (reviewer point: report the distribution, not just mean)
+            q50, q90, qmax = np.quantile(fdp, [0.5, 0.9, 1.0])
             line = (f"  rho={rho:.1f} {mode:9s}: "
-                    f"FDR_hat={fdp.mean():.3f} (se {fdp.std(ddof=1)/np.sqrt(B):.3f}), "
-                    f"P(R>0)={(R>0).mean():.2f}, meanR={R.mean():.1f}, "
+                    f"FDR_hat={fdp.mean():.3f} (se {se:.3f}) "
+                    f"FDP[med/90/max]={q50:.2f}/{q90:.2f}/{qmax:.2f} "
+                    f"P(R>0)={(R>0).mean():.2f} meanR={R.mean():.1f} "
                     f"power={np.mean(powers):.2f}")
-            print(line)
+            print(line, flush=True)
 
 
 if __name__ == '__main__':
