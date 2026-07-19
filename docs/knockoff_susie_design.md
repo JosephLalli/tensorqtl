@@ -398,3 +398,35 @@ status stays "empirically calibrated", not theorem-backed.
 TODO for a real validation: >=50 replicates; HMM/real-haplotype genotypes;
 stacked adversarial factors (unequal signals, low-freq variants, structure,
 covariance misspecification); FDP quantiles not just the mean.
+
+---
+
+## Stability map + derandomization finding (validation, phase 2)
+
+Grid over (n_genes, n_knockoffs), q=0.1, overlapping windows, rho=0.5, B=10.
+
+Complete null: P(R>0)=0.00 in EVERY cell -- no false discoveries under the null
+at any scale/draw count. FDR control under the complete null is airtight.
+
+Mixed null+causal: FDR is controlled everywhere (all <= 0.023, FDP90 <= 0.06),
+BUT power is erratic and the Ren-Barber e-value DERANDOMIZATION makes it worse:
+  - 200 genes: 5 draws -> R=30.8 (sdR=25.2, power 0.59); 15 draws -> R=0 (power 0).
+  - 400 genes: sdR=40 (>= meanR) -- bimodal, all-or-nothing selection.
+More draws and more genes did NOT stabilize (contradicting an earlier guess);
+averaging e-values pulls the aggregate toward zero because near the detection
+floor many single-draw knockoff+ thresholds are tau=inf (empty), contributing 0.
+
+Direct comparison at 200 genes / 50 causal / causal_effect=2.5:
+  n_knockoffs=1 (NO derandomization, single knockoff+ filter):
+    meanR=52 sdR=6.8, power mean=0.95 sd=0.10 min=0.70, FDR=0.079  <- stable & powerful
+  vs derandomized (above): unstable, power collapses.
+
+CONCLUSION: the valid knockoff STATISTIC and single-draw knockoff+ FILTER work
+well (stable power, controlled FDR). The e-BH derandomization LAYER is
+empirically pathological at near-floor eQTL scale -- theory sound, finite-sample
+behavior bad. The tradeoff is now: single-draw (stable power, but seed-dependent
+gene set) vs e-BH (seed-stable, but power-destroying). Likely fix: a gentler
+derandomization (stability-selection / selection-frequency across draws) that
+preserves approximate FDR control without e-BH's zero-collapse. To be designed
+and validated; until then, default to single-draw with a fixed seed and report
+seed-sensitivity, OR use stability selection.
