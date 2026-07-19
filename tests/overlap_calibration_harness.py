@@ -172,27 +172,30 @@ def _run_shared_knockoff(genotype_df, variant_df, phenotype_df, pos_df, cov_df,
     Xfull = Gr.T                              # samples x variants (all SNPs)
 
     gene_ids = list(phenotype_df.index)
-    W_rows = []
-    for gi, gid in enumerate(gene_ids):
-        tss = gene_tss[gi]
-        cols = np.where(np.abs(pos - tss) <= window)[0]
-        if cols.size == 0:
-            W_rows.append([0.0] * n_knockoffs); continue
+    cols_by_gene = [np.where(np.abs(pos - gene_tss[gi]) <= window)[0]
+                    for gi in range(len(gene_ids))]
+    yr_by_gene = []
+    for gid in gene_ids:
         y = torch.tensor(phenotype_df.loc[gid].values, dtype=torch.float32).reshape(1, -1)
-        yr = res.transform(y).T
-        draw = []
-        for r in range(n_knockoffs):
-            gen = torch.Generator().manual_seed(seed * 1000 + r)  # SAME across genes
-            Xk_full = ko.gaussian_knockoff(Xfull, shrink=shrink, generator=gen)
-            Xg = Xfull[:, cols]
-            Xkg = Xk_full[:, cols]             # coherent slice of shared knockoff
+        yr_by_gene.append(res.transform(y).T)
+
+    # Generate the shared chromosome-wide knockoff ONCE per draw, then slice
+    # every gene's window from the SAME knockoff object (the whole point of the
+    # 'shared' construction: a shared SNP has one coherent knockoff everywhere).
+    W_per_draw = np.zeros((n_knockoffs, len(gene_ids)))
+    for r in range(n_knockoffs):
+        gen = torch.Generator().manual_seed(seed * 1000 + r)
+        Xk_full = ko.gaussian_knockoff(Xfull, shrink=shrink, generator=gen)
+        for gi, gid in enumerate(gene_ids):
+            cols = cols_by_gene[gi]
+            if cols.size == 0:
+                continue
             resu, p = ko.augmented_susie_fit(
-                susie.susie, Xg, yr, Xkg, L, intercept=True,
-                estimate_residual_variance=True, estimate_prior_variance=True,
-                max_iter=max_iter, coverage=0.95, min_abs_corr=0.5)
-            draw.append(ko.gene_level_W(resu['pip'], p, kind='max'))
-        W_rows.append(draw)
-    W_per_draw = np.array(W_rows).T
+                susie.susie, Xfull[:, cols], yr_by_gene[gi], Xk_full[:, cols], L,
+                intercept=True, estimate_residual_variance=True,
+                estimate_prior_variance=True, max_iter=max_iter,
+                coverage=0.95, min_abs_corr=0.5)
+            W_per_draw[r, gi] = ko.gene_level_W(resu['pip'], p, kind='max')
     sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr)
     selset = set(sel['selected'])
     return pd.DataFrame({'phenotype_id': gene_ids,
