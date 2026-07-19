@@ -430,3 +430,43 @@ derandomization (stability-selection / selection-frequency across draws) that
 preserves approximate FDR control without e-BH's zero-collapse. To be designed
 and validated; until then, default to single-draw with a fixed seed and report
 seed-sensitivity, OR use stability selection.
+
+---
+
+## Calibration curve (validation phase 3): single-draw offset=0 is calibrated; e-BH was the problem
+
+Realized FDR vs nominal q, single-draw (no e-BH), 200 genes, 50 causal, B=12:
+
+| nominal q | realized FDR (offset=1) | realized FDR (offset=0) | power |
+|---|---|---|---|
+| 0.05 | 0.017 | 0.033 | 0.91 |
+| 0.10 | 0.069 | 0.079 | 0.93 |
+| 0.20 | 0.128 | 0.128 | 0.96 |
+| 0.30 | 0.144 | 0.145 | 0.96 |
+
+Findings:
+- The severe over-conservatism seen earlier (realized 0.002-0.023 at q=0.1) was an
+  e-BH DERANDOMIZATION artifact, NOT the base filter. Single-draw offset=1 is only
+  mildly conservative (0.069 at q=0.1); single-draw offset=0 is close to calibrated
+  (0.079 at q=0.1, 79% of nominal).
+- offset=0 tracks the diagonal better than offset=1 at low q (the +1 in knockoff+
+  buys the provable FDR<=q guarantee at the cost of calibration; dropping it gives an
+  approximately unbiased FDP estimate). At q>=0.2 the two converge.
+- Realized FDR SATURATES at ~0.14: asking q=0.2 or 0.3 does not raise it, because
+  power is already ~0.96 (recall ~100%) and there are no more false discoveries to
+  admit. This is the desired behavior under the "calibration, not just control"
+  goal: low realized FDR at high nominal q here reflects saturated recall, not lost
+  power.
+- Seed-dependence at 200 genes is modest (SE 0.006-0.016); the instability seen in
+  the stability map was also largely an e-BH-near-floor artifact.
+
+DEFAULT RECOMMENDATION: single-draw, offset=0 (calibrated FDP / q-value), e-BH
+derandomization OFF. If seed-stability insurance is wanted, aggregate the CALIBRATED
+quantity across a few draws (median per-gene q-value), NOT e-values -- this preserves
+the calibration demonstrated here. Stability selection is available but trades
+calibration for reproducibility and is not needed above the detection floor.
+
+Caveats unchanged: Gaussian-friendly simulated genotypes (real haplotypes untested),
+one scale/effect regime, the overlapping-gene joint-sign reduction still open. Near
+the detection floor (few genes / weak signal) discovery remains unstable regardless
+of offset.
