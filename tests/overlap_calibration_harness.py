@@ -110,14 +110,27 @@ def run_replicate(n_snps=400, N=300, n_genes=120, window=100_000,
                   n_causal_genes=30, causal_effect=2.0, rho=0.5,
                   shared_signal=True, knockoff_mode='per_gene',
                   n_knockoffs=5, fdr=0.1, shrink=0.1, seed=0, L=5,
-                  max_iter=80, verbose=False, knockoff_offset=1):
+                  max_iter=80, verbose=False, knockoff_offset=1,
+                  genotype_model='gaussian'):
     """
     One replicate. knockoff_mode: 'per_gene' (independent per gene, current
     default) or 'shared' (one chromosome-wide knockoff reused by all genes).
 
+    genotype_model: 'gaussian' (smooth-factor dosages, favorable to Gaussian
+    knockoffs) or 'hmm' (fastPHASE-style discrete genotypes with rare variants
+    and recombination hotspots -- the realistic test bed). The knockoff generator
+    is Gaussian in BOTH cases; switching genotype_model to 'hmm' tests whether
+    Gaussian-knockoff FDR calibration survives realistic, non-Gaussian LD.
+
     Returns dict(V, R, power, n_genes).
     """
-    geno, pos, rng = simulate_chromosome(n_snps, N, seed)
+    if genotype_model == 'hmm':
+        from hmm_genotype_simulator import simulate_hmm_genotypes
+        geno, pos, _ = simulate_hmm_genotypes(n_snps, N, seed=seed,
+                                              n_hotspots=max(1, n_snps // 150))
+        rng = np.random.RandomState(seed + 777)
+    else:
+        geno, pos, rng = simulate_chromosome(n_snps, N, seed)
     gene_tss = build_overlapping_genes(n_snps, pos, n_genes, window)
     Y, causal = simulate_phenotypes(geno, gene_tss, pos, window, N, rng,
                                     n_causal_genes, causal_effect, rho, shared_signal)
