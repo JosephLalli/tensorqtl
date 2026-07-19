@@ -46,10 +46,58 @@ Corrections applied to the shared core regardless of path:
   HMM / reference-panel haplotype generator is likely required for real-data
   credibility.
 
-Still-open items flagged by review, not yet resolved: overlapping-gene joint
-sign property (multitask knockoffs), covariate-aware (Freedman–Lane) permutation
-for the calibration harness, real wall-time/convergence benchmarking, and the
-harder genuinely-CS-level target (review's Path C: sample-splitting).
+### Validity status (reviewer-agreed wording)
+
+> The gene-level statistics satisfy the required deterministic antisymmetry
+> within each gene. Formal genome-wide knockoff+ FDR control additionally
+> requires a joint null sign-flip property across genes. Independent per-gene
+> knockoff generation does not obviously provide that property when cis windows
+> overlap, and independent generator randomness alone is insufficient to prove
+> it. We therefore compare independent and shared knockoff constructions in
+> simulations with overlapping windows and correlated phenotypes while pursuing
+> a formal reduction for the overlapping gene-level hypotheses. Until that issue
+> is resolved, results are described as **empirically calibrated**, not
+> theorem-backed genome-wide FDR control.
+
+Key correction from the second review: independent per-gene knockoff *randomness*
+does NOT establish the joint sign property — the property comes from
+distributional exchangeability of `(X, X̃, Y)`, not from independent RNG streams.
+Under independent per-gene knockoffs a shared SNP has *different, incompatible*
+knockoffs across the genes whose windows contain it, so "swap gene A" is not
+induced by any coherent swap of a single `(X, X̃)` object. A **shared
+chromosome-wide (or LD-block-wide) knockoff** — one `X̃` reused by every gene —
+restores coherence and is the construction we test; but even it does not by
+itself invoke a standard knockoff theorem, because the discovery units are
+phenotype-specific *union* nulls over overlapping feature sets, which needs its
+own reduction (closer to simultaneous/union-null knockoffs than to standard
+group-sparse multitask knockoffs; Dai–Barber is related but not an exact match).
+Simulations can falsify or reveal inflation and support an empirical-calibration
+claim; they cannot substitute for that reduction.
+
+### Calibration harness (Freedman–Lane, reviewer-agreed wording)
+
+> Null calibration uses a Freedman–Lane-style residual permutation conditional
+> on nuisance covariates. A **common sample permutation** is applied to the full
+> gene-by-sample residual matrix so that cross-gene residual correlation is
+> preserved. Restricted exchangeability blocks will be supported where required.
+> Expression-derived latent covariates (PEER/expression PCs) will be either held
+> fixed or re-estimated according to an explicitly reported calibration mode.
+
+Implemented (`susie.map_egenes_knockoffs`, `permute_null=True`): one shared row
+permutation of the covariate-residualized phenotype across all genes, in residual
+space. NOT yet implemented: restricted exchangeability blocks (relatedness,
+batch, strata), and the `covariate_mode = {"fixed","refit_latent"}` policy for
+expression-derived factors — currently equivalent to "fixed" (covariates given).
+The overlap-stress harness (`tests/overlap_calibration_harness.py`) builds
+overlapping windows + tunable cross-gene phenotype correlation
+`Y_B = ρ Y_A + √(1−ρ²)ε` (near-duplicated as ρ→1) and compares per-gene vs shared
+knockoffs, reporting mean per-replicate FDP, `P(R>0)`, and Monte-Carlo intervals.
+
+Still-open items: the overlapping-gene joint-sign *reduction* (the central
+unresolved inferential problem), restricted-exchangeability permutation, the
+latent-covariate calibration policy, real wall-time/convergence benchmarking, and
+a scalable shared-knockoff generator (block-Gaussian or HMM) for true
+chromosome scale. Path C (sample-splitting) is dropped per project scope.
 
 The sections below are **retained as the record of the original CS-level design
 and why it failed**; they do not describe a valid procedure.

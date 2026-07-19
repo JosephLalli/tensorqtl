@@ -1011,6 +1011,18 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
     if igc.n_phenotypes == 0:
         raise ValueError('No valid phenotypes found.')
 
+    # Calibration null via Freedman-Lane residual permutation. ONE shared sample
+    # permutation is applied to EVERY gene's covariate-residual, so cross-gene
+    # residual covariance Cov(r_g, r_h) -- the very structure the overlapping-
+    # gene joint-sign concern is about -- is preserved. (Permuting raw phenotype,
+    # or permuting each gene independently, would destroy that structure and make
+    # the calibration artificially easy.) Applied in residual space, which is
+    # where the downstream augmented SuSiE fit operates. Note: this assumes
+    # unrestricted sample exchangeability after covariate adjustment; restricted
+    # exchangeability blocks (relatedness, batch, strata) are not yet supported.
+    n_samples = phenotype_df.shape[1]
+    fl_perm = rng.permutation(n_samples) if permute_null else None
+
     start_time = time.time()
     logger.write('  * PASS 1: per-gene augmented fits, gene-level W per knockoff draw')
 
@@ -1037,11 +1049,14 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
                                                       dtype=torch.float32).to(device))
 
         phenotype = np.asarray(phenotype, dtype=np.float64)
-        if permute_null:
-            phenotype = phenotype[rng.permutation(phenotype.shape[0])]
         phenotype_t = torch.tensor(phenotype, dtype=torch.float).to(device)
         X_t = iresidualizer.transform(genotypes_t).T
-        y_t = iresidualizer.transform(phenotype_t.reshape(1, -1)).T
+        y_t = iresidualizer.transform(phenotype_t.reshape(1, -1)).T   # residual space
+        if fl_perm is not None:
+            # Freedman-Lane: permute the covariate-residual with the SHARED
+            # permutation (rows = samples). Preserves cross-gene residual
+            # covariance; disrupts sample-wise alignment with genotype.
+            y_t = y_t[fl_perm]
         p = X_t.shape[1]
 
         draw_W = []
