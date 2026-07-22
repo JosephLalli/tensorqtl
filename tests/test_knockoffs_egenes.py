@@ -4,7 +4,10 @@ Calibration + power tests for the VALID eGene-FDR knockoff path (Path A).
 map_egenes_knockoffs uses the gene-level statistic W_g = max PIP(orig) - max
 PIP(knockoff), which tests the FIXED hypothesis "gene g has no cis signal" and
 is swap-antisymmetric (proven in test_knockoffs.py::TestSwapEquivariance). Genes
-are selected via knockoff+ with Ren-Barber e-value derandomization.
+are selected by the default calibrated pooled knockoff q-value (single draw,
+offset=0, selection='qvalue'); Ren-Barber e-value derandomization (selection='ebh')
+is available as an option but is NOT the default (it is over-conservative /
+unstable near the detection floor -- see docs/knockoff_susie_design.md phases 2-3).
 
 Two properties are checked, at REALISTIC scale (the method needs enough genes
 for the pooled null W distribution to be well estimated -- with too few genes the
