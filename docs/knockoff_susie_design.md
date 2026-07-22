@@ -1,7 +1,54 @@
 # Knockoff-calibrated SuSiE for tensorQTL — integration spec
 
-Status: design. Target branch: `claude/susie-knockoff-calibration-IQ6Za`.
+Status: active research (validation phases 1-4 complete). Target branch:
+`claude/susie-knockoff-calibration-IQ6Za`.
 Depends on: `tensorqtl/knockoffs.py`.
+
+---
+
+## STATUS (current) — 2026-07, supersedes all stale text below
+
+This doc is an append-only record of an evolving design; several inline
+statements below (and in the REVISION NOTICE) have been overtaken by later
+validation phases. The authoritative current state is:
+
+1. **Valid procedure = eGene-level FDR** (`susie.map_egenes_knockoffs`, "Path A").
+   The gene-level statistic `W_g = max PIP(orig) − max PIP(knockoff)` is
+   swap-antisymmetric (verified, `TestSwapEquivariance`). The **credible-set-level
+   path** (`susie.map_knockoffs`, `knockoffs.cs_level_W`, `pooled_cs_qvalues`) is
+   **EXPERIMENTAL / NOT FDR-controlled** — its statistic is not swap-antisymmetric
+   (a real signal's CS disappears under the swap rather than negating). Retained
+   only as an exploratory calibration score. Everything in §§1-8 below describing
+   CS-level FDR as the deliverable is the superseded original design.
+
+2. **Default selection = single draw, `offset=0`, calibrated pooled q-value**
+   (`selection='qvalue'`, `n_knockoffs=1`). This tracks realized FDR ≈ nominal q
+   (phase 3). **e-BH / Ren–Barber e-value derandomization is NOT the default** — it
+   is provably FDR≤q but empirically pathological near the detection floor
+   (over-conservative / power collapse, phase 2). It is retained as an option
+   (`selection='ebh'`). Any text below stating e-value derandomization is the
+   required default is stale.
+
+3. **The HMM/DMC knockoff generator is VALIDATED** (`knockoffs.dmc_knockoffs`,
+   `knockoffs.hmm_knockoffs`; commit 0d329ec). It is an independent reimplementation
+   of Sesia, Sabatti & Candès (2019) Algorithms 1-2, verified swap-exchangeable to
+   p=20 by a noise-robust pairwise-swap test (`tests/test_hmm_knockoffs.py`). The
+   earlier "compounding Z-recursion bug / valid only at small p" belief was a **test
+   artifact** — a naive full-joint swap-TV has a noise floor that grows with p, not
+   a real defect. Any "HMM blocked/WIP/buggy" wording elsewhere is false. It is
+   O(N·p·K²) (linear in p) — the path to chromosome-wide coherent knockoffs.
+
+4. **Gaussian knockoffs are the current default generator** (`knockoffs.gaussian_knockoff`),
+   validated to NOT inflate FDR on realistic HMM-simulated genotypes (phase 4). They
+   are O(p³) and thus infeasible chromosome-wide; the HMM generator is the scalable
+   alternative. Still-open hardest corner: strong LD (r²>0.5) + very rare variants.
+
+5. **Still open / not built:** fitting an HMM from *real* genotypes
+   (Baum-Welch / fastPHASE EM) — the sampler exists but real-data parameter
+   estimation does not; per-gene knockoff p-values and interval-valued π₀
+   empirical-Bayes calibration (designed, not built); the overlapping-gene
+   joint-sign reduction (central open theory problem — status is "empirically
+   calibrated", not theorem-backed genome-wide FDR control).
 
 ---
 
@@ -501,5 +548,14 @@ saturates at ~0.075 because power is ~0.99 (recall saturated -> no more nulls to
 admit), so part of the "good control" reflects an easy fine-mapping task, not
 only generator robustness. So this rules out GROSS Gaussian failure on discrete/
 rare/hotspot data; it does not yet test the hardest corner. Next: crank LD
-strength + rare-variant fraction in the simulator, and/or add an HMM knockoff
-GENERATOR (SNPknock) to compare against the Gaussian generator in that corner.
+strength + rare-variant fraction in the simulator, and compare against the HMM
+knockoff GENERATOR in that corner.
+
+UPDATE (supersedes the "add an HMM generator" next-step above): the HMM/DMC
+knockoff generator has since been implemented natively (`knockoffs.dmc_knockoffs`,
+`knockoffs.hmm_knockoffs`; an independent reimplementation of Sesia et al. 2019
+Alg. 1-2, not the SNPknock package) and VALIDATED swap-exchangeable to p=20
+(`tests/test_hmm_knockoffs.py`). What remains for the hardest-corner comparison is
+(a) fitting the HMM from real genotypes (Baum-Welch / fastPHASE EM — not built;
+on simulated data the true params are known) and (b) wiring it into the per-gene
+pipeline. See STATUS (current) at the top of this doc.
