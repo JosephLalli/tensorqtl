@@ -13,9 +13,13 @@ Read this first on resumption.
   milestone: **the HMM/DMC knockoff generator is now VALIDATED** (was falsely
   believed buggy — it was a test artifact). This unblocks chromosome-wide
   coherent knockoffs.
-- **Next task (agreed with the user):** wire HMM knockoffs into the pipeline
-  (chromosome-coherent, M draws), then build **per-gene knockoff p-values** and
-  the **interval-valued π₀ empirical-Bayes calibration** on top.
+- **Step 1 (wire HMM knockoffs into the pipeline) is DONE** (this session):
+  `knockoffs.fit_hmm` (Baum-Welch EM), `knockoffs.chromosome_hmm_knockoffs`
+  (chromosome-coherent, M draws), and `susie.map_egenes_knockoffs(knockoff='hmm')`
+  now exist and pass tests (`tests/test_hmm_knockoff_pipeline.py`, 10 tests).
+- **Next task:** build **per-gene knockoff p-values** (step 2 — now UNBLOCKED by
+  the coherent generator) and the **interval-valued π₀ empirical-Bayes
+  calibration** (step 3) on top.
 
 ---
 
@@ -118,10 +122,15 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
 
 ## 4. Open problems / next steps (in priority order)
 
-1. **Wire HMM knockoffs into the pipeline (NEXT).** The sampler exists; needs:
-   (a) a way to FIT the HMM from real genotypes (Baum-Welch / fastPHASE-style EM)
-   — NOT built; on simulated data the true params are known so we can proceed
-   immediately. (b) chromosome-coherent M-draw generation, sliced per gene.
+1. **Wire HMM knockoffs into the pipeline — DONE (this session).**
+   (a) `knockoffs.fit_hmm` — fastPHASE-style Baum-Welch EM fitter; recovers
+   ground-truth-quality knockoffs (tested). (b) `knockoffs.chromosome_hmm_knockoffs`
+   — one HMM per chromosome, M coherent draws, sliced per gene in
+   `susie.map_egenes_knockoffs(knockoff='hmm')` (exposes `hmm_K`, `hmm_em_iter`,
+   `hmm_params`). Tests: `tests/test_hmm_knockoff_pipeline.py` (10, pass). NOTE:
+   dosages are fit as a single-chain E=3 emission (exact for the fitted model;
+   diploid misfit is the empirical-calibration question). A true diploid
+   pair-of-chains fitter and a phased-haplotype (E=2) fitter remain for step 5.
 2. **Per-gene knockoff p-values.** With M coherent draws, the rank of R_g among
    {R_g, K_g^(1..M)} is EXACTLY uniform under the null (exchangeability) →
    per-gene p-value, robust to pooled-f_0 contamination. This is the agreed
@@ -147,7 +156,8 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
 ## 5. Test status
 
 - `tests/test_hapmixqtl.py` (32), `tests/test_knockoffs.py` (19),
-  `tests/test_hmm_knockoffs.py` (8), `tests/test_hmm_simulator.py` (5) — PASS.
+  `tests/test_hmm_knockoffs.py` (8), `tests/test_hmm_simulator.py` (5),
+  `tests/test_hmm_knockoff_pipeline.py` (10, HMM fit + pipeline wiring) — PASS.
 - `tests/test_knockoffs_calibration.py`, `tests/test_knockoffs_egenes.py` — have
   `@pytest.mark.slow` calibration gates (minutes each; end-to-end SuSiE fits).
 - `tests/overlap_calibration_harness.py` — a research harness, run directly, not

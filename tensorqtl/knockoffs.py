@@ -325,6 +325,227 @@ def hmm_knockoffs(X, init_p, Q, emission_p, seed=0):
 
 
 # ---------------------------------------------------------------------------
+#  Fitting the HMM from data (fastPHASE-style Baum-Welch EM)
+#
+#  hmm_knockoffs above assumes the HMM parameters (init_p, Q, emission_p) are
+#  known. On simulated data they are; on real genotypes they must be estimated.
+#  fit_hmm below is a position-inhomogeneous single-chain HMM fitter by
+#  Baum-Welch (EM), producing parameters in EXACTLY the layout hmm_knockoffs
+#  consumes. This mirrors the fastPHASE model (K latent haplotype/ancestry
+#  clusters, position-specific transitions and categorical emissions) but is a
+#  self-contained, dependency-free reimplementation.
+#
+#  Model note. tensorQTL genotypes are unphased dosages in {0,1,2}. We fit a
+#  single K-state chain with a 3-category emission (E=3) directly to the dosage
+#  sequence. This is the genotype-HMM view: the knockoff is EXACT for the fitted
+#  distribution (Candes-Fan-Janson-Lv 2018), and robustness to the fit error is
+#  the empirical-calibration question (Barber-Candes-Samworth 2020), exactly as
+#  for the Gaussian generator's covariance estimate. Phased haplotypes (E=2, fed
+#  one row per haplotype) fit the same way and enable the two-channel work.
+# ---------------------------------------------------------------------------
+
+def _forward_backward_scaled(X, init_p, Q, emission_p):
+    """
+    Scaled forward-backward for a position-inhomogeneous single-chain HMM,
+    vectorized over the N sequences.
+
+    Args:
+        X: [N, p] integer observations in 0..E-1.
+        init_p: [K] initial state distribution.
+        Q: [p-1, K, K] transitions, Q[j][a, b] = P(H_{j+1}=b | H_j=a).
+        emission_p: [p, E, K], P(X_j = e | H_j = k).
+
+    Returns:
+        gamma: [p, N, K] posterior state marginals P(H_j=k | X).
+        xi_sum: [p-1, K, K] transition posteriors summed over sequences,
+            sum_i P(H_j=a, H_{j+1}=b | X_i).
+        loglik: total log-likelihood sum_i log P(X_i).
+    """
+    N, p = X.shape
+    K = init_p.shape[0]
+    alpha = np.empty((p, N, K), dtype=np.float64)
+    beta = np.empty((p, N, K), dtype=np.float64)
+    c = np.empty((p, N), dtype=np.float64)               # scaling factors
+
+    # emission likelihood B[j][i,k] = P(X[i,j] | H_j=k)
+    def emit(j):
+        return emission_p[j][X[:, j], :]                 # [N, K]
+
+    # forward
+    a = init_p[None, :] * emit(0)                        # [N, K]
+    c[0] = a.sum(1)
+    c[0] = np.maximum(c[0], 1e-300)
+    alpha[0] = a / c[0][:, None]
+    for j in range(1, p):
+        a = (alpha[j - 1] @ Q[j - 1]) * emit(j)          # [N,K]@[K,K] -> [N,K]
+        c[j] = np.maximum(a.sum(1), 1e-300)
+        alpha[j] = a / c[j][:, None]
+
+    # backward (scaled with the same c)
+    beta[p - 1] = 1.0
+    for j in range(p - 2, -1, -1):
+        b_next = emission_p[j + 1][X[:, j + 1], :] * beta[j + 1]   # [N,K]
+        beta[j] = (b_next @ Q[j].T) / c[j + 1][:, None]
+
+    gamma = alpha * beta                                 # [p, N, K]
+    gamma /= np.maximum(gamma.sum(2, keepdims=True), 1e-300)
+
+    # transition posteriors, summed over sequences
+    xi_sum = np.zeros((p - 1, K, K), dtype=np.float64)
+    for j in range(p - 1):
+        b_next = emission_p[j + 1][X[:, j + 1], :] * beta[j + 1]   # [N,K]
+        # xi[i,a,b] = alpha[j,i,a] Q[j][a,b] b_next[i,b] / c[j+1,i]
+        xi = (alpha[j][:, :, None] * Q[j][None, :, :]
+              * b_next[:, None, :]) / c[j + 1][:, None, None]
+        xi_sum[j] = xi.sum(0)
+
+    loglik = float(np.log(c).sum())
+    return gamma, xi_sum, loglik
+
+
+def fit_hmm(X, K, E=None, n_iter=25, tol=1e-4, pseudocount=1.0, seed=0,
+            init_p=None, Q=None, emission_p=None, verbose=False):
+    """
+    Fit a position-inhomogeneous single-chain HMM by Baum-Welch EM.
+
+    Produces parameters in the exact (init_p, Q, emission_p) layout that
+    ``hmm_knockoffs`` / ``dmc_knockoffs`` consume, so the fit output can be fed
+    straight into knockoff generation.
+
+    Args:
+        X: [N, p] integer observations in 0..E-1 (e.g. dosage 0/1/2 -> E=3, or
+           phased alleles 0/1 -> E=2). One row per sequence (individual or
+           haplotype).
+        K: number of latent states (ancestry/haplotype clusters).
+        E: number of emission categories; inferred as X.max()+1 if None.
+        n_iter: maximum EM iterations.
+        tol: stop when the per-iteration log-likelihood gain per sequence falls
+            below this.
+        pseudocount: Dirichlet smoothing added to expected counts in the M-step.
+            Keeps transitions/emissions strictly positive (required for the
+            knockoff sampler's divisions) and regularizes at small N.
+        seed: RNG seed for parameter initialization.
+        init_p, Q, emission_p: optional warm-start parameters; random init if None.
+        verbose: print the log-likelihood trace.
+
+    Returns:
+        dict with 'init_p' [K], 'Q' [p-1,K,K], 'emission_p' [p,E,K],
+        'loglik' (list of per-iteration total log-likelihoods), 'n_iter', 'E'.
+    """
+    X = np.asarray(X)
+    N, p = X.shape
+    if E is None:
+        E = int(X.max()) + 1
+    rng = np.random.default_rng(seed)
+
+    # --- initialization ---
+    if init_p is None:
+        init_p = rng.dirichlet(np.ones(K))
+    else:
+        init_p = np.asarray(init_p, dtype=np.float64).copy()
+    if Q is None:
+        # bias toward self-transitions (LD persistence) so states are identifiable
+        Q = np.empty((p - 1, K, K), dtype=np.float64)
+        base = np.full((K, K), 1.0) + (K * 2.0) * np.eye(K)
+        for j in range(p - 1):
+            for a in range(K):
+                Q[j, a] = rng.dirichlet(base[a])
+    else:
+        Q = np.asarray(Q, dtype=np.float64).copy()
+    if emission_p is None:
+        emission_p = np.empty((p, E, K), dtype=np.float64)
+        for j in range(p):
+            for k in range(K):
+                emission_p[j][:, k] = rng.dirichlet(np.ones(E))
+    else:
+        emission_p = np.asarray(emission_p, dtype=np.float64).copy()
+
+    loglik_trace = []
+    prev_ll = -np.inf
+    for it in range(n_iter):
+        gamma, xi_sum, ll = _forward_backward_scaled(X, init_p, Q, emission_p)
+        loglik_trace.append(ll)
+        if verbose:
+            print(f"  [fit_hmm] iter {it:3d}  loglik={ll:.4f}")
+
+        # --- M-step ---
+        # initial distribution from first-position marginals
+        g0 = gamma[0].sum(0) + pseudocount
+        init_p = g0 / g0.sum()
+
+        # transitions: row-normalize summed xi
+        Qn = xi_sum + pseudocount
+        Q = Qn / Qn.sum(2, keepdims=True)
+
+        # emissions: for each position and category, weight gamma by 1{X==e}
+        emission_p = np.empty((p, E, K), dtype=np.float64)
+        for e in range(E):
+            mask = (X == e).astype(np.float64)           # [N, p]
+            # num[j,k] = sum_i mask[i,j] * gamma[j,i,k]; gamma is [p, N, K]
+            num = np.einsum('ij,jik->jk', mask, gamma)   # [p, K]
+            emission_p[:, e, :] = num
+        emission_p += pseudocount
+        emission_p /= emission_p.sum(1, keepdims=True)   # normalize over E
+
+        if ll - prev_ll < tol * N and it > 0:
+            break
+        prev_ll = ll
+
+    return {'init_p': init_p, 'Q': Q, 'emission_p': emission_p,
+            'loglik': loglik_trace, 'n_iter': len(loglik_trace), 'E': E}
+
+
+# ---------------------------------------------------------------------------
+#  Chromosome-coherent HMM knockoff generation
+#
+#  The knockoff of a whole-chromosome genotype vector is, by the model-X swap
+#  property, also a valid knockoff for any subset of variants (marginalizing the
+#  others preserves exchangeability of the retained coordinates). So we fit ONE
+#  HMM per chromosome, draw M knockoff copies of the entire chromosome, and slice
+#  each gene's cis-window out of them. Two genes with overlapping windows then
+#  share the SAME knockoff values on the shared variants -- the "coherent"
+#  property a per-gene generator cannot provide, and the prerequisite for the
+#  per-gene knockoff p-values and the overlapping-gene analysis.
+# ---------------------------------------------------------------------------
+
+def chromosome_hmm_knockoffs(G, K=10, M=1, E=3, n_em_iter=25, seed=0,
+                             params=None, return_params=False, verbose=False):
+    """
+    Fit a genotype HMM on one chromosome and draw M coherent knockoff copies.
+
+    Args:
+        G: [N, p] integer genotype-state matrix for the chromosome (samples x
+           variants, e.g. dosage rounded to {0,1,2}). Variants must be in
+           chromosome (position) order.
+        K: number of latent clusters for the HMM fit.
+        M: number of knockoff draws.
+        E: number of emission categories (3 for dosages, 2 for phased alleles).
+        n_em_iter: EM iterations for the fit (ignored if params is given).
+        seed: RNG seed (fit init + draw seeds are derived from it).
+        params: optional pre-fit {'init_p','Q','emission_p'} to skip fitting
+            (e.g. simulator ground truth, or a shared reference-panel fit).
+        return_params: also return the fitted/supplied HMM parameters.
+        verbose: forwarded to fit_hmm.
+
+    Returns:
+        draws: [M, N, p] integer knockoff genotype states, coherent across the
+            whole chromosome. If return_params, also returns the params dict.
+    """
+    G = np.asarray(G)
+    N, p = G.shape
+    if params is None:
+        params = fit_hmm(G, K=K, E=E, n_iter=n_em_iter, seed=seed, verbose=verbose)
+    init_p, Q, emission_p = params['init_p'], params['Q'], params['emission_p']
+
+    draws = np.empty((M, N, p), dtype=np.int64)
+    for m in range(M):
+        draws[m] = hmm_knockoffs(G, init_p, Q, emission_p, seed=seed + 1000 + m)
+    if return_params:
+        return draws, params
+    return draws
+
+
+# ---------------------------------------------------------------------------
 #  Importance statistics and the knockoff filter
 # ---------------------------------------------------------------------------
 

@@ -946,6 +946,7 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
                          estimate_residual_variance=True, estimate_prior_variance=True,
                          tol=1e-3, coverage=0.95, min_abs_corr=0.5,
                          maf_threshold=0, max_iter=200, window=1000000,
+                         hmm_K=10, hmm_em_iter=25, hmm_params=None,
                          localize=True, logger=None, verbose=True):
     """
     eGene discovery with knockoff FDR control (Path A), then SuSiE localization.
@@ -981,10 +982,15 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
 
     Args (knockoff-specific; rest mirror susie.map):
         fdr: target genome-wide eGene FDR.
-        n_knockoffs: number of knockoff draws (1 = single draw, default).
-        knockoff: 'gaussian' (approximate; suitable for development/benchmarking,
-            not a basis for exact FDR claims on genotype data -- an HMM/reference-
-            panel generator is likely needed for real-data credibility).
+        n_knockoffs: number of knockoff draws (1 = single draw, default). For
+            knockoff='hmm' this is the number of chromosome-coherent draws.
+        knockoff: 'gaussian' (second-order, residualized, per-gene; O(p^3)) or
+            'hmm' (fastPHASE-style genotype HMM fit per chromosome, then
+            chromosome-COHERENT knockoff draws sliced per gene; O(N p K^2),
+            linear in p and the scalable / discrete-genotype path). The HMM
+            generator draws one knockoff copy of each whole chromosome, so genes
+            with overlapping cis-windows share the same knockoff on shared
+            variants -- the coherence the per-gene Gaussian generator cannot give.
         gene_stat: 'max' or 'sum' for gene_level_W.
         knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
             control, conservative).
@@ -992,6 +998,12 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
             (Ren-Barber e-value derandomization / knockoff+ control).
         aggregate: for selection='qvalue' with n_knockoffs>1: 'median' (default)
             | 'mean' | 'none' (draw 0 only).
+        hmm_K: number of latent clusters for the per-chromosome HMM fit
+            (knockoff='hmm' only).
+        hmm_em_iter: Baum-Welch EM iterations for the HMM fit (knockoff='hmm').
+        hmm_params: optional dict chrom -> {'init_p','Q','emission_p'} of pre-fit
+            HMM parameters (e.g. simulator ground truth or a reference-panel fit);
+            skips EM for those chromosomes (knockoff='hmm' only).
         permute_null: Freedman-Lane residual permutation (calibration harness).
         localize: if True, fine-map selected genes with ordinary SuSiE.
 
@@ -1040,6 +1052,46 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
     n_samples = phenotype_df.shape[1]
     fl_perm = rng.permutation(n_samples) if permute_null else None
 
+    # -----------------------------------------------------------------------
+    # HMM knockoffs: fit one genotype HMM per chromosome and draw M coherent
+    # knockoff copies of the whole chromosome UP FRONT. Each gene later slices
+    # its cis-window out of these draws (see the per-gene loop). This is what
+    # makes overlapping genes share a knockoff on shared variants; a per-gene
+    # generator (like Gaussian below) cannot. Memory/compute scale with the
+    # whole chromosome, which is inherent to coherent construction.
+    # -----------------------------------------------------------------------
+    hmm_draws_by_chrom = None   # chrom -> [M, N, p_chrom] int knockoff states
+    chrom_row_offset = None     # chrom -> first genotype_df row index for chrom
+    if knockoff == 'hmm':
+        logger.write(f'  * PASS 0: per-chromosome HMM fit + {n_knockoffs} '
+                     f'coherent knockoff draw(s) (K={hmm_K})')
+        # Row blocks per chromosome. cis-ranges are contiguous row slices, so we
+        # require each chromosome to occupy a contiguous, ordered row block (the
+        # standard tensorQTL genotype layout, sorted by chrom then position).
+        chrom_arr = variant_df['chrom'].values
+        hmm_draws_by_chrom, chrom_row_offset = {}, {}
+        row0 = 0
+        for c in pd.unique(chrom_arr):
+            rows = np.where(chrom_arr == c)[0]
+            if not (rows[-1] - rows[0] + 1 == rows.size and (np.diff(rows) == 1).all()):
+                raise ValueError(f"chromosome {c} variants are not a contiguous "
+                                 "ordered block in genotype_df; sort by chrom,pos.")
+            # genotype states for this chromosome in phenotype-sample order:
+            # mean-impute missing per variant, round to nearest dosage {0,1,2}.
+            G = genotype_df.values[rows[0]:rows[-1] + 1][:, genotype_ix].astype(np.float64)  # [p_c, N]
+            if np.isnan(G).any():
+                row_mean = np.nanmean(G, axis=1, keepdims=True)
+                row_mean = np.where(np.isnan(row_mean), 0.0, row_mean)
+                G = np.where(np.isnan(G), row_mean, G)
+            G = np.rint(G).clip(0, 2).astype(np.int64).T  # [N, p_c]
+            params = None if hmm_params is None else hmm_params.get(c, None)
+            hmm_draws_by_chrom[c] = ko.chromosome_hmm_knockoffs(
+                G, K=hmm_K, M=n_knockoffs, E=3, n_em_iter=hmm_em_iter,
+                seed=seed * 100003 + int(row0), params=params, verbose=False)
+            chrom_row_offset[c] = rows[0]
+            row0 += rows.size
+        logger.write(f'  * PASS 0 done: {len(hmm_draws_by_chrom)} chromosome(s)')
+
     start_time = time.time()
     logger.write('  * PASS 1: per-gene augmented fits, gene-level W per knockoff draw')
 
@@ -1054,6 +1106,8 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         if maf_threshold > 0:
             maf_t = calculate_maf(genotypes_t)
             mask_t &= maf_t >= maf_threshold
+        # remember the variant mask so the HMM knockoff slice is masked identically
+        mask_applied = mask_t.cpu().numpy() if mask_t.any() else None
         if mask_t.any():
             genotypes_t = genotypes_t[mask_t]
         if genotypes_t.shape[0] == 0:
@@ -1078,9 +1132,19 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
 
         draw_W = []
         for r in range(n_knockoffs):
-            gen = torch.Generator(device='cpu').manual_seed(seed * 100003 + k * 101 + r)
             if knockoff == 'gaussian':
+                gen = torch.Generator(device='cpu').manual_seed(seed * 100003 + k * 101 + r)
                 Xk_t = ko.gaussian_knockoff(X_t.cpu(), shrink=shrink, generator=gen).to(device)
+            elif knockoff == 'hmm':
+                # slice this gene's cis-window out of the chromosome-coherent
+                # knockoff draw r, mask identically, then residualize like X.
+                c = variant_df['chrom'].values[genotype_range[0]]
+                local = np.asarray(genotype_range) - chrom_row_offset[c]
+                Xk_win = hmm_draws_by_chrom[c][r][:, local]          # [N, p_window]
+                if mask_applied is not None:
+                    Xk_win = Xk_win[:, mask_applied]                 # [N, p]
+                Xk_raw = torch.tensor(Xk_win.T, dtype=torch.float).to(device)  # [p, N]
+                Xk_t = iresidualizer.transform(Xk_raw).T             # [N, p]
             else:
                 raise NotImplementedError(f"knockoff='{knockoff}' not yet implemented")
             res, _ = ko.augmented_susie_fit(

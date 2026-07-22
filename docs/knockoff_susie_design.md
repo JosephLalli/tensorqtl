@@ -43,12 +43,39 @@ validation phases. The authoritative current state is:
    are O(p³) and thus infeasible chromosome-wide; the HMM generator is the scalable
    alternative. Still-open hardest corner: strong LD (r²>0.5) + very rare variants.
 
-5. **Still open / not built:** fitting an HMM from *real* genotypes
-   (Baum-Welch / fastPHASE EM) — the sampler exists but real-data parameter
-   estimation does not; per-gene knockoff p-values and interval-valued π₀
-   empirical-Bayes calibration (designed, not built); the overlapping-gene
-   joint-sign reduction (central open theory problem — status is "empirically
-   calibrated", not theorem-backed genome-wide FDR control).
+4b. **HMM knockoffs are now WIRED INTO the pipeline** (step 1 of the plan,
+   this session). Three pieces landed:
+   - **`knockoffs.fit_hmm`** — a fastPHASE-style, position-inhomogeneous,
+     single-chain HMM fitter by Baum-Welch EM. Produces `(init_p, Q, emission_p)`
+     in the exact layout `hmm_knockoffs` consumes. This closes the "fit an HMM
+     from real genotypes" gap. Tested: monotone EM log-likelihood; a knockoff
+     built from the ESTIMATED parameters is as swap-valid as one from the TRUE
+     parameters (fitter is sound, `TestFitHMM`). tensorQTL dosages are fit
+     directly as a 3-category emission (E=3); the knockoff is exact for the
+     fitted distribution and robustness to the diploid-vs-single-chain misfit is
+     the empirical-calibration question (Barber-Candès-Samworth), tested against
+     a Monte-Carlo noise bound.
+   - **`knockoffs.chromosome_hmm_knockoffs`** — fit one HMM per chromosome and
+     draw M **chromosome-coherent** knockoff copies. Slicing a gene's cis-window
+     out of a whole-chromosome draw is a valid knockoff for that window
+     (marginalization preserves exchangeability), and overlapping genes share the
+     SAME knockoff on shared variants — the coherence a per-gene generator cannot
+     give, and the prerequisite for per-gene knockoff p-values (step 2).
+   - **`susie.map_egenes_knockoffs(knockoff='hmm')`** — PASS 0 fits per-chromosome
+     HMMs and generates the coherent draws; the per-gene loop slices, masks and
+     residualizes them like the originals. `hmm_K`, `hmm_em_iter`, and
+     `hmm_params` (pre-fit ground-truth / reference-panel params) are exposed.
+   Tests: `tests/test_hmm_knockoff_pipeline.py` (10, pass).
+
+5. **Still open / not built:** per-gene knockoff p-values (step 2 — now
+   UNBLOCKED by the coherent generator: rank of R_g among {R_g, K_g^(1..M)} is
+   uniform under the null); interval-valued π₀ empirical-Bayes calibration
+   (step 3, designed, not built); the overlapping-gene joint-sign reduction
+   (central open theory problem — status is "empirically calibrated", not
+   theorem-backed genome-wide FDR control); two-channel (phased xL/xR) haplotype
+   knockoffs for hapmixQTL (`fit_hmm` with E=2 on phased haplotypes is the
+   enabler); and an HMM fitter for unphased data that models the true diploid
+   pair-of-chains law rather than the single-chain dosage approximation.
 
 ---
 
