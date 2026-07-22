@@ -994,8 +994,14 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         gene_stat: 'max' or 'sum' for gene_level_W.
         knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
             control, conservative).
-        selection: 'qvalue' (calibrated pooled q-value, default) or 'ebh'
-            (Ren-Barber e-value derandomization / knockoff+ control).
+        selection: 'qvalue' (calibrated pooled q-value, default), 'ebh'
+            (Ren-Barber e-value derandomization / knockoff+ control), 'pvalue'
+            (per-gene knockoff p-value + BH; needs many draws, see
+            ko.select_egenes_pvalue), or 'calibrated' (step-3 known-null
+            Binomial(M,1/2) Storey q-value with a pi0-free mirror cross-check and
+            an interval-valued local fdr; ko.select_egenes_calibrated). With
+            'calibrated', n_knockoffs is the number of draws M that define the
+            per-gene null resolution -- use M>=20-50.
         aggregate: for selection='qvalue' with n_knockoffs>1: 'median' (default)
             | 'mean' | 'none' (draw 0 only).
         hmm_K: number of latent haplotype clusters for the per-chromosome HMM fit
@@ -1201,6 +1207,20 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
                                       offset=(knockoff_offset or 1))
         selected_genes = set(sel['selected'])
         score_col, score_vals = 'pvalue', sel['pvalues']
+    elif selection == 'calibrated':
+        logger.write(f'  * PASS 2: step-3 known-null (Binomial(M,1/2)) calibrated '
+                     f'q-value selection at FDR <= {fdr} (M={W_per_draw.shape[0]} draws)')
+        sel = ko.select_egenes_calibrated(gene_ids, W_per_draw, q=fdr,
+                                          offset=(knockoff_offset or 1))
+        selected_genes = set(sel['selected'])
+        score_col, score_vals = 'qvalue', sel['qvalues']
+        logger.write(f'    - pi0={sel["pi0"]:.3f}; mirror cross-check selected '
+                     f'{sel["mirror"]["n_selected"]} (agreement={sel["agreement"]:.2f}); '
+                     f'pi0 interval=[{sel["lfdr"]["pi0_lo"]:.3f}, {sel["lfdr"]["pi0_hi"]:.3f}]')
+        if sel['agreement'] < 0.5 and len(selected_genes) > 0:
+            logger.write('    ! WARNING: q-value and pi0-free mirror selections '
+                         'disagree (agreement<0.5) -- possible knockoff '
+                         'misspecification; treat FDR numbers with caution.')
     else:  # 'qvalue' (default, calibrated)
         logger.write(f'  * PASS 2: calibrated q-value eGene selection at FDR <= {fdr} '
                      f'(offset={knockoff_offset}, aggregate={aggregate})')

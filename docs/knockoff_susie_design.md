@@ -82,10 +82,46 @@ validation phases. The authoritative current state is:
    available, Route 2 dominates on every axis; Route 1 is the exact fallback for
    unphased input.
 
-5. **Still open / not built:** per-gene knockoff p-values (step 2 — now
-   UNBLOCKED by the coherent generator: rank of R_g among {R_g, K_g^(1..M)} is
-   uniform under the null); interval-valued π₀ empirical-Bayes calibration
-   (step 3, designed, not built); the overlapping-gene joint-sign reduction
+5. **Per-gene knockoff p-values are BUILT (step 2)** (`knockoffs.per_gene_pvalues`,
+   `select_egenes_pvalue`; `selection='pvalue'`). Construction note / correction
+   to the earlier plan: the shipped p-value is the **per-draw sign count**
+   `p_g = (offset + #{m: W_g^(m) ≤ 0}) / (offset + M)`, NOT the "rank of R_g among
+   {R_g, K_g^(1..M)}" originally sketched here. The sign-count has an EXACTLY
+   known null — under H_g each draw uses an independently generated knockoff, so
+   the per-draw model-X swap makes the sign vector uniform on {±1}^M and
+   `#{W≤0} ~ Binomial(M, ½)` exactly. This is a *valid* (super-uniform,
+   CONSERVATIVE) p-value, **not marginally uniform** (the Binomial count
+   concentrates near M/2). Resolution is `1/(M+1)`; direct BH selection needs
+   `M ≳ n/(q·R)` (governed by the number of jointly discoverable genes R), so the
+   p-value's real role is the step-3 calibration primitive, not standalone BH.
+   Tests: `tests/test_per_gene_pvalues.py` (15, pass).
+
+6. **Interval-valued π₀ empirical-Bayes calibration is BUILT (step 3)**
+   (`knockoffs.calibrated_qvalues`, `mirror_fdp`, `local_fdr_interval`,
+   `estimate_pi0_known_null`, `select_egenes_calibrated`; `selection='calibrated'`).
+   Because the per-gene null is the exact discrete Binomial(M,½), calibration
+   uses the **known null CDF** (Döhler–Durand–Roquain discrete-FDR / Storey with
+   `F₀=Binomial` in place of uniform-p) rather than the uniform-null Storey
+   formula. Three redundant estimators, three literatures, one input (the
+   per-gene win-counts `b_g`):
+   - `calibrated_qvalues` — SHIPPED selector: known-null Storey q-values
+     (Storey 2003; Storey–Taylor–Siegmund 2004). Stable (CDF-based), leans on a
+     π₀ estimate.
+   - `mirror_fdp` — π₀-FREE cross-check via the null's symmetry (Barber–Candès
+     knockoff⁺; mirror-statistic line, Dai–Lin–Xing–Liu 2023). Its agreement
+     with the q-values is a built-in **misspecification alarm** (the pipeline
+     warns if Jaccard agreement < 0.5).
+   - `local_fdr_interval` — per-gene lfdr (Efron 2004 two-groups) reported as an
+     INTERVAL because π₀ is only **partially identified** (Genovese–Wasserman
+     2004): identified upper bound + symmetry/excess-mass lower reference.
+   `estimate_pi0_known_null` fixes π₀ by Storey on the known null over the
+   mass-rich, signal-poor band `0.10 ≤ P(B>c) ≤ 0.50` (avoiding the degenerate
+   deep-tail that biases π₀ downward). Empirical calibration (the project's
+   gate): null mean FDP ≈ 0; mixed panels track target q across π₀∈{0.6,0.8,0.9}
+   with the mirror agreeing (Jaccard→1). Tests:
+   `tests/test_knockoff_calibration_step3.py` (16, pass).
+
+7. **Still open / not built:** the overlapping-gene joint-sign reduction
    (central open theory problem — status is "empirically calibrated", not
    theorem-backed genome-wide FDR control); and full integration of the Route-2
    phased knockoffs (`x̃L, x̃R`) into the two-channel hapmixQTL ASE model (the

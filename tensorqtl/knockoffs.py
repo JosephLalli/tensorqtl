@@ -1318,6 +1318,444 @@ def select_egenes_pvalue(gene_ids, W_per_draw, q=0.1, offset=1):
     return {'selected': selected, 'pvalues': pvals, 'n_draws': n_draws}
 
 
+# ===========================================================================
+#  STEP 3 -- Empirical-Bayes eGene calibration from the per-gene knockoff
+#  statistics.  Three estimators, three literatures, one shared input.
+#  ==========================================================================
+#
+#  INPUT.  For each gene g we have the counts of how often, across M coherent
+#  knockoff draws, the KNOCKOFF beat (or tied) the real gene:
+#         b_g = #{m : W_g^(m) <= 0},        b_g in {0, ..., M}.
+#  Large b_g -> the knockoff usually wins -> the gene looks null. Small b_g ->
+#  the real gene usually wins -> the gene looks like a true eGene.
+#
+#  THE ONE FACT EVERYTHING RESTS ON.  Under the null H_g ("gene g has no cis
+#  signal") the sign of each draw's W is a fair, independent coin (per-draw
+#  model-X swap; see per_gene_pvalues), so
+#         b_g ~ Binomial(M, 1/2)   EXACTLY under H_g.
+#  We therefore have a *known, discrete, non-uniform* null. Every estimator
+#  below is just a different, well-studied way to turn "known symmetric null +
+#  observed left-skew" into a calibrated false-discovery statement. They are
+#  redundant ON PURPOSE: if they disagree, the knockoffs are misspecified and
+#  none of the numbers should be trusted (that disagreement is the alarm).
+#
+#  WHICH ONE TO USE (short version).
+#    * calibrated_qvalues  -> the SHIPPED q-value you select eGenes with. Most
+#                             stable; needs a pi0 estimate (handled for you).
+#    * mirror_fdp          -> a pi0-FREE cross-check that uses only the null's
+#                             symmetry. If it disagrees with the q-values, stop.
+#    * local_fdr_interval  -> per-gene posterior "prob this gene is null", with
+#                             an explicit interval reflecting that pi0 is only
+#                             partially identified. For interpretation, not the
+#                             primary selector.
+#  Full statistical tradeoffs are in each function's docstring.
+# ===========================================================================
+
+
+def _binom_half_pmf(M):
+    """PMF of Binomial(M, 1/2) on b = 0..M, computed with stdlib lgamma (no
+    scipy dependency). g0[b] = C(M,b) / 2^M."""
+    from math import lgamma, log
+    b = np.arange(M + 1)
+    logc = (lgamma(M + 1)
+            - np.array([lgamma(k + 1) for k in b])
+            - np.array([lgamma(M - k + 1) for k in b]))
+    return np.exp(logc - M * log(2.0))
+
+
+def _counts_from_W(W_per_draw):
+    """b_g = #{m: W_g^(m) <= 0} per gene, and M. Accepts [M, n] or [n]."""
+    W = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
+    M = W.shape[0]
+    b = (W <= 0).sum(axis=0).astype(int)
+    return b, M
+
+
+def estimate_pi0_known_null(b, M, lam=None, grid=None):
+    """
+    Storey-type null-proportion estimate for the KNOWN discrete Binomial(M,1/2)
+    null (Storey 2003; Storey, Taylor & Siegmund 2004), generalized off the
+    uniform null.
+
+    SUMMARY OF THE CHOICE.  pi0 is "what fraction of genes are truly null."
+    Standard Storey assumes null p-values are Uniform(0,1); ours are not (they
+    live on the Binomial grid), so the uniform formula would MIS-estimate pi0 and
+    silently break calibration. Here we substitute the true null tail mass.
+
+    HOW.  Pick a cut lam on the count axis in the "null-looking" region (large b,
+    where true eGenes essentially never land). Everything above lam is treated as
+    (almost) all null, so
+         pi0_hat = [#genes with b > lam] / [n * P(Binomial(M,1/2) > lam)].
+    The denominator is the EXACT null probability of landing above lam -- that is
+    the only change from textbook Storey, and it is what makes the estimate
+    honest for this non-uniform null.
+
+    TRADEOFF IN lam.  Small lam (cut nearer the center M/2) uses more genes ->
+    lower variance, but risks including true-signal mass -> DOWNWARD bias in pi0
+    -> anti-conservative (too few nulls -> FDR under-stated). Large lam (deep in
+    the right tail) is cleaner of signal -> less bias, but uses few genes ->
+    high variance -- and PAST a point the null mass P(B>lam) itself is ~0, where
+    the ratio 0/0 is pure noise and, worse, drops to 0 whenever no gene happens
+    to exceed lam, biasing an averaged estimate DOWNWARD. This is the standard
+    Storey pitfall. We therefore restrict the default cut grid to the region
+    where the null still carries appreciable mass, P(B>lam) in [0.10, 0.50] --
+    the analog of Storey's "lambda up to ~0.95, not to 1" discipline. Under a
+    decreasing alternative true eGenes essentially never land at b > M/2, so this
+    band is both signal-poor and mass-rich: the sweet spot. We average the
+    estimate over that band (the smoother-of-Storey idea) and clip to [1/n, 1].
+
+    Args:
+        b: array [n] of per-gene knockoff-win counts.
+        M: number of draws.
+        lam: single cut (integer count). If None, uses `grid`.
+        grid: iterable of cuts to average over. Default = the mass-rich right
+            band {c : 0.10 <= P(Binom(M,1/2) > c) <= 0.50}.
+
+    Returns:
+        pi0_hat in (0, 1].
+    """
+    b = np.asarray(b, dtype=int)
+    n = b.shape[0]
+    if n == 0:
+        return 1.0
+    g0 = _binom_half_pmf(M)
+    ccdf = np.array([g0[k + 1:].sum() for k in range(M + 1)])   # P(B > k)
+    if lam is not None:
+        cuts = [int(lam)]
+    elif grid is not None:
+        cuts = [int(c) for c in grid]
+    else:
+        # mass-rich, signal-poor band: 0.10 <= P(B>c) <= 0.50.
+        cuts = [c for c in range(M) if 0.10 <= ccdf[c] <= 0.50]
+        if not cuts:
+            # tiny M: fall back to the single cut nearest the median.
+            cuts = [int(np.clip(round(M / 2.0), 0, M - 1))]
+    ests = []
+    for c in cuts:
+        denom = ccdf[c] * n
+        if denom <= 0:
+            continue
+        ests.append((b > c).sum() / denom)
+    if not ests:
+        return 1.0
+    return float(min(1.0, max(np.mean(ests), 1.0 / n)))
+
+
+def null_cdf(b, M):
+    """
+    Left CDF of the knockoff count under the KNOWN null: F0(b) = P(Binomial(M,
+    1/2) <= b). This is the object that replaces the uniform "p" everywhere the
+    calibration touches Storey/BH machinery.
+
+    SUMMARY OF THE CHOICE.  A p-value's whole job is "probability the null would
+    look at least this extreme." Because our null is the exact Binomial(M,1/2)
+    -- NOT Uniform(0,1) -- the correct such probability is the Binomial CDF, and
+    plugging it in is what turns a raw knockoff vote into a *calibrated* tail
+    probability. Using uniform-p here (the naive default) would be the single
+    most common way to get the FDR wrong for this statistic.
+
+    WHY IT'S EXACT, NOT APPROXIMATE.  b_g ~ Binomial(M,1/2) under H_g is exact
+    (per-draw model-X swap), so F0 is exact; there is nothing to estimate. This
+    is the payoff for having built a statistic with a known null.
+
+    Args:
+        b: array-like of counts (0..M).
+        M: number of draws.
+
+    Returns:
+        F0: array of P(B <= b), same shape as b.
+    """
+    g0 = _binom_half_pmf(M)
+    cdf = np.cumsum(g0)                       # cdf[k] = P(B <= k)
+    b = np.asarray(b, dtype=int)
+    return cdf[np.clip(b, 0, M)]
+
+
+def calibrated_qvalues(W_per_draw, pi0='auto', offset=1):
+    """
+    SHIPPED eGene q-values: Storey q-values computed against the EXACT discrete
+    Binomial(M,1/2) null instead of the uniform null.
+
+    ===================  WHAT THIS BUYS YOU (plain language)  ================
+    A q-value of 0.1 on a gene means: "if you accept every gene at least this
+    knockoff-convincing, about 10% of the accepted genes are expected to be
+    false eGenes." That is the calibrated FDR statement you actually want -- not
+    "1.5-3x fewer false calls," but "5% of my calls are false, no more no less."
+    Select eGenes by thresholding these q-values at your target FDR.
+
+    ===================  HOW IT WORKS (the statistics)  =====================
+    Two-groups / Storey FDR (Storey 2003; Storey, Taylor & Siegmund 2004) says
+    the false-discovery proportion when you accept all genes with statistic at
+    least as extreme as threshold t is estimated by
+
+            FDP_hat(t) = pi0 * n * F0(t) / R(t),
+
+      * F0(t) = expected FRACTION of NULL genes that reach t  -- here the EXACT
+        Binomial CDF null_cdf (this is the only departure from textbook Storey,
+        and the load-bearing one: textbook uses F0(t)=t, valid only for a
+        uniform null, which we do NOT have);
+      * R(t)  = OBSERVED number of genes reaching t;
+      * pi0   = fraction of truly null genes (estimate_pi0_known_null).
+    The q-value of a gene is the smallest FDP_hat over all thresholds at least as
+    extreme as that gene (the usual monotone "min from the tail"), clipped to 1.
+
+    ===================  THE TRADEOFFS YOU'RE ACCEPTING  ====================
+    + Stability. It uses the CDF (a cumulative, well-estimated quantity), so it
+      is far less noisy than a per-gene density ratio (contrast local_fdr_
+      interval). This is why it is the SHIPPED selector.
+    + Exactness of the null. No null to estimate; F0 is known.
+    - It leans on pi0, which is only PARTIALLY identified (Genovese & Wasserman
+      2004): only an upper bound on pi0 is ever learnable from the data. We
+      default pi0 to a Storey estimate that is mildly conservative (tends to
+      OVER-state pi0 -> OVER-state FDP -> slightly too few discoveries). Set
+      pi0=1 for the most conservative, assumption-light version (valid FDR
+      control, less power); set pi0='auto' (default) for the calibrated estimate;
+      pass a float to pin it.
+    - Discreteness. With M draws the statistic lives on M+1 grid points, so many
+      genes tie and share a q-value, and the smallest reachable q is bounded
+      (the 1/(M+1) resolution wall documented on select_egenes_pvalue). Larger M
+      -> finer q-values. This is the discrete-null regime of Doehler, Durand &
+      Roquain 2018 (their DiscreteFDR bounds are the exact-FDR refinement of the
+      Storey estimate used here; we use the simpler Storey plug-in and validate
+      calibration empirically in the tests).
+
+    Args:
+        W_per_draw: [M, n] gene-level statistics (or [n] for a single draw).
+        pi0: 'auto' (estimate), 1.0 / a float (pin), or 'one' (=1.0).
+        offset: passed through for the count convention (kept for symmetry with
+            per_gene_pvalues; does not change the ranking).
+
+    Returns:
+        dict:
+          'qvalues'  array [n] aligned to genes,
+          'pi0'      the pi0 used,
+          'counts'   b_g per gene,
+          'F0'       null tail-mass F0(b_g) per gene,
+          'M'.
+    """
+    b, M = _counts_from_W(W_per_draw)
+    n = b.shape[0]
+    if pi0 == 'auto':
+        pi0_val = estimate_pi0_known_null(b, M)
+    elif pi0 in ('one', 1, 1.0):
+        pi0_val = 1.0
+    else:
+        pi0_val = float(pi0)
+
+    F0 = null_cdf(b, M)                        # per-gene null tail mass (left)
+    # R(t): number of genes with count <= t. Rank genes by b ascending; genes
+    # with smaller b are "more discovered". Work on distinct grid values.
+    order = np.argsort(b, kind='mergesort')
+    b_sorted = b[order]
+    # For each distinct count value v, R(v) = #{genes with b <= v}.
+    qsorted = np.empty(n, dtype=np.float64)
+    # cumulative count of genes up to each position (handle ties: R uses <=)
+    # Precompute R for every gene = number of genes with b <= its b.
+    uniq, inv, counts_v = np.unique(b, return_inverse=True, return_counts=True)
+    cum = np.cumsum(counts_v)                  # cum[k] = #genes with b <= uniq[k]
+    F0_uniq = null_cdf(uniq, M)
+    fdp_uniq = pi0_val * n * F0_uniq / np.maximum(cum, 1)
+    # Monotone (q-value) step: min over thresholds at least as extreme (b >= v),
+    # i.e. take running min from the LARGE-b end back to small-b, because a more
+    # extreme discovery threshold is SMALLER b.
+    q_uniq = np.minimum.accumulate(fdp_uniq[::-1])[::-1]
+    q_uniq = np.clip(q_uniq, 0.0, 1.0)
+    qvals = q_uniq[inv]
+    return {'qvalues': qvals, 'pi0': pi0_val, 'counts': b, 'F0': F0, 'M': M}
+
+
+def mirror_fdp(W_per_draw, q=0.1, offset=1):
+    """
+    pi0-FREE cross-check selector: a mirror / symmetry FDP estimator on the
+    per-gene vote margin. Uses ONLY the null's symmetry -- no pi0, no CDF.
+
+    ===================  WHAT THIS BUYS YOU (plain language)  ================
+    An independent second opinion on which genes are eGenes, built from a
+    DIFFERENT assumption than the q-values. If mirror_fdp and calibrated_qvalues
+    pick nearly the same genes, you can trust the call. If they diverge, your
+    knockoffs are misspecified (the "known null" isn't holding) and NEITHER
+    number is safe -- that divergence is the whole point of computing both.
+
+    ===================  HOW IT WORKS (the statistics)  =====================
+    Define the per-gene vote margin
+            T_g = #{m: W_g^(m) > 0} - #{m: W_g^(m) <= 0} = M - 2 b_g.
+    Under H_g, b_g ~ Binomial(M,1/2), so T_g is SYMMETRIC about 0: a null gene is
+    exactly as likely to land at +t as at -t. True eGenes push T_g positive.
+    The mirror principle (Barber & Candes 2015's knockoff+ threshold; the mirror-
+    statistic / data-splitting FDR line, Dai, Lin, Xing & Liu 2023; Xing, Zhao &
+    Liu 2023) estimates the number of FALSE positives among {T_g >= t} by the
+    number of nulls that leaked to the mirror image {T_g <= -t}:
+
+            FDP_hat(t) = (offset + #{T_g <= -t}) / max(1, #{T_g >= t}).
+
+    Choose the smallest t with FDP_hat(t) <= q and select {T_g >= t}. With
+    offset=1 this is the finite-sample-valid knockoff+ form.
+
+    ===================  THE TRADEOFFS YOU'RE ACCEPTING  ====================
+    + No pi0. It sidesteps the partial-identification problem entirely (Genovese
+      & Wasserman 2004): symmetry does the job pi0 does elsewhere. This is its
+      main virtue as a check on the pi0-dependent q-values.
+    + Assumption-light and finite-sample valid (offset=1).
+    - Coarser / lower power. It throws away the exact null SHAPE (it uses only
+      "left tail counts the right tail's false positives"), so at fixed M it
+      typically selects a bit less than the q-values. Good for a check, weaker
+      as the sole selector.
+    - Detection floor. Like every knockoff+ filter it cannot certify an FDR
+      below 1/(#selected) and needs enough right-tail mass to cross q at all;
+      with few discoveries it returns "select nothing" (correct, not a bug).
+
+    Args:
+        W_per_draw: [M, n] (or [n]).
+        q: target FDR.
+        offset: 1 (knockoff+, recommended) or 0.
+
+    Returns:
+        dict: 'selected_mask' [n] bool, 'T' margins [n], 'tau' threshold (or inf
+              if nothing selected), 'n_selected'.
+    """
+    b, M = _counts_from_W(W_per_draw)
+    T = (M - 2 * b).astype(np.float64)
+    n = T.shape[0]
+    ts = np.unique(np.abs(T[T != 0]))
+    ts = np.sort(ts)
+    tau = np.inf
+    for t in ts:
+        num = offset + np.sum(T <= -t)
+        den = max(1, np.sum(T >= t))
+        if num / den <= q:
+            tau = t
+            break
+    mask = T >= tau if np.isfinite(tau) else np.zeros(n, dtype=bool)
+    return {'selected_mask': mask, 'T': T, 'tau': tau,
+            'n_selected': int(mask.sum())}
+
+
+def local_fdr_interval(W_per_draw, offset=1, smooth=0.5):
+    """
+    Per-gene LOCAL false-discovery rate (posterior "prob this gene is null"),
+    reported as an INTERVAL that makes the pi0 identifiability limit explicit.
+
+    ===================  WHAT THIS BUYS YOU (plain language)  ================
+    For each gene, a number near 0 means "almost surely a real eGene" and near 1
+    means "almost surely null" -- a per-gene confidence, not a set-level FDR.
+    Because the fraction of null genes (pi0) can only be BOUNDED, not pinned
+    down, each gene gets a RANGE [lfdr_lo, lfdr_hi] rather than a single value.
+    Use lfdr_hi (the conservative end) if you ever gate on it; read the width of
+    the interval as "how much the answer depends on the unknowable pi0."
+
+    ===================  HOW IT WORKS (the statistics)  =====================
+    Two-groups model (Efron 2004; Efron et al. 2001): the observed count
+    distribution is a mixture
+            f(b) = pi0 * g0(b) + (1 - pi0) * g1(b),
+    with g0 = Binomial(M,1/2) (KNOWN) and g1 the unknown alternative (mass at
+    small b). The local fdr at count b is
+            lfdr(b) = pi0 * g0(b) / f(b),
+    i.e. of the genes sitting at vote-count b, the fraction that are null.
+    We estimate f(b) by the smoothed empirical fraction of genes at each count.
+
+    THE INTERVAL comes from pi0 being only partially identified (Genovese &
+    Wasserman 2004): the data identify an UPPER bound pi0_hi (Storey estimate on
+    the known null) and, via the null's symmetry, a lower reference pi0_lo (the
+    right tail b>M/2 is pure null and, since g0 is symmetric about M/2, it fixes
+    how much of the LEFT tail must also be null; the residual left-tail EXCESS is
+    signal). Then
+            lfdr_lo(b) = pi0_lo * g0(b) / f(b),
+            lfdr_hi(b) = pi0_hi * g0(b) / f(b)      (both clipped to [0,1]).
+
+    ===================  THE TRADEOFFS YOU'RE ACCEPTING  ====================
+    + Interpretability. A per-gene posterior is often what a biologist actually
+      wants ("how sure are we about THIS gene?").
+    + Honesty about pi0. The interval width surfaces the identifiability limit
+      instead of hiding it behind one number.
+    - Noise. lfdr is a DENSITY RATIO; densities are hard to estimate, so with few
+      genes and/or large M (empty grid cells) lfdr is jumpy. `smooth` adds a
+      pseudocount to stabilize it, at the cost of a small bias toward 1. This is
+      exactly why the SHIPPED selector is the CDF-based calibrated_qvalues, not
+      lfdr: cumulatives are stable, densities are not. Treat lfdr as an
+      interpretive overlay, not the primary FDR gate.
+    - Same discreteness / detection limits as the other two.
+
+    Args:
+        W_per_draw: [M, n] (or [n]).
+        offset: kept for API symmetry (unused in the density ratio).
+        smooth: Laplace pseudocount per grid cell for f(b) (>=0).
+
+    Returns:
+        dict:
+          'lfdr_lo','lfdr_hi' arrays [n] aligned to genes,
+          'pi0_lo','pi0_hi'   the interval endpoints,
+          'counts'            b_g per gene, 'M'.
+    """
+    b, M = _counts_from_W(W_per_draw)
+    n = b.shape[0]
+    g0 = _binom_half_pmf(M)
+
+    # Smoothed empirical f(b) over the full 0..M grid.
+    hist = np.bincount(b, minlength=M + 1).astype(np.float64)
+    f = (hist + smooth) / (n + smooth * (M + 1))
+
+    # pi0_hi: conservative Storey upper bound on the known null.
+    pi0_hi = estimate_pi0_known_null(b, M)
+
+    # pi0_lo: symmetry / excess-mass reference. The right tail (b > M/2) is pure
+    # null; by symmetry g0(b)=g0(M-b), so its mirror fixes the null mass on the
+    # left. The left-tail EXCESS over the mirrored right tail is signal, hence
+    #   1 - pi0_lo = sum_{b < M/2} [ f_hat(b) - f_hat(M-b) ]_+   (a valid signal
+    # lower bound under "no alternative mass on the right"), giving pi0_lo.
+    left = np.arange(0, int(np.floor(M / 2.0)))
+    excess = np.clip(f[left] - f[M - left], 0.0, None).sum()
+    pi0_lo = float(min(pi0_hi, max(0.0, 1.0 - excess)))
+
+    fb = f[b]
+    lfdr_hi = np.clip(pi0_hi * g0[b] / fb, 0.0, 1.0)
+    lfdr_lo = np.clip(pi0_lo * g0[b] / fb, 0.0, 1.0)
+    # Ensure lo <= hi elementwise (pi0_lo <= pi0_hi guarantees this, but clip
+    # can reorder at the [0,1] boundary; enforce for safety).
+    lfdr_lo = np.minimum(lfdr_lo, lfdr_hi)
+    return {'lfdr_lo': lfdr_lo, 'lfdr_hi': lfdr_hi,
+            'pi0_lo': pi0_lo, 'pi0_hi': pi0_hi, 'counts': b, 'M': M}
+
+
+def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1):
+    """
+    Calibrated eGene selection (the shipped step-3 selector) plus its two
+    cross-checks, in one call.
+
+    Selection is by calibrated_qvalues (known-null Storey q-values) at level q.
+    The return also carries the pi0-free mirror_fdp selection and the
+    local_fdr_interval, so a caller can (and the tests do) assert that the three
+    agree -- the built-in misspecification alarm.
+
+    Returns:
+        dict:
+          'selected'      list of gene_ids with q <= q,
+          'qvalues'       array [n] aligned to gene_ids,
+          'pi0'           pi0 used by the q-values,
+          'mirror'        result of mirror_fdp (selected_mask, tau, ...),
+          'lfdr'          result of local_fdr_interval,
+          'n_draws'       M,
+          'agreement'     Jaccard overlap between q-value and mirror selections.
+    """
+    W = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
+    M, m = W.shape
+    assert m == len(gene_ids), "W columns must align to gene_ids"
+    qres = calibrated_qvalues(W, pi0=pi0, offset=offset)
+    qvals = qres['qvalues']
+    q_mask = qvals <= q
+    selected = [gene_ids[i] for i in range(m) if q_mask[i]]
+
+    mir = mirror_fdp(W, q=q, offset=offset)
+    lf = local_fdr_interval(W, offset=offset)
+
+    a = set(np.where(q_mask)[0].tolist())
+    b_ = set(np.where(mir['selected_mask'])[0].tolist())
+    union = a | b_
+    agreement = 1.0 if not union else len(a & b_) / len(union)
+
+    return {'selected': selected, 'qvalues': qvals, 'pi0': qres['pi0'],
+            'mirror': mir, 'lfdr': lf, 'n_draws': M, 'agreement': agreement}
+
+
 # ---------------------------------------------------------------------------
 #  Derandomization (Ren & Barber 2024, e-value aggregation)
 # ---------------------------------------------------------------------------
