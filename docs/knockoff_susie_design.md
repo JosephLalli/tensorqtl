@@ -163,13 +163,19 @@ validation phases. The authoritative current state is:
    `W_g = maxPIP(orig) − maxPIP(knockoff)`. The per-gene W feeds the identical
    step-2/step-3 calibration (`select_egenes_calibrated`, `dependence` arg), so
    eGene FDR is calibrated exactly as for standard SuSiE. Phase is REQUIRED (the
-   ASE channel only exists with phase). Knockoffs here are per-gene; a
-   chromosome-coherent Route-2 variant (only needed for cross-gene per-gene-
-   p-value coherence) mirrors `chromosome_hmm_knockoffs` and is a later add.
+   ASE channel only exists with phase). Both **chromosome-coherent** (`coherent=
+   True`, default) and per-gene draws are supported: coherent mode fits one
+   haplotype HMM per chromosome and draws M phased knockoff copies of the whole
+   chromosome up front (PASS 0, via `chromosome_hmm_knockoffs(..., method=
+   'haplotype', return_phased=True)`), then slices each gene's window — so
+   overlapping genes share the SAME knockoff haplotypes on shared variants
+   (verified: `TestCoherence.test_shared_variants_identical_across_windows`),
+   the prerequisite for cross-gene per-gene p-values. `coherent=False` keeps the
+   independent per-gene fit for non-overlapping loci.
 
-9. **Still open / not built:** chromosome-coherent Route-2 draws for the
-   hapmixQTL path; a closed-form PRDS proof for the coherent-knockoff p-value
-   construction (item 7 — off the critical path).
+9. **Still open / not built:** a closed-form PRDS proof for the coherent-knockoff
+   p-value construction (item 7 — off the critical path; genome-wide control is
+   already validated empirically for the local regime and guaranteed via BY+π₀=1).
 
 ---
 

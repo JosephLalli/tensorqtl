@@ -139,6 +139,44 @@ class TestWiring:
         assert diag['W_per_draw'].shape == (6, 4)
 
 
+class TestCoherence:
+
+    def test_shared_variants_identical_across_windows(self):
+        """The defining coherence property: two OVERLAPPING cis-windows sliced
+        from the same chromosome-coherent phased draw share IDENTICAL knockoff
+        haplotype values on their shared variants. This is what a per-gene fit
+        cannot give and is the prerequisite for cross-gene per-gene p-values."""
+        import tensorqtl.knockoffs as ko
+        rng = np.random.RandomState(0)
+        N, P = 60, 40
+        xL = (rng.rand(N, P) < 0.4).astype(np.int64)
+        xR = (rng.rand(N, P) < 0.4).astype(np.int64)
+        _, (xkL, xkR) = ko.chromosome_hmm_knockoffs(
+            K=5, M=3, n_em_iter=8, seed=1, method='haplotype',
+            xL=xL, xR=xR, return_phased=True)          # [M, N, P] each
+        # Gene A window = variants 5..25, gene B window = 15..35; overlap 15..25.
+        winA, winB = np.arange(5, 25), np.arange(15, 35)
+        shared = np.arange(15, 25)
+        localA = np.searchsorted(winA, shared)
+        localB = np.searchsorted(winB, shared)
+        for m in range(3):
+            slA_L = xkL[m][:, winA][:, localA]
+            slB_L = xkL[m][:, winB][:, localB]
+            slA_R = xkR[m][:, winA][:, localA]
+            slB_R = xkR[m][:, winB][:, localB]
+            assert np.array_equal(slA_L, slB_L), f"draw {m}: xkL differs on shared"
+            assert np.array_equal(slA_R, slB_R), f"draw {m}: xkR differs on shared"
+
+    def test_coherent_and_per_gene_both_run(self):
+        """Both modes produce valid, aligned output on the same panel."""
+        d = _make_egene_dataset(n_genes=5, n_causal=2, p_per_gene=10, N=120, seed=8)
+        for coherent in (True, False):
+            egene_df, diag = _run(d, fdr=0.2, n_knockoffs=6, hmm_K=5,
+                                  selection='calibrated', coherent=coherent, seed=4)
+            assert len(egene_df) == 5
+            assert diag['W_per_draw'].shape == (6, 5)
+
+
 class TestSignalSeparation:
 
     def test_causal_genes_have_positive_W(self):

@@ -771,7 +771,8 @@ def haplotype_hmm_knockoffs(xL, xR, K=8, M=1, n_em_iter=25, seed=0, params=None,
 
 def chromosome_hmm_knockoffs(G=None, K=8, M=1, E=3, n_em_iter=25, seed=0,
                              params=None, method='genotype', xL=None, xR=None,
-                             return_params=False, verbose=False):
+                             return_params=False, return_phased=False,
+                             verbose=False):
     """
     Fit an HMM on one chromosome and draw M coherent knockoff dosage copies.
 
@@ -793,13 +794,20 @@ def chromosome_hmm_knockoffs(G=None, K=8, M=1, E=3, n_em_iter=25, seed=0,
                              law); params = {'init_p','Q','emission_p'}.
         xL, xR: [N, p] phased haplotypes for method='haplotype'.
         return_params: also return the fitted/supplied parameters.
+        return_phased: (method='haplotype' only) also return the phased knockoffs
+            (x~L, x~R) as [M, N, p] each -- needed by the two-channel hapmixQTL
+            path, which reconstructs both the ASE (x~L - x~R) and total
+            (x~L + x~R) channels from the SAME coherent knockoff haplotypes.
         verbose: forwarded to the fitter.
 
     Returns:
         draws: [M, N, p] integer knockoff dosages, coherent across the whole
-        chromosome. If return_params, also the params dict.
+        chromosome. If return_phased, also (x~L, x~R). If return_params, also the
+        params dict (order: draws, [phased], [params]).
     """
     if method == 'genotype':
+        if return_phased:
+            raise ValueError("return_phased is only supported for method='haplotype'")
         return genotype_hmm_knockoffs(G, K=K, M=M, n_em_iter=n_em_iter, seed=seed,
                                       params=params, return_params=return_params,
                                       verbose=verbose)
@@ -808,7 +816,8 @@ def chromosome_hmm_knockoffs(G=None, K=8, M=1, E=3, n_em_iter=25, seed=0,
             "method='haplotype' requires phased xL and xR"
         return haplotype_hmm_knockoffs(xL, xR, K=K, M=M, n_em_iter=n_em_iter,
                                        seed=seed, params=params,
-                                       return_params=return_params, verbose=verbose)
+                                       return_params=return_params,
+                                       return_phased=return_phased, verbose=verbose)
     elif method == 'single_chain':
         G = np.asarray(G)
         N, p = G.shape

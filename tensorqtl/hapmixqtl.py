@@ -1220,6 +1220,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                          phenotype_pos_df, xL_df, xR_df, covariates_df=None,
                          fdr=0.1, n_knockoffs=20, hmm_K=8, hmm_em_iter=25,
+                         coherent=True, hmm_params=None,
                          gene_stat='max', selection='calibrated',
                          knockoff_offset=1, dependence='prds',
                          L=10, scaled_prior_variance=0.2,
@@ -1242,16 +1243,28 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     calibration used for standard SuSiE, so eGene FDR is calibrated identically.
 
     Phase (``xL_df``, ``xR_df``) is REQUIRED: the knockoff must respect the
-    allelic-contrast channel, which only exists with phase. Knockoffs here are
-    per-gene (fit on the gene's cis-window haplotypes); chromosome-coherent
-    Route-2 draws (needed only for cross-gene per-gene-p-value coherence) are a
-    future extension mirroring ``chromosome_hmm_knockoffs``.
+    allelic-contrast channel, which only exists with phase.
+
+    ``coherent`` (default True) fits ONE haplotype HMM per chromosome and draws M
+    knockoff copies of the whole chromosome up front (PASS 0), then slices each
+    gene's cis-window out of them -- so two genes with overlapping windows share
+    the SAME knockoff haplotypes on their shared variants. That cross-gene
+    coherence is what makes the per-gene knockoff p-values (step 2) mutually
+    comparable and is the prerequisite for the genome-wide dependence analysis;
+    it also amortizes one HMM fit over all genes on a chromosome. ``coherent=False``
+    falls back to an independent per-gene HMM fit (fine when windows do not
+    overlap, e.g. one gene per locus). Coherent mode requires each chromosome's
+    variants to be a contiguous, ordered block in ``genotype_df`` (sort by
+    chrom, pos) -- the standard tensorQTL layout.
 
     Args (knockoff-specific; the rest mirror ``map_susie``):
         fdr: target genome-wide eGene FDR.
         n_knockoffs: number of phased knockoff draws M (>= ~20 for 'calibrated').
-        hmm_K: haplotype clusters for the per-gene haplotype HMM.
+        hmm_K: haplotype clusters for the haplotype HMM.
         hmm_em_iter: Baum-Welch iterations for the HMM fit.
+        coherent: True (chromosome-coherent draws, default) or False (per-gene).
+        hmm_params: optional dict chrom -> pre-fit haplotype HMM params
+            {'init_p','Q','emission_p'} to skip EM (coherent mode).
         gene_stat: 'max' or 'sum' for gene_level_W.
         selection: 'calibrated' (default; known-null Storey q-value + mirror
             cross-check, ko.select_egenes_calibrated), 'qvalue', 'pvalue', or
@@ -1279,7 +1292,8 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     logger.write('hapmixQTL knockoff-calibrated eGene mapping (Route 2, phased)')
     logger.write(f'  * {N} samples, {A_df.shape[0]} phenotypes')
-    logger.write(f'  * {n_knockoffs} phased knockoff draws; HMM K={hmm_K}; '
+    logger.write(f'  * {n_knockoffs} phased knockoff draws '
+                 f'({"chromosome-coherent" if coherent else "per-gene"}); HMM K={hmm_K}; '
                  f'selection={selection}, FDR<={fdr}, dependence={dependence}')
 
     if covariates_df is not None:
@@ -1299,6 +1313,43 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     resvar = None if estimate_residual_variance else \
         torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    # PASS 0 (coherent): fit one haplotype HMM per chromosome and draw M coherent
+    # phased knockoff copies of the whole chromosome. Each gene later slices its
+    # cis-window out of these, so overlapping genes share the SAME knockoff
+    # haplotypes on shared variants (the coherence the per-gene fit cannot give).
+    xkL_by_chrom = xkR_by_chrom = chrom_row_offset = None
+    if coherent:
+        logger.write(f'  * PASS 0: per-chromosome haplotype HMM fit + '
+                     f'{n_knockoffs} coherent phased knockoff draw(s) (K={hmm_K})')
+
+        def _hap_in_pheno_order(df_values, lo, hi):
+            V = df_values[lo:hi][:, genotype_ix].astype(np.float64)   # [p_c, N]
+            if np.isnan(V).any():
+                rm = np.nanmean(V, axis=1, keepdims=True)
+                rm = np.where(np.isnan(rm), 0.0, rm)
+                V = np.where(np.isnan(V), rm, V)
+            return np.rint(V).T.clip(0, 1).astype(np.int64)           # [N, p_c]
+
+        chrom_arr = variant_df['chrom'].values
+        xkL_by_chrom, xkR_by_chrom, chrom_row_offset = {}, {}, {}
+        for c in pd.unique(chrom_arr):
+            rows = np.where(chrom_arr == c)[0]
+            if not (rows[-1] - rows[0] + 1 == rows.size and (np.diff(rows) == 1).all()):
+                raise ValueError(f"chromosome {c} variants are not a contiguous "
+                                 "ordered block in genotype_df; sort by chrom,pos "
+                                 "or use coherent=False.")
+            lo, hi = rows[0], rows[-1] + 1
+            xL_c = _hap_in_pheno_order(xL_df.values, lo, hi)
+            xR_c = _hap_in_pheno_order(xR_df.values, lo, hi)
+            cparams = None if hmm_params is None else hmm_params.get(c, None)
+            _, (xkL_c, xkR_c) = ko.chromosome_hmm_knockoffs(
+                K=hmm_K, M=n_knockoffs, n_em_iter=hmm_em_iter,
+                seed=seed * 100003 + int(lo), method='haplotype',
+                xL=xL_c, xR=xR_c, params=cparams, return_phased=True)
+            xkL_by_chrom[c], xkR_by_chrom[c] = xkL_c, xkR_c   # [M, N, p_c] each
+            chrom_row_offset[c] = rows[0]
+        logger.write(f'  * PASS 0 done: {len(xkL_by_chrom)} chromosome(s)')
 
     gene_ids, W_rows = [], []
     start_time = time.time()
@@ -1340,11 +1391,13 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         mask_t = ~(genotypes_t == genotypes_t[:, [0]]).all(1)
         if maf_threshold > 0:
             mask_t &= calculate_maf(genotypes_t) >= maf_threshold
+        mask_applied = None
         if not mask_t.all():
             genotypes_t = genotypes_t[mask_t]
             sign_t = sign_t[mask_t]
             xL_t = xL_t[mask_t]
             xR_t = xR_t[mask_t]
+            mask_applied = mask_t.cpu().numpy().astype(bool)
         if genotypes_t.shape[0] == 0:
             continue
 
@@ -1352,12 +1405,24 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             genotypes_t, sign_t, a_t, t_t,
             sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)
 
-        # Fit the per-gene haplotype HMM once, draw M phased knockoffs from it.
-        xL_np = xL_t.T.cpu().numpy().astype(np.int64)     # [N, p] in {0,1}
-        xR_np = xR_t.T.cpu().numpy().astype(np.int64)
-        _, (xkL_all, xkR_all) = ko.haplotype_hmm_knockoffs(
-            xL_np, xR_np, K=hmm_K, M=n_knockoffs, n_em_iter=hmm_em_iter,
-            seed=seed * 100003 + k, return_phased=True)
+        if coherent:
+            # Slice this gene's cis-window out of the chromosome-coherent phased
+            # draws, then apply the SAME variant mask used on the real design.
+            c = variant_df['chrom'].values[genotype_range[0]]
+            local = np.asarray(genotype_range) - chrom_row_offset[c]
+            xkL_win = xkL_by_chrom[c][:, :, local]        # [M, N, p_window]
+            xkR_win = xkR_by_chrom[c][:, :, local]
+            if mask_applied is not None:
+                xkL_win = xkL_win[:, :, mask_applied]
+                xkR_win = xkR_win[:, :, mask_applied]
+            xkL_all, xkR_all = xkL_win, xkR_win           # [M, N, p]
+        else:
+            # Fit the per-gene haplotype HMM once, draw M phased knockoffs.
+            xL_np = xL_t.T.cpu().numpy().astype(np.int64)     # [N, p] in {0,1}
+            xR_np = xR_t.T.cpu().numpy().astype(np.int64)
+            _, (xkL_all, xkR_all) = ko.haplotype_hmm_knockoffs(
+                xL_np, xR_np, K=hmm_K, M=n_knockoffs, n_em_iter=hmm_em_iter,
+                seed=seed * 100003 + k, return_phased=True)
 
         draw_W = []
         for r in range(n_knockoffs):
