@@ -173,9 +173,40 @@ validation phases. The authoritative current state is:
    the prerequisite for cross-gene per-gene p-values. `coherent=False` keeps the
    independent per-gene fit for non-overlapping loci.
 
-9. **Still open / not built:** a closed-form PRDS proof for the coherent-knockoff
-   p-value construction (item 7 — off the critical path; genome-wide control is
-   already validated empirically for the local regime and guaranteed via BY+π₀=1).
+9. **END-TO-END VALIDATION on the REAL pipeline (not synthetic W)** — the
+   arithmetic-only step-2/3 tests feed W drawn from the exact Binomial null; this
+   validates the selection math but NOT that the real `LD genotypes → knockoffs →
+   SuSiE → W` stack produces that null. `tests/calibration_validation.py` (research
+   harness) + `tests/test_calibration_validation.py` (small slow gates) close that
+   gap by running the full pipeline on realistic HMM-LD genotypes with PVE-scaled,
+   mostly-weak signal. Honest findings (Gaussian knockoffs, target FDR 0.1, mean
+   per-replicate FDP). **The bar is CALIBRATION (realized ≈ nominal), not
+   one-sided control — and by that bar the method is NOT yet calibrated: it
+   misses the target in OPPOSITE directions at the two scales tested.**
+   - **N = 300, mixed signal: OVER-CONSERVATIVE** — realized FDR 0.029 vs target
+     0.10 (~3.4× too low), power 0.34. Valid one-sided control, but *not*
+     calibrated — it wastes power. Sources: the discrete knockoff⁺ q-value and
+     Storey π₀ over-estimate are conservative, and maxPIP is a coarse statistic.
+   - **N ≈ 100, realistic weak signal: ANTI-CONSERVATIVE (~2×) and near-zero
+     power** — realized FDR 0.17–0.22 vs 0.10 (12 reps, SE≈0.05, *not* Monte-Carlo
+     noise), power 0.08–0.11. Adding knockoff draws (M 12→25) did NOT fix it → the
+     cause is GENERATOR error (poorly-estimated shrinkage-Gaussian knockoff
+     covariance at low N; Barber–Candès–Samworth), NOT the selection math.
+   - **Bottom line: calibration is an OPEN problem.** Reducing high-N conservatism
+     (finer statistic than maxPIP; less-conservative π₀/discrete-null handling)
+     and fixing low-N inflation (better/less-approximate knockoffs; heavier
+     shrinkage; larger N) are both needed. The pytest gates test only one-sided
+     control and PASS even under gross over-conservatism — they do not certify
+     calibration.
+   - **Compute (item #7):** the coherent HMM is LINEAR in p (per-1k-variant time
+     flat) but with a large constant (~17 s/1k variants at K=8,M=8,N=120,
+     pure-numpy) → ~28 min at 100k variants, ~2.3 h + ~3.8 GB at 500k. Genome
+     scale is feasible but expensive; a target for future optimization.
+
+10. **Still open / not built:** a closed-form PRDS proof for the coherent-knockoff
+   p-value construction (off the critical path); low-N generator mitigation and
+   the deferred long-term validations (#5 phasing-error, #6 Salmon-posterior,
+   #8 real-data concordance).
 
 ---
 

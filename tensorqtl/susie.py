@@ -941,7 +941,7 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
 def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
                          fdr=0.1, n_knockoffs=1, knockoff='gaussian', shrink=0.05,
                          gene_stat='max', knockoff_offset=0, selection='qvalue',
-                         aggregate='median', seed=0, permute_null=False,
+                         dependence='prds', aggregate='median', seed=0, permute_null=False,
                          paired_covariate_df=None, L=10, scaled_prior_variance=0.2,
                          estimate_residual_variance=True, estimate_prior_variance=True,
                          tol=1e-3, coverage=0.95, min_abs_corr=0.5,
@@ -1204,14 +1204,16 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         logger.write(f'  * PASS 2: per-gene knockoff p-value + BH selection at FDR <= {fdr} '
                      f'(M={W_per_draw.shape[0]} draws)')
         sel = ko.select_egenes_pvalue(gene_ids, W_per_draw, q=fdr,
-                                      offset=(knockoff_offset or 1))
+                                      offset=(knockoff_offset or 1),
+                                      dependence=dependence)
         selected_genes = set(sel['selected'])
         score_col, score_vals = 'pvalue', sel['pvalues']
     elif selection == 'calibrated':
         logger.write(f'  * PASS 2: step-3 known-null (Binomial(M,1/2)) calibrated '
                      f'q-value selection at FDR <= {fdr} (M={W_per_draw.shape[0]} draws)')
         sel = ko.select_egenes_calibrated(gene_ids, W_per_draw, q=fdr,
-                                          offset=(knockoff_offset or 1))
+                                          offset=(knockoff_offset or 1),
+                                          dependence=dependence)
         selected_genes = set(sel['selected'])
         score_col, score_vals = 'qvalue', sel['qvalues']
         logger.write(f'    - pi0={sel["pi0"]:.3f}; mirror cross-check selected '
@@ -1264,6 +1266,10 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         'n_selected': len(selected_genes),
         'fdr': fdr,
     }
+    if selection == 'calibrated':
+        diagnostics['pi0'] = sel['pi0']
+        diagnostics['agreement'] = sel['agreement']
+        diagnostics['mirror_informative'] = sel.get('mirror_informative')
     return egene_df, localize_summary_df, diagnostics
 
 
