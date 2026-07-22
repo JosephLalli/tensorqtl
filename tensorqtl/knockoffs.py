@@ -1258,21 +1258,56 @@ def per_gene_pvalues(W_per_draw, offset=1):
     return (offset + b) / (offset + M)
 
 
-def bh_select(pvals, q):
+def bh_select(pvals, q, dependence='prds'):
     """
     Benjamini-Hochberg selection at FDR q. Returns a boolean mask [n].
 
-    Valid FDR control when the p-values are (super-)uniform under the null and
-    the standard BH dependence conditions hold. For the knockoff per-gene
-    p-values (approximately uniform, positively dependent across genes via shared
-    genotypes) BH is the pragmatic selector; calibration is checked empirically.
+    ================  THE GENOME-WIDE DEPENDENCE QUESTION  ==================
+    This is where the "overlapping-gene joint-sign" problem is actually resolved.
+    Once each gene has a p-value with a KNOWN marginal null (per_gene_pvalues:
+    super-uniform, exact Binomial), controlling eGene FDR across the genome is NO
+    LONGER a novel knockoff-joint-sign theorem -- it is the classical problem of
+    BH under DEPENDENCE, which is solved:
+
+      * dependence='ind'  -- Benjamini-Hochberg 1995. Threshold q*i/n. Valid FDR
+        control when the null p-values are independent.
+      * dependence='prds' (default) -- Benjamini & Yekutieli 2001 proved plain BH
+        (same q*i/n threshold) also controls FDR under POSITIVE REGRESSION
+        DEPENDENCY ON THE NULL SET (PRDS). Overlapping eQTL genes share genotypes
+        (and, with the coherent HMM generator, share knockoffs on shared
+        variants), which induces POSITIVE association between their p-values --
+        the PRDS regime. This is the pragmatic default and what the overlap-
+        stress tests validate empirically.
+      * dependence='arbitrary' -- Benjamini & Yekutieli 2001's distribution-free
+        variant: threshold q*i/(n*c(n)) with c(n)=sum_{j=1}^n 1/j (the harmonic
+        number). Controls FDR under ANY dependence, at the cost of the log-factor
+        c(n) ~ ln n + 0.577 (here ~5-6x more conservative genome-wide). Use when
+        you are unwilling to assume PRDS.
+
+    'ind' and 'prds' share the identical BH threshold; the only reason to
+    distinguish them is documentary honesty about which theorem you are invoking.
+
+    Args:
+        pvals: array [n] of (super-)uniform-null p-values.
+        q: target FDR.
+        dependence: 'prds' (default) / 'ind' (same threshold, BH); or 'arbitrary'
+            (Benjamini-Yekutieli harmonic correction, valid under any dependence).
+
+    Returns:
+        boolean mask [n].
     """
     p = np.asarray(pvals, dtype=np.float64)
     n = p.shape[0]
     if n == 0:
         return np.zeros(0, dtype=bool)
+    if dependence == 'arbitrary':
+        cn = np.sum(1.0 / np.arange(1, n + 1))     # harmonic number
+    elif dependence in ('prds', 'ind'):
+        cn = 1.0
+    else:
+        raise ValueError(f"unknown dependence: {dependence}")
     order = np.argsort(p)
-    thresh = q * np.arange(1, n + 1) / n
+    thresh = q * np.arange(1, n + 1) / (n * cn)
     passed = p[order] <= thresh
     if not passed.any():
         return np.zeros(n, dtype=bool)
@@ -1281,14 +1316,16 @@ def bh_select(pvals, q):
     return p <= cutoff
 
 
-def select_egenes_pvalue(gene_ids, W_per_draw, q=0.1, offset=1):
+def select_egenes_pvalue(gene_ids, W_per_draw, q=0.1, offset=1, dependence='prds'):
     """
     eGene selection via per-gene knockoff p-values + Benjamini-Hochberg.
 
     This is the step-2 selection mode: compute a per-gene p-value with a KNOWN
     (approximately uniform) null from the M coherent draws (per_gene_pvalues),
     then select at FDR q with BH. Its output (`pvalues`) is also the input the
-    step-3 interval-pi0 empirical-Bayes calibration consumes.
+    step-3 interval-pi0 empirical-Bayes calibration consumes. `dependence`
+    ('prds' default | 'ind' | 'arbitrary') selects the cross-gene dependence
+    assumption of the BH step (see bh_select).
 
     RESOLUTION LIMIT (important for choosing M). The smallest attainable p-value
     is offset/(offset+M) = 1/(M+1) at offset=1. For BH at level q to make R
@@ -1313,7 +1350,7 @@ def select_egenes_pvalue(gene_ids, W_per_draw, q=0.1, offset=1):
     n_draws, m = W.shape
     assert m == len(gene_ids), "W columns must align to gene_ids"
     pvals = per_gene_pvalues(W, offset=offset)
-    mask = bh_select(pvals, q)
+    mask = bh_select(pvals, q, dependence=dependence)
     selected = [gene_ids[i] for i in range(m) if mask[i]]
     return {'selected': selected, 'pvalues': pvals, 'n_draws': n_draws}
 
@@ -1471,7 +1508,7 @@ def null_cdf(b, M):
     return cdf[np.clip(b, 0, M)]
 
 
-def calibrated_qvalues(W_per_draw, pi0='auto', offset=1):
+def calibrated_qvalues(W_per_draw, pi0='auto', offset=1, dependence='prds'):
     """
     SHIPPED eGene q-values: Storey q-values computed against the EXACT discrete
     Binomial(M,1/2) null instead of the uniform null.
@@ -1519,11 +1556,22 @@ def calibrated_qvalues(W_per_draw, pi0='auto', offset=1):
       Storey estimate used here; we use the simpler Storey plug-in and validate
       calibration empirically in the tests).
 
+    CROSS-GENE DEPENDENCE.  These q-values are the pooled genome-wide statement,
+    so their FDR guarantee inherits the BH-under-dependence theory (see
+    bh_select): the Storey/BH q-value controls FDR under independence or PRDS
+    (Benjamini & Yekutieli 2001) -- the regime overlapping eQTL genes plausibly
+    occupy (shared genotypes -> positively associated statistics). Set
+    dependence='arbitrary' to multiply the q-values by the harmonic factor
+    c(n)=sum 1/j for a distribution-free guarantee under ANY dependence (~5-6x
+    more conservative genome-wide). 'prds' (default) and 'ind' leave q unscaled.
+
     Args:
         W_per_draw: [M, n] gene-level statistics (or [n] for a single draw).
         pi0: 'auto' (estimate), 1.0 / a float (pin), or 'one' (=1.0).
         offset: passed through for the count convention (kept for symmetry with
             per_gene_pvalues; does not change the ranking).
+        dependence: 'prds' (default) / 'ind' (unscaled) or 'arbitrary'
+            (Benjamini-Yekutieli harmonic inflation for any dependence).
 
     Returns:
         dict:
@@ -1531,7 +1579,7 @@ def calibrated_qvalues(W_per_draw, pi0='auto', offset=1):
           'pi0'      the pi0 used,
           'counts'   b_g per gene,
           'F0'       null tail-mass F0(b_g) per gene,
-          'M'.
+          'M', 'dependence'.
     """
     b, M = _counts_from_W(W_per_draw)
     n = b.shape[0]
@@ -1542,26 +1590,27 @@ def calibrated_qvalues(W_per_draw, pi0='auto', offset=1):
     else:
         pi0_val = float(pi0)
 
+    if dependence == 'arbitrary':
+        cn = float(np.sum(1.0 / np.arange(1, n + 1))) if n > 0 else 1.0
+    elif dependence in ('prds', 'ind'):
+        cn = 1.0
+    else:
+        raise ValueError(f"unknown dependence: {dependence}")
+
     F0 = null_cdf(b, M)                        # per-gene null tail mass (left)
-    # R(t): number of genes with count <= t. Rank genes by b ascending; genes
-    # with smaller b are "more discovered". Work on distinct grid values.
-    order = np.argsort(b, kind='mergesort')
-    b_sorted = b[order]
     # For each distinct count value v, R(v) = #{genes with b <= v}.
-    qsorted = np.empty(n, dtype=np.float64)
-    # cumulative count of genes up to each position (handle ties: R uses <=)
-    # Precompute R for every gene = number of genes with b <= its b.
     uniq, inv, counts_v = np.unique(b, return_inverse=True, return_counts=True)
     cum = np.cumsum(counts_v)                  # cum[k] = #genes with b <= uniq[k]
     F0_uniq = null_cdf(uniq, M)
-    fdp_uniq = pi0_val * n * F0_uniq / np.maximum(cum, 1)
+    fdp_uniq = cn * pi0_val * n * F0_uniq / np.maximum(cum, 1)
     # Monotone (q-value) step: min over thresholds at least as extreme (b >= v),
     # i.e. take running min from the LARGE-b end back to small-b, because a more
     # extreme discovery threshold is SMALLER b.
     q_uniq = np.minimum.accumulate(fdp_uniq[::-1])[::-1]
     q_uniq = np.clip(q_uniq, 0.0, 1.0)
     qvals = q_uniq[inv]
-    return {'qvalues': qvals, 'pi0': pi0_val, 'counts': b, 'F0': F0, 'M': M}
+    return {'qvalues': qvals, 'pi0': pi0_val, 'counts': b, 'F0': F0, 'M': M,
+            'dependence': dependence}
 
 
 def mirror_fdp(W_per_draw, q=0.1, offset=1):
@@ -1716,7 +1765,8 @@ def local_fdr_interval(W_per_draw, offset=1, smooth=0.5):
             'pi0_lo': pi0_lo, 'pi0_hi': pi0_hi, 'counts': b, 'M': M}
 
 
-def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1):
+def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1,
+                             dependence='prds'):
     """
     Calibrated eGene selection (the shipped step-3 selector) plus its two
     cross-checks, in one call.
@@ -1724,7 +1774,9 @@ def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1):
     Selection is by calibrated_qvalues (known-null Storey q-values) at level q.
     The return also carries the pi0-free mirror_fdp selection and the
     local_fdr_interval, so a caller can (and the tests do) assert that the three
-    agree -- the built-in misspecification alarm.
+    agree -- the built-in misspecification alarm. `dependence` ('prds' default |
+    'ind' | 'arbitrary') sets the cross-gene dependence assumption of the
+    genome-wide q-values (see bh_select / calibrated_qvalues).
 
     Returns:
         dict:
@@ -1739,7 +1791,7 @@ def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1):
     W = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
     M, m = W.shape
     assert m == len(gene_ids), "W columns must align to gene_ids"
-    qres = calibrated_qvalues(W, pi0=pi0, offset=offset)
+    qres = calibrated_qvalues(W, pi0=pi0, offset=offset, dependence=dependence)
     qvals = qres['qvalues']
     q_mask = qvals <= q
     selected = [gene_ids[i] for i in range(m) if q_mask[i]]

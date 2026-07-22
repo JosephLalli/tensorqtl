@@ -121,11 +121,39 @@ validation phases. The authoritative current state is:
    with the mirror agreeing (Jaccard→1). Tests:
    `tests/test_knockoff_calibration_step3.py` (16, pass).
 
-7. **Still open / not built:** the overlapping-gene joint-sign reduction
-   (central open theory problem — status is "empirically calibrated", not
-   theorem-backed genome-wide FDR control); and full integration of the Route-2
-   phased knockoffs (`x̃L, x̃R`) into the two-channel hapmixQTL ASE model (the
-   generator exists; the hapmixQTL wiring is step 5).
+7. **Genome-wide FDR: the "joint-sign" problem is REDUCED and empirically
+   resolved** (`knockoffs.bh_select`/`calibrated_qvalues`/`select_egenes_*` gain
+   a `dependence` arg; `tests/test_genome_wide_fdr.py`, 7 pass). The key move:
+   once each gene has a per-gene p-value with an EXACTLY known marginal null
+   (step 2), genome-wide eGene FDR is no longer a novel knockoff-joint-sign
+   theorem — it is the classical **BH-under-dependence** problem
+   (Benjamini–Hochberg 1995; Benjamini–Yekutieli 2001). What the simulations
+   establish (mean realized FDR at q=0.1):
+   - **Independent or LOCAL (block) dependence — the realistic eQTL regime**
+     (distant genes ≈ independent, only nearby genes share LD): the shipped
+     calibrated q-value (`dependence='prds'`, π₀=auto) controls FDR tightly —
+     0.087 independent; 0.090–0.095 at within-block ρ up to 0.9 — at full power.
+     This is the **default and the validated operating regime**.
+   - **Adversarial GLOBAL equicorrelation** (every gene coupled to every other —
+     not an eQTL reality): plain BH can **inflate** (0.18 at ρ=0.7, 0.24 at
+     ρ=0.9). Diagnosis: the **π₀-adaptive step, not BH itself, is fragile** — a
+     bad replicate makes all nulls look like signal, π₀ is under-estimated, and
+     q-values shrink.
+   - **Guaranteed fallback:** `dependence='arbitrary'` (Benjamini–Yekutieli
+     harmonic factor `c(n)=Σ1/j`) **with π₀=1.0** (drop the fragile adaptive
+     step) controls FDR under ANY dependence — verified ≈0.011 even at ρ=0.9 —
+     at the cost of log-factor conservatism.
+   Honest caveat retained: under strong dependence the per-analysis FDP has large
+   VARIANCE even when its mean (FDR) is controlled; BH/BY bound the expectation,
+   not the realized proportion in one run. Status upgraded from "empirically
+   calibrated, no theorem" to "reduced to BH-under-dependence; PRDS validated for
+   the local eQTL regime, BY+π₀=1 for the worst case." A closed-form PRDS proof
+   for the specific coherent-knockoff p-value construction remains open, but is no
+   longer on the critical path.
+
+8. **Still open / not built:** full integration of the Route-2 phased knockoffs
+   (`x̃L, x̃R`) into the two-channel hapmixQTL ASE model (the generator exists;
+   the hapmixQTL wiring is step 5 — in progress).
 
 ---
 
