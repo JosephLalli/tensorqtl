@@ -163,6 +163,170 @@ def gaussian_knockoff(X_t, shrink=0.05, s_method='equicorrelated',
 
 
 # ---------------------------------------------------------------------------
+#  HMM knockoffs (fastPHASE-style), for realistic genotype distributions and
+#  coherent chromosome-wide construction. Independent reimplementation of the
+#  algorithm in Sesia, Sabatti & Candes (2019, Biometrika) "Gene hunting with
+#  hidden Markov model knockoffs" (cf. the SNPknock package): the HMM knockoff
+#  reduces to a discrete-Markov-chain (DMC) knockoff on the latent state path
+#  plus independent re-emission. The DMC sampler uses a forward partition
+#  function Z and backward messages QN. Unlike the Gaussian generator, this
+#  models discrete haplotypic genotypes with rare variants, and is O(N p K^2) --
+#  linear in p -- so it would scale to chromosome-wide designs where the O(p^3)
+#  Gaussian construction is infeasible.
+#
+#  *** WORK IN PROGRESS -- NOT YET CORRECT. DO NOT USE FOR REAL KNOCKOFFS. ***
+#  This reimplementation is swap-exchangeable ONLY for small p: the swap-test
+#  total-variation distance grows monotonically with p (empirically ~0.008 at
+#  p=2, ~0.026 at p=4, ~0.066 at p=5, ~0.11 at p=6), indicating a per-step error
+#  in the forward partition-function (Z) recursion that compounds along the
+#  chain. At cis-window scale (p = hundreds) this would be badly invalid. The
+#  algorithm STRUCTURE matches SNPknock's dmc.cpp/hmm.cpp (the earlier
+#  from-memory attempts were fundamentally wrong -- missing Z entirely -- and
+#  failed at TV~0.2 for all p); the remaining bug is a subtle normalization
+#  error in the Z carry. Blocked on a correct reference (working snpknock build
+#  needs Armadillo; R/Python reference not retrievable). Gated by
+#  tests/test_hmm_knockoffs.py, which asserts validity at p<=4 and DOCUMENTS the
+#  large-p failure (xfail) so this is not mistaken for a finished generator.
+# ---------------------------------------------------------------------------
+
+def dmc_knockoffs(X, init_p, Q, seed=0):
+    """
+    Discrete Markov chain knockoffs for a state sequence.
+
+    *** WORK IN PROGRESS -- valid only for small p (see module comment). The Z
+    partition recursion has a compounding bug at larger p; do not use for
+    real (p >> 10) knockoffs until the swap-test passes at p=hundreds. ***
+
+    Args:
+        X: [N, p] integer state matrix (values in 0..K-1).
+        init_p: [K] initial state distribution P(state_0).
+        Q: [p-1, K, K] transition matrices; Q[j-1][a, b] = P(state_j=b | state_{j-1}=a).
+        seed: RNG seed.
+
+    Returns:
+        Xt: [N, p] integer knockoff state matrix (swap-exchangeable only at small p).
+    """
+    X = np.asarray(X)
+    N, p = X.shape
+    K = init_p.shape[0]
+    rng = np.random.default_rng(seed)
+    Xt = np.empty((N, p), dtype=np.int64)
+
+    # Vectorized over individuals. Z is the forward partition function [N, K].
+    Z = np.ones((N, K), dtype=np.float64)
+    U = rng.random((N, p))  # uniforms for inverse-CDF sampling
+    for j in range(p):
+        if j > 0:
+            Qj = Q[j - 1]                                   # [K, K]
+            # Q1[i,k] = Qj[X[i,j-1], k] * Qj[Xt[i,j-1], k] / Z[i,k]
+            Q1 = Qj[X[:, j - 1], :] * Qj[Xt[:, j - 1], :] / Z
+        else:
+            Q1 = np.tile(init_p, (N, 1))                    # [N, K]
+
+        # forward partition update: Znew = Q1 (L=1); if j<p-1: Znew = Q[j].T @ Q1
+        if j < p - 1:
+            Znew = Q1 @ Q[j]                                # [N,K] @ [K,K] = Q[j].T applied row-wise
+        else:
+            Znew = Q1.copy()
+        Znew = np.maximum(Znew, 1e-50)
+
+        # backward message QN[i,k] = P(X[i,j+1] | state=k) = Q[j][k, X[i,j+1]]
+        if j < p - 1:
+            QN = Q[j][:, X[:, j + 1]].T                     # [N, K]
+        else:
+            QN = np.full((N, K), 1.0 / K)
+
+        w = Q1 * QN                                         # [N, K]
+        w = w / w.sum(1, keepdims=True)
+        # inverse-CDF sample per row
+        cdf = np.cumsum(w, axis=1)
+        Xt[:, j] = (U[:, j:j + 1] > cdf).sum(1).clip(max=K - 1)
+        Z = Znew
+    return Xt
+
+
+def _backward_hmm(X, init_p, Q, emission_p):
+    """
+    Backward messages beta[j][i,k] = P(X[i,j+1:p] | H_j=k), normalized per (i,j).
+    X: [N, p] observed states; emission_p: [p, E, K] with P(X_j=e | H_j=k).
+    Returns beta: [p, N, K].
+    """
+    N, p = X.shape
+    K = init_p.shape[0]
+    beta = np.ones((p, N, K), dtype=np.float64)
+    for j in range(p - 2, -1, -1):
+        # fBeta[i,l] = emission_p[j+1][X[i,j+1], l] * beta[j+1][i,l]
+        emit_next = emission_p[j + 1][X[:, j + 1], :]       # [N, K]
+        fBeta = emit_next * beta[j + 1]                     # [N, K]
+        # beta[j][i,k] = sum_l Q[j][k,l] * fBeta[i,l]
+        b = fBeta @ Q[j].T                                 # [N, K]
+        b = b / np.maximum(b.sum(1, keepdims=True), 1e-300)
+        beta[j] = b
+    return beta
+
+
+def _sample_hidden_states(X, init_p, Q, emission_p, beta, rng):
+    """Forward-sample H ~ P(H | X) using the backward messages beta."""
+    N, p = X.shape
+    K = init_p.shape[0]
+    H = np.empty((N, p), dtype=np.int64)
+    U = rng.random((N, p))
+    # j = 0
+    w = init_p[None, :] * emission_p[0][X[:, 0], :] * beta[0]
+    w = w / w.sum(1, keepdims=True)
+    H[:, 0] = (U[:, 0:1] > np.cumsum(w, 1)).sum(1).clip(max=K - 1)
+    for j in range(1, p):
+        w = Q[j - 1][H[:, j - 1], :] * emission_p[j][X[:, j], :] * beta[j]
+        w = w / w.sum(1, keepdims=True)
+        H[:, j] = (U[:, j:j + 1] > np.cumsum(w, 1)).sum(1).clip(max=K - 1)
+    return H
+
+
+def hmm_knockoffs(X, init_p, Q, emission_p, seed=0):
+    """
+    HMM knockoffs for observed genotype sequences (Sesia et al. 2019).
+
+    *** WORK IN PROGRESS -- valid only for small p; inherits the compounding Z
+    bug from dmc_knockoffs (see module comment). Do not use for real
+    p=hundreds knockoffs yet. ***
+
+    Three steps: (1) backward pass for beta = P(future | H_j); (2) forward-sample
+    the hidden states H ~ P(H | X); (3) DMC knockoff on H -> Ht; (4) re-emit
+    Xt_j ~ P(X_j | H_j = Ht_j). The composition is swap-exchangeable (at small p)
+    because the DMC step is, and the emission is independent given the state.
+
+    Args:
+        X: [N, p] observed genotype states (integers, e.g. dosage 0/1/2 -> E=3).
+        init_p: [K] hidden initial distribution.
+        Q: [p-1, K, K] hidden transition matrices.
+        emission_p: [p, E, K] emission P(X_j = e | H_j = k).
+        seed: RNG seed.
+
+    Returns:
+        Xt: [N, p] observed knockoff genotype states.
+    """
+    X = np.asarray(X)
+    N, p = X.shape
+    K = init_p.shape[0]
+    E = emission_p.shape[1]
+    rng = np.random.default_rng(seed)
+
+    beta = _backward_hmm(X, init_p, Q, emission_p)
+    H = _sample_hidden_states(X, init_p, Q, emission_p, beta, rng)
+    Ht = dmc_knockoffs(H, init_p, Q, seed=seed + 100000)
+
+    # re-emit observations from knockoff hidden states
+    Xt = np.empty((N, p), dtype=np.int64)
+    U = rng.random((N, p))
+    for j in range(p):
+        # w[i,e] = emission_p[j][e, Ht[i,j]]
+        w = emission_p[j][:, Ht[:, j]].T                    # [N, E]
+        w = w / w.sum(1, keepdims=True)
+        Xt[:, j] = (U[:, j:j + 1] > np.cumsum(w, 1)).sum(1).clip(max=E - 1)
+    return Xt
+
+
+# ---------------------------------------------------------------------------
 #  Importance statistics and the knockoff filter
 # ---------------------------------------------------------------------------
 
