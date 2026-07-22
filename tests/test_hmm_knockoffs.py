@@ -1,18 +1,19 @@
 """
-Tests / validity gate for the HMM (fastPHASE-style) knockoff generator.
+Tests for the HMM / discrete-Markov-chain (DMC) knockoff generators.
 
-STATUS: WORK IN PROGRESS. The DMC/HMM knockoff reimplementation is swap-
-exchangeable only for small p -- the swap-test total-variation distance grows
-with p, indicating a compounding bug in the forward partition-function (Z)
-recursion. These tests:
-  - assert validity at small p (where it IS correct), and
-  - DOCUMENT the large-p failure (xfail), so the generator cannot be mistaken
-    for finished. When the Z bug is fixed, the xfail test should start passing
-    and can be promoted to a hard assertion.
+These implement Sesia, Sabatti & Candes (2019, Biometrika) Algorithms 1 & 2.
+Validity is swap-exchangeability of (X, X_knockoff): swapping any variable with
+its knockoff must leave the joint law unchanged.
 
-The swap-exchangeability test is the ground truth for a valid knockoff: swap each
-column with its knockoff and check the joint law is unchanged (TV -> 0 up to
-Monte-Carlo noise, which shrinks like 1/sqrt(n)).
+IMPORTANT testing note: a naive check that computes the total-variation distance
+between the FULL joint of (X, X_knockoff) and its column-swapped version has a
+noise floor that grows with p, because the number of joint cells (|X|^{2p}) grows
+exponentially while the sample size does not. That artifact was once mistaken for
+a "compounding bug." The correct, noise-robust check is either (a) compare the
+swap-TV against the split-half noise floor of the same joint, or (b) use
+LOW-ORDER (pairwise) swap statistics, whose cell counts are small and which are
+well estimated at moderate n. We use the pairwise check here -- it is sensitive,
+fast, and stays flat in p for a valid knockoff.
 """
 
 import numpy as np
@@ -25,112 +26,147 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import tensorqtl.knockoffs as ko
 
 
-def _random_chain(p, K, seed):
-    rng = np.random.default_rng(seed)
-    init_p = rng.dirichlet(np.ones(K))
-    Q = np.array([rng.dirichlet(np.ones(K), size=K) for _ in range(p - 1)])
-    return init_p, Q
-
-
-def _sample_chain(n, init_p, Q, seed):
-    rng = np.random.default_rng(seed)
-    p = len(Q) + 1
-    K = len(init_p)
+def _vec_chain(n, p, K, initP, Q, rng):
     X = np.empty((n, p), dtype=int)
-    X[:, 0] = rng.choice(K, n, p=init_p)
+    X[:, 0] = rng.choice(K, n, p=initP)
     for j in range(1, p):
-        for x in range(K):
-            m = X[:, j - 1] == x
-            if m.any():
-                X[m, j] = rng.choice(K, m.sum(), p=Q[j - 1][x])
+        cdf = np.cumsum(Q[j - 1], 1)
+        u = rng.random(n)
+        X[:, j] = (u[:, None] > cdf[X[:, j - 1]]).sum(1).clip(max=K - 1)
     return X
 
 
-def _mean_swap_tv(X, Xt, base):
-    """Mean over columns of TV(joint, joint-with-column-c-swapped)."""
-    n, p = X.shape
-    tvs = []
-    for c in range(p):
-        Xs = X.copy(); Xts = Xt.copy()
-        Xs[:, c], Xts[:, c] = Xt[:, c].copy(), X[:, c].copy()
-        key = (Xs * (base ** np.arange(p))).sum(1) * (base ** p) + \
-              (Xts * (base ** np.arange(p))).sum(1)
-        sw = np.bincount(key, minlength=(base ** p) ** 2) / n
-        tvs.append(0.5 * np.abs(_joint(X, Xt, base) - sw).sum())
-    return float(np.mean(tvs))
+def _pairwise_swap_maxtv(X, Xt, K):
+    """
+    Max over all column pairs (a,b) of the TV between the (col_a, col_b) 2-way
+    table and its version with column a swapped real<->knockoff. For a valid
+    knockoff this is ~ Monte-Carlo noise and does NOT grow with p.
+    """
+    N, p = X.shape
+    aug = np.concatenate([X, Xt], 1)   # 0..p-1 real, p..2p-1 knockoff
 
+    def tab(i, j):
+        c = aug[:, i] * K + aug[:, j]
+        return np.bincount(c, minlength=K * K) / N
 
-def _joint(A, B, base):
-    p = A.shape[1]
-    key = (A * (base ** np.arange(p))).sum(1) * (base ** p) + \
-          (B * (base ** np.arange(p))).sum(1)
-    return np.bincount(key, minlength=(base ** p) ** 2) / len(A)
+    worst = 0.0
+    for a in range(p):
+        for b in range(p):
+            if a == b:
+                continue
+            worst = max(worst, 0.5 * np.abs(tab(a, b) - tab(a + p, b)).sum())
+            worst = max(worst, 0.5 * np.abs(tab(a, b + p) - tab(a + p, b)).sum())
+    return worst
 
 
 class TestDMCKnockoff:
 
     def test_marginals_match(self):
-        """Knockoff has the correct per-position marginal law (necessary cond.)."""
-        p, K = 4, 3
-        init_p, Q = _random_chain(p, K, seed=1)
-        n = 60000
-        X = _sample_chain(n, init_p, Q, seed=2)
-        Xt = ko.dmc_knockoffs(X, init_p, Q, seed=3)
-        marg = [init_p]
+        rng = np.random.default_rng(0)
+        p, K = 8, 3
+        initP = rng.dirichlet(np.ones(K))
+        Q = np.array([rng.dirichlet(np.ones(K), size=K) for _ in range(p - 1)])
+        n = 100000
+        X = _vec_chain(n, p, K, initP, Q, np.random.default_rng(1))
+        Xt = ko.dmc_knockoffs(X, initP, Q, seed=2)
+        marg = [initP]
         for j in range(p - 1):
             marg.append(marg[-1] @ Q[j])
         for j in range(p):
             obs = np.bincount(Xt[:, j], minlength=K) / n
-            assert np.allclose(obs, marg[j], atol=0.02), f"j={j}"
+            assert np.allclose(obs, marg[j], atol=0.02), f"j={j} marginal off"
 
-    @pytest.mark.parametrize("p", [2, 3, 4])
-    def test_swap_exchangeable_small_p(self, p):
-        """Valid knockoff at small p: swap-test TV ~ 0 (Monte-Carlo noise)."""
+    @pytest.mark.parametrize("p", [6, 12, 20])
+    def test_swap_exchangeable_scales_with_p(self, p):
+        """Pairwise-swap-TV stays ~ Monte-Carlo noise and FLAT as p grows."""
+        rng = np.random.default_rng(5)
         K = 3
-        init_p, Q = _random_chain(p, K, seed=5)
-        n = 120000
-        X = _sample_chain(n, init_p, Q, seed=6)
-        Xt = ko.dmc_knockoffs(X, init_p, Q, seed=7)
-        tv = _mean_swap_tv(X, Xt, base=K)
-        # threshold scales with #cells / n; generous but well below the ~0.2 of
-        # a fundamentally broken sampler.
-        assert tv < 0.04, f"p={p}: swap-TV={tv:.4f} (should be ~0)"
+        initP = rng.dirichlet(np.ones(K))
+        Q = np.array([rng.dirichlet(np.ones(K), size=K) for _ in range(p - 1)])
+        n = 150000
+        X = _vec_chain(n, p, K, initP, Q, np.random.default_rng(1))
+        Xt = ko.dmc_knockoffs(X, initP, Q, seed=2)
+        tv = _pairwise_swap_maxtv(X, Xt, K)
+        # noise scale ~ few / sqrt(n); assert well below a generous bound and,
+        # crucially, that it does NOT blow up with p.
+        assert tv < 0.02, f"p={p}: pairwise-swap-TV={tv:.4f}"
 
-    @pytest.mark.xfail(reason="known compounding Z-recursion bug at large p; "
-                              "generator is WIP and invalid for p>~4",
-                       strict=True)
-    def test_swap_exchangeable_large_p(self):
-        """DOCUMENTS the failure: at p=8 the swap-TV is large (invalid)."""
-        p, K = 8, 3
-        init_p, Q = _random_chain(p, K, seed=5)
-        n = 120000
-        X = _sample_chain(n, init_p, Q, seed=6)
-        Xt = ko.dmc_knockoffs(X, init_p, Q, seed=7)
-        tv = _mean_swap_tv(X, Xt, base=K)
-        assert tv < 0.04, f"p={p}: swap-TV={tv:.4f}"
+    def test_swap_tv_below_full_joint_noise_floor(self):
+        """
+        Sanity that the classic full-joint swap-TV, while nonzero, tracks the
+        split-half noise floor (i.e. it is sampling noise, not bias). K=2 keeps
+        the joint small enough to bincount.
+        """
+        rng = np.random.default_rng(5)
+        p, K = 8, 2
+        initP = rng.dirichlet(np.ones(K))
+        Q = np.array([rng.dirichlet(np.ones(K), size=K) for _ in range(p - 1)])
+        n = 400000
+        X = _vec_chain(n, p, K, initP, Q, np.random.default_rng(1))
+        Xt = ko.dmc_knockoffs(X, initP, Q, seed=2)
+        pw = K ** np.arange(p)
+        M = (K ** p) ** 2
+
+        def dist(A, B):
+            c = (A @ pw).astype(np.int64) * (K ** p) + (B @ pw).astype(np.int64)
+            return np.bincount(c, minlength=M) / len(A)
+
+        base = dist(X, Xt)
+        floor = 0.5 * np.abs(dist(X[:n // 2], Xt[:n // 2]) -
+                             dist(X[n // 2:], Xt[n // 2:])).sum()
+        sw = []
+        for c in range(p):
+            Xs, Xts = X.copy(), Xt.copy()
+            Xs[:, c], Xts[:, c] = Xt[:, c].copy(), X[:, c].copy()
+            sw.append(0.5 * np.abs(base - dist(Xs, Xts)).sum())
+        # swap-TV must not exceed the pure-noise split-half floor by much
+        assert np.mean(sw) <= 1.5 * floor, \
+            f"swap-TV={np.mean(sw):.4f} exceeds noise floor={floor:.4f} -> bias"
 
 
 class TestHMMKnockoff:
 
-    def test_hmm_swap_exchangeable_small_p(self):
-        """HMM knockoff valid at small p (p=2 exhaustive-ish check)."""
-        p, K, E = 2, 2, 2
-        init_p = np.array([0.6, 0.4])
-        Q = np.array([[[0.7, 0.3], [0.2, 0.8]]])
-        emission_p = np.array([[[0.8, 0.3], [0.2, 0.7]],
-                               [[0.6, 0.35], [0.4, 0.65]]])  # [p,E,K]
-        rng = np.random.default_rng(1)
-        n = 200000
-        # sample observed X from the HMM
-        H = np.empty((n, p), int)
-        H[:, 0] = rng.choice(K, n, p=init_p)
-        H[:, 1] = [rng.choice(K, p=Q[0][h]) for h in H[:, 0]]
-        X = np.empty((n, p), int)
+    def _model(self, p, K, E, seed):
+        rng = np.random.default_rng(seed)
+        initP = rng.dirichlet(np.ones(K))
+        Q = np.array([rng.dirichlet(np.ones(K), size=K) for _ in range(p - 1)])
+        emit = np.zeros((p, E, K))
         for j in range(p):
-            X[:, j] = [rng.choice(E, p=emission_p[j][:, h]) for h in H[:, j]]
-        Xt = ko.hmm_knockoffs(X, init_p, Q, emission_p, seed=3)
-        tv = _mean_swap_tv(X, Xt, base=E)
-        assert tv < 0.02, f"HMM p=2 swap-TV={tv:.4f}"
+            for k in range(K):
+                emit[j][:, k] = rng.dirichlet(np.ones(E))
+        return initP, Q, emit
+
+    def _sample(self, n, p, K, E, initP, Q, emit, rng):
+        H = _vec_chain(n, p, K, initP, Q, rng)
+        X = np.empty((n, p), dtype=int)
+        for j in range(p):
+            cdf = np.cumsum(emit[j].T, 1)
+            X[:, j] = (rng.random(n)[:, None] > cdf[H[:, j]]).sum(1).clip(max=E - 1)
+        return X
+
+    @pytest.mark.parametrize("p", [8, 16])
+    def test_hmm_swap_exchangeable(self, p):
+        K, E = 3, 3
+        initP, Q, emit = self._model(p, K, E, seed=5)
+        n = 150000
+        X = self._sample(n, p, K, E, initP, Q, emit, np.random.default_rng(1))
+        Xt = ko.hmm_knockoffs(X, initP, Q, emit, seed=7)
+        tv = _pairwise_swap_maxtv(X, Xt, E)
+        assert tv < 0.02, f"HMM p={p}: pairwise-swap-TV={tv:.4f}"
+
+    def test_hmm_marginals_match(self):
+        p, K, E = 10, 3, 3
+        initP, Q, emit = self._model(p, K, E, seed=2)
+        n = 120000
+        X = self._sample(n, p, K, E, initP, Q, emit, np.random.default_rng(1))
+        Xt = ko.hmm_knockoffs(X, initP, Q, emit, seed=3)
+        pH = [initP]
+        for j in range(p - 1):
+            pH.append(pH[-1] @ Q[j])
+        for j in range(p):
+            obs = np.bincount(Xt[:, j], minlength=E) / n
+            true = emit[j] @ pH[j]
+            assert np.allclose(obs, true, atol=0.02), f"j={j} obs marginal off"
 
 
 if __name__ == '__main__':
