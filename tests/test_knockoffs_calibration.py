@@ -1,5 +1,12 @@
 """
-The calibration gate for knockoff-SuSiE (docs/knockoff_susie_design.md, section 5).
+Calibration gate for the EXPERIMENTAL credible-set-level path (map_knockoffs).
+
+NOTE: this file exercises `susie.map_knockoffs` -- the CS-level knockoff path,
+which is EXPERIMENTAL / not FDR-controlled (its statistic is not swap-antisymmetric;
+see docs/knockoff_susie_design.md STATUS and test_knockoffs.py::TestSwapEquivariance).
+The SHIPPED, valid path is eGene-level FDR (`susie.map_egenes_knockoffs`), whose
+calibration gate is tests/test_knockoffs_egenes.py. These tests remain as the
+empirical characterization of the experimental CS-level path.
 
 Model-X knockoffs guarantee FDR only with a correctly estimated knockoff
 distribution. At the modest N of eQTL studies that is not automatic, so the
