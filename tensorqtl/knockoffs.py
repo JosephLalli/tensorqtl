@@ -1231,14 +1231,19 @@ def per_gene_pvalues(W_per_draw, offset=1):
 
     VALIDITY, not marginal uniformity. This is a valid (super-uniform /
     CONSERVATIVE) p-value: P(p_g <= a | H_g) <= a. It is NOT marginally uniform.
-    When the M draws are independent the count #{W_g^(m) <= 0} is Binomial(M,1/2),
-    which concentrates near M/2, so the p-value distribution piles up near 0.5 and
-    its LEFT TAIL is much lighter than Uniform's -- exactly the property that
-    keeps FDR control safe (and makes it low-power; see the resolution note on
-    select_egenes_pvalue). Coherent (positively correlated) draws spread the count
-    toward the {0, M} extremes, lightening the concentration but never breaking
-    the super-uniform tail bound. Resolution is 1/(M+1), so use M >= 10-20 at a
-    minimum; small-q BH selection needs far more (see select_egenes_pvalue).
+    Under the model-X null each draw m uses an INDEPENDENTLY generated knockoff
+    copy, so the swap X_j <-> X~_j^(m) can be applied per draw independently; that
+    flips the sign of W_g^(m) alone and leaves the joint law invariant. Invariance
+    under flipping any subset of the M signs forces the sign vector to be uniform
+    on {+-1}^M, hence #{W_g^(m) <= 0} ~ Binomial(M, 1/2) EXACTLY (the shared real
+    genotypes do NOT induce dependence in the signs). The count concentrates near
+    M/2, so the p-value piles up near 0.5 and its LEFT TAIL is much lighter than
+    Uniform's -- exactly the property that keeps FDR control safe (and makes it
+    low-power; see the resolution note on select_egenes_pvalue). Because the null
+    is the EXACT Binomial(M,1/2), the step-3 calibration uses that known null CDF
+    directly (calibrated_qvalues) rather than the uniform-null Storey formula.
+    Resolution is 1/(M+1), so use M >= 10-20 at a minimum; small-q BH selection
+    needs far more (see select_egenes_pvalue).
 
     Args:
         W_per_draw: array [n_draws, n_genes] of gene-level statistics.
