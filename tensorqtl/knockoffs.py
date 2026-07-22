@@ -1208,6 +1208,112 @@ def select_egenes_qvalue(gene_ids, W_per_draw, q=0.1, offset=0, aggregate='media
 
 
 # ---------------------------------------------------------------------------
+#  Per-gene knockoff p-values (step 2) -- the primitive for empirical-Bayes
+#  interval-pi0 calibration (step 3). With M coherent knockoff draws, the
+#  per-gene "how often does the knockoff beat the real gene" statistic is an
+#  (approximately) uniform-null p-value. It has a KNOWN null (uniform), which is
+#  exactly what the two-groups / local-FDR calibration needs, and -- because it
+#  is computed within each gene from that gene's own knockoffs -- it is robust to
+#  the pooled-f_0 contamination that a genome-wide knockoff-score density suffers
+#  (alt-gene knockoffs are suppressed by the winning real signal).
+# ---------------------------------------------------------------------------
+
+def per_gene_pvalues(W_per_draw, offset=1):
+    """
+    Per-gene knockoff p-value from M draws of the gene-level statistic.
+
+    W_per_draw[m, g] = W_g^(m) = R_g^(m) - K_g^(m) (real max PIP minus knockoff
+    max PIP in draw m). Under the null H_g (gene has no cis signal) gene_level_W
+    is swap-antisymmetric, so each W_g^(m) is symmetric about 0 (its sign is a
+    coin flip). The knockoff p-value counts how often the knockoff wins:
+
+        p_g = (offset + #{m: W_g^(m) <= 0}) / (offset + M)
+
+    VALIDITY, not marginal uniformity. This is a valid (super-uniform /
+    CONSERVATIVE) p-value: P(p_g <= a | H_g) <= a. It is NOT marginally uniform.
+    When the M draws are independent the count #{W_g^(m) <= 0} is Binomial(M,1/2),
+    which concentrates near M/2, so the p-value distribution piles up near 0.5 and
+    its LEFT TAIL is much lighter than Uniform's -- exactly the property that
+    keeps FDR control safe (and makes it low-power; see the resolution note on
+    select_egenes_pvalue). Coherent (positively correlated) draws spread the count
+    toward the {0, M} extremes, lightening the concentration but never breaking
+    the super-uniform tail bound. Resolution is 1/(M+1), so use M >= 10-20 at a
+    minimum; small-q BH selection needs far more (see select_egenes_pvalue).
+
+    Args:
+        W_per_draw: array [n_draws, n_genes] of gene-level statistics.
+        offset: 1 (knockoff+, recommended) or 0.
+
+    Returns:
+        pvals: array [n_genes] in (0, 1].
+    """
+    W = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
+    M, n = W.shape
+    b = (W <= 0).sum(axis=0)                 # knockoff wins/ties per gene
+    return (offset + b) / (offset + M)
+
+
+def bh_select(pvals, q):
+    """
+    Benjamini-Hochberg selection at FDR q. Returns a boolean mask [n].
+
+    Valid FDR control when the p-values are (super-)uniform under the null and
+    the standard BH dependence conditions hold. For the knockoff per-gene
+    p-values (approximately uniform, positively dependent across genes via shared
+    genotypes) BH is the pragmatic selector; calibration is checked empirically.
+    """
+    p = np.asarray(pvals, dtype=np.float64)
+    n = p.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    order = np.argsort(p)
+    thresh = q * np.arange(1, n + 1) / n
+    passed = p[order] <= thresh
+    if not passed.any():
+        return np.zeros(n, dtype=bool)
+    kmax = np.max(np.where(passed)[0])
+    cutoff = p[order][kmax]
+    return p <= cutoff
+
+
+def select_egenes_pvalue(gene_ids, W_per_draw, q=0.1, offset=1):
+    """
+    eGene selection via per-gene knockoff p-values + Benjamini-Hochberg.
+
+    This is the step-2 selection mode: compute a per-gene p-value with a KNOWN
+    (approximately uniform) null from the M coherent draws (per_gene_pvalues),
+    then select at FDR q with BH. Its output (`pvalues`) is also the input the
+    step-3 interval-pi0 empirical-Bayes calibration consumes.
+
+    RESOLUTION LIMIT (important for choosing M). The smallest attainable p-value
+    is offset/(offset+M) = 1/(M+1) at offset=1. For BH at level q to make R
+    discoveries, the R-th ordered p-value must clear q*R/n; a maximally-signalled
+    gene (p_g = 1/(M+1)) can therefore only enter a rejection set of size R when
+        1/(M+1) <= q * R / n   =>   M >= n / (q * R) - 1.
+    The bound is governed by R, the number of JOINTLY discoverable genes:
+      * Many true genes (R ~ n): the wall is cheap. n=100 all-signal, q=0.1
+        needs only M >= n/(q*n) - 1 = 1/q - 1 = 9, so M=15 already selects them.
+      * Few true genes (small R): the wall is expensive. n=100 with only R=5 true
+        needs M >= 100/(0.1*5) - 1 = 199 draws before those 5 can be selected;
+        M=15/30/60 select nothing at all.
+    So direct BH is only practical when discoveries are plentiful. The per-gene
+    p-value's primary role is as the primitive for the step-3 interval-pi0
+    empirical-Bayes calibration, which pools the p-value DISTRIBUTION across genes
+    and does not hit this hard per-gene 1/(M+1) BH wall.
+
+    Returns:
+        dict: 'selected' (gene_ids), 'pvalues' (array [n], aligned), 'n_draws'.
+    """
+    W = np.atleast_2d(np.asarray(W_per_draw, dtype=np.float64))
+    n_draws, m = W.shape
+    assert m == len(gene_ids), "W columns must align to gene_ids"
+    pvals = per_gene_pvalues(W, offset=offset)
+    mask = bh_select(pvals, q)
+    selected = [gene_ids[i] for i in range(m) if mask[i]]
+    return {'selected': selected, 'pvalues': pvals, 'n_draws': n_draws}
+
+
+# ---------------------------------------------------------------------------
 #  Derandomization (Ren & Barber 2024, e-value aggregation)
 # ---------------------------------------------------------------------------
 

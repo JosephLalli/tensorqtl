@@ -1194,6 +1194,13 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr, offset=(knockoff_offset or 1))
         selected_genes = set(sel['selected'])
         score_col, score_vals = 'evalue', sel['evalues']
+    elif selection == 'pvalue':
+        logger.write(f'  * PASS 2: per-gene knockoff p-value + BH selection at FDR <= {fdr} '
+                     f'(M={W_per_draw.shape[0]} draws)')
+        sel = ko.select_egenes_pvalue(gene_ids, W_per_draw, q=fdr,
+                                      offset=(knockoff_offset or 1))
+        selected_genes = set(sel['selected'])
+        score_col, score_vals = 'pvalue', sel['pvalues']
     else:  # 'qvalue' (default, calibrated)
         logger.write(f'  * PASS 2: calibrated q-value eGene selection at FDR <= {fdr} '
                      f'(offset={knockoff_offset}, aggregate={aggregate})')
