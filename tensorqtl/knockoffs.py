@@ -496,7 +496,268 @@ def fit_hmm(X, K, E=None, n_iter=25, tol=1e-4, pseudocount=1.0, seed=0,
 
 
 # ---------------------------------------------------------------------------
-#  Chromosome-coherent HMM knockoff generation
+#  Diploid genotype HMM (Route 1): the TRUE unphased-dosage law
+#
+#  An unphased dosage G_j = xL_j + xR_j is the sum of two independent haplotype
+#  chains, each a fastPHASE HMM (K clusters, transition Q_hap, allele-1 prob
+#  theta[j,k]). The marginal law of the dosage sequence is therefore ITSELF an
+#  HMM, but its hidden state is the (ordered) PAIR of clusters (a, b):
+#     * initial:     init_pair(a,b) = init_hap(a) init_hap(b)
+#     * transition:  Q_pair = Q_hap (Kronecker) Q_hap   (two chains recombine
+#                    independently)
+#     * emission:    P(G_j=g | a,b) = convolution of Bernoulli(theta[j,a]) and
+#                    Bernoulli(theta[j,b]):
+#                      P(0)=(1-ta)(1-tb), P(1)=ta(1-tb)+(1-ta)tb, P(2)=ta tb.
+#  Feeding this K^2-state pair HMM to hmm_knockoffs (with the OBSERVED dosages as
+#  E=3 observations) yields a knockoff dosage that is exact for the true diploid
+#  law -- WITHOUT phasing (Sesia, Sabatti & Candes 2019, genotype knockoffs).
+#  Cost is O(N p K^4): the price of not phasing. Route 2 below (phased) is
+#  O(N p K^2) but needs haplotypes.
+# ---------------------------------------------------------------------------
+
+def _pair_indices(K):
+    """Ordered-pair index maps: state s = a*K + b -> (A[s]=a, B[s]=b)."""
+    A = np.repeat(np.arange(K), K)      # L-haplotype cluster per pair-state
+    B = np.tile(np.arange(K), K)        # R-haplotype cluster per pair-state
+    return A, B
+
+
+def build_genotype_pair_hmm(init_p_hap, Q_hap, theta):
+    """
+    Assemble the K^2-state genotype (pair) HMM from haplotype-level parameters.
+
+    Args:
+        init_p_hap: [K] haplotype initial cluster distribution.
+        Q_hap: [p-1, K, K] haplotype transition matrices.
+        theta: [p, K] allele-1 emission probabilities per position and cluster.
+
+    Returns:
+        (init_pair [K^2], Q_pair [p-1, K^2, K^2], emission_pair [p, 3, K^2]) in
+        the layout hmm_knockoffs consumes (E=3 dosage emissions).
+    """
+    init_p_hap = np.asarray(init_p_hap, dtype=np.float64)
+    Q_hap = np.asarray(Q_hap, dtype=np.float64)
+    theta = np.asarray(theta, dtype=np.float64)
+    K = init_p_hap.shape[0]
+    p = theta.shape[0]
+    A, B = _pair_indices(K)
+
+    init_pair = init_p_hap[A] * init_p_hap[B]
+    init_pair = init_pair / init_pair.sum()
+    # Q_pair[j] = kron(Q_hap[j], Q_hap[j]); kron indexes (a*K+b, c*K+d)=Q[a,c]Q[b,d]
+    Q_pair = np.stack([np.kron(Q_hap[j], Q_hap[j]) for j in range(p - 1)])
+    ta = theta[:, A]                                  # [p, K^2]
+    tb = theta[:, B]                                  # [p, K^2]
+    emission_pair = np.stack([(1 - ta) * (1 - tb),
+                              ta * (1 - tb) + (1 - ta) * tb,
+                              ta * tb], axis=1)        # [p, 3, K^2]
+    return init_pair, Q_pair, emission_pair
+
+
+def fit_genotype_hmm(G, K, n_iter=25, tol=1e-4, pseudocount=1.0, theta_pseudo=1.0,
+                     seed=0, init_p_hap=None, Q_hap=None, theta=None, verbose=False):
+    """
+    Fit the diploid genotype HMM from UNPHASED dosages by constrained Baum-Welch
+    (fastPHASE-style genotype EM).
+
+    The E-step is an ordinary forward-backward on the K^2-state pair HMM built
+    from the current haplotype parameters. The M-step maps the pair-state
+    posteriors back to HAPLOTYPE-level parameters (the constraint that makes this
+    the diploid model rather than a generic K^2-state HMM):
+      * init/transition: pool the L- and R-haplotype marginals of the pair
+        posteriors (haplotypes are exchangeable);
+      * emission theta[j,k]: expected number of allele-1 emissions attributed to
+        cluster k, where a heterozygous dosage (g=1) is split between the two
+        clusters in proportion to their current allele probabilities.
+
+    Args:
+        G: [N, p] unphased dosage matrix in {0,1,2}.
+        K: number of haplotype clusters.
+        n_iter, tol: EM stopping controls.
+        pseudocount: smoothing for init/transition counts.
+        theta_pseudo: smoothing for the emission (keeps theta in (0,1)).
+        seed: RNG seed for initialization.
+        init_p_hap, Q_hap, theta: optional warm-start haplotype parameters.
+        verbose: print the log-likelihood trace.
+
+    Returns:
+        dict: 'init_p_hap' [K], 'Q_hap' [p-1,K,K], 'theta' [p,K],
+        'loglik' (per-iteration), 'n_iter', 'K'.
+    """
+    G = np.asarray(G).astype(np.int64)
+    N, p = G.shape
+    rng = np.random.default_rng(seed)
+    A, B = _pair_indices(K)
+
+    if init_p_hap is None:
+        init_p_hap = rng.dirichlet(np.ones(K))
+    else:
+        init_p_hap = np.asarray(init_p_hap, dtype=np.float64).copy()
+    if Q_hap is None:
+        Q_hap = np.empty((p - 1, K, K), dtype=np.float64)
+        base = np.ones((K, K)) + (K * 2.0) * np.eye(K)   # self-transition bias
+        for j in range(p - 1):
+            for a in range(K):
+                Q_hap[j, a] = rng.dirichlet(base[a])
+    else:
+        Q_hap = np.asarray(Q_hap, dtype=np.float64).copy()
+    if theta is None:
+        theta = rng.uniform(0.05, 0.95, size=(p, K))
+    else:
+        theta = np.asarray(theta, dtype=np.float64).copy()
+
+    loglik_trace = []
+    prev_ll = -np.inf
+    for it in range(n_iter):
+        init_pair, Q_pair, emission_pair = build_genotype_pair_hmm(init_p_hap, Q_hap, theta)
+        gamma, xi_sum, ll = _forward_backward_scaled(G, init_pair, Q_pair, emission_pair)
+        loglik_trace.append(ll)
+        if verbose:
+            print(f"  [fit_genotype_hmm] iter {it:3d}  loglik={ll:.4f}")
+
+        # --- M-step: initial haplotype distribution (pool L and R marginals) ---
+        g0 = gamma[0].sum(0)                              # [K^2]
+        occ = 0.5 * (np.bincount(A, g0, minlength=K)
+                     + np.bincount(B, g0, minlength=K)) + pseudocount
+        init_p_hap = occ / occ.sum()
+
+        # --- M-step: haplotype transitions from pair-transition posteriors ---
+        Qn = np.empty((p - 1, K, K), dtype=np.float64)
+        for j in range(p - 1):
+            xij = xi_sum[j].reshape(K, K, K, K)          # [a, b, c, d]
+            L = xij.sum(axis=(1, 3))                      # L: a -> c
+            R = xij.sum(axis=(0, 2))                      # R: b -> d
+            tc = L + R + pseudocount
+            Qn[j] = tc / tc.sum(1, keepdims=True)
+        Q_hap = Qn
+
+        # --- M-step: emission theta (allele-1 responsibilities per cluster) ---
+        theta_new = np.empty((p, K), dtype=np.float64)
+        for j in range(p):
+            ta = theta[j][A]
+            tb = theta[j][B]
+            het = ta * (1 - tb) + (1 - ta) * tb          # P(g=1 | a,b) numerator
+            # E[xL=1 | g=1, a, b] = ta(1-tb) / het ; xR gets the complement
+            exL1 = np.where(het > 1e-12, ta * (1 - tb) / np.maximum(het, 1e-12), 0.5)
+            g = G[:, j]                                   # [N]
+            gam = gamma[j]                                # [N, K^2]
+            ExL = (g[:, None] == 1) * exL1[None, :] + (g[:, None] == 2) * 1.0
+            ExR = g[:, None] - ExL                        # since xL + xR = g
+            wLs = (gam * ExL).sum(0)                      # [K^2] allele-1 (L)
+            wRs = (gam * ExR).sum(0)                      # [K^2] allele-1 (R)
+            gs = gam.sum(0)                               # [K^2] total mass
+            num = np.bincount(A, wLs, minlength=K) + np.bincount(B, wRs, minlength=K)
+            den = np.bincount(A, gs, minlength=K) + np.bincount(B, gs, minlength=K)
+            theta_new[j] = (num + theta_pseudo) / (den + 2 * theta_pseudo)
+        theta = np.clip(theta_new, 1e-4, 1 - 1e-4)
+
+        if it > 0 and ll - prev_ll < tol * N:
+            break
+        prev_ll = ll
+
+    return {'init_p_hap': init_p_hap, 'Q_hap': Q_hap, 'theta': theta,
+            'loglik': loglik_trace, 'n_iter': len(loglik_trace), 'K': K}
+
+
+def genotype_hmm_knockoffs(G, K=8, M=1, n_em_iter=25, seed=0, params=None,
+                           return_params=False, verbose=False):
+    """
+    Route 1 (exact, unphased): knockoff dosages from the diploid genotype HMM.
+
+    Fits (or accepts) haplotype-level parameters, assembles the K^2-state pair
+    HMM, and draws M knockoff dosage copies. Exact for the true diploid law.
+
+    Args:
+        G: [N, p] unphased dosage matrix in {0,1,2}.
+        K: haplotype clusters (cost is O(N p K^4) -- keep modest).
+        M: number of knockoff draws.
+        n_em_iter: EM iterations (ignored if params given).
+        seed: RNG seed.
+        params: optional {'init_p_hap','Q_hap','theta'} to skip fitting.
+        return_params: also return the (fitted/supplied) haplotype params.
+        verbose: forwarded to fit_genotype_hmm.
+
+    Returns:
+        draws [M, N, p] int knockoff dosages (+ params if requested).
+    """
+    G = np.asarray(G).astype(np.int64)
+    N, p = G.shape
+    if params is None:
+        params = fit_genotype_hmm(G, K=K, n_iter=n_em_iter, seed=seed, verbose=verbose)
+    init_pair, Q_pair, emission_pair = build_genotype_pair_hmm(
+        params['init_p_hap'], params['Q_hap'], params['theta'])
+    draws = np.empty((M, N, p), dtype=np.int64)
+    for m in range(M):
+        draws[m] = hmm_knockoffs(G, init_pair, Q_pair, emission_pair, seed=seed + 1000 + m)
+    if return_params:
+        return draws, params
+    return draws
+
+
+# ---------------------------------------------------------------------------
+#  Phased haplotype knockoffs (Route 2): generate knockoff diploid genomes
+#
+#  When phase is available, the cheaper and equally exact construction is to
+#  knock off the two haplotypes directly. Fit a single haplotype HMM (E=2) to the
+#  pooled 2N haplotypes, draw x~L conditional on xL and x~R conditional on xR
+#  (same fitted model, independent randomness), and set G~ = x~L + x~R. This is a
+#  valid knockoff of G because the simultaneous swap of BOTH haplotype systems --
+#  under which each is individually exchangeable and the two are independent --
+#  induces exactly the genotype swap G_j <-> G~_j and preserves the joint law.
+#  Cost O(N p K^2). The phased knockoffs x~L, x~R are also what the two-channel
+#  hapmixQTL ASE model needs (signed indicator s = xL - xR).
+# ---------------------------------------------------------------------------
+
+def haplotype_hmm_knockoffs(xL, xR, K=8, M=1, n_em_iter=25, seed=0, params=None,
+                            return_phased=False, return_params=False, verbose=False):
+    """
+    Route 2 (exact, phased): knockoff dosages from phased haplotype knockoffs.
+
+    Args:
+        xL, xR: [N, p] phased haplotype allele matrices in {0,1} (the two
+            haplotypes per individual). xL + xR is the dosage.
+        K: haplotype clusters.
+        M: number of knockoff draws.
+        n_em_iter: EM iterations for the haplotype HMM (ignored if params given).
+        seed: RNG seed.
+        params: optional {'init_p','Q','emission_p'} haplotype HMM (E=2) to skip
+            fitting.
+        return_phased: also return the phased knockoffs (x~L, x~R) per draw.
+        return_params: also return the haplotype HMM params.
+        verbose: forwarded to fit_hmm.
+
+    Returns:
+        draws [M, N, p] int knockoff dosages. If return_phased, also
+        (xkL [M,N,p], xkR [M,N,p]); if return_params, also the params dict.
+    """
+    xL = np.asarray(xL).astype(np.int64)
+    xR = np.asarray(xR).astype(np.int64)
+    N, p = xL.shape
+    if params is None:
+        H = np.concatenate([xL, xR], axis=0)             # [2N, p] pooled haplotypes
+        params = fit_hmm(H, K=K, E=2, n_iter=n_em_iter, seed=seed, verbose=verbose)
+    ip, Q, em = params['init_p'], params['Q'], params['emission_p']
+
+    draws = np.empty((M, N, p), dtype=np.int64)
+    xkL_all = np.empty((M, N, p), dtype=np.int64) if return_phased else None
+    xkR_all = np.empty((M, N, p), dtype=np.int64) if return_phased else None
+    for m in range(M):
+        xkL = hmm_knockoffs(xL, ip, Q, em, seed=seed + 2000 + 2 * m)
+        xkR = hmm_knockoffs(xR, ip, Q, em, seed=seed + 2000 + 2 * m + 1)
+        draws[m] = xkL + xkR
+        if return_phased:
+            xkL_all[m], xkR_all[m] = xkL, xkR
+
+    out = [draws]
+    if return_phased:
+        out.append((xkL_all, xkR_all))
+    if return_params:
+        out.append(params)
+    return out[0] if len(out) == 1 else tuple(out)
+
+
+# ---------------------------------------------------------------------------
+#  Chromosome-coherent HMM knockoff generation (dispatcher)
 #
 #  The knockoff of a whole-chromosome genotype vector is, by the model-X swap
 #  property, also a valid knockoff for any subset of variants (marginalizing the
@@ -508,41 +769,58 @@ def fit_hmm(X, K, E=None, n_iter=25, tol=1e-4, pseudocount=1.0, seed=0,
 #  per-gene knockoff p-values and the overlapping-gene analysis.
 # ---------------------------------------------------------------------------
 
-def chromosome_hmm_knockoffs(G, K=10, M=1, E=3, n_em_iter=25, seed=0,
-                             params=None, return_params=False, verbose=False):
+def chromosome_hmm_knockoffs(G=None, K=8, M=1, E=3, n_em_iter=25, seed=0,
+                             params=None, method='genotype', xL=None, xR=None,
+                             return_params=False, verbose=False):
     """
-    Fit a genotype HMM on one chromosome and draw M coherent knockoff copies.
+    Fit an HMM on one chromosome and draw M coherent knockoff dosage copies.
 
     Args:
-        G: [N, p] integer genotype-state matrix for the chromosome (samples x
-           variants, e.g. dosage rounded to {0,1,2}). Variants must be in
-           chromosome (position) order.
-        K: number of latent clusters for the HMM fit.
+        G: [N, p] dosage-state matrix (needed for method 'genotype'/'single_chain').
+        K: number of latent haplotype clusters.
         M: number of knockoff draws.
-        E: number of emission categories (3 for dosages, 2 for phased alleles).
-        n_em_iter: EM iterations for the fit (ignored if params is given).
-        seed: RNG seed (fit init + draw seeds are derived from it).
-        params: optional pre-fit {'init_p','Q','emission_p'} to skip fitting
-            (e.g. simulator ground truth, or a shared reference-panel fit).
-        return_params: also return the fitted/supplied HMM parameters.
-        verbose: forwarded to fit_hmm.
+        E: emission categories for method='single_chain' (3 for dosages).
+        n_em_iter: EM iterations for the fit (ignored if params given).
+        seed: RNG seed (fit init + per-draw seeds derived from it).
+        params: optional pre-fit parameters (format depends on method).
+        method: which generator --
+            'genotype'     : Route 1, exact diploid pair-state HMM (default);
+                             params = {'init_p_hap','Q_hap','theta'}.
+            'haplotype'    : Route 2, phased haplotype knockoffs; requires xL, xR;
+                             params = {'init_p','Q','emission_p'} (E=2).
+            'single_chain' : approximate single K-state chain with a free E=3
+                             emission (cheapest, O(N p K^2), NOT the exact diploid
+                             law); params = {'init_p','Q','emission_p'}.
+        xL, xR: [N, p] phased haplotypes for method='haplotype'.
+        return_params: also return the fitted/supplied parameters.
+        verbose: forwarded to the fitter.
 
     Returns:
-        draws: [M, N, p] integer knockoff genotype states, coherent across the
-            whole chromosome. If return_params, also returns the params dict.
+        draws: [M, N, p] integer knockoff dosages, coherent across the whole
+        chromosome. If return_params, also the params dict.
     """
-    G = np.asarray(G)
-    N, p = G.shape
-    if params is None:
-        params = fit_hmm(G, K=K, E=E, n_iter=n_em_iter, seed=seed, verbose=verbose)
-    init_p, Q, emission_p = params['init_p'], params['Q'], params['emission_p']
-
-    draws = np.empty((M, N, p), dtype=np.int64)
-    for m in range(M):
-        draws[m] = hmm_knockoffs(G, init_p, Q, emission_p, seed=seed + 1000 + m)
-    if return_params:
-        return draws, params
-    return draws
+    if method == 'genotype':
+        return genotype_hmm_knockoffs(G, K=K, M=M, n_em_iter=n_em_iter, seed=seed,
+                                      params=params, return_params=return_params,
+                                      verbose=verbose)
+    elif method == 'haplotype':
+        assert xL is not None and xR is not None, \
+            "method='haplotype' requires phased xL and xR"
+        return haplotype_hmm_knockoffs(xL, xR, K=K, M=M, n_em_iter=n_em_iter,
+                                       seed=seed, params=params,
+                                       return_params=return_params, verbose=verbose)
+    elif method == 'single_chain':
+        G = np.asarray(G)
+        N, p = G.shape
+        if params is None:
+            params = fit_hmm(G, K=K, E=E, n_iter=n_em_iter, seed=seed, verbose=verbose)
+        ip, Q, em = params['init_p'], params['Q'], params['emission_p']
+        draws = np.empty((M, N, p), dtype=np.int64)
+        for m in range(M):
+            draws[m] = hmm_knockoffs(G, ip, Q, em, seed=seed + 1000 + m)
+        return (draws, params) if return_params else draws
+    else:
+        raise ValueError(f"unknown method: {method}")
 
 
 # ---------------------------------------------------------------------------

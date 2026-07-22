@@ -946,7 +946,8 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
                          estimate_residual_variance=True, estimate_prior_variance=True,
                          tol=1e-3, coverage=0.95, min_abs_corr=0.5,
                          maf_threshold=0, max_iter=200, window=1000000,
-                         hmm_K=10, hmm_em_iter=25, hmm_params=None,
+                         hmm_K=8, hmm_em_iter=25, hmm_params=None,
+                         hmm_method='genotype', phased_haplotypes=None,
                          localize=True, logger=None, verbose=True):
     """
     eGene discovery with knockoff FDR control (Path A), then SuSiE localization.
@@ -985,12 +986,11 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         n_knockoffs: number of knockoff draws (1 = single draw, default). For
             knockoff='hmm' this is the number of chromosome-coherent draws.
         knockoff: 'gaussian' (second-order, residualized, per-gene; O(p^3)) or
-            'hmm' (fastPHASE-style genotype HMM fit per chromosome, then
-            chromosome-COHERENT knockoff draws sliced per gene; O(N p K^2),
-            linear in p and the scalable / discrete-genotype path). The HMM
-            generator draws one knockoff copy of each whole chromosome, so genes
-            with overlapping cis-windows share the same knockoff on shared
-            variants -- the coherence the per-gene Gaussian generator cannot give.
+            'hmm' (fastPHASE-style HMM fit per chromosome, then chromosome-
+            COHERENT knockoff draws sliced per gene). The HMM generator draws one
+            knockoff copy of each whole chromosome, so genes with overlapping
+            cis-windows share the same knockoff on shared variants -- the
+            coherence the per-gene Gaussian generator cannot give. See hmm_method.
         gene_stat: 'max' or 'sum' for gene_level_W.
         knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
             control, conservative).
@@ -998,12 +998,22 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
             (Ren-Barber e-value derandomization / knockoff+ control).
         aggregate: for selection='qvalue' with n_knockoffs>1: 'median' (default)
             | 'mean' | 'none' (draw 0 only).
-        hmm_K: number of latent clusters for the per-chromosome HMM fit
+        hmm_K: number of latent haplotype clusters for the per-chromosome HMM fit
             (knockoff='hmm' only).
         hmm_em_iter: Baum-Welch EM iterations for the HMM fit (knockoff='hmm').
-        hmm_params: optional dict chrom -> {'init_p','Q','emission_p'} of pre-fit
-            HMM parameters (e.g. simulator ground truth or a reference-panel fit);
-            skips EM for those chromosomes (knockoff='hmm' only).
+        hmm_params: optional dict chrom -> pre-fit HMM parameters (format depends
+            on hmm_method); skips EM for those chromosomes (knockoff='hmm' only).
+        hmm_method: HMM knockoff construction (knockoff='hmm' only):
+            'genotype'     : Route 1 -- the EXACT diploid pair-state genotype HMM
+                             fit from unphased dosages (default). O(N p K^4).
+            'haplotype'    : Route 2 -- phased haplotype knockoffs summed to a
+                             dosage; requires phased_haplotypes. Exact, O(N p K^2),
+                             the cheaper path when phase is available.
+            'single_chain' : cheap single K-state chain with a free 3-way emission
+                             (approximate; not the exact diploid law).
+        phased_haplotypes: (xL_df, xR_df) tuple of phased-allele DataFrames with
+            the SAME index/columns as genotype_df (0/1 alleles). Required for
+            hmm_method='haplotype'.
         permute_null: Freedman-Lane residual permutation (calibration harness).
         localize: if True, fine-map selected genes with ordinary SuSiE.
 
@@ -1060,11 +1070,24 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
     # generator (like Gaussian below) cannot. Memory/compute scale with the
     # whole chromosome, which is inherent to coherent construction.
     # -----------------------------------------------------------------------
-    hmm_draws_by_chrom = None   # chrom -> [M, N, p_chrom] int knockoff states
+    hmm_draws_by_chrom = None   # chrom -> [M, N, p_chrom] int knockoff dosages
     chrom_row_offset = None     # chrom -> first genotype_df row index for chrom
     if knockoff == 'hmm':
-        logger.write(f'  * PASS 0: per-chromosome HMM fit + {n_knockoffs} '
-                     f'coherent knockoff draw(s) (K={hmm_K})')
+        logger.write(f'  * PASS 0: per-chromosome HMM ({hmm_method}) fit + '
+                     f'{n_knockoffs} coherent knockoff draw(s) (K={hmm_K})')
+        if hmm_method == 'haplotype' and phased_haplotypes is None:
+            raise ValueError("hmm_method='haplotype' requires phased_haplotypes=(xL_df, xR_df)")
+
+        def _states_in_pheno_order(df_values, lo, hi):
+            """Slice variant rows [lo:hi], reorder to phenotype samples, impute,
+            round to integer states."""
+            V = df_values[lo:hi][:, genotype_ix].astype(np.float64)   # [p_c, N]
+            if np.isnan(V).any():
+                rm = np.nanmean(V, axis=1, keepdims=True)
+                rm = np.where(np.isnan(rm), 0.0, rm)
+                V = np.where(np.isnan(V), rm, V)
+            return np.rint(V).T                                        # [N, p_c] float
+
         # Row blocks per chromosome. cis-ranges are contiguous row slices, so we
         # require each chromosome to occupy a contiguous, ordered row block (the
         # standard tensorQTL genotype layout, sorted by chrom then position).
@@ -1076,18 +1099,22 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
             if not (rows[-1] - rows[0] + 1 == rows.size and (np.diff(rows) == 1).all()):
                 raise ValueError(f"chromosome {c} variants are not a contiguous "
                                  "ordered block in genotype_df; sort by chrom,pos.")
-            # genotype states for this chromosome in phenotype-sample order:
-            # mean-impute missing per variant, round to nearest dosage {0,1,2}.
-            G = genotype_df.values[rows[0]:rows[-1] + 1][:, genotype_ix].astype(np.float64)  # [p_c, N]
-            if np.isnan(G).any():
-                row_mean = np.nanmean(G, axis=1, keepdims=True)
-                row_mean = np.where(np.isnan(row_mean), 0.0, row_mean)
-                G = np.where(np.isnan(G), row_mean, G)
-            G = np.rint(G).clip(0, 2).astype(np.int64).T  # [N, p_c]
+            lo, hi = rows[0], rows[-1] + 1
             params = None if hmm_params is None else hmm_params.get(c, None)
-            hmm_draws_by_chrom[c] = ko.chromosome_hmm_knockoffs(
-                G, K=hmm_K, M=n_knockoffs, E=3, n_em_iter=hmm_em_iter,
-                seed=seed * 100003 + int(row0), params=params, verbose=False)
+            cseed = seed * 100003 + int(row0)
+            if hmm_method == 'haplotype':
+                xL_df, xR_df = phased_haplotypes
+                xL = _states_in_pheno_order(xL_df.values, lo, hi).clip(0, 1).astype(np.int64)
+                xR = _states_in_pheno_order(xR_df.values, lo, hi).clip(0, 1).astype(np.int64)
+                draws = ko.chromosome_hmm_knockoffs(
+                    K=hmm_K, M=n_knockoffs, n_em_iter=hmm_em_iter, seed=cseed,
+                    method='haplotype', xL=xL, xR=xR, params=params)
+            else:  # 'genotype' (exact) or 'single_chain' (approx)
+                G = _states_in_pheno_order(genotype_df.values, lo, hi).clip(0, 2).astype(np.int64)
+                draws = ko.chromosome_hmm_knockoffs(
+                    G, K=hmm_K, M=n_knockoffs, E=3, n_em_iter=hmm_em_iter,
+                    seed=cseed, method=hmm_method, params=params)
+            hmm_draws_by_chrom[c] = draws
             chrom_row_offset[c] = rows[0]
             row0 += rows.size
         logger.write(f'  * PASS 0 done: {len(hmm_draws_by_chrom)} chromosome(s)')

@@ -13,10 +13,16 @@ Read this first on resumption.
   milestone: **the HMM/DMC knockoff generator is now VALIDATED** (was falsely
   believed buggy — it was a test artifact). This unblocks chromosome-wide
   coherent knockoffs.
-- **Step 1 (wire HMM knockoffs into the pipeline) is DONE** (this session):
-  `knockoffs.fit_hmm` (Baum-Welch EM), `knockoffs.chromosome_hmm_knockoffs`
-  (chromosome-coherent, M draws), and `susie.map_egenes_knockoffs(knockoff='hmm')`
-  now exist and pass tests (`tests/test_hmm_knockoff_pipeline.py`, 10 tests).
+- **Step 1 (wire HMM knockoffs into the pipeline) is DONE** (this session), with
+  BOTH exact diploid constructions: **Route 1** `method='genotype'` (exact
+  pair-state genotype HMM fit from unphased dosages; `fit_genotype_hmm`,
+  `build_genotype_pair_hmm`, `genotype_hmm_knockoffs`) and **Route 2**
+  `method='haplotype'` (phased haplotype knockoffs `x̃L,x̃R` summed to a dosage;
+  `haplotype_hmm_knockoffs`), plus a cheap `method='single_chain'` approximation.
+  All chromosome-coherent, sliced per gene, wired through
+  `susie.map_egenes_knockoffs`. Tests: `tests/test_hmm_knockoff_pipeline.py`
+  (16 tests). Route 1 is O(N·p·K⁴) (exact, unphased); Route 2 is O(N·p·K²)
+  (exact, needs phase, and is what hapmixQTL step 5 will consume).
 - **Next task:** build **per-gene knockoff p-values** (step 2 — now UNBLOCKED by
   the coherent generator) and the **interval-valued π₀ empirical-Bayes
   calibration** (step 3) on top.
@@ -122,15 +128,16 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
 
 ## 4. Open problems / next steps (in priority order)
 
-1. **Wire HMM knockoffs into the pipeline — DONE (this session).**
-   (a) `knockoffs.fit_hmm` — fastPHASE-style Baum-Welch EM fitter; recovers
-   ground-truth-quality knockoffs (tested). (b) `knockoffs.chromosome_hmm_knockoffs`
-   — one HMM per chromosome, M coherent draws, sliced per gene in
-   `susie.map_egenes_knockoffs(knockoff='hmm')` (exposes `hmm_K`, `hmm_em_iter`,
-   `hmm_params`). Tests: `tests/test_hmm_knockoff_pipeline.py` (10, pass). NOTE:
-   dosages are fit as a single-chain E=3 emission (exact for the fitted model;
-   diploid misfit is the empirical-calibration question). A true diploid
-   pair-of-chains fitter and a phased-haplotype (E=2) fitter remain for step 5.
+1. **Wire HMM knockoffs into the pipeline — DONE (this session), both routes.**
+   `chromosome_hmm_knockoffs(method=...)` dispatches: **'genotype'** (Route 1,
+   default, exact pair-state diploid HMM from unphased dosages —
+   `fit_genotype_hmm` constrained Baum-Welch + `build_genotype_pair_hmm`),
+   **'haplotype'** (Route 2, exact phased knockoffs — `haplotype_hmm_knockoffs`,
+   returns `x̃L,x̃R`), **'single_chain'** (approximate). Wired through
+   `susie.map_egenes_knockoffs` with `hmm_method`, `hmm_K`, `hmm_em_iter`,
+   `hmm_params`, `phased_haplotypes`. Tests: `tests/test_hmm_knockoff_pipeline.py`
+   (16, pass). Compute: Route 1 O(N·p·K⁴), Route 2 O(N·p·K²) — prefer Route 2
+   when phased. The Route-2 phased knockoffs are the enabler for step 5.
 2. **Per-gene knockoff p-values.** With M coherent draws, the rank of R_g among
    {R_g, K_g^(1..M)} is EXACTLY uniform under the null (exchangeability) →
    per-gene p-value, robust to pooled-f_0 contamination. This is the agreed
@@ -146,8 +153,10 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
    Empirically un-inflated so far, but not proven. Status label:
    "empirically calibrated", not "theorem-backed".
 5. **Two-channel hapmixQTL knockoffs** — for the ASE channel's signed indicator
-   `s = xL - xR`, need haplotype-level knockoffs (x̃L, x̃R). The HMM generator on
-   phased haplotypes is the enabler. Not started.
+   `s = xL - xR`, need haplotype-level knockoffs (x̃L, x̃R). ENABLER NOW BUILT:
+   `knockoffs.haplotype_hmm_knockoffs(..., return_phased=True)` returns exactly
+   (x̃L, x̃R). Remaining work is wiring those into hapmixQTL's two-channel augmented
+   design, not the generator.
 6. **Hardest-LD-corner test** — crank simulator LD strength + rare-variant
    fraction to r^2>0.5, MAF<0.01 to stress the Gaussian generator.
 
@@ -157,7 +166,7 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
 
 - `tests/test_hapmixqtl.py` (32), `tests/test_knockoffs.py` (19),
   `tests/test_hmm_knockoffs.py` (8), `tests/test_hmm_simulator.py` (5),
-  `tests/test_hmm_knockoff_pipeline.py` (10, HMM fit + pipeline wiring) — PASS.
+  `tests/test_hmm_knockoff_pipeline.py` (16, HMM fit + both routes + pipeline) — PASS.
 - `tests/test_knockoffs_calibration.py`, `tests/test_knockoffs_egenes.py` — have
   `@pytest.mark.slow` calibration gates (minutes each; end-to-end SuSiE fits).
 - `tests/overlap_calibration_harness.py` — a research harness, run directly, not
