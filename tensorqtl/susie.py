@@ -1217,10 +1217,11 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         logger.write(f'    - pi0={sel["pi0"]:.3f}; mirror cross-check selected '
                      f'{sel["mirror"]["n_selected"]} (agreement={sel["agreement"]:.2f}); '
                      f'pi0 interval=[{sel["lfdr"]["pi0_lo"]:.3f}, {sel["lfdr"]["pi0_hi"]:.3f}]')
-        if sel['agreement'] < 0.5 and len(selected_genes) > 0:
+        if sel.get('mirror_informative') and sel['agreement'] < 0.5 and selected_genes:
             logger.write('    ! WARNING: q-value and pi0-free mirror selections '
-                         'disagree (agreement<0.5) -- possible knockoff '
-                         'misspecification; treat FDR numbers with caution.')
+                         'disagree (agreement<0.5, above the mirror detection '
+                         'floor) -- possible knockoff misspecification; treat FDR '
+                         'numbers with caution.')
     else:  # 'qvalue' (default, calibrated)
         logger.write(f'  * PASS 2: calibrated q-value eGene selection at FDR <= {fdr} '
                      f'(offset={knockoff_offset}, aggregate={aggregate})')

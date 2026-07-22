@@ -39,6 +39,7 @@ from collections import OrderedDict
 sys.path.insert(1, os.path.dirname(__file__))
 import genotypeio
 import susie
+import knockoffs as ko
 from core import *
 
 
@@ -960,6 +961,37 @@ def _build_stacked_design(genotypes_t, sign_t, a_t, t_t,
     return X_aug_t, y_aug_t
 
 
+def _build_knockoff_stacked_design(xkL_t, xkR_t, sqrt_wa_t, sqrt_wt_t,
+                                   residualizer_a, residualizer_t):
+    """
+    Build the [2N, p] stacked knockoff design for a phased (Route 2) knockoff.
+
+    The knockoff enters BOTH channels COHERENTLY: a single pair of knockoff
+    haplotypes (x~L, x~R) produces the knockoff ASE predictor s~ = x~L - x~R and
+    the knockoff total predictor g~/2 = (x~L + x~R)/2, whitened and residualized
+    exactly like the real channels in _build_stacked_design. This coherence --
+    the same knockoff haplotypes driving both the allelic-contrast and total
+    channels -- is why phased (Route 2) knockoffs are the right construction for
+    the two-channel model: an independent knockoff per channel would not respect
+    the shared per-variant effect the model estimates.
+
+    Args:
+        xkL_t, xkR_t: [p, N] knockoff haplotype allele matrices (variant x
+            sample), same window/order as the real design.
+        sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t: the SAME weights
+            and covariate residualizers used for the real design.
+
+    Returns:
+        Xk_aug_t: [2N, p] stacked knockoff predictors.
+    """
+    sign_k_t = xkL_t - xkR_t                                          # p x N
+    geno_k_t = xkL_t + xkR_t                                          # p x N
+    s_k_res = residualizer_a.transform(sign_k_t * sqrt_wa_t.unsqueeze(0))       # p x N
+    g_k_half_res = residualizer_t.transform((geno_k_t / 2) * sqrt_wt_t.unsqueeze(0))  # p x N
+    Xk_aug_t = torch.cat([s_k_res, g_k_half_res], dim=1).T                      # (2N) x p
+    return Xk_aug_t
+
+
 def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
               phenotype_pos_df, xL_df=None, xR_df=None,
               covariates_df=None, L=10, scaled_prior_variance=0.2,
@@ -1183,3 +1215,212 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         for key in drop_ids:
             del susie_res[key]
         return susie_summary, susie_res
+
+
+def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+                         phenotype_pos_df, xL_df, xR_df, covariates_df=None,
+                         fdr=0.1, n_knockoffs=20, hmm_K=8, hmm_em_iter=25,
+                         gene_stat='max', selection='calibrated',
+                         knockoff_offset=1, dependence='prds',
+                         L=10, scaled_prior_variance=0.2,
+                         estimate_residual_variance=False,
+                         estimate_prior_variance=True,
+                         coverage=0.95, min_abs_corr=0.5, maf_threshold=0,
+                         tau_mode='zero', max_iter=500, window=1000000, tol=1e-3,
+                         seed=0, logger=None, verbose=True):
+    """
+    hapmixQTL knockoff-calibrated eGene FDR using PHASED (Route 2) knockoffs.
+
+    This is the two-channel analog of ``susie.map_egenes_knockoffs``. For each
+    gene it draws ``n_knockoffs`` phased haplotype knockoffs (x~L, x~R) under a
+    per-gene haplotype HMM (``knockoffs.haplotype_hmm_knockoffs``), builds the
+    augmented two-channel stacked design ``[X, X~]`` (each of the ASE and total
+    channels gets its knockoff columns from the SAME knockoff haplotypes -- the
+    coherence phased knockoffs provide), fits SuSiE on it, and forms the
+    swap-antisymmetric gene statistic ``W_g = maxPIP(orig) - maxPIP(knockoff)``.
+    The per-gene W across the M draws then feeds the same step-2/step-3
+    calibration used for standard SuSiE, so eGene FDR is calibrated identically.
+
+    Phase (``xL_df``, ``xR_df``) is REQUIRED: the knockoff must respect the
+    allelic-contrast channel, which only exists with phase. Knockoffs here are
+    per-gene (fit on the gene's cis-window haplotypes); chromosome-coherent
+    Route-2 draws (needed only for cross-gene per-gene-p-value coherence) are a
+    future extension mirroring ``chromosome_hmm_knockoffs``.
+
+    Args (knockoff-specific; the rest mirror ``map_susie``):
+        fdr: target genome-wide eGene FDR.
+        n_knockoffs: number of phased knockoff draws M (>= ~20 for 'calibrated').
+        hmm_K: haplotype clusters for the per-gene haplotype HMM.
+        hmm_em_iter: Baum-Welch iterations for the HMM fit.
+        gene_stat: 'max' or 'sum' for gene_level_W.
+        selection: 'calibrated' (default; known-null Storey q-value + mirror
+            cross-check, ko.select_egenes_calibrated), 'qvalue', 'pvalue', or
+            'ebh'. See susie.map_egenes_knockoffs.
+        knockoff_offset: offset for the count/threshold conventions.
+        dependence: cross-gene dependence assumption for the genome-wide
+            selection ('prds' default | 'ind' | 'arbitrary'; see
+            knockoffs.bh_select).
+
+    Returns:
+        (egene_df, diagnostics):
+          egene_df: DataFrame [phenotype_id, qvalue/score, selected].
+          diagnostics: dict with 'W_per_draw', 'gene_ids', 'n_draws', 'selection',
+            and (for 'calibrated') 'pi0', 'agreement', 'pi0_interval'.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if logger is None:
+        logger = SimpleLogger()
+
+    samples = A_df.columns
+    N = len(samples)
+    assert xL_df is not None and xR_df is not None, \
+        "map_egenes_knockoffs requires phased haplotypes (xL_df, xR_df)"
+    assert A_df.columns.equals(T_df.columns) and A_df.index.equals(T_df.index)
+
+    logger.write('hapmixQTL knockoff-calibrated eGene mapping (Route 2, phased)')
+    logger.write(f'  * {N} samples, {A_df.shape[0]} phenotypes')
+    logger.write(f'  * {n_knockoffs} phased knockoff draws; HMM K={hmm_K}; '
+                 f'selection={selection}, FDR<={fdr}, dependence={dependence}')
+
+    if covariates_df is not None:
+        assert covariates_df.index.equals(A_df.columns)
+        covariates_t = torch.tensor(covariates_df.values, dtype=torch.float32).to(device)
+    else:
+        covariates_t = None
+
+    genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
+    genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
+
+    igc = genotypeio.InputGeneratorCis(
+        genotype_df, variant_df, T_df, phenotype_pos_df, window=window)
+    if igc.n_phenotypes == 0:
+        raise ValueError('No valid phenotypes found.')
+    pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
+
+    resvar = None if estimate_residual_variance else \
+        torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    gene_ids, W_rows = [], []
+    start_time = time.time()
+    for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
+        igc.generate_data(verbose=verbose), 1
+    ):
+        if phenotype_id not in pheno_ix:
+            continue
+        pidx = pheno_ix[phenotype_id]
+        a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
+        t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+
+        if tau_mode == 'estimate':
+            tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
+            tau_tv = _estimate_tau(t_t, vt_t, covariates_t, device)
+            sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+            sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_tv))
+        else:
+            sqrt_wa_t = torch.sqrt(1.0 / va_t)
+            sqrt_wt_t = torch.sqrt(1.0 / vt_t)
+
+        residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
+        residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+
+        genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
+        genotypes_t = genotypes_t[:, genotype_ix_t]
+        impute_mean(genotypes_t)
+
+        # Phased haplotype window (contiguous), before filtering.
+        xL_vals = xL_df.values[genotype_range[0]:genotype_range[-1] + 1]
+        xR_vals = xR_df.values[genotype_range[0]:genotype_range[-1] + 1]
+        xL_t = torch.tensor(xL_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+        xR_t = torch.tensor(xR_vals, dtype=torch.float32).to(device)[:, genotype_ix_t]
+        sign_t = xL_t - xR_t
+
+        # filter monomorphic (and optionally low-MAF) variants, masking phase too
+        mask_t = ~(genotypes_t == genotypes_t[:, [0]]).all(1)
+        if maf_threshold > 0:
+            mask_t &= calculate_maf(genotypes_t) >= maf_threshold
+        if not mask_t.all():
+            genotypes_t = genotypes_t[mask_t]
+            sign_t = sign_t[mask_t]
+            xL_t = xL_t[mask_t]
+            xR_t = xR_t[mask_t]
+        if genotypes_t.shape[0] == 0:
+            continue
+
+        X_aug_t, y_aug_t = _build_stacked_design(
+            genotypes_t, sign_t, a_t, t_t,
+            sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)
+
+        # Fit the per-gene haplotype HMM once, draw M phased knockoffs from it.
+        xL_np = xL_t.T.cpu().numpy().astype(np.int64)     # [N, p] in {0,1}
+        xR_np = xR_t.T.cpu().numpy().astype(np.int64)
+        _, (xkL_all, xkR_all) = ko.haplotype_hmm_knockoffs(
+            xL_np, xR_np, K=hmm_K, M=n_knockoffs, n_em_iter=hmm_em_iter,
+            seed=seed * 100003 + k, return_phased=True)
+
+        draw_W = []
+        for r in range(n_knockoffs):
+            xkL_t = torch.tensor(xkL_all[r].T, dtype=torch.float32).to(device)  # [p, N]
+            xkR_t = torch.tensor(xkR_all[r].T, dtype=torch.float32).to(device)
+            Xk_aug_t = _build_knockoff_stacked_design(
+                xkL_t, xkR_t, sqrt_wa_t, sqrt_wt_t,
+                residualizer_a, residualizer_tc)
+            res, p = ko.augmented_susie_fit(
+                susie.susie, X_aug_t, y_aug_t, Xk_aug_t, L,
+                scaled_prior_variance=scaled_prior_variance, intercept=False,
+                estimate_residual_variance=estimate_residual_variance,
+                estimate_prior_variance=estimate_prior_variance,
+                residual_variance=resvar, coverage=coverage,
+                min_abs_corr=min_abs_corr, tol=tol, max_iter=max_iter)
+            draw_W.append(ko.gene_level_W(res['pip'], p, kind=gene_stat))
+        gene_ids.append(phenotype_id)
+        W_rows.append(draw_W)
+
+    if not gene_ids:
+        raise ValueError('No genes produced statistics.')
+    W_per_draw = np.array(W_rows, dtype=np.float64).T          # [M, n_genes]
+
+    diagnostics = {'W_per_draw': W_per_draw, 'gene_ids': gene_ids,
+                   'n_draws': W_per_draw.shape[0], 'selection': selection}
+    if selection == 'calibrated':
+        sel = ko.select_egenes_calibrated(gene_ids, W_per_draw, q=fdr,
+                                          offset=(knockoff_offset or 1),
+                                          dependence=dependence)
+        selected = set(sel['selected'])
+        score_col, score_vals = 'qvalue', sel['qvalues']
+        diagnostics.update(pi0=sel['pi0'], agreement=sel['agreement'],
+                           mirror_informative=sel.get('mirror_informative'),
+                           pi0_interval=(sel['lfdr']['pi0_lo'], sel['lfdr']['pi0_hi']))
+        logger.write(f'  * pi0={sel["pi0"]:.3f}; mirror cross-check selected '
+                     f'{sel["mirror"]["n_selected"]} (agreement={sel["agreement"]:.2f}'
+                     f'{"" if sel.get("mirror_informative") else ", below mirror detection floor"})')
+        if sel.get('mirror_informative') and sel['agreement'] < 0.5 and selected:
+            logger.write('  ! WARNING: q-value and pi0-free mirror disagree '
+                         '(agreement<0.5, above the mirror detection floor) -- '
+                         'possible knockoff misspecification.')
+    elif selection == 'pvalue':
+        sel = ko.select_egenes_pvalue(gene_ids, W_per_draw, q=fdr,
+                                      offset=(knockoff_offset or 1),
+                                      dependence=dependence)
+        selected = set(sel['selected'])
+        score_col, score_vals = 'pvalue', sel['pvalues']
+    elif selection == 'ebh':
+        sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr,
+                               offset=(knockoff_offset or 1))
+        selected = set(sel['selected'])
+        score_col, score_vals = 'evalue', sel['evalues']
+    else:  # 'qvalue'
+        sel = ko.select_egenes_qvalue(gene_ids, W_per_draw, q=fdr,
+                                      offset=knockoff_offset)
+        selected = set(sel['selected'])
+        score_col, score_vals = 'qvalue', sel['qvalues']
+
+    logger.write(f'  * {len(selected)}/{len(gene_ids)} genes selected as eGenes')
+    logger.write(f'  Time elapsed: {(time.time()-start_time)/60:.2f} min')
+    egene_df = pd.DataFrame({
+        'phenotype_id': gene_ids,
+        score_col: score_vals,
+        'selected': [g in selected for g in gene_ids],
+    })
+    return egene_df, diagnostics

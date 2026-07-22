@@ -151,9 +151,25 @@ validation phases. The authoritative current state is:
    for the specific coherent-knockoff p-value construction remains open, but is no
    longer on the critical path.
 
-8. **Still open / not built:** full integration of the Route-2 phased knockoffs
-   (`x̃L, x̃R`) into the two-channel hapmixQTL ASE model (the generator exists;
-   the hapmixQTL wiring is step 5 — in progress).
+8. **Route-2 phased knockoffs are WIRED INTO the two-channel hapmixQTL model
+   (step 5)** (`hapmixqtl.map_egenes_knockoffs`, `_build_knockoff_stacked_design`;
+   `tests/test_hapmixqtl_knockoffs.py`, 5 pass). For each gene it draws M phased
+   haplotype knockoffs `(x̃L, x̃R)` from a per-gene haplotype HMM
+   (`haplotype_hmm_knockoffs`), builds the augmented two-channel stacked design
+   `[X, X̃]` where BOTH the ASE channel (`s̃ = x̃L − x̃R`) and the total channel
+   (`g̃/2 = (x̃L + x̃R)/2`) take their knockoff columns from the SAME knockoff
+   haplotypes — the coherence a phased (Route 2) knockoff provides and an
+   independent per-channel knockoff would break — then fits SuSiE and forms
+   `W_g = maxPIP(orig) − maxPIP(knockoff)`. The per-gene W feeds the identical
+   step-2/step-3 calibration (`select_egenes_calibrated`, `dependence` arg), so
+   eGene FDR is calibrated exactly as for standard SuSiE. Phase is REQUIRED (the
+   ASE channel only exists with phase). Knockoffs here are per-gene; a
+   chromosome-coherent Route-2 variant (only needed for cross-gene per-gene-
+   p-value coherence) mirrors `chromosome_hmm_knockoffs` and is a later add.
+
+9. **Still open / not built:** chromosome-coherent Route-2 draws for the
+   hapmixQTL path; a closed-form PRDS proof for the coherent-knockoff p-value
+   construction (item 7 — off the critical path).
 
 ---
 

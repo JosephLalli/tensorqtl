@@ -1804,8 +1804,20 @@ def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1,
     union = a | b_
     agreement = 1.0 if not union else len(a & b_) / len(union)
 
+    # The mirror (knockoff+ at this offset) has a DETECTION FLOOR: it cannot
+    # certify FDR<=q with fewer than ~offset/q discoveries, because its estimate
+    # is (offset + #neg)/#pos and needs #pos >= offset/q even with zero negatives.
+    # So when the total discovery count is below that floor the mirror is EXPECTED
+    # to select little/nothing regardless of correctness, and low agreement is
+    # uninformative -- NOT evidence of misspecification. `mirror_informative`
+    # flags whether the agreement check is meaningful; callers should gate any
+    # misspecification warning on it.
+    floor = int(np.ceil((offset or 1) / q)) if q > 0 else m
+    mirror_informative = bool(len(selected) >= floor)
+
     return {'selected': selected, 'qvalues': qvals, 'pi0': qres['pi0'],
-            'mirror': mir, 'lfdr': lf, 'n_draws': M, 'agreement': agreement}
+            'mirror': mir, 'lfdr': lf, 'n_draws': M, 'agreement': agreement,
+            'mirror_informative': mirror_informative}
 
 
 # ---------------------------------------------------------------------------

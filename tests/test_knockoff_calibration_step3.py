@@ -209,6 +209,21 @@ class TestMirrorFdp:
         W, _ = _mixed(200, 400, 80, rng, strength=4.5)
         out = ko.select_egenes_calibrated([f"g{i}" for i in range(400)], W, q=0.1)
         assert out['agreement'] >= 0.7, f"estimators disagree: {out['agreement']:.2f}"
+        assert out['mirror_informative'], "80 discoveries should be above the floor"
+
+    def test_mirror_uninformative_below_detection_floor(self):
+        """When fewer than ~1/q genes are discoverable, the mirror (knockoff+)
+        cannot certify and selects nothing while the q-values correctly select
+        the few true genes. Low agreement here is EXPECTED, not misspecification:
+        mirror_informative must be False so callers suppress the false alarm."""
+        rng = np.random.RandomState(20)
+        n, n_sig, M = 400, 5, 200          # only 5 true < 1/q=10 floor at q=0.1
+        W, _ = _mixed(M, n, n_sig, rng, strength=6.0)
+        out = ko.select_egenes_calibrated([f"g{i}" for i in range(n)], W, q=0.1)
+        # q-values recover the strong signals; mirror is below its floor.
+        assert len(out['selected']) >= 1
+        assert out['mirror']['n_selected'] < int(np.ceil(1 / 0.1))
+        assert out['mirror_informative'] is False
 
 
 # ---------------------------------------------------------------------------
