@@ -287,6 +287,21 @@ v2.0 windows. The systematic bias essentially **disappears**:
 | **fastPHASE fit K=20 → our generator** | **−0.023 (≈ unbiased)** |
 | Gaussian shrink=0.1 | −0.140 |
 
+> **Caveat — the null-W bias is not a pure location shift (open).** The Gaussian
+> `mean W = −0.140` (n=40) is **sign-discordant** with its `frac(W>0) = 0.556`
+> (n=200, reported above): a mean below 0 but a **median above 0** is the signature
+> of a **left-skewed** null W — a heavy negative tail dragging the mean down while
+> the bulk sits just above 0 — not a rigid leftward shift of a symmetric density.
+> This distinction is load-bearing: Barber–Candès control depends on the **tail
+> sign-symmetry of the null W at the operating threshold τ** (`#{W≤−τ}` vs
+> `#{W≥τ}`), not on the mean. A "recenter the mean W at 0" correction is therefore
+> only valid under a pure-location model that these two statistics jointly refute,
+> and centering a left-skewed null moves its positive-median bulk further right —
+> the **anti-conservative** direction. Before any de-biasing is entertained, the
+> mean and the tail asymmetry must be re-measured on a **single** permutation-null
+> sample (permute Y so Y ⟂ genotype) evaluated **at τ**, not via separate summary
+> statistics on different window counts.
+
 So a properly-fit HMM knockoff is nearly well-specified on real LD, confirming the
 literature (Sesia, Sabatti & Candès 2019 *Biometrika*; Sesia et al. 2021 *PNAS* /
 KnockoffGWAS on UK Biobank, N≈489k). **The earlier "HMM misspecified on real LD"
@@ -315,6 +330,19 @@ is unbiased-but-underpowered here and far slower; its value is confined to
 regimes that genuinely need whole-chromosome coherence, which the per-gene KFc
 design does not. (Both are mildly conservative at this N/signal; Gaussian reaches
 power 0.54 at PVE 0.15.)
+
+> **Monte-Carlo caveat — realized-FDR point estimates carry wide error.** The two
+> Gaussian realized-FDR figures on record — `0.06–0.07` (200-window null-symmetry
+> study, above) and `0.014–0.030` (this 160-window end-to-end table) — differ 2–4×
+> across near-identical configs at only 8 reps. At this rep count the realized-FDR
+> point estimate is Monte-Carlo-noisy, so "how conservative is it, exactly" cannot
+> be settled with point values. Any calibration claim — and in particular any future
+> de-biasing that aims to raise realized FDR toward the 0.10 target — must be stated
+> with a confidence interval or a pre-registered FDR upper bound, on a fixed and
+> larger window count. The safe reading today: the method **controls** FDR
+> (all realized values ≤ 0.10) and is **conservative**; the remaining question is
+> how much power that conservatism costs, which is a tail-symmetry/generator problem
+> (see the caveat under the mean-W table above), not a selector-threshold problem.
 
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
 comparison; requires `pysam` + network; opt-in/slow).
