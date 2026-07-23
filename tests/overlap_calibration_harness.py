@@ -154,9 +154,14 @@ def run_replicate(n_snps=400, N=300, n_genes=120, window=100_000,
     else:
         eg, _, _ = susie.map_egenes_knockoffs(
             genotype_df, variant_df, phenotype_df, pos_df, cov_df,
-            fdr=fdr, n_knockoffs=n_knockoffs, shrink=shrink, window=window,
+            fdr=fdr, n_knockoffs=n_knockoffs, knockoff='gaussian', shrink=shrink,
+            window=window,
             L=L, max_iter=max_iter, verbose=verbose, seed=seed, localize=False,
             knockoff_offset=knockoff_offset)
+        # NOTE: this harness is by design a GAUSSIAN-knockoff study (see the
+        # 'genotype_model' docstring); knockoff='gaussian' is pinned explicitly so
+        # the flipped map_egenes_knockoffs default (now 'hmm') does not silently
+        # change it. Realistic-genotype calibration should use knockoff='hmm'.
 
     sel = set(eg[eg['selected']]['phenotype_id'])
     V = len(sel - causal_gene_ids)

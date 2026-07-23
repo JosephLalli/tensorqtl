@@ -224,9 +224,14 @@ def simulate_eqtl_panel(n_genes, N, p_per_gene, egene_frac, signal_regime,
 # ---------------------------------------------------------------------------
 
 def run_and_score(panel, fdr=0.1, n_knockoffs=30, selection='calibrated',
-                  knockoff='gaussian', shrink=0.1, dependence='prds',
+                  knockoff='hmm', shrink=0.1, dependence='prds',
                   hmm_K=8, hmm_em_iter=15, L=5, max_iter=100, seed=0,
                   window=1_000_000, verbose=False, null_set='null'):
+    # NOTE: default flipped gaussian->hmm (2026-07). These panels use realistic
+    # HMM-structured genotypes; Gaussian knockoffs are MISSPECIFIED on them and
+    # inflate the original-favored false-positive tail, so validating on Gaussian
+    # here measures the wrong generator. Pass knockoff='gaussian' explicitly only
+    # as a comparison arm.
     """
     Run susie.map_egenes_knockoffs on a panel and score realized FDP / power.
 
@@ -281,7 +286,7 @@ def _summarize(results, label):
 
 def study_end_to_end(reps=10, Ns=(50, 150, 300), regimes=('mixed', 'weak'),
                      n_genes=60, p_per_gene=60, egene_frac=0.3, fdr=0.1,
-                     n_knockoffs=30, knockoff='gaussian', selection='calibrated',
+                     n_knockoffs=30, knockoff='hmm', selection='calibrated',
                      base_seed=0):
     """#1: realized FDR vs nominal across N x signal regime."""
     print(f"\n=== STUDY #1 end-to-end calibration ({knockoff} knockoffs, "
@@ -364,7 +369,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--study', choices=list(STUDIES) + ['all'], default='end_to_end')
     ap.add_argument('--reps', type=int, default=10)
-    ap.add_argument('--knockoff', default='gaussian')
+    ap.add_argument('--knockoff', default='hmm')   # realistic genotypes -> HMM knockoffs
     args = ap.parse_args()
     t0 = time.time()
     todo = STUDIES.keys() if args.study == 'all' else [args.study]

@@ -26,15 +26,29 @@ the two-channel hapmixQTL specifics. It is used by both the standard
 
 Method
 ------
-Default construction: second-order (Gaussian) model-X knockoffs on the
-covariate-residualized dosage matrix. Given the variant covariance ``Sigma``,
-sample::
+This module provides TWO generators:
+
+* **HMM knockoffs (recommended default for realistic genotypes)** -- a
+  fastPHASE-style hidden-Markov model of the discrete diploid genotypes, matched
+  to real LD structure and rare variants, drawn chromosome-coherently. Validated
+  swap-exchangeable, O(N*p*K^2..K^4), the scalable path to whole-chromosome
+  knockoffs. See ``chromosome_hmm_knockoffs`` / ``genotype_hmm_knockoffs`` /
+  ``haplotype_hmm_knockoffs``. The single- and two-channel pipelines default to
+  this generator (``knockoff='hmm'``).
+
+* **Gaussian knockoffs (fast second-order approximation)** -- ``gaussian_knockoff``,
+  on the covariate-residualized dosage matrix. Given the variant covariance
+  ``Sigma``, sample::
 
     X_knockoff = X (I - Sigma^{-1} D) + E chol(2D - D Sigma^{-1} D)
 
-where ``D = diag(s)`` and ``E ~ N(0, I)``. The vector ``s`` controls how
-distinguishable each knockoff is from its original; ``2D - D Sigma^{-1} D`` must
-stay PSD, which bounds ``s``.
+  where ``D = diag(s)`` and ``E ~ N(0, I)``. Fast and dependency-free, but a
+  SECOND-ORDER approximation that is **misspecified on non-Gaussian, HMM-
+  structured genotypes**: on strong-LD (r^2>0.5) / rare-variant data it can
+  inflate the original-favored false-positive tail (Barber, Candes & Samworth
+  2020; empirically confirmed in docs/calibration_findings.md). Use only for
+  small p / mild LD, or as a fast comparison arm -- not as the default on real
+  eQTL genotypes.
 
 At small N (e.g. ~200 eQTL samples) the empirical covariance is noisy and
 rank-deficient, so **shrinkage is mandatory** -- ``Sigma`` is regularized toward

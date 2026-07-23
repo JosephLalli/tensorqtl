@@ -40,7 +40,8 @@ def _run_one(seed, n_genes, N, p_per_gene, n_causal, q, n_knockoffs=5,
     causal = {f"G{g}" for g in range(n_causal)}
     eg, _, diag = susie.map_egenes_knockoffs(
         d['genotype_df'], d['variant_df'], d['phenotype_df'], d['pos_df'],
-        d['cov_df'], fdr=q, n_knockoffs=n_knockoffs, window=1_000_000, L=5,
+        d['cov_df'], fdr=q, n_knockoffs=n_knockoffs, knockoff='gaussian',
+        window=1_000_000, L=5,
         max_iter=100, verbose=False, seed=seed + 1, localize=False,
         permute_null=permute_null)
     sel = set(eg[eg['selected']]['phenotype_id'])

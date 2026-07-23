@@ -87,8 +87,11 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
   q (calibration, not just control).
 - **Knockoff generators** (`tensorqtl/knockoffs.py`):
   - `gaussian_knockoff` — second-order Gaussian, mandatory covariance shrinkage.
-    Current default. O(p^3). Validated to NOT inflate FDR on realistic
-    HMM-simulated genotypes.
+    O(p^3). FAST APPROXIMATION, no longer the default (flipped to HMM 2026-07):
+    misspecified on non-Gaussian HMM genotypes; the earlier "validated to NOT
+    inflate FDR" claim only covered mild regimes and is superseded — on strong-
+    LD/rare-variant genotypes it inflates the original-favored false-positive
+    tail (see docs/calibration_findings.md).
   - `dmc_knockoffs` / `hmm_knockoffs` — **NOW VALIDATED** (commit 0d329ec).
     Implements Sesia et al. (2019) Algorithms 1-2 (DMC eqs 4-5 + HMM
     forward-backward + re-emit). Swap-exchangeable to p=20 (noise-robust test).

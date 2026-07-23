@@ -776,7 +776,9 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
         fdr: target genome-wide CS-level FDR (the sensitivity dial).
         n_knockoffs: M knockoff draws per gene; each CS's W is averaged over
             draws (matched by original-member set) to reduce selection variance.
-        knockoff: 'gaussian' (default). 'hmm' reserved for a later phase.
+        knockoff: 'gaussian' or 'hmm'. (This is the EXPERIMENTAL CS-level path;
+            the HMM generator is validated and wired into the valid eGene path
+            map_egenes_knockoffs -- it is no longer "reserved for a later phase".)
         shrink: covariance shrinkage for the Gaussian generator (mandatory > 0
             at small N).
         w_stat: 'pip' or 'max_alpha' importance.
@@ -939,7 +941,7 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
 
 
 def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
-                         fdr=0.1, n_knockoffs=1, knockoff='gaussian', shrink=0.05,
+                         fdr=0.1, n_knockoffs=1, knockoff='hmm', shrink=0.05,
                          gene_stat='max', knockoff_offset=0, selection='qvalue',
                          dependence='prds', aggregate='median', seed=0, permute_null=False,
                          paired_covariate_df=None, L=10, scaled_prior_variance=0.2,
@@ -985,12 +987,28 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         fdr: target genome-wide eGene FDR.
         n_knockoffs: number of knockoff draws (1 = single draw, default). For
             knockoff='hmm' this is the number of chromosome-coherent draws.
-        knockoff: 'gaussian' (second-order, residualized, per-gene; O(p^3)) or
-            'hmm' (fastPHASE-style HMM fit per chromosome, then chromosome-
-            COHERENT knockoff draws sliced per gene). The HMM generator draws one
-            knockoff copy of each whole chromosome, so genes with overlapping
-            cis-windows share the same knockoff on shared variants -- the
-            coherence the per-gene Gaussian generator cannot give. See hmm_method.
+        knockoff: 'hmm' (DEFAULT, recommended for realistic genotypes) or
+            'gaussian' (fast second-order approximation).
+            - 'hmm': fastPHASE-style HMM fit per chromosome, then chromosome-
+              COHERENT knockoff draws sliced per gene (genes with overlapping
+              cis-windows share the same knockoff on shared variants). Matched to
+              discrete, LD-structured, rare-variant genotypes; validated swap-
+              exchangeable. O(N*p*K^2..K^4) per chromosome (slower; needs each
+              chromosome's variants to be a contiguous ordered block). See
+              hmm_method / hmm_K.
+            - 'gaussian': second-order (residualized, per-gene, O(p^3)). A fast
+              approximation that is MISSPECIFIED on non-Gaussian HMM-structured
+              genotypes (Barber-Candes-Samworth 2020): it can inflate the
+              original-favored false-positive tail on strong-LD (r^2>0.5) /
+              rare-variant genotypes (empirically confirmed, docs/
+              calibration_findings.md). Prefer for small p / mild LD, or as a
+              fast comparison arm -- NOT the default.
+            CALIBRATION CAVEAT: neither generator makes the eGene FDR calibrated
+            as shipped. Two open issues (docs/calibration_findings.md): (A) a
+            degenerate all-tie null from SuSiE's prior-variance collapse
+            [fixable, not yet applied], and (B) a non-Binomial, asymmetric per-
+            gene statistic that HMM knockoffs reduce but do NOT eliminate. Treat
+            selections as uncalibrated pending those fixes.
         gene_stat: 'max' or 'sum' for gene_level_W.
         knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
             control, conservative).

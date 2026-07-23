@@ -38,10 +38,24 @@ validation phases. The authoritative current state is:
    a real defect. Any "HMM blocked/WIP/buggy" wording elsewhere is false. It is
    O(N·p·K²) (linear in p) — the path to chromosome-wide coherent knockoffs.
 
-4. **Gaussian knockoffs are the current default generator** (`knockoffs.gaussian_knockoff`),
-   validated to NOT inflate FDR on realistic HMM-simulated genotypes (phase 4). They
-   are O(p³) and thus infeasible chromosome-wide; the HMM generator is the scalable
-   alternative. Still-open hardest corner: strong LD (r²>0.5) + very rare variants.
+4. **HMM knockoffs are the default/recommended generator** (`knockoff='hmm'`,
+   flipped 2026-07; the pipelines now default to it). CORRECTION to the earlier
+   claim here that "Gaussian knockoffs are the current default … validated to NOT
+   inflate FDR": that was too strong and is now superseded. Gaussian knockoffs
+   (`knockoffs.gaussian_knockoff`) are a **fast second-order approximation** that
+   is **misspecified on non-Gaussian, HMM-structured genotypes** — empirically
+   they inflate the *original-favored* false-positive tail (the "phase 4"
+   validation only ruled out gross failure in mild regimes; it did NOT cover the
+   strong-LD/rare-variant corner, which is exactly where Gaussian is misspecified;
+   see `docs/calibration_findings.md`). Gaussian is O(p³) (infeasible chromosome-
+   wide); HMM is O(N·p·K²..K⁴), matched to the discrete diploid law, and the
+   scalable path. Empirical split (2026-07): swapping Gaussian→HMM knockoffs on
+   HMM genotypes *reduces* the anti-conservative false-positive tail (confirming
+   part of the miscalibration was Gaussian misspecification) but does NOT
+   eliminate it and can introduce an over-conservative bias when the HMM is
+   under-fit (small K / few EM iters) — so HMM is the principled default, not a
+   calibration cure. Use Gaussian only for small p / mild LD or as a comparison
+   arm.
 
 4b. **HMM knockoffs are now WIRED INTO the pipeline** (step 1 of the plan),
    with **BOTH** exact constructions of the true diploid law plus a cheap
@@ -462,9 +476,12 @@ Design choices baked into the signature:
   superset. A caller who ignores the knockoff args gets standard behavior plus
   the calibration columns.
 - **`fdr` is the sensitivity dial.** Lower = stricter/fewer CSs.
-- **`knockoff='gaussian'` default, `'hmm'` reserved.** Gaussian is dependency-
-  free and validates the whole pipeline; HMM (SNPknock, GPLv3, optional runtime
-  dep) is a swappable generator added later behind the same interface.
+- **`knockoff='hmm'` default (recommended); `'gaussian'` = fast approximation.**
+  (STALE TEXT CORRECTED: HMM is no longer "reserved for a later phase" and needs
+  no SNPknock dependency — it is implemented in `knockoffs.py`, validated, and
+  wired into `map_egenes_knockoffs` with three exact/approximate constructions.
+  Gaussian remains dependency-free and is retained as a fast approximation valid
+  only at small p / mild LD.)
 
 ### 4.2 Augmented-fit helper (new, in `knockoffs.py`)
 
