@@ -344,8 +344,51 @@ power 0.54 at PVE 0.15.)
 > how much power that conservatism costs, which is a tail-symmetry/generator problem
 > (see the caveat under the mean-W table above), not a selector-threshold problem.
 
+### Permutation-null tail-symmetry probe (300 windows) — the bias is a mild LOCATION shift, and mean-centering is a validated candidate
+
+To settle whether the Gaussian null-W mismatch is a location shift or a tail skew
+(the distinction that decides whether centering is a valid de-bias), we built a
+contamination-free null on **300 real HPRC v2.0 windows (N=232)**: 4500 draws of
+`W = imp(real) − imp(knockoff)` with `Y ⟂ genotype` (`permutation_null_W`), and
+measured the tail sign-asymmetry `A(t) = #{W ≤ −t} / #{W ≥ t}` across the operating
+threshold (median τ = 1.22), raw and after subtracting the null mean.
+
+- **Clean null W: mean = −0.037, median = −0.035, frac(W>0) = 0.456.** Mean ≈ median
+  (both mildly negative) — **not** the mean<0<median skew signature. The earlier
+  n=40 `mean=−0.14` / n=200 `frac=0.556` discordance was Monte-Carlo noise, as the
+  caveat above anticipated.
+- **`A(t)` is ~uniform at 1.3–1.4 across t (raw) and collapses to ≈ 1.0 at every t
+  including τ after subtracting the null mean** (`A_ctr` = 0.97, 1.07, 1.05, 0.87,
+  1.00, 0.91). A uniform-in-`t` asymmetry that mean-centering removes is a **location
+  shift, not a skew** — so centering by the permutation-null mean is theoretically
+  valid here (it symmetrizes the null tail at the operating threshold).
+- **FDR/power counterfactual** (mirror q=0.10, offset=1, 30 reps, 95% bootstrap CI):
+
+  | PVE | center | realized FDR (95% CI) | power (95% CI) |
+  |---|---|---|---|
+  | 0.10 | none (shipped) | 0.028 [0.016, 0.044] | 0.28 [0.25, 0.30] |
+  | 0.10 | permutation-null mean | 0.050 [0.033, 0.069] | 0.32 [0.29, 0.34] |
+  | 0.15 | none (shipped) | 0.037 [0.027, 0.049] | 0.52 [0.49, 0.54] |
+  | 0.15 | permutation-null mean | 0.054 [0.041, 0.069] | 0.55 [0.52, 0.58] |
+
+  Centering recovers about half the FDR gap to target and lifts power **+6–14%**
+  relative, while **keeping control**: the centered realized-FDR upper 95% CI ≤ 0.069
+  < 0.10 at both PVE levels. This MEETS the pre-registered acceptance criteria
+  (centered upper-CI FDR ≤ q AND power strictly rises).
+
+**Status: a validated candidate, NOT shipped.** Recommended as an OPT-IN (estimate
+the center from a per-dataset phenotype-permutation pass; the default stays
+uncentered), pending (i) a genome-scale confirmation — at ~14k genes the `+1`
+knockoff-offset conservatism vanishes, so the location-shift share of the
+conservatism, and hence the centering benefit, should grow — and (ii) human
+sign-off, since it modifies a scientific error-rate guarantee. The shipped
+uncentered path controls FDR conservatively (realized ~0.03 here, tight CI) and is
+unchanged.
+
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
-comparison; requires `pysam` + network; opt-in/slow).
+comparison; requires `pysam` + network; opt-in/slow). Permutation-null experiment:
+`python tests/hprc_calibration.py --permutation_null` (300 windows, reps=30 by
+default; `--cache <path.npz>` reuses fetched windows).
 
 ---
 
