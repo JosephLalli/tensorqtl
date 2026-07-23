@@ -5,7 +5,31 @@ Read this first on resumption.
 
 ---
 
-## 0. TL;DR / where to pick up
+## FINAL RESOLUTION (supersedes the running notes below)
+
+The knockoff-calibration investigation is **complete and validated on real data**.
+Bottom line:
+
+- **The calibrated eGene-FDR method is the KFc path**: continuous statistic
+  `W_g = −log10(min cis p, real) − (knockoff)` + empirical mirror-null selection
+  (`ko.mirror_select_egenes`), with **per-gene Gaussian knockoffs, `shrink≈0.1`**.
+  Available as `statistic='kfc'` in BOTH `susie.map_egenes_knockoffs` and
+  `hapmixqtl.map_egenes_knockoffs`. No atom; FDR controlled with good power on
+  **real HPRC v2.0 genotypes** (0.06–0.07 at target 0.10, power 0.31–0.55).
+- **The old maxPIP + Binomial-null path is DEGENERATE** (SuSiE prior variance
+  collapses to 0 → atom at W=0). Kept as `statistic='maxpip'` for continuity;
+  `susie(prior_variance_floor=1e-2)` removes the atom if needed.
+- Authoritative summaries: `docs/knockoff_susie_design.md` (RESOLUTION block at
+  top) and `docs/calibration_findings.md` (full evidence incl. the real-HPRC
+  generator comparison and the fastPHASE experiment). The running notes in THIS
+  file and the design-doc STATUS items are the historical record of how we got
+  here; where they conflict, the two docs above win.
+
+Everything below is retained as the append-only investigation log.
+
+---
+
+## 0. TL;DR / where to pick up (historical)
 
 - **hapmixQTL** is done and PR-ready on its own branch, pushed to origin. Nothing
   blocking; open a PR when ready.

@@ -1,8 +1,43 @@
 # Knockoff-calibrated SuSiE for tensorQTL — integration spec
 
-Status: active research (validation phases 1-4 complete). Target branch:
-`claude/susie-knockoff-calibration-IQ6Za`.
-Depends on: `tensorqtl/knockoffs.py`.
+Status: investigation complete; the calibrated path is implemented, validated on
+real data, and wired into both pipelines. Target branch:
+`claude/susie-knockoff-calibration-IQ6Za`. Depends on: `tensorqtl/knockoffs.py`.
+
+---
+
+## ✅ RESOLUTION (final) — read this first
+
+The shipped, calibrated way to get eGene-level FDR from knockoffs is the **KFc
+path**: a **continuous** per-gene statistic + an **empirical mirror-null**
+selection, with **per-gene Gaussian knockoffs**. Concretely:
+
+- **Use `statistic='kfc'`** in `susie.map_egenes_knockoffs` (standard SuSiE) or
+  `hapmixqtl.map_egenes_knockoffs` (two-channel ASE+total). The gene statistic is
+  `W_g = imp(real) − imp(knockoff)` where `imp = −log10(min cis p)` (a continuous
+  marginal contrast; for hapmixQTL the combined two-channel t). Selection is the
+  mirror-null knockoff⁺ threshold `#{W≤−t}/#{W≥t}` (`ko.mirror_select_egenes`);
+  `W≤0` is never selected. No SuSiE fit for the filter, **no degenerate atom**.
+- **Generator: per-gene Gaussian, `shrink≈0.1`.** Validated on **real HPRC v2.0
+  genotypes** (N=232): FDR controlled (0.06–0.07 at target 0.10) with the best
+  power (0.31–0.55). It beats even a properly-fit fastPHASE HMM knockoff on power
+  for this LD-sensitive min-p statistic, and is feasible per-cis-window (§8 of
+  `docs/calibration_findings.md`). Whole-chromosome coherence (the only thing that
+  needed the linear-in-p HMM) is not used by the per-gene KFc design.
+- **The legacy `statistic='maxpip'` path is DEGENERATE and not calibrated** — under
+  a null gene SuSiE's prior variance collapses to exactly 0, `maxPIP(orig) −
+  maxPIP(knockoff)` is a point-mass at 0 (an atom), and the assumed Binomial(M,½)
+  null is false. Retained for continuity only. If you must use it, `susie(...,
+  prior_variance_floor=1e-2)` removes the atom (opt-in; off by default).
+- **Full evidence & the corrected mechanistic story** (atom, mirror null, the
+  real-HPRC generator comparison, and every over-claim we walked back) are in
+  `docs/calibration_findings.md`. Tests: `test_kfc_marginal.py`,
+  `test_prior_variance_floor.py`, `test_genome_wide_fdr.py`,
+  `test_knockoff_calibration_step3.py`, `tests/hprc_calibration.py` (real-data,
+  opt-in), plus the pipeline tests.
+
+The detailed STATUS items and design history below are the append-only record of
+how we got here; where they conflict with this block, this block wins.
 
 ---
 
