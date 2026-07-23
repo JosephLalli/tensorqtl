@@ -168,10 +168,30 @@ def neg_loglik_logscale(lV, betahat, shat2, prior_weights):
 
 def optimize_prior_variance(optimize_V, betahat, shat2, prior_weights,
                             alpha=None, post_mean2=None, V_init=None,
-                            check_null_threshold=0):
+                            check_null_threshold=0, prior_variance_floor=0.0):
     """"""
     # EM solution
     V = (alpha * post_mean2).sum()
+
+    # Optional positive FLOOR on the prior variance (default 0.0 -> off ->
+    # unchanged susieR behavior). When > 0, we clamp V to the floor instead of
+    # ever snapping it to EXACTLY 0. Rationale: the exact-0 snap below makes every
+    # per-variant Bayes factor identical -> alpha EXACTLY uniform -> PIP
+    # identically 0 for a no-signal single effect. That is a degenerate,
+    # information-destroying fit: it discards the finite-sample differences among
+    # variants. For a plain fine-mapping run it is harmless (a null effect is
+    # correctly "off"); but any statistic that contrasts variants (e.g. a knockoff
+    # maxPIP(orig) - maxPIP(knockoff)) is then a point mass at 0 -- an atom that
+    # breaks its null distribution. A small floor (e.g. 1e-2) keeps V > prior_tol
+    # so the effect survives susie_get_pip and the posterior stays continuous.
+    # TRADE-OFF: flooring keeps the empty single effects "on" (V=floor rather than
+    # 0), so they each spread a small BASELINE PIP across all variants. For plain
+    # fine-mapping this is a (usually mild) change to non-causal PIPs -- which is
+    # why the floor is opt-in. For a variant-CONTRAST statistic it is benign: the
+    # baseline is symmetric across the contrasted blocks and the real signal still
+    # dominates the max. Choose the smallest floor that removes the atom.
+    if prior_variance_floor and prior_variance_floor > 0:
+        return torch.clamp(V, min=prior_variance_floor)
 
     # set V exactly 0 if that beats the numerical value
     # by check_null_threshold in loglik.
@@ -194,7 +214,8 @@ def SER_posterior_e_loglik(X_t, xattr, Y_t, s2, Eb, Eb2):
 
 
 def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weights=None,
-                             optimize_V='EM', check_null_threshold=0):
+                             optimize_V='EM', check_null_threshold=0,
+                             prior_variance_floor=0.0):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # assert optimize_V in ["none", "optim", "uniroot", "EM", "simple"]
@@ -243,7 +264,8 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
 
     # if optimize_V == 'EM':
     V = optimize_prior_variance(optimize_V, betahat, shat2, prior_weights, alpha,
-                                post_mean2, check_null_threshold=check_null_threshold)
+                                post_mean2, check_null_threshold=check_null_threshold,
+                                prior_variance_floor=prior_variance_floor)
 
     return {
         'alpha': alpha,
@@ -257,7 +279,8 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
 
 
 def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
-                       estimate_prior_method='EM', check_null_threshold=0):
+                       estimate_prior_method='EM', check_null_threshold=0,
+                       prior_variance_floor=0.0):
     """
 
     """
@@ -276,7 +299,8 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
 
         res = single_effect_regression(R_t, X_t, xattr, s['V'][l],
                                        residual_variance=s['sigma2'], prior_weights=s['pi'],
-                                       optimize_V=estimate_prior_method)
+                                       optimize_V=estimate_prior_method,
+                                       prior_variance_floor=prior_variance_floor)
 
         # update the variational estimate of the posterior mean
         s['mu'][l] = res['mu']
@@ -476,7 +500,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           standardize=True, intercept=True,
           estimate_residual_variance=True, estimate_prior_variance=True,
           estimate_prior_method='EM',
-          check_null_threshold=0, prior_tol=1e-9,
+          check_null_threshold=0, prior_tol=1e-9, prior_variance_floor=0.0,
           residual_variance_upperbound=np.inf,
           # s_init=None,
           coverage=0.95, min_abs_corr=0.5,
@@ -509,7 +533,8 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         s = update_each_effect(X_t, xattr, y_t, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
-                               check_null_threshold=0)
+                               check_null_threshold=0,
+                               prior_variance_floor=prior_variance_floor)
         elbo[i] = get_objective(X_t, xattr, y_t, s)
         if verbose:
             print(f'Objective (iter {i}): {elbo[i]}')
