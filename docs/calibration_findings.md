@@ -300,7 +300,10 @@ v2.0 windows. The systematic bias essentially **disappears**:
 > the **anti-conservative** direction. Before any de-biasing is entertained, the
 > mean and the tail asymmetry must be re-measured on a **single** permutation-null
 > sample (permute Y so Y ⟂ genotype) evaluated **at τ**, not via separate summary
-> statistics on different window counts.
+> statistics on different window counts. **This has now been done — see the
+> permutation-null probe below: the clean 300-window measurement shows a mild
+> LOCATION shift (mean ≈ median ≈ −0.037), not a skew, and the earlier discordance
+> was Monte-Carlo noise.**
 
 So a properly-fit HMM knockoff is nearly well-specified on real LD, confirming the
 literature (Sesia, Sabatti & Candès 2019 *Biometrika*; Sesia et al. 2021 *PNAS* /
