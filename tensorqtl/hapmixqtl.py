@@ -1221,7 +1221,7 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                          phenotype_pos_df, xL_df, xR_df, covariates_df=None,
                          fdr=0.1, n_knockoffs=20, hmm_K=8, hmm_em_iter=25,
                          coherent=True, hmm_params=None,
-                         gene_stat='max', selection='calibrated',
+                         statistic='maxpip', gene_stat='max', selection='calibrated',
                          knockoff_offset=1, dependence='prds',
                          L=10, scaled_prior_variance=0.2,
                          estimate_residual_variance=False,
@@ -1265,6 +1265,24 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         coherent: True (chromosome-coherent draws, default) or False (per-gene).
         hmm_params: optional dict chrom -> pre-fit haplotype HMM params
             {'init_p','Q','emission_p'} to skip EM (coherent mode).
+        statistic: 'maxpip' (default, legacy) or 'kfc'. The two-channel analog of
+            susie.map_egenes_knockoffs' statistic:
+            - 'maxpip': augmented SuSiE fit per gene per draw, gene_level_W =
+              maxPIP(orig)-maxPIP(knockoff). Degenerate under a null gene (an atom
+              at W=0; see docs/calibration_findings.md) -- not calibrated.
+            - 'kfc' (recommended): continuous two-channel marginal importance
+              W_g = max|combined t| over cis variants (real) - (same on the phased
+              knockoff g~=x~L+x~R, s~=x~L-x~R), selected by the empirical mirror-
+              null knockoff+ threshold (ko.mirror_select_egenes; W<=0 never
+              selected). No SuSiE fit for the filter, no atom. gene_stat/selection/
+              dependence are ignored for 'kfc'; knockoff_offset sets the mirror
+              offset. NOTE: the two-channel knockoff must be PHASED (the ASE
+              channel needs x~L,x~R), so this path uses the haplotype-HMM knockoff.
+              Per the real-data (HPRC) finding that HMM knockoffs, though unbiased
+              when well-fit, are lower-power than Gaussian for the min-p statistic
+              (docs sec 8), expect the phased-HMM KFc here to be somewhat
+              conservative/lower-power; it is the coherent construction the ASE
+              model requires. SuSiE (via localize) localizes within selected genes.
         gene_stat: 'max' or 'sum' for gene_level_W.
         selection: 'calibrated' (default; known-null Storey q-value + mirror
             cross-check, ko.select_egenes_calibrated), 'qvalue', 'pvalue', or
@@ -1424,21 +1442,39 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 xL_np, xR_np, K=hmm_K, M=n_knockoffs, n_em_iter=hmm_em_iter,
                 seed=seed * 100003 + k, return_phased=True)
 
+        # KFc: continuous two-channel marginal importance = max|combined t| over
+        # cis variants. The real importance does not depend on the knockoff, so
+        # compute it once here (the knockoff importance is computed per draw).
+        if statistic == 'kfc':
+            ts_real = calculate_hapmixqtl_nominal(
+                genotypes_t, sign_t, a_t, t_t, sqrt_wa_t, sqrt_wt_t,
+                residualizer_a, residualizer_tc)[0]
+            imp_real = float(torch.nan_to_num(ts_real.abs()).max().item())
+
         draw_W = []
         for r in range(n_knockoffs):
             xkL_t = torch.tensor(xkL_all[r].T, dtype=torch.float32).to(device)  # [p, N]
             xkR_t = torch.tensor(xkR_all[r].T, dtype=torch.float32).to(device)
-            Xk_aug_t = _build_knockoff_stacked_design(
-                xkL_t, xkR_t, sqrt_wa_t, sqrt_wt_t,
-                residualizer_a, residualizer_tc)
-            res, p = ko.augmented_susie_fit(
-                susie.susie, X_aug_t, y_aug_t, Xk_aug_t, L,
-                scaled_prior_variance=scaled_prior_variance, intercept=False,
-                estimate_residual_variance=estimate_residual_variance,
-                estimate_prior_variance=estimate_prior_variance,
-                residual_variance=resvar, coverage=coverage,
-                min_abs_corr=min_abs_corr, tol=tol, max_iter=max_iter)
-            draw_W.append(ko.gene_level_W(res['pip'], p, kind=gene_stat))
+            if statistic == 'kfc':
+                # knockoff two-channel importance from the phased knockoff:
+                # g~ = x~L + x~R (total), s~ = x~L - x~R (ASE). W = imp - imp_ko.
+                ts_ko = calculate_hapmixqtl_nominal(
+                    xkL_t + xkR_t, xkL_t - xkR_t, a_t, t_t, sqrt_wa_t, sqrt_wt_t,
+                    residualizer_a, residualizer_tc)[0]
+                imp_ko = float(torch.nan_to_num(ts_ko.abs()).max().item())
+                draw_W.append(imp_real - imp_ko)
+            else:
+                Xk_aug_t = _build_knockoff_stacked_design(
+                    xkL_t, xkR_t, sqrt_wa_t, sqrt_wt_t,
+                    residualizer_a, residualizer_tc)
+                res, p = ko.augmented_susie_fit(
+                    susie.susie, X_aug_t, y_aug_t, Xk_aug_t, L,
+                    scaled_prior_variance=scaled_prior_variance, intercept=False,
+                    estimate_residual_variance=estimate_residual_variance,
+                    estimate_prior_variance=estimate_prior_variance,
+                    residual_variance=resvar, coverage=coverage,
+                    min_abs_corr=min_abs_corr, tol=tol, max_iter=max_iter)
+                draw_W.append(ko.gene_level_W(res['pip'], p, kind=gene_stat))
         gene_ids.append(phenotype_id)
         W_rows.append(draw_W)
 
@@ -1447,8 +1483,18 @@ def map_egenes_knockoffs(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     W_per_draw = np.array(W_rows, dtype=np.float64).T          # [M, n_genes]
 
     diagnostics = {'W_per_draw': W_per_draw, 'gene_ids': gene_ids,
-                   'n_draws': W_per_draw.shape[0], 'selection': selection}
-    if selection == 'calibrated':
+                   'n_draws': W_per_draw.shape[0], 'selection': selection,
+                   'statistic': statistic}
+    if statistic == 'kfc':
+        # continuous statistic -> empirical mirror-null knockoff+ selection
+        W_gene = W_per_draw.mean(axis=0)
+        sel = ko.mirror_select_egenes(gene_ids, W_gene, q=fdr,
+                                      offset=(knockoff_offset or 1))
+        selected = set(sel['selected'])
+        score_col, score_vals = 'knockoff_qvalue', sel['qvalues']
+        logger.write(f'  * KFc two-channel statistic + mirror-null selection: '
+                     f'tau={sel["tau"]:.3g}; {sel["n_selected"]} eGenes')
+    elif selection == 'calibrated':
         sel = ko.select_egenes_calibrated(gene_ids, W_per_draw, q=fdr,
                                           offset=(knockoff_offset or 1),
                                           dependence=dependence)

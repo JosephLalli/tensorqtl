@@ -210,5 +210,28 @@ class TestSignalSeparation:
             assert n_true >= 1, "no causal gene recovered"
 
 
+class TestKfcStatistic:
+
+    def test_kfc_two_channel_runs_and_separates(self):
+        """statistic='kfc' uses the continuous two-channel min-|t| importance +
+        phased knockoff + mirror-null selection. Schema correct, no atom/NaN,
+        causal genes preferentially recovered."""
+        d = _make_egene_dataset(n_genes=8, n_causal=4, p_per_gene=12, N=150,
+                                seed=3, beta=2.0)
+        eg, diag = hapmixqtl.map_egenes_knockoffs(
+            d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+            d['Va_df'], d['Vt_df'], d['pos_df'], d['xL_df'], d['xR_df'],
+            fdr=0.2, n_knockoffs=6, hmm_K=5, hmm_em_iter=6, statistic='kfc',
+            coherent=True, window=500_000, L=5, max_iter=100, verbose=False, seed=7)
+        assert list(eg.columns) == ['phenotype_id', 'knockoff_qvalue', 'selected']
+        assert diag['statistic'] == 'kfc'
+        assert not np.isnan(diag['W_per_draw']).any()
+        # continuous statistic: not a degenerate atom at 0
+        assert np.mean(np.abs(diag['W_per_draw']) < 1e-12) < 0.9
+        sel = set(eg[eg['selected']]['phenotype_id'])
+        if sel:
+            assert len(sel & d['causal']) >= 1, "no causal gene recovered"
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v', '-s']))
