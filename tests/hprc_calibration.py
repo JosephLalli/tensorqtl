@@ -28,9 +28,12 @@ import numpy as np
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
 
-import tensorqtl.knockoffs as ko
+try:
+    import tensorqtl.knockoffs as ko
+except ImportError:  # standalone run: tensorqtl dir directly on path
+    sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
+    import knockoffs as ko
 
 HPRC_V2_URL = ('https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/'
                'freeze/release2/minigraph-cactus/hprc-v2.0-mc-grch38.wave.vcf.gz')
