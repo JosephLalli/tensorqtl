@@ -597,20 +597,28 @@ quantify the power cost of calibration.
 
 ## 7. CLI
 
-**Not built.** This section originally proposed a `cis_susie_knockoffs` mode in
-`tensorqtl.py` mirroring `cis_susie` (see the build-order item 5 below); as of
-this writing `tensorqtl/tensorqtl.py`'s `--mode` choices are `cis`, `cis_nominal`,
-`cis_independent`, `cis_susie`, `trans`, `trans_susie`, `nbqtl-score`,
-`hapmixqtl_nominal`, `hapmixqtl`, `hapmixqtl_susie` — there is no knockoff mode,
-and no `--fdr`/`--n_knockoffs`/`--knockoff` flags gate anything on the CLI path.
-The shipped interface is Python-only: `tensorqtl.susie.map_egenes_knockoffs`
-(standard *cis* phenotypes) and `tensorqtl.hapmixqtl.map_egenes_knockoffs`
-(two-channel hapmixQTL phenotypes), both returning DataFrames rather than
-writing files. See the README section "Knockoff-calibrated eGene FDR" for the
-user-facing call pattern (recommended: `statistic='kfc'`, and for the standard
-`cis` path `knockoff='gaussian', shrink=0.1`, per the RESOLUTION block at the
-top of this document) and `docs/outputs.md` for the `egene_df` column schema.
-Adding a CLI mode remains open work, not yet scheduled.
+**Built** as the `cis_egenes_knockoff` mode in `tensorqtl.py` (the original
+`cis_susie_knockoffs` proposal, renamed to describe what it does — eGene calling
+via knockoffs). It wraps `tensorqtl.susie.map_egenes_knockoffs`:
+
+```
+python3 -m tensorqtl ${plink} ${expr_bed} ${prefix} \
+    --covariates ${cov} --mode cis_egenes_knockoff --fdr 0.10
+```
+
+Defaults are the HPRC-validated configuration (`--statistic kfc`, `--knockoff
+gaussian`, `--shrink 0.1`, `--knockoff_offset 1`, `--n_knockoffs 1`), so only
+`--fdr` is normally set; all five knobs are exposed as flags. Writes
+`${prefix}.cis_knockoff_egenes.txt.gz` (the per-gene eGene table),
+`${prefix}.cis_knockoff_egenes.SuSiE_summary.parquet` (SuSiE localization for the
+selected eGenes, same format as `cis_susie`), and
+`${prefix}.cis_knockoff_egenes.diagnostics.pickle`. See the README section
+"Knockoff-calibrated eGene FDR" and `docs/outputs.md` for the column schema, and
+`tests/test_cli_knockoff_mode.py` for the surface + config regression tests.
+
+The two-channel `hapmixqtl.map_egenes_knockoffs` remains Python-only (more
+experimental; phased-HMM knockoffs, lower power — see the RESOLUTION block at the
+top of this document).
 
 ---
 
@@ -622,7 +630,7 @@ Adding a CLI mode remains open work, not yet scheduled.
 3. **Null-permutation calibration test on synthetic data** — the gate. Do not
    proceed to real-data / CLI until empirical FDR ≈ q here.
 4. Spike-in power test.
-5. CLI mode — **not done** (see §7; still open work).
+5. CLI mode — **done**: `cis_egenes_knockoff` (see §7).
 6. (later) hapmixQTL two-channel path; HMM generator; v2 knobs.
 
 Open question flagged for the two-channel phase (not v1): the augmented fit
