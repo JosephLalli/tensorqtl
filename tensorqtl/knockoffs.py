@@ -1843,6 +1843,134 @@ def select_egenes_calibrated(gene_ids, W_per_draw, q=0.1, pi0='auto', offset=1,
             'mirror_informative': mirror_informative}
 
 
+# ===========================================================================
+#  KFc-style continuous statistic + empirical mirror-null FDR (fixes problem B)
+#  ==========================================================================
+#
+#  WHY.  The gene statistic W_g = maxPIP(orig) - maxPIP(knockoff) is DEGENERATE
+#  under a null gene: SuSiE collapses the prior variance to exactly 0, PIPs become
+#  identically 0, and W_g is a point mass at 0 (an ATOM). The per-gene count
+#  b = #{W <= 0} is then pinned at M and the assumed Binomial(M,1/2) null is false
+#  (see docs/calibration_findings.md). No amount of pi0 / discrete-FDR tuning
+#  fixes a statistic whose null is an atom.
+#
+#  THE FIX (KFc; Wang et al., NAR Genomics & Bioinformatics 2023,
+#  github.com/QingboWang/KFc; and the GhostKnockoff / Barber-Candes lineage):
+#    1. Use a CONTINUOUS per-gene importance -- the strongest marginal cis
+#       association, -log10(min nominal p) over the gene's variants -- computed on
+#       the REAL genotypes and on a KNOCKOFF copy. This has NO atom and NO ties
+#       (min-p over t-tests is continuous), so
+#           W_g = imp(real) - imp(knockoff)
+#       is a genuinely continuous, swap-antisymmetric statistic whose null sign is
+#       a real coin flip.
+#    2. Select genome-wide with the EMPIRICAL MIRROR-NULL knockoff+ threshold
+#       (Barber & Candes 2015): FDP_hat(t) = (offset + #{W_g <= -t}) / #{W_g >= t}.
+#       No distributional assumption; and W_g <= 0 can NEVER be selected (a tie or
+#       a knockoff-win "provides no evidence against the null", Candes et al.
+#       2018), so the 2^-M-tail landmine and the atom both disappear.
+#  SuSiE is then used only to LOCALIZE within the selected eGenes, not for the FDR
+#  statistic. This is faster too (a marginal scan, no per-gene SuSiE fit for the
+#  filter).
+# ===========================================================================
+
+
+def marginal_importance(X_t, y_t, dof_adjust=2):
+    """
+    Continuous per-gene importance = -log10(min two-sided nominal p) over the
+    gene's cis variants, from per-variant marginal t-tests.
+
+    No SuSiE, no atom, no ties: min-p over continuous t-statistics is continuous.
+
+    Args:
+        X_t: [N, p] genotype/dosage matrix for the gene's cis window. Should be
+            covariate-RESIDUALIZED (and the same residualization applied to y_t);
+            columns need not be standardized (correlation is scale-free).
+        y_t: [N] or [N,1] residualized phenotype.
+        dof_adjust: residual dof = N - dof_adjust (2 for an intercept + slope; use
+            2 + n_covariates if covariates were projected out beforehand -- the
+            exact value barely moves -log10 p at eQTL N).
+
+    Returns:
+        importance: float, -log10(min_j p_j). Larger = stronger cis signal.
+    """
+    from scipy import stats as _stats
+    X = np.asarray(X_t, dtype=np.float64)
+    y = np.asarray(y_t, dtype=np.float64).ravel()
+    N, p = X.shape
+    Xc = X - X.mean(0)
+    yc = y - y.mean()
+    sx = np.sqrt((Xc * Xc).sum(0))
+    sy = np.sqrt((yc * yc).sum())
+    denom = sx * sy
+    good = denom > 0
+    r = np.zeros(p)
+    r[good] = (Xc[:, good] * yc[:, None]).sum(0) / denom[good]
+    r = np.clip(r, -0.999999, 0.999999)
+    dof = max(1, N - dof_adjust)
+    t = r * np.sqrt(dof / (1.0 - r * r))
+    # two-sided p; -log10 via the log-sf for numerical range
+    logsf = _stats.t.logsf(np.abs(t), dof)           # log P(T > |t|)
+    neglog10p = -(np.log(2.0) + logsf) / np.log(10.0)  # -log10(2*sf)
+    neglog10p[~good] = 0.0
+    return float(neglog10p.max()) if p > 0 else 0.0
+
+
+def gene_W_marginal(X_t, Xk_t, y_t, dof_adjust=2):
+    """
+    Continuous KFc gene statistic: W_g = imp(real) - imp(knockoff), where imp is
+    marginal_importance (-log10 min-p). Swap-antisymmetric and continuous (no
+    atom). X_t and Xk_t must be the SAME gene's real and knockoff windows, both
+    covariate-residualized like y_t.
+    """
+    return marginal_importance(X_t, y_t, dof_adjust) - \
+        marginal_importance(Xk_t, y_t, dof_adjust)
+
+
+def mirror_select_egenes(gene_ids, W, q=0.1, offset=1):
+    """
+    Genome-wide eGene selection from continuous per-gene statistics via the
+    empirical mirror-null knockoff+ threshold (Barber & Candes 2015).
+
+    FDP_hat(t) = (offset + #{W_g <= -t}) / max(1, #{W_g >= t}); select the genes
+    with W_g >= tau, where tau is the smallest t>0 with FDP_hat(t) <= q. Genes
+    with W_g <= 0 are never selected. Valid for ANY continuous swap-antisymmetric
+    W (no Binomial / no known-null assumption) -- the correct selector for the
+    continuous KFc statistic.
+
+    Args:
+        gene_ids: list of n gene ids.
+        W: array [n] of continuous per-gene statistics (gene_W_marginal), aligned.
+        q: target FDR.
+        offset: 1 (knockoff+, finite-sample valid) or 0.
+
+    Returns:
+        dict: 'selected' (gene_ids), 'W' (array), 'tau', 'qvalues' (per-gene
+              knockoff q-value = min over t<=W_g of FDP_hat), 'n_selected'.
+    """
+    W = np.asarray(W, dtype=np.float64)
+    n = W.shape[0]
+    tau = knockoff_threshold(W, q=q, offset=offset)
+    mask = W >= tau if np.isfinite(tau) else np.zeros(n, dtype=bool)
+    # per-gene knockoff q-value: for each positive W_g, the min achievable FDP if
+    # the threshold were set at that gene (monotone from the top).
+    qvals = np.ones(n)
+    order = np.argsort(-W)                    # descending
+    pos = W[order] > 0
+    for rank, idx in enumerate(order):
+        t = W[idx]
+        if t <= 0:
+            continue
+        num = offset + np.sum(W <= -t)
+        den = max(1, np.sum(W >= t))
+        qvals[idx] = min(1.0, num / den)
+    # enforce monotonicity in W (larger W -> smaller q)
+    qsorted = np.minimum.accumulate(qvals[order])
+    qvals[order] = qsorted
+    selected = [gene_ids[i] for i in range(n) if mask[i]]
+    return {'selected': selected, 'W': W, 'tau': tau, 'qvalues': qvals,
+            'n_selected': int(mask.sum())}
+
+
 # ---------------------------------------------------------------------------
 #  Derandomization (Ren & Barber 2024, e-value aggregation)
 # ---------------------------------------------------------------------------

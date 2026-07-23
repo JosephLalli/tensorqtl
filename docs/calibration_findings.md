@@ -188,8 +188,31 @@ loop) before routine whole-genome use.
 
 ## 7. Path to calibration
 
-Calibration is an **open problem**, but a bounded one. The two failures need
-different work:
+**UPDATE (2026-07): the root causes were pinned down and both fixes are now
+implemented and validated.** The deeper diagnosis (from a multi-probe
+investigation) revised the "high-N vs low-N" framing:
+- The high-N over-conservatism is an **ATOM**: SuSiE snaps the single-effect
+  prior variance to *exactly 0* under a null, so `alpha` is exactly uniform and
+  `maxPIP(orig) − maxPIP(knockoff)` is a point mass at 0. Fix shipped:
+  `susie(prior_variance_floor=...)` clamps the prior variance to a small positive
+  floor, restoring a continuous fit (commit adds the option; off by default).
+- The low-N "inflation" is **not really low-N** — it is an N-persistent,
+  asymmetric false-positive tail from the coherent-draw + `maxPIP` construction
+  and from Gaussian-knockoff misspecification. NIG / SuSiE 2.0 does *not* fix it.
+- **The real fix for the statistic is the KFc redesign** (Wang et al. 2023):
+  a **continuous** per-gene statistic `W_g = −log10(min p_real) − −log10(min
+  p_knockoff)` (no atom, no ties) + the **empirical mirror-null** knockoff+
+  threshold (`W≤0` never selected; no Binomial assumption). Implemented in
+  `knockoffs.marginal_importance` / `gene_W_marginal` / `mirror_select_egenes`.
+  Validated on realistic HMM genotypes with HMM knockoffs
+  (`tests/test_kfc_marginal.py`): **null atom = 0%, realized FDR controlled
+  (0.03–0.055 at target 0.10), power 0.48–0.90** — a decisive improvement over
+  the maxPIP+Binomial path (atom, 8–17% false-positive tail, power 0.08–0.34).
+  Residual: a mild conservatism from the knockoff⁺ offset and a slight `W>0` bias
+  when the HMM knockoff is under-fit (K=5); a better-fit knockoff pushes it toward
+  the target. SuSiE is now used only to *localize* within selected eGenes.
+
+The original per-failure notes below are retained for the record:
 
 **A. Reduce high-N conservatism** (recover power without losing control):
 1. Use a **less-conservative π₀** — the identified lower end of the interval, or
