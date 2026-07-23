@@ -262,3 +262,28 @@ summary_df, susie_res = hapmixqtl.map_susie(
     covariates_df=covariates_df, L=10, summary_only=False)
 ```
 
+#### Knockoff-calibrated eGene FDR (Python API only)
+This calls eGenes (phenotypes with a *cis* signal) at a knockoff-controlled false discovery rate, robust to SuSiE's own PIP miscalibration. For each phenotype, the *cis* genotype design is augmented with knockoff copies, a gene-level statistic is computed from `[X, X_knockoff]`, and genes are selected genome-wide at the target FDR before ordinary SuSiE localizes credible sets within the selected genes. **There is no CLI `--mode` for this yet** (see the `--mode` choices in `tensorqtl/tensorqtl.py`); it is called directly from Python: `tensorqtl.susie.map_egenes_knockoffs` for standard BED-format phenotypes (as for `cis`/`cis_susie`), or `tensorqtl.hapmixqtl.map_egenes_knockoffs` for the two-channel hapmixQTL phenotypes.
+
+Two gene-level statistics are available (`statistic=`):
+* `'kfc'` (**recommended**) — a continuous statistic `W_g = -log10(min cis p, real) − -log10(min cis p, knockoff)`, selected genome-wide by the empirical mirror-null knockoff+ threshold. This is the only path validated end-to-end on real genotypes (HPRC v2.0, N=232): realized FDR 0.06–0.07 at target FDR 0.10, power 0.31–0.55 (`docs/calibration_findings.md`, "Real-data (HPRC) validation").
+* `'maxpip'` (module default, **legacy, not calibrated**) — `W_g = maxPIP(original) − maxPIP(knockoff)` from an augmented SuSiE fit. Under a null gene, SuSiE's prior variance collapses to exactly 0, producing a point mass at `W=0` that breaks the knockoff-null assumption used for selection; retained only for continuity (`docs/knockoff_susie_design.md`, "STATUS" §3.2). Do not use it for FDR claims unless also setting `susie(..., prior_variance_floor=...)` to remove the atom.
+
+Standard *cis*-QTL phenotypes, using the configuration validated for `'kfc'`:
+```python
+from tensorqtl import susie
+egene_df, localize_summary_df, diagnostics = susie.map_egenes_knockoffs(
+    genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
+    fdr=0.1, statistic='kfc', knockoff='gaussian', shrink=0.1, knockoff_offset=1)
+```
+`knockoff='gaussian', shrink=0.1` is the generator validated for the `kfc` statistic on real LD. The module default `knockoff='hmm'` (chromosome-coherent HMM knockoffs) instead targets the legacy `maxpip` path, where whole-chromosome coherence is the point. `egene_df` has one row per phenotype: `phenotype_id`, `knockoff_qvalue`, `selected` (boolean). `localize_summary_df` (from the default `localize=True`) holds ordinary SuSiE credible sets for the selected eGenes, in the same format as `cis_susie`'s summary output.
+
+hapmixQTL phenotypes — the two-channel analog. Because the ASE channel needs phase, this path always uses chromosome-coherent phased haplotype knockoffs rather than Gaussian:
+```python
+from tensorqtl import hapmixqtl
+egene_df, diagnostics = hapmixqtl.map_egenes_knockoffs(
+    genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, phenotype_pos_df,
+    xL_df, xR_df, covariates_df=covariates_df, fdr=0.1, statistic='kfc')
+```
+Because the phased-HMM knockoff is unbiased but lower-power than Gaussian for this statistic on real LD (`docs/calibration_findings.md`, "Real-data (HPRC) validation"), expect this path to be more conservative than the standard *cis* `'kfc'` path above. Both functions require genotypes sorted by chromosome then position (the standard tensorQTL layout), since each chromosome must occupy a contiguous row block.
+

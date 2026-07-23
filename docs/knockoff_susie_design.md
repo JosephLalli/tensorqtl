@@ -597,16 +597,20 @@ quantify the power cost of calibration.
 
 ## 7. CLI
 
-New mode `cis_susie_knockoffs` in `tensorqtl.py`, mirroring `cis_susie`:
-
-```
-python -m tensorqtl ${plink} ${expr_bed} ${prefix} \
-    --covariates ${cov} --mode cis_susie_knockoffs \
-    --fdr 0.05 --n_knockoffs 5 --knockoff gaussian
-```
-
-Writes `${prefix}.SuSiE_knockoff_summary.parquet` (the §2 table) and, if
-`--emit_diagnostics`, `${prefix}.SuSiE_knockoff_diagnostics.pickle`.
+**Not built.** This section originally proposed a `cis_susie_knockoffs` mode in
+`tensorqtl.py` mirroring `cis_susie` (see the build-order item 5 below); as of
+this writing `tensorqtl/tensorqtl.py`'s `--mode` choices are `cis`, `cis_nominal`,
+`cis_independent`, `cis_susie`, `trans`, `trans_susie`, `nbqtl-score`,
+`hapmixqtl_nominal`, `hapmixqtl`, `hapmixqtl_susie` — there is no knockoff mode,
+and no `--fdr`/`--n_knockoffs`/`--knockoff` flags gate anything on the CLI path.
+The shipped interface is Python-only: `tensorqtl.susie.map_egenes_knockoffs`
+(standard *cis* phenotypes) and `tensorqtl.hapmixqtl.map_egenes_knockoffs`
+(two-channel hapmixQTL phenotypes), both returning DataFrames rather than
+writing files. See the README section "Knockoff-calibrated eGene FDR" for the
+user-facing call pattern (recommended: `statistic='kfc'`, and for the standard
+`cis` path `knockoff='gaussian', shrink=0.1`, per the RESOLUTION block at the
+top of this document) and `docs/outputs.md` for the `egene_df` column schema.
+Adding a CLI mode remains open work, not yet scheduled.
 
 ---
 
@@ -618,7 +622,7 @@ Writes `${prefix}.SuSiE_knockoff_summary.parquet` (the §2 table) and, if
 3. **Null-permutation calibration test on synthetic data** — the gate. Do not
    proceed to real-data / CLI until empirical FDR ≈ q here.
 4. Spike-in power test.
-5. CLI mode.
+5. CLI mode — **not done** (see §7; still open work).
 6. (later) hapmixQTL two-channel path; HMM generator; v2 knobs.
 
 Open question flagged for the two-channel phase (not v1): the augmented fit
