@@ -144,5 +144,60 @@ class TestEndToEndHMM:
         assert np.mean(powers) >= 0.4, f"power {np.mean(powers):.2f}"
 
 
+@pytest.mark.slow
+class TestKfcPipeline:
+
+    def test_statistic_kfc_end_to_end(self):
+        """statistic='kfc' runs through susie.map_egenes_knockoffs: continuous
+        statistic + mirror-null selection + SuSiE localization, correct schema."""
+        import pandas as pd
+        import tensorqtl.susie as susie
+        from hmm_genotype_simulator import simulate_hmm_genotypes
+        rng = np.random.RandomState(0)
+        N, n_genes, p, n_sig = 200, 30, 20, 12
+        samples = [f"S{i:04d}" for i in range(N)]
+        vids, chroms, poss, blocks, causal_row = [], [], [], [], {}
+        for g in range(n_genes):
+            geno, _, info = simulate_hmm_genotypes(p, N, seed=g)
+            blocks.append(geno)
+            base = 1_000_000 * g + 50_000
+            for j in range(p):
+                vids.append(f"g{g}_v{j}"); chroms.append("chr1"); poss.append(base + j * 200)
+            if g < n_sig:
+                elig = np.where(info['maf'] > 0.05)[0]
+                causal_row[g] = g * p + (elig[0] if elig.size else 0)
+        geno = np.vstack(blocks)
+        genotype_df = pd.DataFrame(geno, index=vids, columns=samples)
+        variant_df = pd.DataFrame({'chrom': chroms, 'pos': poss}, index=vids)
+        pheno, pids = [], []
+        for g in range(n_genes):
+            y = rng.randn(N)
+            if g < n_sig:
+                r = causal_row[g]
+                xc = (geno[r] - geno[r].mean()) / (geno[r].std() + 1e-9)
+                y = y + np.sqrt(0.12 / 0.88) * xc
+            pheno.append(y); pids.append(f"G{g}")
+        phenotype_df = pd.DataFrame(np.array(pheno), index=pids, columns=samples)
+        pos_df = pd.DataFrame({'chr': ['chr1'] * n_genes,
+                               'pos': [1_000_000 * g + 50_000 + (p // 2) * 200 for g in range(n_genes)]},
+                              index=pids)
+        cov_df = pd.DataFrame(rng.randn(N, 2), index=samples, columns=['PC1', 'PC2'])
+        truth = set(f"G{g}" for g in range(n_sig))
+
+        eg, loc, diag = susie.map_egenes_knockoffs(
+            genotype_df, variant_df, phenotype_df, pos_df, cov_df,
+            fdr=0.1, n_knockoffs=1, knockoff='hmm', statistic='kfc',
+            hmm_K=5, hmm_em_iter=6, knockoff_offset=1, window=1_000_000, L=5,
+            max_iter=100, verbose=False, seed=1, localize=True)
+        assert list(eg.columns) == ['phenotype_id', 'knockoff_qvalue', 'selected']
+        assert len(eg) == n_genes
+        sel = set(eg[eg['selected']]['phenotype_id'])
+        # power: most true eGenes recovered (single run, tolerant)
+        assert len(sel & truth) >= n_sig // 2
+        # localization ran on the selected genes
+        if sel:
+            assert loc is not None
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v', '-s']))

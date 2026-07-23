@@ -967,7 +967,8 @@ def map_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covar
 
 def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
                          fdr=0.1, n_knockoffs=1, knockoff='hmm', shrink=0.05,
-                         gene_stat='max', knockoff_offset=0, selection='qvalue',
+                         statistic='maxpip', gene_stat='max', knockoff_offset=0,
+                         selection='qvalue',
                          dependence='prds', aggregate='median', seed=0, permute_null=False,
                          paired_covariate_df=None, L=10, scaled_prior_variance=0.2,
                          estimate_residual_variance=True, estimate_prior_variance=True,
@@ -1034,9 +1035,26 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
             [fixable, not yet applied], and (B) a non-Binomial, asymmetric per-
             gene statistic that HMM knockoffs reduce but do NOT eliminate. Treat
             selections as uncalibrated pending those fixes.
-        gene_stat: 'max' or 'sum' for gene_level_W.
+        statistic: 'maxpip' (default, legacy) or 'kfc' (RECOMMENDED).
+            - 'maxpip': gene_level_W = maxPIP(orig) - maxPIP(knockoff) from an
+              augmented SuSiE fit per gene per draw, selected via `selection`
+              below. NOTE: this statistic is DEGENERATE under a null gene (an atom
+              at W=0; see the calibration caveat and docs/calibration_findings.md)
+              and is not calibrated. Retained for continuity.
+            - 'kfc': the continuous KFc statistic W_g = -log10(min p_real) -
+              -log10(min p_knockoff) (marginal cis association contrast; no SuSiE
+              fit for the filter, no atom, no ties), selected genome-wide by the
+              empirical mirror-null knockoff+ threshold (ko.mirror_select_egenes;
+              W<=0 never selected). Fixes issue (B): validated to control FDR with
+              good power on realistic HMM genotypes (tests/test_kfc_marginal.py).
+              With 'kfc', gene_stat/selection/aggregate/dependence are ignored;
+              knockoff_offset (1 = knockoff+, recommended) sets the mirror offset;
+              n_knockoffs draws are averaged into one continuous W per gene. SuSiE
+              (via localize) is then used only to localize within selected eGenes.
+        gene_stat: 'max' or 'sum' for gene_level_W (statistic='maxpip' only).
         knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
-            control, conservative).
+            control, conservative). For statistic='kfc' this is the mirror-null
+            offset (1 recommended).
         selection: 'qvalue' (calibrated pooled q-value, default), 'ebh'
             (Ren-Barber e-value derandomization / knockoff+ control), 'pvalue'
             (per-gene knockoff p-value + BH; needs many draws, see
@@ -1223,14 +1241,22 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
                 Xk_t = iresidualizer.transform(Xk_raw).T             # [N, p]
             else:
                 raise NotImplementedError(f"knockoff='{knockoff}' not yet implemented")
-            res, _ = ko.augmented_susie_fit(
-                susie, X_t, y_t, Xk_t, L,
-                scaled_prior_variance=scaled_prior_variance,
-                coverage=coverage, min_abs_corr=min_abs_corr,
-                estimate_residual_variance=estimate_residual_variance,
-                estimate_prior_variance=estimate_prior_variance,
-                tol=tol, max_iter=max_iter)
-            draw_W.append(ko.gene_level_W(res['pip'], p, kind=gene_stat))
+            if statistic == 'kfc':
+                # Continuous KFc statistic: -log10(min p) marginal contrast, no
+                # SuSiE fit, no atom. Uses the covariate-residualized X, Xk, y.
+                yv = y_t.detach().cpu().numpy().ravel()
+                draw_W.append(
+                    ko.marginal_importance(X_t.detach().cpu().numpy(), yv)
+                    - ko.marginal_importance(Xk_t.detach().cpu().numpy(), yv))
+            else:
+                res, _ = ko.augmented_susie_fit(
+                    susie, X_t, y_t, Xk_t, L,
+                    scaled_prior_variance=scaled_prior_variance,
+                    coverage=coverage, min_abs_corr=min_abs_corr,
+                    estimate_residual_variance=estimate_residual_variance,
+                    estimate_prior_variance=estimate_prior_variance,
+                    tol=tol, max_iter=max_iter)
+                draw_W.append(ko.gene_level_W(res['pip'], p, kind=gene_stat))
         gene_ids.append(phenotype_id)
         W_rows.append(draw_W)
 
@@ -1238,7 +1264,16 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
         raise ValueError('No genes produced statistics.')
     W_per_draw = np.array(W_rows, dtype=np.float64).T   # [n_draws, n_genes]
 
-    if selection == 'ebh':
+    if statistic == 'kfc':
+        logger.write(f'  * PASS 2: KFc continuous statistic + empirical mirror-null '
+                     f'knockoff+ eGene selection at FDR <= {fdr}')
+        W_gene = W_per_draw.mean(axis=0)                 # continuous W, averaged over draws
+        sel = ko.mirror_select_egenes(gene_ids, W_gene, q=fdr,
+                                      offset=(knockoff_offset or 1))
+        selected_genes = set(sel['selected'])
+        score_col, score_vals = 'knockoff_qvalue', sel['qvalues']
+        logger.write(f'    - tau={sel["tau"]:.3g}; {sel["n_selected"]} genes with W>=tau')
+    elif selection == 'ebh':
         logger.write(f'  * PASS 2: e-value (knockoff+) eGene selection at FDR <= {fdr}')
         sel = ko.select_egenes(gene_ids, W_per_draw, q=fdr, offset=(knockoff_offset or 1))
         selected_genes = set(sel['selected'])
