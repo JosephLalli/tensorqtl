@@ -275,15 +275,28 @@ Why Gaussian, not HMM, for KFc — and the scalability caveat:
   thing that required the linear-in-p HMM — was a need of the abandoned maxPIP
   per-gene-p-value design.
 
-**Important caveat (do not over-read):** the HMM misspecification here is almost
-certainly an **under-fitting / immature-implementation** issue, NOT a limitation
-of HMMs. Properly-fit HMM knockoffs control FDR on real human data at scale
-(Sesia, Sabatti & Candès 2019 *Biometrika*; Sesia et al. 2021 *PNAS* / KnockoffGWAS
-on UK Biobank, N≈489k). The correct test is to swap our toy HMM for a phasing-grade
-fit (SNPknock / fastPHASE — the published method; SNPknock's Python package is
-installed) and re-run this exact null-`W` test. **That test is in progress**; until
-it is done, the validated real-data generator for the shipped KFc path is per-gene
-Gaussian, `shrink≈0.1`.
+**RESOLVED — the bias was UNDER-FITTING, not an HMM limitation.** We swapped the
+toy HMM for a **phasing-grade fastPHASE fit** (the `fastphase` PyPI package,
+patched for a 64-bit `dtype=int`→`int32` Cython bug and rebuilt; K=20, fit on the
+pooled phased HPRC haplotypes) and re-ran the exact null-`W` test on 40 real HPRC
+v2.0 windows. The systematic bias essentially **disappears**:
+
+| generator (real HPRC LD) | mean W (→0 = unbiased) |
+|---|---|
+| toy genotype-HMM K=8 | −0.276 (strongly biased) |
+| **fastPHASE fit K=20 → our generator** | **−0.023 (≈ unbiased)** |
+| Gaussian shrink=0.1 | −0.140 |
+
+So a properly-fit HMM knockoff is nearly well-specified on real LD, confirming the
+literature (Sesia, Sabatti & Candès 2019 *Biometrika*; Sesia et al. 2021 *PNAS* /
+KnockoffGWAS on UK Biobank, N≈489k). **The earlier "HMM misspecified on real LD"
+framing was wrong — it was our toy fit that was inadequate.** (`frac(W>0)` stayed
+~0.375 on that 40-window sample, but that metric is noisy at n=40 — even Gaussian
+read 0.325 there vs 0.556 at 200 windows; `mean W` is the clean signal.) The
+shipped cis-scale default remains per-gene Gaussian (`shrink≈0.1`, still the most
+convenient at bounded cis-window p); the fastPHASE-HMM path is the principled
+generator for genome scale, pending the end-to-end FDR/power confirmation on
+≥150 real windows.
 
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
 comparison; requires `pysam` + network; opt-in/slow).
