@@ -8,3 +8,8 @@ dist/
 
 dummy_output*
 output_prefix*
+
+# remote-fetch caches (pysam tabix index, genetic maps)
+*.tbi
+*.gmap.gz
+gmaps.tar.gz

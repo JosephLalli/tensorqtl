@@ -240,6 +240,56 @@ target across N and signal regimes — measured by the harness in this repo.
 
 ---
 
+## 8. Real-data (HPRC) validation — the generator choice for the KFc statistic
+
+Synthetic HMM-simulated genotypes flatter the HMM knockoff (the data *are* Markov,
+so the HMM knockoff trivially matches). To avoid that circularity we validated on
+**real human LD**: the HPRC (Human Pangenome Reference Consortium) minigraph-cactus
+phased VCFs on the public `human-pangenomics` S3 bucket — v1.0 (N=45) and **v2.0
+(N=232)**, sliced into real cis-windows via `pysam` remote tabix. Metric: null-`W`
+symmetry — for a null gene (Y ⟂ genotype) a valid knockoff gives `W = imp(real) −
+imp(knockoff)` symmetric about 0, so `frac(W>0) → 0.5`; deviation = misspecification.
+
+Findings (KFc `-log10(min-p)` statistic on real HPRC v2.0 LD):
+- **The KFc statistic has NO atom on real data** — the redesign holds up outside
+  the synthetic world.
+- **Our toy genotype-HMM knockoff (Route 1) is misspecified on real LD:**
+  `frac(W>0)` ≈ 0.20–0.31 (biased; the knockoff looks *more* associated with a
+  null phenotype than the real genotype). This is **not** a small-N artifact — it
+  persists N=45 → N=232 — and is **not** fixed by a recombination map (first pass)
+  or by more states/iterations in our own implementation (K=15, 40 iters still
+  gives ≈0.28). Consequence: the KFc filter selects nothing on real LD (0 power).
+- **Per-gene shrinkage-Gaussian (shrink≈0.1) is well-specified on real LD:**
+  `frac(W>0)` = 0.556 (mean W ≈ 0). On 200 real HPRC v2.0 windows it **controls
+  FDR with real power: realized FDR 0.06–0.07 at target 0.10, power 0.31–0.55**
+  (8 reps). `shrink=0.05`/`0.2` were more biased (0.36/0.44).
+
+Why Gaussian, not HMM, for KFc — and the scalability caveat:
+- The min-p statistic is LD-sensitive (it depends on the effective number of
+  independent tests), so it amplifies any residual mismatch in the knockoff's LD.
+  At **cis-window scale** (bounded p, a few hundred variants) the empirical
+  covariance is directly estimable, so shrinkage-Gaussian matches it closely.
+- Gaussian is O(p³) and infeasible **whole-chromosome**, but the KFc statistic is
+  **per gene** (one independent knockoff per cis-window + the genome-wide mirror
+  filter), so per-gene Gaussian is feasible. Whole-chromosome coherence — the only
+  thing that required the linear-in-p HMM — was a need of the abandoned maxPIP
+  per-gene-p-value design.
+
+**Important caveat (do not over-read):** the HMM misspecification here is almost
+certainly an **under-fitting / immature-implementation** issue, NOT a limitation
+of HMMs. Properly-fit HMM knockoffs control FDR on real human data at scale
+(Sesia, Sabatti & Candès 2019 *Biometrika*; Sesia et al. 2021 *PNAS* / KnockoffGWAS
+on UK Biobank, N≈489k). The correct test is to swap our toy HMM for a phasing-grade
+fit (SNPknock / fastPHASE — the published method; SNPknock's Python package is
+installed) and re-run this exact null-`W` test. **That test is in progress**; until
+it is done, the validated real-data generator for the shipped KFc path is per-gene
+Gaussian, `shrink≈0.1`.
+
+Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
+comparison; requires `pysam` + network; opt-in/slow).
+
+---
+
 ## 8. Reproduction
 
 ```bash

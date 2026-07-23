@@ -1051,6 +1051,16 @@ def map_egenes_knockoffs(genotype_df, variant_df, phenotype_df, phenotype_pos_df
               knockoff_offset (1 = knockoff+, recommended) sets the mirror offset;
               n_knockoffs draws are averaged into one continuous W per gene. SuSiE
               (via localize) is then used only to localize within selected eGenes.
+              GENERATOR CHOICE IS STATISTIC-DEPENDENT: for 'kfc', pass
+              knockoff='gaussian', shrink=0.1 -- this is the choice VALIDATED ON
+              REAL HUMAN LD (HPRC v2.0, N=232: null-W symmetric, realized FDR
+              0.06-0.07 at target 0.10, power 0.31-0.55; docs/calibration_findings
+              .md sec 8). The min-p statistic is LD-sensitive and per-gene Gaussian
+              matches the empirical cis-window covariance; our current HMM knockoff
+              is under-fit and MISSPECIFIED on real LD for this statistic (biased,
+              ~0 power). A phasing-grade HMM (SNPknock/fastPHASE) may change this
+              (investigation open); until then use Gaussian for 'kfc'. (The module
+              default knockoff='hmm' is for the maxpip/SuSiE path.)
         gene_stat: 'max' or 'sum' for gene_level_W (statistic='maxpip' only).
         knockoff_offset: 0 (calibrated FDP estimate, default) or 1 (knockoff+
             control, conservative). For statistic='kfc' this is the mirror-null
