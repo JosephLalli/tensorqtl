@@ -293,10 +293,28 @@ KnockoffGWAS on UK Biobank, N≈489k). **The earlier "HMM misspecified on real L
 framing was wrong — it was our toy fit that was inadequate.** (`frac(W>0)` stayed
 ~0.375 on that 40-window sample, but that metric is noisy at n=40 — even Gaussian
 read 0.325 there vs 0.556 at 200 windows; `mean W` is the clean signal.) The
-shipped cis-scale default remains per-gene Gaussian (`shrink≈0.1`, still the most
-convenient at bounded cis-window p); the fastPHASE-HMM path is the principled
-generator for genome scale, pending the end-to-end FDR/power confirmation on
-≥150 real windows.
+shipped cis-scale default remains per-gene Gaussian (`shrink≈0.1`).
+
+**End-to-end FDR/power confirmation (160 real HPRC v2.0 windows, N=232, 8 reps,
+mirror-null q=0.10)** settles the generator question with a twist:
+
+| PVE | fastPHASE-HMM: FDR / power | Gaussian shrink=0.1: FDR / power |
+|---|---|---|
+| 0.10 | 0.062 / 0.09 | 0.014 / 0.23 |
+| 0.15 | 0.042 / 0.11 | 0.030 / 0.54 |
+
+**Both control FDR, but Gaussian has ~3-5x the power** (and is ~1000x faster --
+fastPHASE fit 160 windows in ~1020 s). So although the fastPHASE fit fixes the
+null BIAS (mean W ~ 0, above), that null-calibration edge does NOT translate into
+power: for the LD-sensitive min-p (KFc) statistic on real cis LD, the Gaussian
+knockoff separates signal from null better while still controlling FDR.
+**Conclusion: per-gene Gaussian (shrink~0.1) is the recommended KFc generator on
+real data -- not a fallback but the better performer** -- validated end to end on
+real human LD (FDR controlled, best power). The HMM knockoff, even properly fit,
+is unbiased-but-underpowered here and far slower; its value is confined to
+regimes that genuinely need whole-chromosome coherence, which the per-gene KFc
+design does not. (Both are mildly conservative at this N/signal; Gaussian reaches
+power 0.54 at PVE 0.15.)
 
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
 comparison; requires `pysam` + network; opt-in/slow).
