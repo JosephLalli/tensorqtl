@@ -197,7 +197,9 @@ validation phases. The authoritative current state is:
      and fixing low-N inflation (better/less-approximate knockoffs; heavier
      shrinkage; larger N) are both needed. The pytest gates test only one-sided
      control and PASS even under gross over-conservatism — they do not certify
-     calibration.
+     calibration. **See `docs/calibration_findings.md` for the full, thorough
+     treatment** (evidence, per-mechanism diagnosis, compute ceiling, the path to
+     calibration, and reproduction commands).
    - **Compute (item #7):** the coherent HMM is LINEAR in p (per-1k-variant time
      flat) but with a large constant (~17 s/1k variants at K=8,M=8,N=120,
      pure-numpy) → ~28 min at 100k variants, ~2.3 h + ~3.8 GB at 500k. Genome
