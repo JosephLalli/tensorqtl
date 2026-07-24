@@ -287,6 +287,24 @@ v2.0 windows. The systematic bias essentially **disappears**:
 | **fastPHASE fit K=20 → our generator** | **−0.023 (≈ unbiased)** |
 | Gaussian shrink=0.1 | −0.140 |
 
+> **Caveat — the null-W bias is not a pure location shift (open).** The Gaussian
+> `mean W = −0.140` (n=40) is **sign-discordant** with its `frac(W>0) = 0.556`
+> (n=200, reported above): a mean below 0 but a **median above 0** is the signature
+> of a **left-skewed** null W — a heavy negative tail dragging the mean down while
+> the bulk sits just above 0 — not a rigid leftward shift of a symmetric density.
+> This distinction is load-bearing: Barber–Candès control depends on the **tail
+> sign-symmetry of the null W at the operating threshold τ** (`#{W≤−τ}` vs
+> `#{W≥τ}`), not on the mean. A "recenter the mean W at 0" correction is therefore
+> only valid under a pure-location model that these two statistics jointly refute,
+> and centering a left-skewed null moves its positive-median bulk further right —
+> the **anti-conservative** direction. Before any de-biasing is entertained, the
+> mean and the tail asymmetry must be re-measured on a **single** permutation-null
+> sample (permute Y so Y ⟂ genotype) evaluated **at τ**, not via separate summary
+> statistics on different window counts. **This has now been done — see the
+> permutation-null probe below: the clean 300-window measurement shows a mild
+> LOCATION shift (mean ≈ median ≈ −0.037), not a skew, and the earlier discordance
+> was Monte-Carlo noise.**
+
 So a properly-fit HMM knockoff is nearly well-specified on real LD, confirming the
 literature (Sesia, Sabatti & Candès 2019 *Biometrika*; Sesia et al. 2021 *PNAS* /
 KnockoffGWAS on UK Biobank, N≈489k). **The earlier "HMM misspecified on real LD"
@@ -316,8 +334,142 @@ regimes that genuinely need whole-chromosome coherence, which the per-gene KFc
 design does not. (Both are mildly conservative at this N/signal; Gaussian reaches
 power 0.54 at PVE 0.15.)
 
+> **Monte-Carlo caveat — realized-FDR point estimates carry wide error.** The two
+> Gaussian realized-FDR figures on record — `0.06–0.07` (200-window null-symmetry
+> study, above) and `0.014–0.030` (this 160-window end-to-end table) — differ 2–4×
+> across near-identical configs at only 8 reps. At this rep count the realized-FDR
+> point estimate is Monte-Carlo-noisy, so "how conservative is it, exactly" cannot
+> be settled with point values. Any calibration claim — and in particular any future
+> de-biasing that aims to raise realized FDR toward the 0.10 target — must be stated
+> with a confidence interval or a pre-registered FDR upper bound, on a fixed and
+> larger window count. The safe reading today: the method **controls** FDR
+> (all realized values ≤ 0.10) and is **conservative**; the remaining question is
+> how much power that conservatism costs, which is a tail-symmetry/generator problem
+> (see the caveat under the mean-W table above), not a selector-threshold problem.
+
+### Permutation-null tail-symmetry probe (300 windows) — the bias is a mild LOCATION shift, and mean-centering is a validated candidate
+
+To settle whether the Gaussian null-W mismatch is a location shift or a tail skew
+(the distinction that decides whether centering is a valid de-bias), we built a
+contamination-free null on **300 real HPRC v2.0 windows (N=232)**: 4500 draws of
+`W = imp(real) − imp(knockoff)` with `Y ⟂ genotype` (`permutation_null_W`), and
+measured the tail sign-asymmetry `A(t) = #{W ≤ −t} / #{W ≥ t}` across the operating
+threshold (median τ = 1.22), raw and after subtracting the null mean.
+
+- **Clean null W: mean = −0.037, median = −0.035, frac(W>0) = 0.456.** Mean ≈ median
+  (both mildly negative) — **not** the mean<0<median skew signature. The earlier
+  n=40 `mean=−0.14` / n=200 `frac=0.556` discordance was Monte-Carlo noise, as the
+  caveat above anticipated.
+- **`A(t)` is ~uniform at 1.3–1.4 across t (raw) and collapses to ≈ 1.0 at every t
+  including τ after subtracting the null mean** (`A_ctr` = 0.97, 1.07, 1.05, 0.87,
+  1.00, 0.91). A uniform-in-`t` asymmetry that mean-centering removes is a **location
+  shift, not a skew** — so centering by the permutation-null mean is theoretically
+  valid here (it symmetrizes the null tail at the operating threshold).
+- **FDR/power counterfactual** (mirror q=0.10, offset=1, 30 reps, 95% bootstrap CI):
+
+  | PVE | center | realized FDR (95% CI) | power (95% CI) |
+  |---|---|---|---|
+  | 0.10 | none (shipped) | 0.028 [0.016, 0.044] | 0.28 [0.25, 0.30] |
+  | 0.10 | permutation-null mean | 0.050 [0.033, 0.069] | 0.32 [0.29, 0.34] |
+  | 0.15 | none (shipped) | 0.037 [0.027, 0.049] | 0.52 [0.49, 0.54] |
+  | 0.15 | permutation-null mean | 0.054 [0.041, 0.069] | 0.55 [0.52, 0.58] |
+
+  Centering recovers about half the FDR gap to target and lifts power **+6–14%**
+  relative, while **keeping control**: the centered realized-FDR upper 95% CI ≤ 0.069
+  < 0.10 at both PVE levels. This MEETS the pre-registered acceptance criteria
+  (centered upper-CI FDR ≤ q AND power strictly rises).
+
+**Status: a validated candidate, NOT shipped.** Recommended as an OPT-IN (estimate
+the center from a per-dataset phenotype-permutation pass; the default stays
+uncentered), pending (i) a genome-scale confirmation — at ~14k genes the `+1`
+knockoff-offset conservatism vanishes, so the location-shift share of the
+conservatism, and hence the centering benefit, should grow — and (ii) human
+sign-off, since it modifies a scientific error-rate guarantee. The shipped
+uncentered path controls FDR conservatively (realized ~0.03 here, tight CI) and is
+unchanged.
+
+### Control vs calibration: the mirror is intrinsically conservative; a permutation-null Storey q-value calibrates
+
+The goal is calibration (realized FDR ≈ target), not merely control (≤ target):
+realized 0.05 at target 0.10 spends only half the budget. Two follow-up
+experiments locate the remaining gap.
+
+**Scaling (`--scaling`): centering + scale do NOT reach the target.**
+Bootstrap-pooling the 300 real windows to gene counts m = 150 → 2000 (reps=15,
+bootstrap CIs), the CENTERED realized FDR plateaus at ~0.045–0.05 (offset=1) and
+~0.05 (offset=0) at PVE 0.10, and ~0.053–0.055 at PVE 0.15 — it does **not** climb
+toward 0.10 as m grows, and offset=0 (which removes the `+1`) barely helps at
+scale. So the residual conservatism is neither the `+1` offset nor the location
+bias: it is intrinsic to the **mirror-null estimator**, which uses `#{W ≤ −t}` as
+its false-discovery proxy — a count inflated by weak true-signal genes whose
+knockoff occasionally wins. (An earlier synthetic sweep suggested genome scale
+would calibrate offset=1; that held only for clean, well-separated Gaussian signal,
+not the real LD-sensitive min-p statistic under weak signal.) The conservatism is
+the price of the mirror's distribution-free, dependence-robust guarantee.
+
+**Selector comparison (`--selector_comparison`): a permutation-null Storey q-value
+calibrates.** Replacing the mirror with a BH-Storey q-value computed from the clean
+permutation-null right-tail p-value (Storey pi0):
+
+| PVE | m | mirror (control): FDR / power | permutation-null Storey (calibrated): FDR [95% CI] / power |
+|---|---|---|---|
+| 0.10 | 300 | 0.050 / 0.35 | 0.087 [0.068, 0.107] / 0.42 |
+| 0.10 | 1200 | 0.048 / 0.36 | 0.086 [0.078, 0.095] / 0.44 |
+| 0.15 | 300 | 0.065 / 0.58 | 0.098 [0.085, 0.113] / 0.62 |
+
+Storey reaches realized FDR ~0.086–0.098 (86–98% of the 0.10 budget) with **+6–22%
+power** over the mirror, and controls at scale (m=1200 upper CI 0.095 ≤ 0.10).
+Caveats: (i) mild overshoot at small m (upper CI ~0.107–0.113 at m=300); (ii) it
+relies on Storey's pi0 estimate being conservatively biased — here 0.72–0.77 vs
+true 0.60, which is what keeps control; plugging the TRUE pi0=0.60 overshoots
+(0.112–0.118 > target); (iii) it replaces the mirror's distribution-free guarantee
+with BH-Storey (valid under PRDS, standard for QTL) and needs a per-dataset
+permutation-null pass.
+
+### Pre-registered validation (`--validate`): Storey is calibrated but FAILS strict control
+
+Before implementing anything, we ran a **pre-registered** validation on **1200
+DISTINCT real HPRC windows in spatial order** (real cross-gene LD dependence, no
+bootstrap reuse), N=232, across a pi0 × PVE sweep, reps=15, bootstrap CIs.
+Acceptance criterion, fixed before running: *Storey is validated iff, in EVERY
+regime, its realized-FDR upper 95% CI ≤ q+0.01 (=0.11) AND its power > mirror.*
+
+| pi0 | PVE | est. pi0 | mirror FDR / pow | Storey FDR [95% CI] / pow | regime |
+|---|---|---|---|---|---|
+| 0.90 | 0.10 | 0.94 | 0.081 / 0.20 | 0.070 [0.047, 0.091] / 0.21 | pass |
+| 0.90 | 0.15 | 0.92 | 0.087 / 0.41 | 0.072 [0.055, 0.087] / 0.41 | pass |
+| 0.80 | 0.10 | 0.88 | 0.068 / 0.26 | 0.085 [0.069, 0.102] / 0.29 | pass |
+| 0.80 | 0.15 | 0.86 | 0.076 / 0.48 | 0.100 [0.085, **0.115**] / 0.51 | **FAIL** |
+| 0.60 | 0.10 | 0.77 | 0.048 / 0.31 | 0.092 [0.081, 0.104] / 0.39 | pass |
+| 0.60 | 0.15 | 0.72 | 0.059 / 0.53 | 0.096 [0.086, 0.107] / 0.60 | pass |
+
+**Pre-registered verdict: Storey FAILS.** Its mean realized FDR tracks the target
+beautifully (0.070–0.100 vs the mirror's conservative 0.048–0.087) and its power
+exceeds the mirror in every regime — but at pi0=0.80 / PVE=0.15 its upper 95% CI is
+**0.115 > 0.11**, breaching the pre-registered tolerance, and several regimes sit at
+upper-CI 0.102–0.107. So Storey **achieves calibration (mean ≈ target) but does not
+GUARANTEE control** — it mildly overshoots in some regimes. The criterion was fixed
+before the run and is not moved post hoc.
+
+**Bottom line — a quantified, honest trade-off:**
+- **mirror (shipped):** realized FDR ≤ target *always* (max 0.087 here), distribution-free,
+  but wastes 15–50% of the FDR budget, worst at low pi0 (0.048 at pi0=0.60).
+- **permutation-null Storey:** realized FDR ≈ target (calibrated) with +power in every
+  regime, but mild overshoot (upper CI to 0.115) — approximate, not guaranteed, control.
+
+**Status: NOT shipped; the shipped mirror is unchanged.** Storey is calibrated-but-not-
+strictly-controlled as-is. A plausible middle path (not yet built/validated): a small
+safety inflation of the Storey pi0 (it already runs conservative — 0.94/0.72 vs true
+0.90/0.60) to pull the upper CI back under target while keeping most of the calibration
+gain. That, plus the untested co-expression-dependence axis, is the remaining work before
+this could be offered even as an opt-in.
+
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
-comparison; requires `pysam` + network; opt-in/slow).
+comparison; requires `pysam` + network; opt-in/slow). Follow-up experiments:
+`--permutation_null` (tail symmetry, 300 windows), `--scaling` (calibration vs gene
+count), `--selector_comparison` (mirror vs Storey), `--validate` (pre-registered
+pi0 × PVE sweep on 1200 distinct spatial windows); `--cache <path.npz>` reuses
+fetched windows.
 
 ---
 

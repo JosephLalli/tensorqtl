@@ -22,7 +22,7 @@ def main():
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
     parser.add_argument('prefix', help='Prefix for output file names')
-    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl', 'hapmixqtl_susie'],
+    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'cis_egenes_knockoff', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl', 'hapmixqtl_susie'],
                         help='Mapping mode. Default: cis')
     parser.add_argument('--covariates', default=None, help='Covariates file, tab-delimited (covariates x samples)')
     parser.add_argument('--paired_covariate', default=None, help='Single phenotype-specific covariate, tab-delimited (phenotypes x samples)')
@@ -67,6 +67,17 @@ def main():
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--tau_mode', default='zero', type=str, choices=['zero', 'estimate'], help='Overdispersion handling: zero (default) or estimate per phenotype')
     parser.add_argument('--se_mode', default='model', type=str, choices=['model', 'robust'], help='SE mode: model-based (default) or robust/sandwich')
+    # knockoff-calibrated eGene FDR arguments (cis_egenes_knockoff mode)
+    parser.add_argument('--statistic', default='kfc', type=str, choices=['kfc', 'maxpip'],
+                        help="Gene-level knockoff statistic (cis_egenes_knockoff mode): 'kfc' (recommended: continuous min-p contrast, validated on real LD) or 'maxpip' (legacy, uncalibrated). Default: kfc")
+    parser.add_argument('--knockoff', default='gaussian', type=str, choices=['gaussian', 'hmm'],
+                        help="Knockoff generator (cis_egenes_knockoff mode): 'gaussian' (recommended for kfc on real cis LD) or 'hmm' (chromosome-coherent). Default: gaussian")
+    parser.add_argument('--shrink', default=0.1, type=np.float64,
+                        help='Covariance shrinkage for the Gaussian knockoff generator (cis_egenes_knockoff mode). Default: 0.1')
+    parser.add_argument('--knockoff_offset', default=1, type=int, choices=[0, 1],
+                        help='Selection offset (cis_egenes_knockoff mode): 1 = knockoff+ (finite-sample FDR control, recommended), 0 = basic filter. Default: 1')
+    parser.add_argument('--n_knockoffs', default=1, type=int,
+                        help='Number of knockoff draws averaged into the per-gene statistic (cis_egenes_knockoff mode). Default: 1')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     args = parser.parse_args()
 
@@ -312,6 +323,33 @@ def main():
         summary_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.SuSiE_summary.parquet'))
         with open(os.path.join(args.output_dir, f'{args.prefix}.SuSiE.pickle'), 'wb') as f:
             pickle.dump(res, f)
+
+    elif args.mode == 'cis_egenes_knockoff':
+        # Knockoff-calibrated eGene FDR (Path A): select phenotypes with a cis
+        # signal at a knockoff-controlled FDR, then localize with SuSiE. Defaults
+        # target the HPRC-validated configuration (statistic='kfc', Gaussian
+        # generator, shrink=0.1, knockoff+); see docs/calibration_findings.md.
+        if args.chunk_size is not None:
+            raise NotImplementedError("cis_egenes_knockoff requires genotypes in memory (omit --chunk_size).")
+        logger.write(f'  * knockoff eGene FDR: statistic={args.statistic}, generator={args.knockoff}, '
+                     f'shrink={args.shrink}, offset={args.knockoff_offset}, draws={args.n_knockoffs}, target FDR<={args.fdr}')
+        egene_df, localize_summary_df, diagnostics = susie.map_egenes_knockoffs(
+            genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
+            paired_covariate_df=paired_covariate_df,
+            fdr=args.fdr, statistic=args.statistic, knockoff=args.knockoff,
+            shrink=args.shrink, knockoff_offset=args.knockoff_offset,
+            n_knockoffs=args.n_knockoffs, L=args.max_effects,
+            maf_threshold=maf_threshold, window=args.window,
+            seed=args.seed if args.seed is not None else 0,
+            localize=True, logger=logger, verbose=True)
+        logger.write('  * writing output')
+        logger.write(f"  * {int(egene_df['selected'].sum())} eGenes selected at FDR <= {args.fdr}")
+        egene_df.to_csv(os.path.join(args.output_dir, f'{args.prefix}.cis_knockoff_egenes.txt.gz'),
+                        sep='\t', index=False, float_format='%.6g')
+        if localize_summary_df is not None:
+            localize_summary_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.cis_knockoff_egenes.SuSiE_summary.parquet'))
+        with open(os.path.join(args.output_dir, f'{args.prefix}.cis_knockoff_egenes.diagnostics.pickle'), 'wb') as f:
+            pickle.dump(diagnostics, f)
 
     elif args.mode == 'trans_susie':
         assert args.susie_loci is not None

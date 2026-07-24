@@ -597,16 +597,28 @@ quantify the power cost of calibration.
 
 ## 7. CLI
 
-New mode `cis_susie_knockoffs` in `tensorqtl.py`, mirroring `cis_susie`:
+**Built** as the `cis_egenes_knockoff` mode in `tensorqtl.py` (the original
+`cis_susie_knockoffs` proposal, renamed to describe what it does — eGene calling
+via knockoffs). It wraps `tensorqtl.susie.map_egenes_knockoffs`:
 
 ```
-python -m tensorqtl ${plink} ${expr_bed} ${prefix} \
-    --covariates ${cov} --mode cis_susie_knockoffs \
-    --fdr 0.05 --n_knockoffs 5 --knockoff gaussian
+python3 -m tensorqtl ${plink} ${expr_bed} ${prefix} \
+    --covariates ${cov} --mode cis_egenes_knockoff --fdr 0.10
 ```
 
-Writes `${prefix}.SuSiE_knockoff_summary.parquet` (the §2 table) and, if
-`--emit_diagnostics`, `${prefix}.SuSiE_knockoff_diagnostics.pickle`.
+Defaults are the HPRC-validated configuration (`--statistic kfc`, `--knockoff
+gaussian`, `--shrink 0.1`, `--knockoff_offset 1`, `--n_knockoffs 1`), so only
+`--fdr` is normally set; all five knobs are exposed as flags. Writes
+`${prefix}.cis_knockoff_egenes.txt.gz` (the per-gene eGene table),
+`${prefix}.cis_knockoff_egenes.SuSiE_summary.parquet` (SuSiE localization for the
+selected eGenes, same format as `cis_susie`), and
+`${prefix}.cis_knockoff_egenes.diagnostics.pickle`. See the README section
+"Knockoff-calibrated eGene FDR" and `docs/outputs.md` for the column schema, and
+`tests/test_cli_knockoff_mode.py` for the surface + config regression tests.
+
+The two-channel `hapmixqtl.map_egenes_knockoffs` remains Python-only (more
+experimental; phased-HMM knockoffs, lower power — see the RESOLUTION block at the
+top of this document).
 
 ---
 
@@ -618,7 +630,7 @@ Writes `${prefix}.SuSiE_knockoff_summary.parquet` (the §2 table) and, if
 3. **Null-permutation calibration test on synthetic data** — the gate. Do not
    proceed to real-data / CLI until empirical FDR ≈ q here.
 4. Spike-in power test.
-5. CLI mode.
+5. CLI mode — **done**: `cis_egenes_knockoff` (see §7).
 6. (later) hapmixQTL two-channel path; HMM generator; v2 knobs.
 
 Open question flagged for the two-channel phase (not v1): the augmented fit
