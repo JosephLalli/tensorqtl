@@ -187,19 +187,152 @@ def collect_signal_W(wins, kind='gaussian', shrink=0.1, hmm_K=8, pve=0.10,
     return per_rep
 
 
-def eval_selection(per_rep, center=0.0, q=0.1):
+def eval_selection(per_rep, center=0.0, q=0.1, offset=1):
     """Realized FDP/power/tau over reps for a given additive center on W
     (select on W - center; center = null-mean shifts a left-biased null to 0)."""
     fdps, powers, taus, Rs = [], [], [], []
     for Wg, truth in per_rep:
         gid = [f"g{i}" for i in range(len(Wg))]
-        sel = ko.mirror_select_egenes(gid, Wg - center, q=q, offset=1)
+        sel = ko.mirror_select_egenes(gid, Wg - center, q=q, offset=offset)
         sm = np.array([g in set(sel['selected']) for g in gid])
         R = int(sm.sum())
         fdps.append((sm & ~truth).sum() / max(R, 1))
         powers.append((sm & truth).sum() / max(truth.sum(), 1))
         taus.append(sel['tau']); Rs.append(R)
     return np.array(fdps), np.array(powers), np.array(taus), np.array(Rs)
+
+
+def _fast_threshold(W, q=0.1, offset=1):
+    """Vectorized mirror knockoff+ threshold; verified == ko.knockoff_threshold.
+    Used to make the gene-count scaling sweep tractable (ko.mirror_select_egenes
+    computes per-gene q-values in O(m^2), too slow at m~2000)."""
+    W = np.asarray(W, dtype=np.float64)
+    ws = np.sort(W)
+    cand = np.unique(np.abs(W[W != 0.0]))
+    if cand.size == 0:
+        return np.inf
+    ge = ws.size - np.searchsorted(ws, cand, side='left')
+    le = np.searchsorted(ws, -cand, side='right')
+    fdp = (offset + le) / np.maximum(1, ge)
+    ok = np.where(fdp <= q)[0]
+    return cand[ok[0]] if ok.size else np.inf
+
+
+def _fast_select_mask(W, q=0.1, offset=1, center=0.0):
+    Wc = np.asarray(W, dtype=np.float64) - center
+    tau = _fast_threshold(Wc, q=q, offset=offset)
+    return (Wc >= tau) if np.isfinite(tau) else np.zeros(Wc.shape[0], bool)
+
+
+def run_calibration_scaling_experiment(wins, ms=(150, 300, 600, 1200, 2000),
+                                       reps=15, q=0.1, seed=0):
+    """Realized FDR (centered) vs gene count m, on the real HPRC per-window W
+    distribution bootstrap-pooled to larger m. Isolates the small-m +1-offset
+    conservatism from the generator bias: with the location bias removed by
+    centering, realized FDR should climb toward q as m grows (the +1 becomes
+    negligible), i.e. CALIBRATION requires centering AND scale, not just control.
+    Also reports the offset=0 ceiling (calibrated but only asymptotically
+    controlled)."""
+    # verify the fast selector reproduces the shipped threshold exactly
+    rng = np.random.RandomState(0)
+    for _ in range(25):
+        w = rng.randn(400)
+        for off in (0, 1):
+            a = _fast_threshold(w, q=q, offset=off)
+            b = ko.knockoff_threshold(w, q=q, offset=off)
+            assert (np.isinf(a) and np.isinf(b)) or np.isclose(a, b), (a, b, off)
+
+    c = float(permutation_null_W(wins, kind='gaussian', shrink=0.1).mean())
+    m_max = max(ms)
+    idx = np.random.RandomState(seed).randint(0, len(wins), size=m_max)
+    exp = [wins[i] for i in idx]   # real windows resampled w/ replacement to m_max
+    print(f"\n{'='*72}\nCalibration-vs-gene-count scaling "
+          f"(real HPRC windows bootstrap-pooled; base={len(wins)}, N={wins[0].shape[0]}, "
+          f"reps={reps}, q={q})\n{'='*72}")
+    print(f"null-mean center c = {c:+.4f}   (each real window reused ~{m_max/len(wins):.1f}x "
+          f"with independent knockoffs/Y)")
+    print("  columns: realized FDR [95% CI] (power) for each configuration\n")
+    print(f"  {'PVE':>4} {'m':>6}  {'shipped off=1':>22} {'centered off=1':>22} {'centered off=0':>22}")
+    for pve in (0.10, 0.15):
+        per_rep = collect_signal_W(exp, pve=pve, reps=reps, seed=seed)
+        for m in ms:
+            cells = []
+            for center, offset in [(0.0, 1), (c, 1), (c, 0)]:
+                fdps, powers = [], []
+                for Wg, truth in per_rep:
+                    mask = _fast_select_mask(Wg[:m], q=q, offset=offset, center=center)
+                    R = int(mask.sum())
+                    fdps.append((mask & ~truth[:m]).sum() / max(R, 1))
+                    powers.append((mask & truth[:m]).sum() / max(truth[:m].sum(), 1))
+                fm, flo, fhi = _boot_ci(fdps)
+                pm, _, _ = _boot_ci(powers)
+                cells.append(f"{fm:.3f}[{flo:.2f},{fhi:.2f}]({pm:.2f})")
+            print(f"  {pve:>4} {m:>6}  {cells[0]:>22} {cells[1]:>22} {cells[2]:>22}")
+    print("\nRead: with the location bias removed (centered), realized FDR should rise")
+    print("toward q as m grows -- the residual small-m gap is the +1 knockoff-offset")
+    print("(finite-sample control), not the generator. offset=0 removes the +1 (near-")
+    print("exact calibration) but controls FDR only asymptotically -- watch for >q at small m.")
+    print("Caveat: bootstrap-pooling assumes independent genes; real genome-wide LD adds")
+    print("PRDS dependence, so treat the large-m numbers as the independent-gene ideal.")
+    return dict(center=c)
+
+
+def permnull_storey_select(Wg, Wnull_sorted_centered, center, q=0.1, lam=0.5, pi0=None):
+    """CALIBRATED alternative to the mirror: right-tail p-value of each (centered)
+    gene W against the clean permutation null, Storey pi0, BH-Storey q-values,
+    select q <= target. Unlike the mirror this uses the UNCONTAMINATED null (no
+    weak-signal negatives), so realized FDR tracks the target instead of sitting
+    well below it -- at the cost of the mirror's distribution-free guarantee (this
+    is BH-Storey, valid under PRDS). Returns (mask, pi0)."""
+    Wc = np.asarray(Wg, dtype=np.float64) - center
+    n0 = len(Wnull_sorted_centered)
+    p = (n0 - np.searchsorted(Wnull_sorted_centered, Wc, side='left') + 1) / (n0 + 1)
+    p = np.clip(p, 1.0 / (n0 + 1), 1.0)
+    if pi0 is None:
+        pi0 = min(1.0, float(np.mean(p >= lam) / (1.0 - lam)))
+    m = len(p); order = np.argsort(p); ps = p[order]
+    qs = pi0 * ps * m / np.arange(1, m + 1)
+    qs = np.minimum.accumulate(qs[::-1])[::-1]
+    qv = np.empty(m); qv[order] = np.clip(qs, 0, 1)
+    return qv <= q, pi0
+
+
+def run_selector_comparison(wins, ms=(300, 1200), reps=25, q=0.1, seed=0):
+    """Mirror (shipped, conservative) vs permutation-null Storey (calibrated) on
+    the real HPRC per-window W, bootstrap-pooled to gene count m. Shows that
+    calibration (realized FDR ~ target) is achievable, and the associated
+    control/robustness trade-off, with bootstrap CIs."""
+    Wnull = permutation_null_W(wins, kind='gaussian', shrink=0.1)
+    center = float(Wnull.mean())
+    null_c = np.sort(Wnull - center)
+    print(f"\n{'='*72}\nSelector comparison: mirror (control) vs permutation-null Storey "
+          f"(calibration)\n(real HPRC bootstrap-pooled, N={wins[0].shape[0]}, reps={reps}, "
+          f"q={q}, center={center:+.4f})\n{'='*72}")
+    for pve in (0.10, 0.15):
+        idx = np.random.RandomState(seed).randint(0, len(wins), size=max(ms))
+        per_rep = collect_signal_W([wins[i] for i in idx], pve=pve, reps=reps, seed=seed)
+        for m in ms:
+            mir_f, mir_p, sto_f, sto_p, pi0s = [], [], [], [], []
+            for Wg, truth in per_rep:
+                W, tr = Wg[:m], truth[:m]
+                sel = ko.mirror_select_egenes([str(i) for i in range(m)], W - center, q=q, offset=1)
+                mm = np.zeros(m, bool); mm[[int(g) for g in sel['selected']]] = True
+                sm, pi0 = permnull_storey_select(W, null_c, center, q=q); pi0s.append(pi0)
+                for mask, fl, pl in ((mm, mir_f, mir_p), (sm, sto_f, sto_p)):
+                    R = int(mask.sum())
+                    fl.append((mask & ~tr).sum() / max(R, 1))
+                    pl.append((mask & tr).sum() / max(tr.sum(), 1))
+            mf, mlo, mhi = _boot_ci(mir_f); mpw, _, _ = _boot_ci(mir_p)
+            sf, slo, shi = _boot_ci(sto_f); spw, _, _ = _boot_ci(sto_p)
+            print(f"\nPVE={pve}  m={m}  (est pi0={np.mean(pi0s):.2f}, true pi0={float(np.mean(~per_rep[0][1])):.2f})")
+            print(f"  mirror  (control) : FDR {mf:.3f} [{mlo:.3f},{mhi:.3f}]  power {mpw:.2f}  "
+                  f"{'OK' if mhi <= q + 1e-9 else 'over'}")
+            print(f"  storey  (calibr.) : FDR {sf:.3f} [{slo:.3f},{shi:.3f}]  power {spw:.2f}  "
+                  f"{'OK' if shi <= q + 1e-9 else 'over'}")
+    print("\nStorey reaches realized FDR ~ target (calibrated) with more power, and controls")
+    print("at scale; mild overshoot at small m. Trade-off: BH-Storey (PRDS-valid) replaces")
+    print("the mirror's distribution-free guarantee, and needs a per-dataset permutation pass.")
+    return dict(center=center)
 
 
 def _boot_ci(vals, reps=4000, alpha=0.05, seed=1):
@@ -315,16 +448,25 @@ if __name__ == '__main__':
     ap.add_argument('--hmm_K', type=int, default=8)
     ap.add_argument('--permutation_null', action='store_true',
                     help='Run the permutation-null tail-symmetry experiment (defaults to 300 windows, reps=30)')
+    ap.add_argument('--scaling', action='store_true',
+                    help='Run the calibration-vs-gene-count scaling experiment (centered FDR as m grows)')
+    ap.add_argument('--selector_comparison', action='store_true',
+                    help='Compare the mirror (control) vs permutation-null Storey (calibration) selectors')
     ap.add_argument('--cache', default=None, help='Path to .npz to cache/reuse fetched windows')
     args = ap.parse_args()
 
-    if args.permutation_null:
+    if args.permutation_null or args.scaling or args.selector_comparison:
         nw = args.n_windows if args.n_windows != 60 else 300
         reps = args.reps if args.reps != 8 else 30
         wins, N = _load_windows(nw, cache=args.cache)
         if len(wins) < 30:
             raise SystemExit(f"only {len(wins)} windows fetched; need >= 30")
-        run_permutation_null_experiment(wins, reps=reps, q=0.1)
+        if args.permutation_null:
+            run_permutation_null_experiment(wins, reps=reps, q=0.1)
+        if args.scaling:
+            run_calibration_scaling_experiment(wins, reps=min(reps, 15), q=0.1)
+        if args.selector_comparison:
+            run_selector_comparison(wins, reps=min(reps, 25), q=0.1)
         sys.exit(0)
 
     wins, N = _load_windows(args.n_windows, cache=args.cache)

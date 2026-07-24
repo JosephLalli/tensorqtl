@@ -388,10 +388,55 @@ sign-off, since it modifies a scientific error-rate guarantee. The shipped
 uncentered path controls FDR conservatively (realized ~0.03 here, tight CI) and is
 unchanged.
 
+### Control vs calibration: the mirror is intrinsically conservative; a permutation-null Storey q-value calibrates
+
+The goal is calibration (realized FDR ≈ target), not merely control (≤ target):
+realized 0.05 at target 0.10 spends only half the budget. Two follow-up
+experiments locate the remaining gap.
+
+**Scaling (`--scaling`): centering + scale do NOT reach the target.**
+Bootstrap-pooling the 300 real windows to gene counts m = 150 → 2000 (reps=15,
+bootstrap CIs), the CENTERED realized FDR plateaus at ~0.045–0.05 (offset=1) and
+~0.05 (offset=0) at PVE 0.10, and ~0.053–0.055 at PVE 0.15 — it does **not** climb
+toward 0.10 as m grows, and offset=0 (which removes the `+1`) barely helps at
+scale. So the residual conservatism is neither the `+1` offset nor the location
+bias: it is intrinsic to the **mirror-null estimator**, which uses `#{W ≤ −t}` as
+its false-discovery proxy — a count inflated by weak true-signal genes whose
+knockoff occasionally wins. (An earlier synthetic sweep suggested genome scale
+would calibrate offset=1; that held only for clean, well-separated Gaussian signal,
+not the real LD-sensitive min-p statistic under weak signal.) The conservatism is
+the price of the mirror's distribution-free, dependence-robust guarantee.
+
+**Selector comparison (`--selector_comparison`): a permutation-null Storey q-value
+calibrates.** Replacing the mirror with a BH-Storey q-value computed from the clean
+permutation-null right-tail p-value (Storey pi0):
+
+| PVE | m | mirror (control): FDR / power | permutation-null Storey (calibrated): FDR [95% CI] / power |
+|---|---|---|---|
+| 0.10 | 300 | 0.050 / 0.35 | 0.087 [0.068, 0.107] / 0.42 |
+| 0.10 | 1200 | 0.048 / 0.36 | 0.086 [0.078, 0.095] / 0.44 |
+| 0.15 | 300 | 0.065 / 0.58 | 0.098 [0.085, 0.113] / 0.62 |
+
+Storey reaches realized FDR ~0.086–0.098 (86–98% of the 0.10 budget) with **+6–22%
+power** over the mirror, and controls at scale (m=1200 upper CI 0.095 ≤ 0.10).
+Caveats: (i) mild overshoot at small m (upper CI ~0.107–0.113 at m=300); (ii) it
+relies on Storey's pi0 estimate being conservatively biased — here 0.72–0.77 vs
+true 0.60, which is what keeps control; plugging the TRUE pi0=0.60 overshoots
+(0.112–0.118 > target); (iii) it replaces the mirror's distribution-free guarantee
+with BH-Storey (valid under PRDS, standard for QTL) and needs a per-dataset
+permutation-null pass.
+
+**Status: calibration is achievable, but it is a METHOD change and is NOT shipped.**
+The choice is a genuine trade-off — the conservative mirror (distribution-free,
+robust, realized ~0.05) vs the calibrated permutation-null Storey (realized ~0.09,
+more power, PRDS-valid). It awaits a scientific decision plus genome-scale and
+real-dependence validation; the shipped selector is unchanged.
+
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
-comparison; requires `pysam` + network; opt-in/slow). Permutation-null experiment:
-`python tests/hprc_calibration.py --permutation_null` (300 windows, reps=30 by
-default; `--cache <path.npz>` reuses fetched windows).
+comparison; requires `pysam` + network; opt-in/slow). Follow-up experiments:
+`--permutation_null` (tail symmetry, 300 windows, reps=30), `--scaling`
+(calibration vs gene count), `--selector_comparison` (mirror vs permutation-null
+Storey); `--cache <path.npz>` reuses fetched windows.
 
 ---
 
