@@ -426,17 +426,50 @@ true 0.60, which is what keeps control; plugging the TRUE pi0=0.60 overshoots
 with BH-Storey (valid under PRDS, standard for QTL) and needs a per-dataset
 permutation-null pass.
 
-**Status: calibration is achievable, but it is a METHOD change and is NOT shipped.**
-The choice is a genuine trade-off — the conservative mirror (distribution-free,
-robust, realized ~0.05) vs the calibrated permutation-null Storey (realized ~0.09,
-more power, PRDS-valid). It awaits a scientific decision plus genome-scale and
-real-dependence validation; the shipped selector is unchanged.
+### Pre-registered validation (`--validate`): Storey is calibrated but FAILS strict control
+
+Before implementing anything, we ran a **pre-registered** validation on **1200
+DISTINCT real HPRC windows in spatial order** (real cross-gene LD dependence, no
+bootstrap reuse), N=232, across a pi0 × PVE sweep, reps=15, bootstrap CIs.
+Acceptance criterion, fixed before running: *Storey is validated iff, in EVERY
+regime, its realized-FDR upper 95% CI ≤ q+0.01 (=0.11) AND its power > mirror.*
+
+| pi0 | PVE | est. pi0 | mirror FDR / pow | Storey FDR [95% CI] / pow | regime |
+|---|---|---|---|---|---|
+| 0.90 | 0.10 | 0.94 | 0.081 / 0.20 | 0.070 [0.047, 0.091] / 0.21 | pass |
+| 0.90 | 0.15 | 0.92 | 0.087 / 0.41 | 0.072 [0.055, 0.087] / 0.41 | pass |
+| 0.80 | 0.10 | 0.88 | 0.068 / 0.26 | 0.085 [0.069, 0.102] / 0.29 | pass |
+| 0.80 | 0.15 | 0.86 | 0.076 / 0.48 | 0.100 [0.085, **0.115**] / 0.51 | **FAIL** |
+| 0.60 | 0.10 | 0.77 | 0.048 / 0.31 | 0.092 [0.081, 0.104] / 0.39 | pass |
+| 0.60 | 0.15 | 0.72 | 0.059 / 0.53 | 0.096 [0.086, 0.107] / 0.60 | pass |
+
+**Pre-registered verdict: Storey FAILS.** Its mean realized FDR tracks the target
+beautifully (0.070–0.100 vs the mirror's conservative 0.048–0.087) and its power
+exceeds the mirror in every regime — but at pi0=0.80 / PVE=0.15 its upper 95% CI is
+**0.115 > 0.11**, breaching the pre-registered tolerance, and several regimes sit at
+upper-CI 0.102–0.107. So Storey **achieves calibration (mean ≈ target) but does not
+GUARANTEE control** — it mildly overshoots in some regimes. The criterion was fixed
+before the run and is not moved post hoc.
+
+**Bottom line — a quantified, honest trade-off:**
+- **mirror (shipped):** realized FDR ≤ target *always* (max 0.087 here), distribution-free,
+  but wastes 15–50% of the FDR budget, worst at low pi0 (0.048 at pi0=0.60).
+- **permutation-null Storey:** realized FDR ≈ target (calibrated) with +power in every
+  regime, but mild overshoot (upper CI to 0.115) — approximate, not guaranteed, control.
+
+**Status: NOT shipped; the shipped mirror is unchanged.** Storey is calibrated-but-not-
+strictly-controlled as-is. A plausible middle path (not yet built/validated): a small
+safety inflation of the Storey pi0 (it already runs conservative — 0.94/0.72 vs true
+0.90/0.60) to pull the upper CI back under target while keeping most of the calibration
+gain. That, plus the untested co-expression-dependence axis, is the remaining work before
+this could be offered even as an opt-in.
 
 Reproduce: `tests/hprc_calibration.py` (pulls real HPRC windows and runs the
 comparison; requires `pysam` + network; opt-in/slow). Follow-up experiments:
-`--permutation_null` (tail symmetry, 300 windows, reps=30), `--scaling`
-(calibration vs gene count), `--selector_comparison` (mirror vs permutation-null
-Storey); `--cache <path.npz>` reuses fetched windows.
+`--permutation_null` (tail symmetry, 300 windows), `--scaling` (calibration vs gene
+count), `--selector_comparison` (mirror vs Storey), `--validate` (pre-registered
+pi0 × PVE sweep on 1200 distinct spatial windows); `--cache <path.npz>` reuses
+fetched windows.
 
 ---
 

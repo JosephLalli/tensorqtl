@@ -335,6 +335,61 @@ def run_selector_comparison(wins, ms=(300, 1200), reps=25, q=0.1, seed=0):
     return dict(center=center)
 
 
+def run_validation_experiment(wins, reps=15, q=0.1, seed=0, tol=0.01):
+    """Pre-registered validation of the permutation-null Storey selector on
+    DISTINCT real windows in spatial order (real cross-gene LD dependence; NO
+    bootstrap reuse), across signal regimes (pi0 via egene_frac, PVE). Uses the
+    fast selector (verified == ko.knockoff_threshold) for the mirror to stay
+    tractable at large m.
+
+    Pre-registered acceptance for Storey (decided before running): in EVERY
+    regime, realized-FDR upper 95%% CI <= q + tol AND power > mirror.
+
+    Limitation: this induces real GENOTYPE-LD dependence across genes (adjacent
+    windows), but not co-expression dependence (correlated phenotypes), which
+    needs real expression data unavailable in this genotype-only harness."""
+    m = len(wins)
+    Wnull = permutation_null_W(wins, kind='gaussian', shrink=0.1)
+    center = float(Wnull.mean()); null_c = np.sort(Wnull - center)
+    print(f"\n{'='*76}\nPre-registered validation: mirror vs permutation-null Storey\n"
+          f"{m} DISTINCT real HPRC windows in spatial order (real cross-gene LD), "
+          f"N={wins[0].shape[0]}, reps={reps}, q={q}\n"
+          f"ACCEPT Storey iff every regime has FDR upper-CI <= {q+tol:.2f} AND power > mirror"
+          f"\n{'='*76}")
+    print(f"  {'pi0':>5} {'PVE':>5} {'est.pi0':>8}  {'mirror FDR/pow':>16}  "
+          f"{'Storey FDR [95% CI] / pow':>32}  {'verdict':>8}")
+    all_pass = True
+    results = []
+    for egene_frac in (0.10, 0.20, 0.40):
+        for pve in (0.10, 0.15):
+            per_rep = collect_signal_W(wins, pve=pve, egene_frac=egene_frac,
+                                       reps=reps, seed=seed)
+            mir_f, mir_p, sto_f, sto_p, pi0s = [], [], [], [], []
+            for Wg, truth in per_rep:
+                mm = _fast_select_mask(Wg, q=q, offset=1, center=center)
+                sm, pi0 = permnull_storey_select(Wg, null_c, center, q=q); pi0s.append(pi0)
+                for mask, fl, pl in ((mm, mir_f, mir_p), (sm, sto_f, sto_p)):
+                    R = int(mask.sum())
+                    fl.append((mask & ~truth).sum() / max(R, 1))
+                    pl.append((mask & truth).sum() / max(truth.sum(), 1))
+            mf, _, _ = _boot_ci(mir_f); mpw, _, _ = _boot_ci(mir_p)
+            sf, slo, shi = _boot_ci(sto_f); spw, _, _ = _boot_ci(sto_p)
+            ok = (shi <= q + tol) and (spw > mpw)
+            all_pass = all_pass and ok
+            results.append(dict(pi0=1 - egene_frac, pve=pve, mirror_fdr=mf, mirror_pow=mpw,
+                                storey_fdr=sf, storey_ci=(slo, shi), storey_pow=spw,
+                                est_pi0=float(np.mean(pi0s)), pass_=ok))
+            print(f"  {1-egene_frac:>5.2f} {pve:>5} {np.mean(pi0s):>8.2f}  "
+                  f"{f'{mf:.3f}/{mpw:.2f}':>16}  "
+                  f"{f'{sf:.3f} [{slo:.3f},{shi:.3f}]/{spw:.2f}':>32}  "
+                  f"{'PASS' if ok else 'FAIL':>8}")
+    print(f"\nPre-registered verdict: Storey {'PASSES' if all_pass else 'FAILS'} "
+          f"(control + power gain) across all {len(results)} regimes on real spatial LD.")
+    print("Caveat: genotype-LD dependence is real here; co-expression dependence "
+          "(correlated phenotypes across genes) is NOT tested (needs real expression).")
+    return dict(center=center, all_pass=all_pass, results=results)
+
+
 def _boot_ci(vals, reps=4000, alpha=0.05, seed=1):
     """95% bootstrap CI for the mean of `vals`."""
     vals = np.asarray(vals, float)
@@ -424,16 +479,19 @@ def test_gaussian_kfc_controls_fdr_on_real_hprc():
     assert res['power'] >= 0.2, f"power={res['power']:.2f}"
 
 
-def _load_windows(n_windows, cache=None):
-    """Fetch windows, optionally caching to/from an .npz (windows are all [N,p])."""
+def _load_windows(n_windows, cache=None, start=5_000_000, end=60_000_000):
+    """Fetch windows, optionally caching to/from an .npz (windows are all [N,p]).
+    `start`/`end` widen the chr1 region so a large n_windows can draw enough
+    DISTINCT cis-windows (each is a contiguous block of real SNPs, in position
+    order, so adjacent windows carry real cross-gene LD)."""
     import os
     if cache and os.path.exists(cache):
         z = np.load(cache)
         wins = [z[k] for k in sorted(z.files, key=lambda s: int(s.split('_')[1]))]
         print(f"  loaded {len(wins)} cached windows from {cache}")
         return wins, wins[0].shape[0]
-    print(f"Fetching {n_windows} real HPRC v2.0 cis-windows ...")
-    wins, N = fetch_windows(n_windows=n_windows)
+    print(f"Fetching {n_windows} real HPRC v2.0 cis-windows (chr1:{start:,}-{end:,}) ...")
+    wins, N = fetch_windows(start=start, end=end, n_windows=n_windows)
     print(f"  {len(wins)} windows, N={N} individuals, p={wins[0].shape[1]}")
     if cache:
         np.savez(cache, **{f"w_{i}": w for i, w in enumerate(wins)})
@@ -452,13 +510,23 @@ if __name__ == '__main__':
                     help='Run the calibration-vs-gene-count scaling experiment (centered FDR as m grows)')
     ap.add_argument('--selector_comparison', action='store_true',
                     help='Compare the mirror (control) vs permutation-null Storey (calibration) selectors')
+    ap.add_argument('--validate', action='store_true',
+                    help='Pre-registered validation on distinct spatial windows across pi0/PVE regimes (defaults to ~1200 distinct windows, wide chr1)')
+    ap.add_argument('--start', type=int, default=5_000_000, help='chr1 region start for the fetch')
+    ap.add_argument('--end', type=int, default=60_000_000, help='chr1 region end for the fetch')
     ap.add_argument('--cache', default=None, help='Path to .npz to cache/reuse fetched windows')
     args = ap.parse_args()
 
-    if args.permutation_null or args.scaling or args.selector_comparison:
+    if args.permutation_null or args.scaling or args.selector_comparison or args.validate:
         nw = args.n_windows if args.n_windows != 60 else 300
         reps = args.reps if args.reps != 8 else 30
-        wins, N = _load_windows(nw, cache=args.cache)
+        start, end = args.start, args.end
+        if args.validate:
+            if nw == 300:
+                nw = 1200
+            if end == 60_000_000:  # widen region so enough DISTINCT windows exist
+                end = 245_000_000
+        wins, N = _load_windows(nw, cache=args.cache, start=start, end=end)
         if len(wins) < 30:
             raise SystemExit(f"only {len(wins)} windows fetched; need >= 30")
         if args.permutation_null:
@@ -467,6 +535,8 @@ if __name__ == '__main__':
             run_calibration_scaling_experiment(wins, reps=min(reps, 15), q=0.1)
         if args.selector_comparison:
             run_selector_comparison(wins, reps=min(reps, 25), q=0.1)
+        if args.validate:
+            run_validation_experiment(wins, reps=min(reps, 15), q=0.1)
         sys.exit(0)
 
     wins, N = _load_windows(args.n_windows, cache=args.cache)
