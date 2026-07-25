@@ -296,3 +296,15 @@ egene_df, diagnostics = hapmixqtl.map_egenes_knockoffs(
 ```
 Because the phased-HMM knockoff is unbiased but lower-power than Gaussian for this statistic on real LD (`docs/calibration_findings.md`, "Real-data (HPRC) validation"), expect this path to be more conservative than the standard *cis* `'kfc'` path above. Both functions require genotypes sorted by chromosome then position (the standard tensorQTL layout), since each chromosome must occupy a contiguous row block.
 
+#### SuSiE-inf (fine-mapping with an infinitesimal effect)
+`tensorqtl.susieinf` is a faithful port of SuSiE-inf (Cui, Kanai, ... Finucane, *Nat Genet* 2024) — the same algorithm susieR ≥2.0 exposes as `susie(..., unmappable_effects = "inf")`. It adds a Gaussian polygenic random-effect term (`tau^2`) alongside the sparse credible sets, so a diffuse polygenic background is absorbed into `tau^2` instead of distorting the sparse fit — improving PIP calibration when the cis architecture is not truly sparse. It is a *localization* method (use it downstream of a detection step; per `docs/calibration_findings.md` section 9, the standard `cis` mode is the more powerful eGene *detector*), and under a polygenic background it is preferred over ordinary SuSiE.
+```python
+from tensorqtl import susieinf
+# individual-level convenience wrapper (residualizes on covariates, builds z/LD internally):
+fit = susieinf.susie_inf_from_data(X, y, L=10, covariates=cov, method='moments')
+fit['pip']   # max PIP per variant;  fit['cs'] credible sets;  fit['tausq'] infinitesimal variance
+# or directly from summary statistics (z = X'y/sqrt(n), meansq = ||y||^2/n, LD = X'X/n):
+fit = susieinf.susie_inf(z, meansq, n, L=10, LD=LD, method='moments', est_tausq=True)
+```
+The implementation is verified numerically identical to the FinucaneLab reference (max PIP difference ≤ 3e-13, `tau^2`/`sigma^2`/credible sets to machine precision across null/single/polygenic architectures and both `'moments'` and `'MLE'` variance estimators; `tests/test_susieinf.py`). `'moments'` (method-of-moments, closed form) is recommended and is the default; `'MLE'` uses L-BFGS-B on the negative ELBO.
+
