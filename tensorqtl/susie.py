@@ -504,7 +504,13 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
                                check_null_threshold=0)
-        elbo[i] = get_objective(X_t, xattr, y_t, s)
+        # get_ER2 (the dominant O(L*N*p) matmul via compute_MXt) feeds BOTH the
+        # objective and the residual-variance update, and s is unchanged between
+        # them, so compute it once. elbo[i] is get_objective(...) inlined with the
+        # reused er2; sigma2 update is estimate_residual_variance_fct(...) = er2/n.
+        er2 = get_ER2(X_t, xattr, y_t, s)
+        # exactly get_objective(...) with er2 reused (same op order as eloglik):
+        elbo[i] = -(n/2) * torch.log(2*np.pi*s['sigma2']) - (1/(2*s['sigma2'])) * er2 - (s['KL']).sum()
         if verbose:
             print(f'Objective (iter {i}): {elbo[i]}')
         if (elbo[i] - elbo[i-1]) < tol:
@@ -512,7 +518,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
             break
 
         if estimate_residual_variance:
-            s['sigma2'] = estimate_residual_variance_fct(X_t, xattr, y_t, s)
+            s['sigma2'] = (1/n) * er2  # == estimate_residual_variance_fct(...)
             if s['sigma2'] > residual_variance_upperbound:
                 s['sigma2'] = residual_variance_upperbound
             if verbose:
