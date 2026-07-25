@@ -395,9 +395,55 @@ def get_purity(pos, X, Xcorr, squared=False, n=100):
         return float(value.min()), float(value.mean()), float(value.median())
 
 
+def _abs_corr_members_to_all(members, X=None, Xcorr=None):
+    """Absolute correlation of each CS member against all p variants -> (len(members), p).
+
+    With a precomputed Xcorr, index directly. From individual-level X (n x p) we
+    standardize columns (Pearson correlation is shift/scale invariant, so the raw
+    genotype columns give the same answer) and take z[:,members].T @ z / (n-1).
+    """
+    if Xcorr is not None:
+        return Xcorr[members].abs().clamp(max=1.0)
+    n = X.shape[0]
+    Xc = X - X.mean(0)
+    sd = torch.sqrt((Xc*Xc).sum(0) / (n - 1))
+    sd[sd == 0] = 1
+    z = Xc / sd
+    corr = (z[:, members].T @ z) / (n - 1)
+    return corr.abs().clamp(max=1.0)
+
+
+def extend_cs_by_correlation(cs, threshold, null_index, X=None, Xcorr=None):
+    """susieR-2.0 `cs_extension_corr`: absorb into each CS every variant whose
+    |corr| to ANY current member exceeds `threshold` (recommended 0.99). Runs
+    before purity, so it changes CS membership and the reported purity numbers.
+    Off by default upstream; only called when cs_extension_corr is set."""
+    if len(cs) == 0:
+        return cs
+    device = cs[0].device
+    extended = []
+    for members in cs:
+        corr_rows = _abs_corr_members_to_all(members, X=X, Xcorr=Xcorr)  # (m, p)
+        in_tight = torch.where((corr_rows > threshold).any(0))[0].to(device)
+        if null_index > 0:
+            in_tight = in_tight[in_tight != null_index]
+        extended.append(torch.unique(torch.cat([members, in_tight])))  # sorted, unique
+    return extended
+
+
 def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
+                 median_abs_corr=None, cs_extension_corr=None,
                  dedup=True, squared=False):
-    """"""
+    """Extract credible sets.
+
+    susieR-2.0 additions (both default-off, so the default call is unchanged):
+      median_abs_corr:   keep a CS if min|corr| >= min_abs_corr OR
+                         median|corr| >= median_abs_corr (OR-linked, so it can
+                         only ADMIT extra CSs whose bulk is tight but whose
+                         minimum is dragged down by one weak member).
+      cs_extension_corr: before purity, absorb near-perfect proxies (|corr| >
+                         threshold to a member) into each CS.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if X is not None and Xcorr is not None:
@@ -432,6 +478,10 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
     else:
         cs = [cs[k] for k,i in enumerate(include_mask) if i]
 
+        # susieR-2.0 cs_extension_corr: absorb near-perfect proxies before purity
+        if cs_extension_corr is not None:
+            cs = extend_cs_by_correlation(cs, cs_extension_corr, null_index, X=X, Xcorr=Xcorr)
+
         purity = []
         for i in range(len(cs)):
             if null_index > 0 and null_index in cs[i]:
@@ -444,8 +494,20 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
             cols = ['min_abs_corr', 'mean_abs_corr', 'median_abs_corr']
         purity = pd.DataFrame(purity, columns=cols)
 
-        threshold = min_abs_corr**2 if squared else min_abs_corr
-        is_pure = np.where(purity.values[:,0] >= threshold)[0]
+        # susieR-2.0: keep a CS if it passes the min OR the median criterion.
+        # Default (min_abs_corr=0.5, median_abs_corr=None) reduces to the pre-2.0
+        # min-only filter. Both None -> keep every non-null CS (null CS has -9).
+        if min_abs_corr is None and median_abs_corr is None:
+            keep = purity.values[:, 0] > -1
+        else:
+            keep = np.zeros(len(purity), dtype=bool)
+            if min_abs_corr is not None:
+                thr = min_abs_corr**2 if squared else min_abs_corr
+                keep = keep | (purity.values[:, 0] >= thr)
+            if median_abs_corr is not None:
+                thr = median_abs_corr**2 if squared else median_abs_corr
+                keep = keep | (purity.values[:, 2] >= thr)
+        is_pure = np.where(keep)[0]
         if len(is_pure) > 0:
             include_idx = torch.where(include_mask)[0]
             cs = [cs[k] for k in is_pure]
@@ -474,6 +536,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           residual_variance_upperbound=np.inf,
           # s_init=None,
           coverage=0.95, min_abs_corr=0.5,
+          median_abs_corr=None, cs_extension_corr=None,
           compute_univariate_zscore=False,
           na_rm=False, max_iter=100, tol=0.001,
           verbose=False, track_fit=False):
@@ -546,7 +609,8 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
 
     # SuSiE CS and PIP
     if coverage is not None and min_abs_corr is not None:
-        s['sets'] = susie_get_cs(s, coverage=coverage, X=X_t, min_abs_corr=min_abs_corr)
+        s['sets'] = susie_get_cs(s, coverage=coverage, X=X_t, min_abs_corr=min_abs_corr,
+                                 median_abs_corr=median_abs_corr, cs_extension_corr=cs_extension_corr)
         s['pip'] = susie_get_pip(s, prune_by_cs=False, prior_tol=prior_tol).cpu().numpy()
 
     return s
