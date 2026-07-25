@@ -473,7 +473,162 @@ fetched windows.
 
 ---
 
-## 8. Reproduction
+## 9. Detection power: knockoff KFc vs standard permutation-min-p vs SuSiE / SuSiE-inf (head-to-head, real HPRC v2.0)
+
+Everything above (§§1-8) asks whether the knockoff KFc eGene path's realized
+FDR tracks its nominal target. This section asks a different question: for the
+same target FDR, which method actually finds the most true eGenes. All numbers
+below are from a head-to-head benchmark on real HPRC v2.0 genotypes (N=232),
+run in this investigation. The benchmark scripts lived in an ephemeral job
+directory and were not committed to the repository; the results are recorded
+here as established findings, pending a durable, committed reproduction
+harness.
+
+### 9.1 Same statistic family, only the null differs — the knockoff pays a large power tax
+
+Held fixed: the same genes, the same per-gene statistic family (`-log10(min
+cis p-value)`), the same target FDR (5%). The only thing that changes is which
+null the statistic is compared against:
+- **Standard permutation** (permute phenotype `Y`, keep the real genotypes,
+  build the null from permuted-`Y` min-p) → BH selection: **power 0.97-1.00**
+  at calibrated 5% FDR (PVE 0.10-0.15).
+- **Knockoff KFc** (`statistic='kfc'` in `susie.map_egenes_knockoffs`,
+  `tensorqtl/susie.py:968`, handled at `tensorqtl/susie.py:1254` and
+  `:1277-1278`; selection via `knockoffs.mirror_select_egenes`,
+  `tensorqtl/knockoffs.py:1929`) → **power 0.11-0.57** at the same target and
+  PVE range.
+
+Mechanism (measured, not assumed): in cis-LD, a variant's model-X Gaussian
+knockoff is **~90% correlated with the real variant** — this is not an
+estimation failure, it is forced by the model-X exchangeability constraint
+itself (small residual variance keeps the knockoff close to its original in
+dense LD). For a causal gene, the knockoff copy of the causal variant (and
+everything in LD with it) is nearly as good a predictor as the real thing, so
+`imp(knockoff) ≈ imp(real)` and `W = imp(real) - imp(knockoff)` stays small
+even for a true eGene. Permutation's null has no such handicap — a permuted
+phenotype is genuinely uncorrelated with genotype, so the null min-p does not
+silently mimic the real signal the way a cis-LD knockoff does.
+
+### 9.2 Standard `cis` mode is calibrated and the most powerful detector in every regime tested
+
+Extending the comparison to a harder, more realistic setting — `p=1000`
+variants, `N=232`, a dense polygenic background (1 large + 3 moderate + 500
+tiny exponential-effect variants per gene) — **permutation-min-p + Storey
+q-values (tensorQTL's standard `cis` mode: `cis.map_cis`,
+`tensorqtl/cis.py:627`, followed by `tensorqtl.calculate_qvalues`,
+`tensorqtl/post.py:17`) was calibrated and the most powerful method of every
+one tested**, beating the knockoff KFc path, standard SuSiE, and SuSiE-inf in
+every regime:
+- Well-calibrated null: uniform null p-values (KS test p=0.77).
+- Storey realized FDR ≈0.05 against a 0.05 target.
+- Achieved oracle power (the power attainable given the planted effect sizes).
+
+Caveat: at a single replicate, realized FDR is Monte-Carlo-noisy (a handful of
+discrete false positives shifts the ratio substantially), so FDR should be
+reported with replicates/confidence intervals before being read as a precise
+number. Power is stable at a single replicate because it is driven by the
+fixed, known planted effects rather than by rare false-positive counts.
+
+### 9.3 SuSiE and SuSiE-inf are localization tools, not detection tools
+
+Using "SuSiE emits at least one credible set" as the eGene call is
+FDR-controlled (conservatively — ~0 false credible sets on true-null genes)
+but **40-55% less powerful than min-p** at matched, near-zero FDR (e.g. power
+0.25-0.35 for the credible-set rule vs 0.42 for min-p in the same regime).
+
+The reason is what this investigation calls the **localization tax**: a
+credible set only forms when SuSiE can concentrate posterior mass on a *pure*
+set of variants (its purity/coverage filter, `susie_get_cs`,
+`tensorqtl/susie.py:428`). In dense LD the posterior inclusion probability
+smears across the whole LD block, no set passes the purity filter, and the
+gene is missed — not because the signal isn't there, but because SuSiE cannot
+decide *which* variant carries it. Detection does not require localizing a
+signal to a small set of variants; the credible-set rule does, and pays for
+it.
+
+Framing worth keeping: **min-p statistics AGGREGATE LD-correlated evidence**
+(strong LD helps detection — many correlated variants each cast a vote for the
+gene), while **maxPIP-based statistics APPORTION posterior mass among
+indistinguishable candidates** (strong LD hurts localization certainty — the
+same correlated variants split the vote). The same LD structure that boosts
+one sinks the other.
+
+### 9.4 Correction: standard SuSiE's credible sets are not spuriously false on true nulls
+
+An earlier concern recorded in this project's history was that standard SuSiE
+emits spurious credible sets on true-null genes under a dense (`p=1000`)
+polygenic background. This benchmark found that is **not** the case: standard
+SuSiE's purity/coverage-filtered credible-set output is clean — ~0 false
+credible sets on true nulls at `p=1000`. The earlier worry traced to a
+**pooled-permutation-null artifact** (a null panel that mixed phenotypes with
+different variances), not a defect in SuSiE's own credible-set output. The
+real standard-SuSiE issue at this scale is the **null-collapse atom** in raw
+`maxPIP` (§9.5, and already documented in §7 above) — a calibration problem for
+the *continuous* PIP-contrast statistic, not a false-credible-set problem for
+the *discrete* CS-emission rule.
+
+### 9.5 SuSiE-inf fixes the null-collapse atom, at a detection-power cost
+
+*(SuSiE-inf is not implemented in tensorqtl — this comparison used an external
+reference implementation of the published method, for context only. There is
+no `tensorqtl.susie` equivalent to point to.)*
+
+Standard SuSiE's raw `maxPIP` has a point mass at exactly 0 under a null gene:
+its single-effect prior variance collapses to exactly 0 under a polygenic
+background (the same atom documented in §7 above for the knockoff maxPIP path;
+the collapse and its `prior_variance_floor` mitigation are implemented at
+`tensorqtl/susie.py:169-194`), which makes `maxPIP` uncalibratable via
+permutation p-values — the atom pins ~95% of null p-values at 1.0. SuSiE-inf's
+infinitesimal random-effect term (`tausq`, absorbing a polygenic background as
+a variance component instead of forcing the prior variance to 0) prevents the
+collapse, so its `maxPIP` is calibratable by permutation.
+
+But `tausq` also absorbs real per-variant signal, costing detection power —
+disabling it (`tausq=0`, reducing SuSiE-inf to plain SuSiE) was the single
+biggest power gain for SuSiE-inf in this sweep. So `tausq` buys PIP calibration
+and costs detection power: a genuine trade-off, not a strict improvement. This
+reproduces the finding reported for the published method (Cui, Kellis,
+Finucane et al., *Nat Genet* 2024): SuSiE-inf yields ~42% fewer credible sets
+with slightly lower recall than standard SuSiE.
+
+### 9.6 Literature context — this is unbenchmarked territory
+
+No published SuSiE (Wang et al. 2020, *J. R. Stat. Soc. B*,
+10.1111/rssb.12388), SuSiE-RSS (Zou et al. 2022, *PLoS Genet*,
+10.1371/journal.pgen.1010299), or SuSiE-inf (Cui et al. 2024, *Nat Genet*,
+10.1038/s41588-023-01597-3) benchmark evaluates region-level DETECTION over a
+mix of true-null and non-null regions at anything near this investigation's
+N=232 / p=1000 with a polygenic background. Those papers report per-variant
+coverage/recall *inside* regions already guaranteed to contain a causal
+variant, at N=574 (Wang et al. 2020, p=1000) up to N=50,000-500,000. So the
+detection comparison in this section is unbenchmarked territory — but it is
+qualitatively consistent with those papers' internal trends (SuSiE recall
+falls as the number of effects per region rises; unmodeled polygenicity
+degrades SuSiE calibration).
+
+### 9.7 Practical recommendation
+
+- **For eGene DETECTION at a target FDR, prefer permutation-min-p + Storey
+  q-values — tensorQTL's standard `cis` mode** (`cis.map_cis` +
+  `tensorqtl.calculate_qvalues`). It was calibrated and the most powerful
+  method across every regime tested here, including the knockoff KFc path and
+  both SuSiE variants.
+- **The knockoff KFc eGene path (`cis_egenes_knockoff` / `statistic='kfc'`)
+  controls FDR** (§8 above) **but is materially less powerful for detection**
+  than the standard permutation `cis` mode. It remains available and valid —
+  its FDR-control properties (distribution-free, model-X) are still real and
+  useful where specifically wanted — but it is not the recommended default for
+  calling eGenes.
+- **SuSiE and SuSiE-inf belong downstream, for LOCALIZATION within
+  already-detected eGenes**, not for the initial detection call. Between the
+  two, SuSiE-inf's infinitesimal term is preferable under a polygenic
+  background (it fixes the `maxPIP` null-collapse atom, yielding cleaner,
+  calibratable credible sets) at a small recall cost; plain SuSiE is adequate
+  when the background is not strongly polygenic.
+
+---
+
+## 10. Reproduction
 
 ```bash
 # End-to-end calibration study (the load-bearing measurement)
