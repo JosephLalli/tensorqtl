@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(1, os.path.dirname(__file__))
 import genotypeio
+import susieash
 from core import *
 from susieslot import (
     finish_slot_sweep,
@@ -639,6 +640,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           check_null_threshold=0, prior_tol=1e-9,
           residual_variance_upperbound=np.inf,
           slot_prior=None,
+          unmappable_effects=None,
           coverage=0.95, min_abs_corr=0.5,
           median_abs_corr=None, cs_extension_corr=None,
           compute_univariate_zscore=False,
@@ -663,15 +665,48 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         raise ValueError("convergence_method must be 'elbo' or 'pip'.")
     if not isinstance(pip_stall_window, (int, np.integer)) or pip_stall_window < 1:
         raise ValueError('pip_stall_window must be a positive integer.')
-    if slot_prior is not None:
+    if unmappable_effects not in {None, 'ash'}:
+        raise ValueError("unmappable_effects must be None or 'ash'.")
+
+    # SuSiE-ash (Mr.ASH polygenic background). Between IBSS iterations a Mr.ASH
+    # fit absorbs a diffuse polygenic background theta on residuals with confident
+    # credible-set variants masked; the SER then sees residuals net of X@theta.
+    # Convergence is PIP-based (susieR forces convergence_method="pip" for
+    # unmappable-effects models, which have no well-defined ELBO).
+    use_ash = unmappable_effects == 'ash'
+    if use_ash and not estimate_residual_variance:
+        # susieR gates the in-loop refit on estimate_residual_variance=TRUE
+        # (update_model_variance early-returns otherwise); the shared sigma2 is
+        # driven by Mr.ASH. Enforce it so theta is actually fit inside the loop.
+        raise ValueError("unmappable_effects='ash' requires estimate_residual_variance=True.")
+    if slot_prior is not None or use_ash:
         # The ordinary SuSiE ELBO does not define a valid stopping rule once
-        # fitted effects are marginalized by c_hat.
+        # fitted effects are marginalized by c_hat or theta changes residuals.
         convergence_method = 'pip'
 
     if intercept:
         y_t = y_t - mean_y
 
     xattr = get_x_attributes(X_t, center=intercept, scale=standardize)
+
+    if use_ash:
+        # Materialize the standardized design x_std = (X - cm)/csd; the SER effects
+        # (mu/alpha) live in these units and compute_Xb(X_t, b) == x_std @ b, so
+        # running Mr.ASH here (intercept=False) puts theta in the same units and
+        # X_theta subtracts consistently. mr.ash is CPU/numpy, so keep a float64
+        # host copy for refits. w = colSums(x_std^2) = xattr['d']; the default sa2
+        # grid matches susieR (median(w), n).
+        x_std_t = (X_t - xattr['scaled_center']) / xattr['scaled_scale']
+        x_std_np = x_std_t.detach().cpu().numpy().astype(np.float64)
+        d_t = xattr['d']
+        sa2_np = susieash.default_sa2_grid(
+            d_t.detach().cpu().numpy().astype(np.float64), n
+        )
+        Xcorr_t = susieash.variant_corr(x_std_t, d_t)
+        theta_t = torch.zeros(p, dtype=X_t.dtype, device=device)
+        X_theta_t = torch.zeros(n, dtype=X_t.dtype, device=device)
+        ash_pi = None
+        ash_iter = 0
 
     # initialize susie fit
     s = init_setup(n, p, L, scaled_prior_variance, y_t.var(unbiased=True),
@@ -694,10 +729,52 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     )]
     for i in range(1, max_iter+1):
 
-        s = update_each_effect(X_t, xattr, y_t, s,
+        if use_ash:
+            prev_alpha = s['alpha'].clone()
+            prev_pip_ash = susieash.pip(prev_alpha)
+
+        # SuSiE-ash: the SER regresses on residuals net of the polygenic
+        # background X@theta (theta is 0 on iter 1). Xr stays sparse-only, so
+        # subtracting X_theta from the target is the only ash-specific change.
+        y_eff = (y_t - X_theta_t.reshape(-1, 1)) if use_ash else y_t
+
+        s = update_each_effect(X_t, xattr, y_eff, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
                                check_null_threshold=check_null_threshold)
+        if use_ash:
+            # PIP-based convergence vs the previous iterate (susie_utils.R:278-338;
+            # unmappable-effects models force convergence_method="pip" -- no ELBO).
+            pip_new = susieash.pip(s['alpha'])
+            state_diff = float(torch.maximum((s['alpha'] - prev_alpha).abs().max(),
+                                             (pip_new - prev_pip_ash).abs().max()))
+            if verbose:
+                print(f'ash state_diff (iter {i}): {state_diff}')
+            if state_diff < tol:
+                s['converged'] = True
+                break   # the final unmasked ash pass runs after the loop
+            # end-of-iteration Mr.ASH refit on (y - X@b_confident), CS variants
+            # masked. ash_iter is bumped first so the first refit uses convtol 1e-3
+            # and later refits 1e-4 (susie_utils.R:1880, incremented at :1719).
+            ash_iter += 1
+            convtol_ash = 1e-3 if ash_iter < 2 else 1e-4
+            b_confident, mask_t = susieash.confident_mask(
+                s['alpha'], s['mu'], Xcorr_t
+            )
+            b_conf_fit = compute_Xb(X_t, b_confident, xattr['scaled_center'], xattr['scaled_scale'])
+            target_np = (y_t.squeeze() - b_conf_fit).detach().cpu().numpy().astype(np.float64)
+            mask_np = mask_t.detach().cpu().numpy()
+            beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
+            beta_init_np[mask_np] = 0.0                       # susie_utils.R:1871
+            theta_np, sig, ash_pi, s['tau2'] = susieash.refit(
+                x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
+                sa2_np, convtol_ash, estimate_residual_variance)
+            theta_np[mask_np] = 0.0                            # susie_utils.R:1889
+            s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
+                                      dtype=X_t.dtype, device=device)  # Mr.ASH drives sigma2
+            theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
+            X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])
+            continue
         # Both calculations use the same expected residual sum of squares.
         er2 = get_ER2(X_t, xattr, y_t, s)
         elbo[i] = get_objective(X_t, xattr, y_t, s, er2=er2)
@@ -747,14 +824,42 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     sparse_effect_std = _weighted_sparse_effect(s)
     sparse_effect_raw = sparse_effect_std / xattr['scaled_scale']
     s['sparse_effects'] = sparse_effect_raw
+    if use_ash:
+        # Final unmasked pass (susie_utils.R:2447-2473): one Mr.ASH refit on
+        # residuals net of ALL sparse effects (no confident/uncertain split,
+        # c_hat ignored), warm-started from the last in-loop theta, convtol 1e-4,
+        # output NOT masked. Produces the reported dense theta / tau2 / ash_pi.
+        b_all_fit = compute_Xb(X_t, (s['alpha'] * s['mu']).sum(0),
+                               xattr['scaled_center'], xattr['scaled_scale'])
+        target_np = (y_t.squeeze() - b_all_fit).detach().cpu().numpy().astype(np.float64)
+        beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
+        theta_np, sig, ash_pi, s['tau2'] = susieash.refit(
+            x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
+            sa2_np, 1e-4, estimate_residual_variance)
+        s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
+                                      dtype=X_t.dtype, device=device)
+        theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
+        X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])
+        s['theta'] = theta_np      # dense polygenic background, standardized-X units (like mu)
+        s['ash_pi'] = ash_pi
+
+    total_effect_raw = sparse_effect_raw
+    if use_ash:
+        total_effect_raw = total_effect_raw + theta_t / xattr['scaled_scale']
+        s['theta_raw'] = theta_t / xattr['scaled_scale']
+
     if intercept:
         s['intercept'] = mean_y - (
-            xattr['scaled_center'] * sparse_effect_raw
+            xattr['scaled_center'] * total_effect_raw
         ).sum()
         s['fitted'] = s['Xr'] + mean_y
     else:
         s['intercept'] = 0
         s['fitted'] = s['Xr']
+
+    if use_ash:
+        # fitted = sparse Xr + polygenic X_theta + intercept (get_fitted, IDM:480-488)
+        s['fitted'] = s['fitted'] + X_theta_t
 
     s['fitted'] = s['fitted'].squeeze()
     # if track_fit:
