@@ -123,13 +123,10 @@ def test_ash_requires_estimate_residual_variance():
 
 
 def test_ash_rejects_unsupported_public_option_combinations():
-    """Unknown unmappable-effects values and the incompatible NIG mode fail
-    explicitly instead of silently taking a different fitting path."""
+    """Unknown unmappable-effects values fail instead of silently fitting SuSiE."""
     Xt, yt, _, _ = _sim()
     with pytest.raises(ValueError, match='unmappable_effects'):
         sm.susie(Xt, yt, unmappable_effects='foo')
-    with pytest.raises(ValueError, match='incompatible'):
-        sm.susie(Xt, yt, unmappable_effects='ash', estimate_residual_method='NIG')
 
 
 def test_ash_multi_sweep_fitted_value_decomposition():

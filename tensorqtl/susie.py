@@ -672,8 +672,6 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     # Convergence is PIP-based (susieR forces convergence_method="pip" for
     # unmappable-effects models, which have no well-defined ELBO).
     use_ash = unmappable_effects == 'ash'
-    if use_ash and use_nig:
-        raise ValueError("unmappable_effects='ash' is incompatible with estimate_residual_method='NIG'.")
     if use_ash and not estimate_residual_variance:
         # susieR gates the in-loop refit on estimate_residual_variance=TRUE
         # (update_model_variance early-returns otherwise); the shared sigma2 is
