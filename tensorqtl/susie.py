@@ -56,7 +56,10 @@ def init_setup(n, p, L, scaled_prior_variance, varY, residual_variance=None,
     if prior_weights is None:
         prior_weights = torch.full([p], 1/p, dtype=torch.float32).to(device)
     else:
-        prior_weights = prior_weights / sum(prior_weights)
+        # accept tensor/numpy/list and land on `device` so s['pi'] matches the
+        # rest of the internal state (which is allocated on `device` below).
+        prior_weights = torch.as_tensor(prior_weights, dtype=torch.float32, device=device)
+        prior_weights = prior_weights / prior_weights.sum()
     if len(prior_weights) != p:
         raise ValueError('Prior weights must have length p.')
     if (p < L):
@@ -542,6 +545,14 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           verbose=False, track_fit=False):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Normalize caller-provided inputs onto the compute device. susie() allocates
+    # all of its internal state (alpha/mu/Xr/...) on `device`, so inputs built on a
+    # different device (e.g. CPU tensors handed in directly) must be moved here or
+    # they collide with that state in the first matmul (compute_Xb). map_* callers
+    # already build on `device`, making this a no-op for them.
+    X_t = X_t.to(device)
+    y_t = y_t.to(device)
 
     n, p = X_t.shape
     mean_y = y_t.mean()
