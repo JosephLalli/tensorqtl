@@ -377,12 +377,17 @@ def corrcoef(X_t):
 
 
 def get_purity(pos, X, Xcorr, squared=False, n=100):
-    """subsample and compute min, mean, median and max abs corr"""
+    """Deterministically subsample and compute min, mean and median correlation."""
     if len(pos) == 1:
         return np.ones(3)
     else:
         if len(pos) > n:
-            pos = np.random.choice(pos, n, replace=False)
+            if torch.is_tensor(pos):
+                generator = torch.Generator(device=pos.device)
+                generator.manual_seed(1)
+                pos = pos[torch.randperm(len(pos), generator=generator, device=pos.device)[:n]]
+            else:
+                pos = np.random.default_rng(1).choice(pos, n, replace=False)
         if Xcorr is None:
             X_sub = X[:, pos]
             if len(pos) > n:  # remove columns with identical values
@@ -451,6 +456,11 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
 
     if X is not None and Xcorr is not None:
         raise ValueError('Only one of X or Xcorr should be specified.')
+    for name, value in [('min_abs_corr', min_abs_corr),
+                        ('median_abs_corr', median_abs_corr),
+                        ('cs_extension_corr', cs_extension_corr)]:
+        if value is not None and not 0 <= value <= 1:
+            raise ValueError(f'{name} must be between 0 and 1.')
     # if Xcorr is not None and not is_symmetric_matrix(Xcorr):
     #     raise ValueError('Xcorr matrix must be symmetric.')
 
