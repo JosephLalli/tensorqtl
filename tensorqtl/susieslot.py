@@ -78,8 +78,10 @@ def initialize_slot_state(slot_prior, L, dtype, device):
         )
 
     c_hat_init = slot_prior['c_hat_init']
+    # susieR uses a warm start only when it has exactly L entries; otherwise
+    # it falls back to the prior-mean initialization.
     if c_hat_init is not None and len(c_hat_init) != L:
-        raise ValueError(f'c_hat_init must have length L={L}.')
+        c_hat_init = None
 
     if slot_prior['prior_type'] == 'betabinom':
         if c_hat_init is None:
