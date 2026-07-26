@@ -3,10 +3,7 @@
 # This is the polygenic-background fitter used by SuSiE-ash (susie(...,
 # unmappable_effects="ash") in susieR 2.0): a mixture-of-normals prior over all
 # variant effects, fit by coordinate ascent. SuSiE-ash refits this background
-# between IBSS iterations (on residuals net of the sparse credible-set effects,
-# with confident variants masked) so a diffuse polygenic background is absorbed
-# adaptively instead of distorting the sparse fit -- the paper's claimed 1.5-3x
-# FDR reduction vs SuSiE-inf's single Gaussian background.
+# between IBSS iterations on residuals net of the sparse credible-set effects.
 #
 # Faithful numpy port of susieR's compiled core (src/caisa.cpp updatebetaj /
 # caisa_cpp) and its R wrapper (R/mr.ash.R). The coordinate sweep is inherently
@@ -118,30 +115,76 @@ def mr_ash(X, y, sa2=None, sigma2=None, pi=None, beta_init=None,
     dict(beta, sigma2, pi, iter, intercept, varobj). standardize is not supported
     (SuSiE-ash calls with standardize=FALSE)."""
     X = np.asarray(X, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64)
+    if X.ndim != 2:
+        raise ValueError("X must be a two-dimensional array.")
+    if y.ndim == 2 and y.shape[1] == 1:
+        y = y[:, 0]
+    elif y.ndim != 1:
+        raise ValueError("y must be a one-dimensional array or a single column.")
     n, p = X.shape
+    if n < 2 or p < 1:
+        raise ValueError("X must contain at least two samples and one predictor.")
+    if y.shape[0] != n:
+        raise ValueError("X and y must contain the same number of samples.")
+    if not np.isfinite(X).all() or not np.isfinite(y).all():
+        raise ValueError("X and y must contain only finite values.")
+    if method_q not in {"sigma_dep_q", "sigma_indep_q"}:
+        raise ValueError("method_q must be 'sigma_dep_q' or 'sigma_indep_q'.")
+    if not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
+        raise ValueError("max_iter must be a positive integer.")
+    if not isinstance(min_iter, (int, np.integer)) or not 1 <= min_iter <= max_iter:
+        raise ValueError("min_iter must be between 1 and max_iter.")
+    if not np.isfinite(convtol) or convtol <= 0:
+        raise ValueError("convtol must be positive and finite.")
+    if not np.isfinite(epstol) or epstol <= 0:
+        raise ValueError("epstol must be positive and finite.")
+
+    x_mean = X.mean(0) if intercept else np.zeros(p)
+    y_mean = float(y.mean()) if intercept else 0.0
     if intercept:
-        X = X - X.mean(0)
-        y = y - y.mean()
+        X = X - x_mean
+        y = y - y_mean
     w = (X * X).sum(0)
+    if not np.isfinite(w).all() or np.any(w <= 0):
+        raise ValueError("X must not contain constant predictors.")
     if sa2 is None:
         sa2 = default_sa2_grid(w, n)
     else:
         sa2 = np.asarray(sa2, dtype=np.float64)
-    if sa2[0] != 0:
-        raise ValueError("sa2[0] must be 0 (spike component).")
+    if (
+        sa2.ndim != 1
+        or sa2.size < 2
+        or not np.isfinite(sa2).all()
+        or sa2[0] != 0
+        or np.any(sa2[1:] <= 0)
+    ):
+        raise ValueError(
+            "sa2 must start with 0 and contain positive, finite slab variances."
+        )
     K = sa2.shape[0]
-    beta = np.zeros(p) if beta_init is None else np.asarray(beta_init, dtype=np.float64).copy()
+    has_beta_init = beta_init is not None
+    beta = (
+        np.zeros(p)
+        if beta_init is None
+        else np.asarray(beta_init, dtype=np.float64).copy()
+    )
+    if beta.ndim != 1 or beta.shape[0] != p or not np.isfinite(beta).all():
+        raise ValueError("beta_init must contain one finite value per predictor.")
     r = y - X @ beta
     if sigma2 is None:
         sigma2 = float(((r - r.mean()) ** 2).mean())   # var.n
+    else:
+        sigma2 = float(sigma2)
+    if not np.isfinite(sigma2) or sigma2 <= 0:
+        raise ValueError("sigma2 must be positive and finite.")
     if pi is None:
         # port of R/mr.ash.R pi-init: uniform when beta.init is absent, but
         # data-driven when an explicit beta.init is supplied (even zeros). The
         # data-driven branch is what SuSiE-ash's first refit relies on
         # (pi=None, beta.init=theta=0) -- a uniform init there diverges from
         # susieR. beta.init absent here means beta_init was None above.
-        if beta_init is None:
+        if not has_beta_init:
             pi = np.full(K, 1.0 / K)
         else:
             with np.errstate(divide='ignore'):
@@ -150,7 +193,30 @@ def mr_ash(X, y, sa2=None, sigma2=None, pi=None, beta_init=None,
             Phi = np.exp(Phi - Phi.max(axis=1, keepdims=True))
             Phi = Phi / Phi.sum(axis=1, keepdims=True)
             pi = Phi.mean(axis=0)
+    else:
+        pi = np.asarray(pi, dtype=np.float64)
+    if (
+        pi.ndim != 1
+        or pi.shape[0] != K
+        or not np.isfinite(pi).all()
+        or np.any(pi < 0)
+        or not np.isclose(pi.sum(), 1.0)
+    ):
+        raise ValueError("pi must be a probability vector with one value per sa2.")
+
+    if order is not None:
+        order = np.asarray(order)
+        if (
+            order.ndim != 1
+            or not np.issubdtype(order.dtype, np.integer)
+            or order.size < p * max_iter
+            or np.any(order < 0)
+            or np.any(order >= p)
+        ):
+            raise ValueError(
+                "order must contain at least p * max_iter valid predictor indices."
+            )
     out = _caisa(X, w, sa2, pi, beta, r, float(sigma2), order,
                  max_iter, min_iter, convtol, epstol, method_q, update_pi, update_sigma)
-    out['intercept'] = float(y.mean()) if intercept else 0.0
+    out['intercept'] = float(y_mean - x_mean @ out['beta']) if intercept else 0.0
     return out

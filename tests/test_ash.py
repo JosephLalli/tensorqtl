@@ -146,6 +146,23 @@ def test_ash_multi_sweep_fitted_value_decomposition():
     assert torch.allclose(s['fitted'], expected, rtol=1e-5, atol=1e-5)
 
 
+def test_ash_intercept_reconstructs_predictions_on_raw_design():
+    """Raw-scale coefficients and intercept reproduce the reported fitted values."""
+    Xt, yt, _, _ = _sim(seed=22, signal_cols=(4, 17), signal_beta=2.0)
+    Xt = Xt + torch.linspace(-2, 2, Xt.shape[1])
+    yt = yt + 3.0
+    s = _fit_ash(Xt, yt)
+
+    fit_device = s['Xr'].device
+    X_fit = Xt.to(fit_device)
+    xattr = sm.get_x_attributes(X_fit, center=True, scale=True)
+    sparse_t = (s['alpha'] * s['mu']).sum(0)
+    theta_t = torch.as_tensor(s['theta'], dtype=X_fit.dtype, device=fit_device)
+    raw_coef_t = (sparse_t + theta_t) / xattr['scaled_scale']
+    expected = X_fit @ raw_coef_t + s['intercept']
+    assert torch.allclose(s['fitted'], expected, rtol=1e-5, atol=1e-5)
+
+
 def test_default_path_unaffected_by_unmappable_effects_param():
     """unmappable_effects=None must reproduce the plain susie() fit exactly and
     must not attach ash-only fields."""

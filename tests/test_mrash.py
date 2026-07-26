@@ -13,6 +13,7 @@ dependency-light property tests (no R needed).
 """
 import sys
 import numpy as np
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tensorqtl'))
@@ -85,6 +86,30 @@ def test_fixed_pi_no_update():
     pi0 = np.full(K, 1.0 / K)
     out = mrash.mr_ash(X, y, pi=pi0.copy(), update_pi=False, update_sigma=False, sigma2=1.0)
     assert np.allclose(out['pi'], pi0)
+
+
+def test_intercept_reconstructs_predictions_on_raw_design():
+    """The returned intercept and coefficients operate on the uncentered X."""
+    rng = np.random.RandomState(8)
+    X = rng.randn(100, 8) + np.arange(8)
+    y = 4.0 + X @ rng.randn(8) + 0.5 * rng.randn(100)
+    out = mrash.mr_ash(X, y)
+    fitted_raw = out['intercept'] + X @ out['beta']
+    fitted_centered = y.mean() + (X - X.mean(0)) @ out['beta']
+    assert np.allclose(fitted_raw, fitted_centered)
+
+
+@pytest.mark.parametrize(
+    "X, y, match",
+    [
+        (np.ones((20, 2)), np.arange(20.0), "constant predictors"),
+        (np.ones(20), np.arange(20.0), "two-dimensional"),
+        (np.ones((20, 2)), np.arange(19.0), "same number of samples"),
+    ],
+)
+def test_rejects_invalid_designs(X, y, match):
+    with pytest.raises(ValueError, match=match):
+        mrash.mr_ash(X, y)
 
 
 def test_matches_manual_single_variant():
