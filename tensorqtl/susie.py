@@ -14,6 +14,7 @@ from collections import defaultdict
 import sys
 import os
 import time
+from scipy.optimize import minimize_scalar
 
 sys.path.insert(1, os.path.dirname(__file__))
 import genotypeio
@@ -172,6 +173,44 @@ def neg_loglik_logscale(lV, betahat, shat2, prior_weights):
     return -loglik(torch.exp(lV), betahat, shat2, prior_weights)
 
 
+def optimize_prior_variance_brent(V_init, betahat, shat2, prior_weights,
+                                  check_null_threshold=0):
+    """Optimize scalar SER prior variance on susieR's log-variance bounds."""
+    device = betahat.device
+    dtype = betahat.dtype
+    betahat64 = betahat.detach().to(torch.float64)
+    shat264 = shat2.detach().to(torch.float64)
+    weights64 = prior_weights.detach().to(torch.float64)
+
+    def objective(log_variance):
+        value = neg_loglik_logscale(
+            torch.as_tensor(log_variance, dtype=torch.float64, device=device),
+            betahat64, shat264, weights64,
+        )
+        return float(value.detach().cpu())
+
+    result = minimize_scalar(
+        objective,
+        bounds=(-30.0, 15.0),
+        method='bounded',
+        options={'xatol': 1e-8},
+    )
+    current = float(V_init)
+    candidate = float(np.exp(result.x)) if result.success else current
+    current_log = -np.inf if current == 0 else float(np.log(current))
+    if objective(result.x) > objective(current_log):
+        candidate = current
+
+    V = torch.as_tensor(candidate, dtype=dtype, device=device)
+    if (
+        float(loglik(0, betahat, shat2, prior_weights))
+        + check_null_threshold
+        >= float(loglik(V, betahat, shat2, prior_weights))
+    ):
+        V = torch.zeros((), dtype=dtype, device=device)
+    return V
+
+
 def optimize_prior_variance(optimize_V, betahat, shat2, prior_weights,
                             alpha=None, post_mean2=None, V_init=None,
                             check_null_threshold=0):
@@ -203,19 +242,33 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
                              optimize_V='EM', check_null_threshold=0):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # assert optimize_V in ["none", "optim", "uniroot", "EM", "simple"]
+    if optimize_V not in {'none', 'optim', 'EM', 'simple'}:
+        raise ValueError(
+            "estimate_prior_method must be 'none', 'optim', 'EM', or 'simple'."
+        )
 
     Xty = compute_Xty(X_t, Y_t, xattr['scaled_center'], xattr['scaled_scale'])
     betahat = (1/xattr['d']) * Xty
 
     shat2 = residual_variance / xattr['d']
     if prior_weights is None:
-        prior_weights = torch.full([X.shape[1]], 1/X.shape[1])
+        prior_weights = torch.full(
+            [X_t.shape[1]], 1 / X_t.shape[1],
+            dtype=X_t.dtype, device=X_t.device,
+        )
 
-    # if optimize_V != 'EM' and optimize_V != 'none':
-    #     V = optimize_prior_variance(optimize_V, betahat, shat2, prior_weights,
-    #                                 alpha=None, post_mean2=None, V_init=V,
-    #                                 check_null_threshold=check_null_threshold)
+    if optimize_V == 'optim':
+        V = optimize_prior_variance_brent(
+            V, betahat, shat2, prior_weights,
+            check_null_threshold=check_null_threshold,
+        )
+    elif optimize_V == 'simple':
+        if (
+            float(loglik(0, betahat, shat2, prior_weights))
+            + check_null_threshold
+            >= float(loglik(V, betahat, shat2, prior_weights))
+        ):
+            V = torch.zeros((), dtype=betahat.dtype, device=betahat.device)
 
     # lbf = stats.norm.logpdf(betahat, 0, np.sqrt(V+shat2)) - stats.norm.logpdf(betahat, 0, np.sqrt(shat2))
     lbf = torch.distributions.Normal(0, torch.sqrt(V+shat2)).log_prob(betahat) - torch.distributions.Normal(0, torch.sqrt(shat2)).log_prob(betahat)
@@ -636,7 +689,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           residual_variance=None, prior_weights=None, null_weight=None,
           standardize=True, intercept=True,
           estimate_residual_variance=True, estimate_prior_variance=True,
-          estimate_prior_method='EM',
+          estimate_prior_method=None,
           check_null_threshold=0, prior_tol=1e-9,
           residual_variance_upperbound=np.inf,
           slot_prior=None,
@@ -679,6 +732,27 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         # (update_model_variance early-returns otherwise); the shared sigma2 is
         # driven by Mr.ASH. Enforce it so theta is actually fit inside the loop.
         raise ValueError("unmappable_effects='ash' requires estimate_residual_variance=True.")
+    if estimate_prior_method is None:
+        # Keep TensorQTL's historical EM default on the ordinary path, while
+        # matching susieR's optimizer default for SuSiE-ash.
+        estimate_prior_method = 'optim' if use_ash else 'EM'
+    if estimate_prior_method not in {'none', 'optim', 'EM', 'simple'}:
+        raise ValueError(
+            "estimate_prior_method must be 'none', 'optim', 'EM', or 'simple'."
+        )
+    if use_ash and estimate_prior_method == 'EM':
+        raise ValueError(
+            "unmappable_effects='ash' does not support "
+            "estimate_prior_method='EM'; use 'optim'."
+        )
+    if use_ash and not intercept:
+        raise ValueError("unmappable_effects='ash' requires intercept=True.")
+    if use_ash and not standardize:
+        raise ValueError("unmappable_effects='ash' requires standardize=True.")
+    if use_ash and slot_prior is None:
+        # The activity prior is required to identify sparse slots separately
+        # from the dense Mr.ASH background.
+        slot_prior = slot_prior_betabinom()
     if slot_prior is not None or use_ash:
         # The ordinary SuSiE ELBO does not define a valid stopping rule once
         # fitted effects are marginalized by c_hat or theta changes residuals.
@@ -706,7 +780,11 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         theta_t = torch.zeros(p, dtype=X_t.dtype, device=device)
         X_theta_t = torch.zeros(n, dtype=X_t.dtype, device=device)
         ash_pi = None
-        ash_iter = 0
+        ash_tau2 = 0.0
+        ash_state = susieash.initialize_state(
+            min(L, p), p, device
+        )
+        ash_policy_history = []
 
     # initialize susie fit
     s = init_setup(n, p, L, scaled_prior_variance, y_t.var(unbiased=True),
@@ -729,10 +807,6 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     )]
     for i in range(1, max_iter+1):
 
-        if use_ash:
-            prev_alpha = s['alpha'].clone()
-            prev_pip_ash = susieash.pip(prev_alpha)
-
         # SuSiE-ash: the SER regresses on residuals net of the polygenic
         # background X@theta (theta is 0 on iter 1). Xr stays sparse-only, so
         # subtracting X_theta from the target is the only ash-specific change.
@@ -741,43 +815,15 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         s = update_each_effect(X_t, xattr, y_eff, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
-                               check_null_threshold=check_null_threshold)
-        if use_ash:
-            # PIP-based convergence vs the previous iterate (susie_utils.R:278-338;
-            # unmappable-effects models force convergence_method="pip" -- no ELBO).
-            pip_new = susieash.pip(s['alpha'])
-            state_diff = float(torch.maximum((s['alpha'] - prev_alpha).abs().max(),
-                                             (pip_new - prev_pip_ash).abs().max()))
-            if verbose:
-                print(f'ash state_diff (iter {i}): {state_diff}')
-            if state_diff < tol:
-                s['converged'] = True
-                break   # the final unmasked ash pass runs after the loop
-            # end-of-iteration Mr.ASH refit on (y - X@b_confident), CS variants
-            # masked. ash_iter is bumped first so the first refit uses convtol 1e-3
-            # and later refits 1e-4 (susie_utils.R:1880, incremented at :1719).
-            ash_iter += 1
-            convtol_ash = 1e-3 if ash_iter < 2 else 1e-4
-            b_confident, mask_t = susieash.confident_mask(
-                s['alpha'], s['mu'], Xcorr_t
-            )
-            b_conf_fit = compute_Xb(X_t, b_confident, xattr['scaled_center'], xattr['scaled_scale'])
-            target_np = (y_t.squeeze() - b_conf_fit).detach().cpu().numpy().astype(np.float64)
-            mask_np = mask_t.detach().cpu().numpy()
-            beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
-            beta_init_np[mask_np] = 0.0                       # susie_utils.R:1871
-            theta_np, sig, ash_pi, s['tau2'] = susieash.refit(
-                x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
-                sa2_np, convtol_ash, estimate_residual_variance)
-            theta_np[mask_np] = 0.0                            # susie_utils.R:1889
-            s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
-                                      dtype=X_t.dtype, device=device)  # Mr.ASH drives sigma2
-            theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
-            X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])
-            continue
+                               check_null_threshold=(
+                                   0 if use_ash else check_null_threshold
+                               ))
         # Both calculations use the same expected residual sum of squares.
-        er2 = get_ER2(X_t, xattr, y_t, s)
-        elbo[i] = get_objective(X_t, xattr, y_t, s, er2=er2)
+        objective_y = y_eff if use_ash else y_t
+        er2 = get_ER2(X_t, xattr, objective_y, s)
+        elbo[i] = get_objective(
+            X_t, xattr, objective_y, s, er2=er2
+        )
         if verbose:
             print(f'Objective (iter {i}): {elbo[i]}')
         if convergence_method == 'pip':
@@ -805,6 +851,56 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
                 s['converged'] = True
                 break
 
+        if use_ash:
+            # Pinned susieR updates ash state only after the sparse sweep has
+            # failed its convergence check. The resulting theta is consumed by
+            # the next sparse sweep.
+            policy = susieash.update_policy(
+                s['alpha'], s['mu'], Xcorr_t, s['slot_weights'], ash_state
+            )
+            mask_t = policy['mask']
+            b_conf_fit = compute_Xb(
+                X_t, policy['b_confident'],
+                xattr['scaled_center'], xattr['scaled_scale'],
+            )
+            target_np = (
+                y_t.squeeze() - b_conf_fit
+            ).detach().cpu().numpy().astype(np.float64)
+            mask_np = mask_t.detach().cpu().numpy()
+            beta_init_np = (
+                theta_t.detach().cpu().numpy().astype(np.float64)
+            )
+            beta_init_np[mask_np] = 0.0
+            convtol_ash = (
+                1e-3 if ash_state['ash_iter'] < 2 else 1e-4
+            )
+            theta_np, sig, ash_pi, ash_tau2 = susieash.refit(
+                x_std_np, target_np, float(s['sigma2']),
+                beta_init_np, ash_pi, sa2_np, convtol_ash, True,
+            )
+            theta_np[mask_np] = 0.0
+            s['sigma2'] = torch.as_tensor(
+                min(sig, float(residual_variance_upperbound)),
+                dtype=X_t.dtype, device=device,
+            )
+            theta_t = torch.as_tensor(
+                theta_np, dtype=X_t.dtype, device=device
+            )
+            X_theta_t = compute_Xb(
+                X_t, theta_t,
+                xattr['scaled_center'], xattr['scaled_scale'],
+            )
+            if track_fit:
+                ash_policy_history.append({
+                    key: (
+                        value.detach().cpu().clone()
+                        if torch.is_tensor(value) else value
+                    )
+                    for key, value in policy.items()
+                    if key != 'state'
+                })
+            continue
+
         if estimate_residual_variance:
             s['sigma2'] = estimate_residual_variance_fct(
                 X_t, xattr, y_t, s, er2=er2
@@ -824,24 +920,38 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     sparse_effect_std = _weighted_sparse_effect(s)
     sparse_effect_raw = sparse_effect_std / xattr['scaled_scale']
     s['sparse_effects'] = sparse_effect_raw
-    if use_ash:
-        # Final unmasked pass (susie_utils.R:2447-2473): one Mr.ASH refit on
-        # residuals net of ALL sparse effects (no confident/uncertain split,
-        # c_hat ignored), warm-started from the last in-loop theta, convtol 1e-4,
-        # output NOT masked. Produces the reported dense theta / tau2 / ash_pi.
-        b_all_fit = compute_Xb(X_t, (s['alpha'] * s['mu']).sum(0),
-                               xattr['scaled_center'], xattr['scaled_scale'])
+    ash_final_pass = False
+    if use_ash and s['converged']:
+        # Final unmasked pass: unlike the pinned source's unweighted subtraction,
+        # use the fitted model's c_hat-weighted sparse mean. This preserves the
+        # identity between the residual fitted here and the reported predictor.
+        b_all_fit = compute_Xb(
+            X_t, sparse_effect_std,
+            xattr['scaled_center'], xattr['scaled_scale'],
+        )
         target_np = (y_t.squeeze() - b_all_fit).detach().cpu().numpy().astype(np.float64)
         beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
-        theta_np, sig, ash_pi, s['tau2'] = susieash.refit(
+        theta_np, sig, ash_pi, ash_tau2 = susieash.refit(
             x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
             sa2_np, 1e-4, estimate_residual_variance)
         s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
                                       dtype=X_t.dtype, device=device)
         theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
         X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])
-        s['theta'] = theta_np      # dense polygenic background, standardized-X units (like mu)
+        ash_final_pass = True
+
+    if use_ash:
+        s['theta'] = theta_t.detach().cpu().numpy()
         s['ash_pi'] = ash_pi
+        s['tau2'] = ash_tau2
+        s['ash_final_pass'] = ash_final_pass
+        for key, value in ash_state.items():
+            s[key] = (
+                value.detach().cpu().numpy()
+                if torch.is_tensor(value) else value
+            )
+        if track_fit:
+            s['ash_policy_history'] = ash_policy_history
 
     total_effect_raw = sparse_effect_raw
     if use_ash:
@@ -862,8 +972,8 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         s['fitted'] = s['fitted'] + X_theta_t
 
     s['fitted'] = s['fitted'].squeeze()
-    # if track_fit:
-    #     s['trace'] = tracking
+    if track_fit:
+        s['trace'] = tracking
 
     s['lbf_variable'] = s['lbf_variable'].cpu().numpy()
 
@@ -881,7 +991,9 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     if coverage is not None:
         s['sets'] = susie_get_cs(s, coverage=coverage, X=X_t, min_abs_corr=min_abs_corr,
                                  median_abs_corr=median_abs_corr, cs_extension_corr=cs_extension_corr)
-        s['pip'] = susie_get_pip(s, prune_by_cs=False, prior_tol=prior_tol).cpu().numpy()
+    s['pip'] = susie_get_pip(
+        s, prune_by_cs=False, prior_tol=prior_tol
+    ).cpu().numpy()
 
     return s
 

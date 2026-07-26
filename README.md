@@ -183,7 +183,7 @@ include these weights. Both constructors accept `c_hat_init` for a warm start,
 and the Poisson prior supports `update_schedule="sequential"` or `"batch"`.
 Leaving `slot_prior=None` preserves the ordinary SuSiE fit.
 
-#### Experimental SuSiE-ash fine-mapping
+#### SuSiE-ash fine-mapping
 
 SuSiE-ash adds a dense Mr.ASH adaptive-shrinkage background to the sparse
 SuSiE effects. It is available through the Python API:
@@ -193,14 +193,18 @@ result = susie.susie(
     estimate_residual_variance=True,
 )
 ```
-The result additionally contains `theta`, `ash_pi`, and `tau2`. Mr.ASH refits
-currently run on the CPU.
+The result additionally contains `theta`, `theta_raw`, `ash_pi`, `tau2`, the
+slot-activity estimates `c_hat` and `C_hat`, and the persistent ash masking
+state. If no `slot_prior` is supplied, the ash mode uses
+`slot_prior_betabinom()` to distinguish sparse slots from the dense
+background.
 
-This is a deliberately limited port of the susieR 2.0 implementation:
-`c_hat` is fixed at 1 and the full three-state masking/collision bookkeeping is
-replaced by a two-state confident/not-confident rule. It should therefore be
-treated as experimental and validated for the intended fine-mapping design,
-not as a claim of complete susieR parity.
+The integration implements the pinned susieR 2.0 diffuse, uncertain, and
+confident states, including collision and oscillation handling, delayed
+exposure, second chances, c_hat-weighted confident-effect subtraction, and the
+final unmasked Mr.ASH pass after convergence. Mr.ASH refits currently run on
+the CPU. The returned raw-scale sparse and dense effects, intercept, fitted
+values, tau2, and residual variance describe the same final predictor.
 
 #### *trans*-QTL mapping
 This mode computes nominal associations between all phenotypes and genotypes. tensorQTL generates sparse output by default (associations with p-value < 1e-5). *cis*-associations are filtered out. The output is in parquet format, with four columns: phenotype_id, variant_id, pval, maf.
