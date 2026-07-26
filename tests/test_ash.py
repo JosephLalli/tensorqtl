@@ -14,6 +14,7 @@ integration on top of it.
 """
 import sys
 import numpy as np
+import pytest
 import torch
 from pathlib import Path
 
@@ -121,6 +122,33 @@ def test_ash_requires_estimate_residual_variance():
         raise AssertionError("expected ValueError for estimate_residual_variance=False")
 
 
+def test_ash_rejects_unsupported_public_option_combinations():
+    """Unknown unmappable-effects values and the incompatible NIG mode fail
+    explicitly instead of silently taking a different fitting path."""
+    Xt, yt, _, _ = _sim()
+    with pytest.raises(ValueError, match='unmappable_effects'):
+        sm.susie(Xt, yt, unmappable_effects='foo')
+    with pytest.raises(ValueError, match='incompatible'):
+        sm.susie(Xt, yt, unmappable_effects='ash', estimate_residual_method='NIG')
+
+
+def test_ash_multi_sweep_fitted_value_decomposition():
+    """After multiple IBSS/Mr.ASH sweeps, the reported fitted values equal the
+    sparse fit plus the final unmasked Mr.ASH background and intercept."""
+    Xt, yt, _, _ = _sim(seed=21, signal_cols=(4, 17), signal_beta=2.0,
+                         bg_scale=0.08, noise=0.4)
+    s = _fit_ash(Xt, yt)
+    assert s['niter'] >= 2
+    fit_device = s['Xr'].device
+    X_fit = Xt.to(fit_device)
+    xattr = sm.get_x_attributes(X_fit, center=True, scale=True)
+    theta_t = torch.as_tensor(s['theta'], dtype=X_fit.dtype, device=fit_device)
+    background = sm.compute_Xb(X_fit, theta_t,
+                               xattr['scaled_center'], xattr['scaled_scale'])
+    expected = s['Xr'].squeeze() + yt.to(fit_device).mean() + background
+    assert torch.allclose(s['fitted'], expected, rtol=1e-5, atol=1e-5)
+
+
 def test_default_path_unaffected_by_unmappable_effects_param():
     """unmappable_effects=None must reproduce the plain susie() fit exactly and
     must not attach ash-only fields."""
@@ -136,7 +164,6 @@ def test_ash_gpu_cpu_equivalence():
     """When CUDA is available, the ash fit must match the CPU fit (PIPs identical,
     theta within tight float tolerance). Skipped if no GPU is visible."""
     if not torch.cuda.is_available():
-        import pytest
         pytest.skip("no CUDA device visible")
     Xt, yt, _, _ = _sim(signal_cols=(10,))
     s_gpu = _fit_ash(Xt.cuda(), yt.cuda())

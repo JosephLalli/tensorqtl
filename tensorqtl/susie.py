@@ -663,12 +663,17 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     n, p = X_t.shape
     mean_y = y_t.mean()
 
+    if unmappable_effects not in {None, 'ash'}:
+        raise ValueError("unmappable_effects must be None or 'ash'.")
+
     # SuSiE-ash (Mr.ASH polygenic background). Between IBSS iterations a Mr.ASH
     # fit absorbs a diffuse polygenic background theta on residuals with confident
     # credible-set variants masked; the SER then sees residuals net of X@theta.
     # Convergence is PIP-based (susieR forces convergence_method="pip" for
     # unmappable-effects models, which have no well-defined ELBO).
     use_ash = unmappable_effects == 'ash'
+    if use_ash and use_nig:
+        raise ValueError("unmappable_effects='ash' is incompatible with estimate_residual_method='NIG'.")
     if use_ash and not estimate_residual_variance:
         # susieR gates the in-loop refit on estimate_residual_variance=TRUE
         # (update_model_variance early-returns otherwise); the shared sigma2 is
