@@ -80,3 +80,39 @@ def test_correlation_extension_adds_tight_proxies():
     )
 
     torch.testing.assert_close(extended[0], torch.tensor([0, 1]))
+
+
+def test_median_only_credible_set_filter_is_available_from_susie():
+    generator = torch.Generator().manual_seed(8)
+    X = torch.randn((80, 5), generator=generator)
+    y = 2 * X[:, 2] + 0.2 * torch.randn(80, generator=generator)
+
+    result = susie.susie(
+        X, y.reshape(-1, 1), L=1, max_iter=30,
+        min_abs_corr=None, median_abs_corr=0.5,
+    )
+
+    assert 'sets' in result
+    assert 'pip' in result
+
+
+def test_objective_helpers_can_reuse_expected_residual_sum_of_squares():
+    generator = torch.Generator().manual_seed(11)
+    X = torch.randn((50, 4), generator=generator)
+    y = X[:, 0] + 0.3 * torch.randn(50, generator=generator)
+    result = susie.susie(X, y.reshape(-1, 1), L=2, max_iter=20)
+
+    device = result['alpha'].device
+    X = X.to(device)
+    y = (y.to(device) - y.mean().to(device)).reshape(-1, 1)
+    xattr = susie.get_x_attributes(X)
+    er2 = susie.get_ER2(X, xattr, y, result)
+
+    torch.testing.assert_close(
+        susie.get_objective(X, xattr, y, result),
+        susie.get_objective(X, xattr, y, result, er2=er2),
+    )
+    torch.testing.assert_close(
+        susie.estimate_residual_variance_fct(X, xattr, y, result),
+        susie.estimate_residual_variance_fct(X, xattr, y, result, er2=er2),
+    )

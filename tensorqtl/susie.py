@@ -287,15 +287,17 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
     return(s)
 
 
-def get_objective(X_t, xattr, Y_t, s):
-    """Get objective function from data and susie fit object"""
-    return eloglik(X_t, xattr, Y_t, s) - (s['KL']).sum()
+def get_objective(X_t, xattr, Y_t, s, er2=None):
+    """Get objective function from data and susie fit object."""
+    return eloglik(X_t, xattr, Y_t, s, er2=er2) - (s['KL']).sum()
 
 
-def eloglik(X_t, xattr, Y_t, s):
-    """expected loglikelihood for a susie fit"""
+def eloglik(X_t, xattr, Y_t, s, er2=None):
+    """Expected log-likelihood for a SuSiE fit."""
     n = X_t.shape[0]
-    return -(n/2) * torch.log(2*np.pi*s['sigma2']) - (1/(2*s['sigma2'])) * get_ER2(X_t, xattr, Y_t, s)
+    if er2 is None:
+        er2 = get_ER2(X_t, xattr, Y_t, s)
+    return -(n/2) * torch.log(2*np.pi*s['sigma2']) - (1/(2*s['sigma2'])) * er2
 
 
 def get_ER2(X_t, xattr, Y_t, s):
@@ -308,9 +310,11 @@ def get_ER2(X_t, xattr, Y_t, s):
     return ((Y_t.squeeze()-s['Xr'])**2).sum() - (Xr_L**2).sum() + (xattr['d'].reshape(-1,1) * postb2.T).sum()
 
 
-def estimate_residual_variance_fct(X_t, xattr, Y_t, s):
+def estimate_residual_variance_fct(X_t, xattr, Y_t, s, er2=None):
     n = X_t.shape[0]
-    return (1/n) * get_ER2(X_t, xattr, Y_t, s)
+    if er2 is None:
+        er2 = get_ER2(X_t, xattr, Y_t, s)
+    return (1/n) * er2
 
 
 def susie_get_pip(res, prune_by_cs=False, prior_tol=1e-9):
@@ -588,13 +592,9 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
                                check_null_threshold=0)
-        # get_ER2 (the dominant O(L*N*p) matmul via compute_MXt) feeds BOTH the
-        # objective and the residual-variance update, and s is unchanged between
-        # them, so compute it once. elbo[i] is get_objective(...) inlined with the
-        # reused er2; sigma2 update is estimate_residual_variance_fct(...) = er2/n.
+        # Both calculations use the same expected residual sum of squares.
         er2 = get_ER2(X_t, xattr, y_t, s)
-        # exactly get_objective(...) with er2 reused (same op order as eloglik):
-        elbo[i] = -(n/2) * torch.log(2*np.pi*s['sigma2']) - (1/(2*s['sigma2'])) * er2 - (s['KL']).sum()
+        elbo[i] = get_objective(X_t, xattr, y_t, s, er2=er2)
         if verbose:
             print(f'Objective (iter {i}): {elbo[i]}')
         if (elbo[i] - elbo[i-1]) < tol:
@@ -602,7 +602,9 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
             break
 
         if estimate_residual_variance:
-            s['sigma2'] = (1/n) * er2  # == estimate_residual_variance_fct(...)
+            s['sigma2'] = estimate_residual_variance_fct(
+                X_t, xattr, y_t, s, er2=er2
+            )
             if s['sigma2'] > residual_variance_upperbound:
                 s['sigma2'] = residual_variance_upperbound
             if verbose:
@@ -629,7 +631,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     s['lbf_variable'] = s['lbf_variable'].cpu().numpy()
 
     # SuSiE CS and PIP
-    if coverage is not None and min_abs_corr is not None:
+    if coverage is not None:
         s['sets'] = susie_get_cs(s, coverage=coverage, X=X_t, min_abs_corr=min_abs_corr,
                                  median_abs_corr=median_abs_corr, cs_extension_corr=cs_extension_corr)
         s['pip'] = susie_get_pip(s, prune_by_cs=False, prior_tol=prior_tol).cpu().numpy()
