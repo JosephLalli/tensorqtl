@@ -149,12 +149,15 @@ def test_gamma_poisson_shape_and_skip_threshold(schedule):
 
 def test_skip_threshold_freezes_the_entire_slot():
     X, y = _data(seed=7, p=12, signals=((2, 1.4),))
-    xattr = susie.get_x_attributes(X)
     state = susie.init_finalize(
         susie.init_setup(
             len(y), X.shape[1], 3, 0.2, y.var(unbiased=True)
         )
     )
+    device = state['alpha'].device
+    X = X.to(device)
+    y = y.to(device)
+    xattr = susie.get_x_attributes(X)
     state['slot_weights'], state['c_hat_state'] = (
         susieslot.initialize_slot_state(
             susie.slot_prior_poisson(C=2), 3,
@@ -182,7 +185,9 @@ def test_weighted_residual_variance_identity_matches_direct_formula():
         slot_prior=susie.slot_prior_betabinom(),
         max_iter=20, coverage=None,
     )
-    centered_y = y - y.mean()
+    device = fit['alpha'].device
+    X = X.to(device)
+    centered_y = (y - y.mean()).to(device)
     xattr = susie.get_x_attributes(X)
     Xr_L = susie.compute_MXt(fit['alpha'] * fit['mu'], X, xattr)
     second_moment = torch.matmul(fit['alpha'] * fit['mu2'], xattr['d'])
@@ -220,7 +225,10 @@ def test_end_to_end_slot_fit_reports_consistent_effects(prior):
     assert fit['c_hat'].shape == (8,)
     assert np.all((fit['c_hat'] >= 0) & (fit['c_hat'] <= 1))
     assert fit['C_hat'] == pytest.approx(fit['c_hat'].sum())
-    prediction = fit['intercept'] + X @ fit['sparse_effects']
+    prediction = (
+        fit['intercept']
+        + X.to(fit['sparse_effects'].device) @ fit['sparse_effects']
+    )
     torch.testing.assert_close(prediction, fit['fitted'])
     active = fit['V'] > 1e-9
     expected_pip = 1 - (
