@@ -1,12 +1,12 @@
-"""Property tests for SuSiE-ash (susie(unmappable_effects="ash")).
+"""Property tests for full SuSiE-ash (susie(unmappable_effects="ash")).
 
 SuSiE-ash adds a Mr.ASH adaptive-shrinkage polygenic background `theta`, refit
 between IBSS iterations on residuals with confident credible-set variants masked
-(port of susieR 2.0). These tests need no R: they check invariants (shapes,
-determinism, GPU==CPU), signal recovery under a polygenic background, that the
-background is actually absorbed by `theta`, and that the default (non-ash) path
-is untouched. Bit-close agreement with susieR's own susie(unmappable_effects=
-"ash") is checked separately in the oracle harness (needs susieR master).
+(port of pinned susieR 2.0). These tests check invariants (shapes, determinism,
+GPU==CPU), signal recovery under a polygenic background, that the background is
+actually absorbed by `theta`, and that the default (non-ash) path is untouched.
+Pinned state-transition and end-to-end agreement are checked in the retained
+oracle harness.
 
 The Mr.ASH coordinate-ascent core is verified numerically identical to susieR's
 compiled caisa_cpp in tests/test_mrash.py; these tests exercise the IBSS
@@ -64,6 +64,10 @@ def test_ash_reports_theta_tau2_and_valid_pi():
     assert np.isclose(s['ash_pi'].sum(), 1.0, atol=1e-8)
     assert (s['ash_pi'] >= 0).all()
     assert float(s['sigma2']) > 0.0
+    assert s['c_hat'].shape == (5,)
+    assert np.all((s['c_hat'] >= 0) & (s['c_hat'] <= 1))
+    assert s['C_hat'] == pytest.approx(s['c_hat'].sum())
+    assert s['ash_final_pass'] is True
 
 
 def test_ash_recovers_sparse_signal_under_polygenic_background():
@@ -127,6 +131,15 @@ def test_ash_rejects_unsupported_public_option_combinations():
     Xt, yt, _, _ = _sim()
     with pytest.raises(ValueError, match='unmappable_effects'):
         sm.susie(Xt, yt, unmappable_effects='foo')
+    with pytest.raises(ValueError, match="estimate_prior_method='EM'"):
+        sm.susie(
+            Xt, yt, unmappable_effects='ash',
+            estimate_prior_method='EM',
+        )
+    with pytest.raises(ValueError, match='intercept=True'):
+        sm.susie(Xt, yt, unmappable_effects='ash', intercept=False)
+    with pytest.raises(ValueError, match='standardize=True'):
+        sm.susie(Xt, yt, unmappable_effects='ash', standardize=False)
 
 
 def test_ash_multi_sweep_fitted_value_decomposition():
@@ -156,11 +169,27 @@ def test_ash_intercept_reconstructs_predictions_on_raw_design():
     fit_device = s['Xr'].device
     X_fit = Xt.to(fit_device)
     xattr = sm.get_x_attributes(X_fit, center=True, scale=True)
-    sparse_t = (s['alpha'] * s['mu']).sum(0)
+    sparse_t = (
+        s['slot_weights'][:, None] * s['alpha'] * s['mu']
+    ).sum(0)
     theta_t = torch.as_tensor(s['theta'], dtype=X_fit.dtype, device=fit_device)
     raw_coef_t = (sparse_t + theta_t) / xattr['scaled_scale']
     expected = X_fit @ raw_coef_t + s['intercept']
     assert torch.allclose(s['fitted'], expected, rtol=1e-5, atol=1e-5)
+
+
+def test_final_unmasked_pass_requires_convergence():
+    """A max-iteration exit retains the last masked ash update, matching the
+    upstream workhorse ordering, and does not claim a final unmasked refit."""
+    Xt, yt, _, _ = _sim(seed=31, n=100, p=20)
+    s = sm.susie(
+        Xt, yt, L=4, unmappable_effects='ash',
+        max_iter=1, tol=0, coverage=None,
+    )
+    assert s['converged'] is False
+    assert s['ash_final_pass'] is False
+    assert s['ash_iter'] == 1
+    assert np.all(s['theta'][s['masked']] == 0)
 
 
 def test_default_path_unaffected_by_unmappable_effects_param():
