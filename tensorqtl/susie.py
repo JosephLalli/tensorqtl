@@ -28,9 +28,9 @@ def get_x_attributes(X_t, center=True, scale=True):
     csd_t[csd_t == 0] = 1
 
     if not center:
-        cm = torch.zeros(X_t.shape[1])
+        cm_t = torch.zeros(X_t.shape[1], dtype=X_t.dtype, device=X_t.device)
     if not scale:
-        csd = torch.ones(X_t.shape[1])
+        csd_t = torch.ones(X_t.shape[1], dtype=X_t.dtype, device=X_t.device)
 
     x_std_t = (X_t - cm_t) / csd_t
     xattr = {
