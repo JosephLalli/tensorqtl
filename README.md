@@ -171,6 +171,25 @@ member fails `min_abs_corr`. `cs_extension_corr` adds near-perfect proxies to a
 credible set before purity is calculated. Both options default to `None`, so
 existing analyses are unchanged.
 
+#### Experimental SuSiE-ash fine-mapping
+
+SuSiE-ash adds a dense Mr.ASH adaptive-shrinkage background to the sparse
+SuSiE effects. It is available through the Python API:
+```
+result = susie.susie(
+    X, y, unmappable_effects='ash',
+    estimate_residual_variance=True,
+)
+```
+The result additionally contains `theta`, `ash_pi`, and `tau2`. Mr.ASH refits
+currently run on the CPU.
+
+This is a deliberately limited port of the susieR 2.0 implementation:
+`c_hat` is fixed at 1 and the full three-state masking/collision bookkeeping is
+replaced by a two-state confident/not-confident rule. It should therefore be
+treated as experimental and validated for the intended fine-mapping design,
+not as a claim of complete susieR parity.
+
 #### *trans*-QTL mapping
 This mode computes nominal associations between all phenotypes and genotypes. tensorQTL generates sparse output by default (associations with p-value < 1e-5). *cis*-associations are filtered out. The output is in parquet format, with four columns: phenotype_id, variant_id, pval, maf.
 In Python:
