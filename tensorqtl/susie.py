@@ -18,6 +18,14 @@ import time
 sys.path.insert(1, os.path.dirname(__file__))
 import genotypeio
 from core import *
+from susieslot import (
+    finish_slot_sweep,
+    initialize_slot_state,
+    slot_prior_betabinom,
+    slot_prior_elbo,
+    slot_prior_poisson,
+    update_slot_weight,
+)
 
 
 def get_x_attributes(X_t, center=True, scale=True):
@@ -238,9 +246,9 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
     # loglik = lbf_model + np.sum(stats.norm.logpdf(Y_t, 0, np.sqrt(residual_variance)))
     loglik = lbf_model + torch.distributions.Normal(0, torch.sqrt(residual_variance)).log_prob(Y_t).sum()
 
-    # if optimize_V == 'EM':
-    V = optimize_prior_variance(optimize_V, betahat, shat2, prior_weights, alpha,
-                                post_mean2, check_null_threshold=check_null_threshold)
+    if optimize_V == 'EM':
+        V = optimize_prior_variance(optimize_V, betahat, shat2, prior_weights, alpha,
+                                    post_mean2, check_null_threshold=check_null_threshold)
 
     return {
         'alpha': alpha,
@@ -263,17 +271,30 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
 
     # Repeat for each effect to update
     L = s['alpha'].shape[0]
+    use_c_hat = 'c_hat_state' in s
 
     for l in range(L):
+        if (
+            use_c_hat
+            and float(s['slot_weights'][l]) < s['c_hat_state']['skip_threshold']
+        ):
+            continue
+
+        slot_weight = float(s['slot_weights'][l]) if use_c_hat else 1.0
+
         # remove lth effect from fitted values
-        s['Xr'] = s['Xr'] - compute_Xb(X_t, (s['alpha'][l,:] * s['mu'][l,:]), xattr['scaled_center'], xattr['scaled_scale'])
+        s['Xr'] = s['Xr'] - slot_weight * compute_Xb(
+            X_t, s['alpha'][l, :] * s['mu'][l, :],
+            xattr['scaled_center'], xattr['scaled_scale']
+        )
 
         # compute residuals
         R_t = Y_t - s['Xr'].reshape(-1,1)
 
         res = single_effect_regression(R_t, X_t, xattr, s['V'][l],
                                        residual_variance=s['sigma2'], prior_weights=s['pi'],
-                                       optimize_V=estimate_prior_method)
+                                       optimize_V=estimate_prior_method,
+                                       check_null_threshold=check_null_threshold)
 
         # update the variational estimate of the posterior mean
         s['mu'][l] = res['mu']
@@ -283,13 +304,28 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
         s['lbf'][l] = res['lbf_model']
         s['lbf_variable'][l] = res['lbf']
         s['KL'][l] = -res['loglik'] + SER_posterior_e_loglik(X_t, xattr, R_t, s['sigma2'], res['alpha']*res['mu'], res['alpha']*res['mu2'])
-        s['Xr'] = s['Xr'] + compute_Xb(X_t, (s['alpha'][l,:] * s['mu'][l,:]), xattr['scaled_center'], xattr['scaled_scale'])
+        effect_fitted = compute_Xb(
+            X_t, s['alpha'][l, :] * s['mu'][l, :],
+            xattr['scaled_center'], xattr['scaled_scale']
+        )
+        s['Xr'] = s['Xr'] + slot_weight * effect_fitted
+
+        if use_c_hat:
+            old_c, new_c = update_slot_weight(s, l)
+            if abs(new_c - old_c) > 1e-15:
+                s['Xr'] = s['Xr'] + (new_c - old_c) * effect_fitted
+
+    if use_c_hat:
+        finish_slot_sweep(s)
     return(s)
 
 
 def get_objective(X_t, xattr, Y_t, s, er2=None):
     """Get objective function from data and susie fit object."""
-    return eloglik(X_t, xattr, Y_t, s, er2=er2) - (s['KL']).sum()
+    objective = eloglik(X_t, xattr, Y_t, s, er2=er2) - (s['KL']).sum()
+    if 'c_hat_state' in s:
+        objective = objective + slot_prior_elbo(s)
+    return objective
 
 
 def eloglik(X_t, xattr, Y_t, s, er2=None):
@@ -307,7 +343,17 @@ def get_ER2(X_t, xattr, Y_t, s):
     """
     Xr_L = compute_MXt(s['alpha']*s['mu'], X_t, xattr)
     postb2 = s['alpha'] * s['mu2']  # posterior second moment
-    return ((Y_t.squeeze()-s['Xr'])**2).sum() - (Xr_L**2).sum() + (xattr['d'].reshape(-1,1) * postb2.T).sum()
+    if 'slot_weights' not in s:
+        return ((Y_t.squeeze()-s['Xr'])**2).sum() - (Xr_L**2).sum() + (xattr['d'].reshape(-1,1) * postb2.T).sum()
+
+    slot_weights = s['slot_weights']
+    per_slot_Eb2 = torch.matmul(postb2, xattr['d'])
+    per_slot_Xb2 = (Xr_L**2).sum(1)
+    return (
+        ((Y_t.squeeze() - s['Xr'])**2).sum()
+        + (slot_weights * per_slot_Eb2
+           - slot_weights**2 * per_slot_Xb2).sum()
+    )
 
 
 def estimate_residual_variance_fct(X_t, xattr, Y_t, s, er2=None):
@@ -328,12 +374,15 @@ def susie_get_pip(res, prune_by_cs=False, prior_tol=1e-9):
     Returns:
       array of posterior inclusion probabilities
     """
+    alpha = res['alpha']
+
     # drop null weight columns
     if res['null_index'] > 0:
-        res['alpha'] = res['alpha'][:, -res['null_index']]
+        keep = torch.arange(alpha.shape[1], device=alpha.device) != res['null_index']
+        alpha = alpha[:, keep]
 
     # drop the single effect with estimated prior zero
-    include_idx = torch.where(res['V'] > 1e-9)[0]
+    include_idx = torch.where(res['V'] > prior_tol)[0]
 
     # only consider variables in reported CS
     # this is not what we do in the SuSiE paper
@@ -347,11 +396,49 @@ def susie_get_pip(res, prune_by_cs=False, prior_tol=1e-9):
 
     # now extract relevant rows from alpha matrix
     if len(include_idx) > 0:
-        res = res['alpha'][include_idx]  # TODO: check dims
+        alpha = alpha[include_idx]
+        slot_weights = res.get('slot_weights')
+        if slot_weights is not None:
+            alpha = alpha * slot_weights[include_idx, None]
     else:
-        res = torch.zeros([1, res['alpha'].shape[1]])
+        alpha = torch.zeros(
+            [1, alpha.shape[1]], dtype=alpha.dtype, device=alpha.device
+        )
 
-    return 1 - (1 - res).prod(0)
+    return 1 - (1 - alpha).prod(0)
+
+
+def _weighted_sparse_effect(s):
+    """Posterior mean sparse effect on the standardized-X scale."""
+    weights = s.get('slot_weights')
+    effects = s['alpha'] * s['mu']
+    if weights is not None:
+        effects = effects * weights[:, None]
+    return effects.sum(0)
+
+
+def _recompute_weighted_fitted(X_t, xattr, s):
+    s['Xr'] = compute_Xb(
+        X_t, _weighted_sparse_effect(s),
+        xattr['scaled_center'], xattr['scaled_scale']
+    )
+
+
+def _pip_state_converged(s, history, tol, cycle_window):
+    """Check the upstream alpha/PIP fixed point and short-cycle criterion."""
+    current_alpha = s['alpha'].detach().clone()
+    current_pip = susie_get_pip(s).detach().clone()
+    max_lag = min(max(1, int(cycle_window)), len(history))
+
+    for lag in range(1, max_lag + 1):
+        old_alpha, old_pip = history[-lag]
+        state_diff = max(
+            float((current_alpha - old_alpha).abs().max()),
+            float((current_pip - old_pip).abs().max()),
+        )
+        if state_diff < tol:
+            return True, state_diff, lag
+    return False, state_diff, None
 
 
 def in_CS(res, coverage=0.9):
@@ -551,11 +638,12 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           estimate_prior_method='EM',
           check_null_threshold=0, prior_tol=1e-9,
           residual_variance_upperbound=np.inf,
-          # s_init=None,
+          slot_prior=None,
           coverage=0.95, min_abs_corr=0.5,
           median_abs_corr=None, cs_extension_corr=None,
           compute_univariate_zscore=False,
           na_rm=False, max_iter=100, tol=0.001,
+          convergence_method='elbo', pip_stall_window=5,
           verbose=False, track_fit=False):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -571,6 +659,15 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     n, p = X_t.shape
     mean_y = y_t.mean()
 
+    if convergence_method not in {'elbo', 'pip'}:
+        raise ValueError("convergence_method must be 'elbo' or 'pip'.")
+    if not isinstance(pip_stall_window, (int, np.integer)) or pip_stall_window < 1:
+        raise ValueError('pip_stall_window must be a positive integer.')
+    if slot_prior is not None:
+        # The ordinary SuSiE ELBO does not define a valid stopping rule once
+        # fitted effects are marginalized by c_hat.
+        convergence_method = 'pip'
+
     if intercept:
         y_t = y_t - mean_y
 
@@ -581,25 +678,55 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
                    residual_variance=residual_variance,
                    prior_weights=prior_weights, null_weight=null_weight)
     s = init_finalize(s)
+    if slot_prior is not None:
+        s['slot_weights'], s['c_hat_state'] = initialize_slot_state(
+            slot_prior, s['alpha'].shape[0], s['alpha'].dtype, s['alpha'].device
+        )
+        _recompute_weighted_fitted(X_t, xattr, s)
 
     # initialize elbo to NA
     elbo = torch.full([max_iter + 1], np.nan).to(device)
     elbo[0] = -np.inf;
     tracking = []
+    state_history = [(
+        s['alpha'].detach().clone(),
+        susie_get_pip(s, prior_tol=prior_tol).detach().clone(),
+    )]
     for i in range(1, max_iter+1):
 
         s = update_each_effect(X_t, xattr, y_t, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
-                               check_null_threshold=0)
+                               check_null_threshold=check_null_threshold)
         # Both calculations use the same expected residual sum of squares.
         er2 = get_ER2(X_t, xattr, y_t, s)
         elbo[i] = get_objective(X_t, xattr, y_t, s, er2=er2)
         if verbose:
             print(f'Objective (iter {i}): {elbo[i]}')
-        if (elbo[i] - elbo[i-1]) < tol:
-            s['converged'] = True
-            break
+        if convergence_method == 'pip':
+            converged, state_diff, cycle_lag = _pip_state_converged(
+                s, state_history, tol, pip_stall_window
+            )
+            if verbose:
+                print(f'max|d(alpha,PIP)| (iter {i}): {state_diff}')
+            if i > 1 and converged:
+                s['converged'] = True
+                s['convergence_reason'] = (
+                    'alpha_pip_fixed_point' if cycle_lag == 1
+                    else f'alpha_pip_cycle_{cycle_lag}'
+                )
+                break
+            state_history.append((
+                s['alpha'].detach().clone(),
+                susie_get_pip(s, prior_tol=prior_tol).detach().clone(),
+            ))
+            if len(state_history) > pip_stall_window:
+                state_history.pop(0)
+        else:
+            elbo_diff = elbo[i] - elbo[i-1]
+            if elbo_diff >= 0 and elbo_diff < tol:
+                s['converged'] = True
+                break
 
         if estimate_residual_variance:
             s['sigma2'] = estimate_residual_variance_fct(
@@ -617,8 +744,13 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         print(f"\n    WARNING: IBSS algorithm did not converge in {max_iter} iterations!")
         s['converged'] = False
 
+    sparse_effect_std = _weighted_sparse_effect(s)
+    sparse_effect_raw = sparse_effect_std / xattr['scaled_scale']
+    s['sparse_effects'] = sparse_effect_raw
     if intercept:
-        s['intercept'] = mean_y - (xattr['scaled_center'] * ((s['alpha']*s['mu']).sum(0)/xattr['scaled_scale'])).sum()
+        s['intercept'] = mean_y - (
+            xattr['scaled_center'] * sparse_effect_raw
+        ).sum()
         s['fitted'] = s['Xr'] + mean_y
     else:
         s['intercept'] = 0
@@ -629,6 +761,16 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     #     s['trace'] = tracking
 
     s['lbf_variable'] = s['lbf_variable'].cpu().numpy()
+
+    if slot_prior is not None:
+        s['c_hat'] = s['slot_weights'].detach().cpu().numpy()
+        s['C_hat'] = float(s['slot_weights'].sum())
+        if s['c_hat_state']['prior_type'] == 'betabinom':
+            s['a_beta'] = s['c_hat_state']['a_beta']
+            s['b_beta'] = s['c_hat_state']['b_beta']
+        else:
+            s['a_g'] = s['c_hat_state']['a_g']
+            s['b_g'] = s['c_hat_state']['b_g']
 
     # SuSiE CS and PIP
     if coverage is not None:

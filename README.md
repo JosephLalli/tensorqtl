@@ -171,6 +171,18 @@ member fails `min_abs_corr`. `cs_extension_corr` adds near-perfect proxies to a
 credible set before purity is calculated. Both options default to `None`, so
 existing analyses are unchanged.
 
+#### SuSiE 2.0 slot activity
+
+The individual-data `susie.susie` interface can estimate whether each
+single-effect slot is active instead of treating all `L` slots as present.
+Pass either `susie.slot_prior_betabinom()` for the collapsed Beta-Binomial
+prior or `susie.slot_prior_poisson(C, nu=8)` for the Gamma-Poisson/Poisson
+prior. The result reports the per-slot posterior activity probabilities in
+`c_hat` and their sum in `C_hat`; fitted values, sparse effects, and PIPs all
+include these weights. Both constructors accept `c_hat_init` for a warm start,
+and the Poisson prior supports `update_schedule="sequential"` or `"batch"`.
+Leaving `slot_prior=None` preserves the ordinary SuSiE fit.
+
 #### *trans*-QTL mapping
 This mode computes nominal associations between all phenotypes and genotypes. tensorQTL generates sparse output by default (associations with p-value < 1e-5). *cis*-associations are filtered out. The output is in parquet format, with four columns: phenotype_id, variant_id, pval, maf.
 In Python:
