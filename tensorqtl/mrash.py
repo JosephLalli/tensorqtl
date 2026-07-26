@@ -136,7 +136,20 @@ def mr_ash(X, y, sa2=None, sigma2=None, pi=None, beta_init=None,
     if sigma2 is None:
         sigma2 = float(((r - r.mean()) ** 2).mean())   # var.n
     if pi is None:
-        pi = np.full(K, 1.0 / K)
+        # port of R/mr.ash.R pi-init: uniform when beta.init is absent, but
+        # data-driven when an explicit beta.init is supplied (even zeros). The
+        # data-driven branch is what SuSiE-ash's first refit relies on
+        # (pi=None, beta.init=theta=0) -- a uniform init there diverges from
+        # susieR. beta.init absent here means beta_init was None above.
+        if beta_init is None:
+            pi = np.full(K, 1.0 / K)
+        else:
+            with np.errstate(divide='ignore'):
+                S = (np.where(w > 0, 1.0 / w, np.inf)[:, None] + sa2[None, :]) * sigma2
+            Phi = -beta[:, None] ** 2 / S / 2.0 - np.log(S) / 2.0   # (p, K)
+            Phi = np.exp(Phi - Phi.max(axis=1, keepdims=True))
+            Phi = Phi / Phi.sum(axis=1, keepdims=True)
+            pi = Phi.mean(axis=0)
     out = _caisa(X, w, sa2, pi, beta, r, float(sigma2), order,
                  max_iter, min_iter, convtol, epstol, method_q, update_pi, update_sigma)
     out['intercept'] = float(y.mean()) if intercept else 0.0

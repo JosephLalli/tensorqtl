@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(1, os.path.dirname(__file__))
 import genotypeio
+import mrash
 from core import *
 
 
@@ -544,6 +545,96 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
             return {'cs':None, 'coverage':coverage}
 
 
+# --- SuSiE-ash (unmappable_effects="ash") helpers -----------------------------
+# Minimal port of susieR 2.0's SuSiE-ash: a Mr.ASH adaptive-shrinkage polygenic
+# background theta, refit between IBSS iterations on residuals with confident
+# credible-set variants masked, so a diffuse polygenic background is absorbed by
+# theta instead of distorting the sparse fit (the paper's claimed 1.5-3x FDR
+# reduction over SuSiE-inf's single Gaussian background). Scope of THIS port:
+#   * c_hat = 1  -- no Beta-Binomial slot-weight marginalization (every susieR
+#     slot weight collapses to 1; the only ash-specific change to the SER
+#     residual is y -> y - X_theta).
+#   * simplified two-state confident/not masking -- the full susieR 3-tier
+#     diffuse/uncertain/confident state machine (with collision/oscillation/
+#     delayed-unmask bookkeeping) is deferred; the fixed point is unchanged on
+#     clean signals, only the tie-breaking on ambiguous effects differs.
+# Refs (oracle susieR master dd9d9ce): R/susie_utils.R
+#   update_ash_variance_components (masking, ~1695-1946),
+#   compute_ash_from_individual_data (the mr.ash call, ~2351-2375),
+#   run_final_ash_pass (~2447-2473); R/individual_data_methods.R residual (~137-155)
+#   and derived-quantity (~435-443) handling. See tensorqtl/mrash.py for the core.
+
+def _ash_pip(alpha_t):
+    """PIP from an L x p alpha matrix: 1 - prod_l (1 - alpha[l])."""
+    return 1.0 - torch.prod(1.0 - alpha_t, dim=0)
+
+
+def _ash_variant_corr(x_std_t, d_t):
+    """Pearson correlation between the columns of the standardized design.
+    x_std columns are mean-centered with sum-of-squares d, so
+    corr[j,k] = (x_std[:,j] . x_std[:,k]) / sqrt(d_j d_k)."""
+    gram = x_std_t.T @ x_std_t
+    denom = torch.sqrt(torch.outer(d_t, d_t)).clamp_min(1e-30)
+    return gram / denom
+
+
+def _ash_confident_mask(alpha_t, mu_t, Xcorr_t, cs_threshold=0.9,
+                        purity_threshold=0.5, active_tol=5e-5,
+                        ld_threshold=0.5, pip_nbhd_thresh=0.4, pip_self_thresh=0.1):
+    """Minimal two-state confident-CS rule. Returns (b_confident [p], mask [p]bool).
+
+    For each single-effect slot l: it is 'active' if its alpha spread >= active_tol
+    (susie_utils.R:1751), and 'confident' if active and its working-CS purity
+    (min |Xcorr| over the cumulative-alpha CS up to cs_threshold) >= purity_threshold
+    (the full 3-tier's CASE 3, with ever_diffuse == 0 since we drop the state
+    machine). b_confident sums alpha*mu over confident slots only (c_hat=1;
+    susie_utils.R:1820). alpha_protected keeps the rows of every ACTIVE slot (the
+    conservative choice: masks a real-but-uncertain effect's neighborhood rather
+    than let theta absorb it); the mask is the union of high-PIP variants and their
+    LD neighborhood (susie_utils.R:1838-1844)."""
+    L, p = alpha_t.shape
+    device = alpha_t.device
+    b_confident = torch.zeros(p, dtype=alpha_t.dtype, device=device)
+    alpha_protected = torch.zeros_like(alpha_t)
+    for l in range(L):
+        a = alpha_t[l]
+        if float(a.max() - a.min()) < active_tol:
+            continue  # inactive slot: neither protected nor confident
+        alpha_protected[l] = a
+        # working CS: cumulative sorted alpha up to cs_threshold (+1, capped at p)
+        order = torch.argsort(a, descending=True)
+        k = min(int((torch.cumsum(a[order], dim=0) < cs_threshold).sum().item()) + 1, p)
+        cs_idx = order[:k]
+        if k <= 1:
+            purity = 1.0
+        else:
+            sub = Xcorr_t[cs_idx][:, cs_idx].abs()
+            iu = torch.triu_indices(k, k, offset=1, device=device)
+            purity = float(sub[iu[0], iu[1]].min().item())
+        if purity >= purity_threshold:
+            b_confident = b_confident + a * mu_t[l]
+    pip_protected = _ash_pip(alpha_protected)
+    ld_adj = (Xcorr_t.abs() > ld_threshold).to(pip_protected.dtype)
+    neighborhood_pip = ld_adj @ pip_protected
+    mask_t = (neighborhood_pip > pip_nbhd_thresh) | (pip_protected > pip_self_thresh)
+    return b_confident, mask_t
+
+
+def _ash_refit(x_std_np, target_np, sigma2, beta_init_np, ash_pi, sa2_np,
+               convtol, update_sigma):
+    """One Mr.ASH refit on the standardized design (mrash.mr_ash is CPU/numpy).
+    Returns (theta_np, sigma2, ash_pi, tau2). Caller masks theta as needed.
+    Mirrors compute_ash_from_individual_data (susie_utils.R:2351-2375):
+    intercept=F, standardize=F, method_q='sigma_dep_q', max.iter=1000."""
+    out = mrash.mr_ash(x_std_np, target_np, sa2=sa2_np, sigma2=float(sigma2),
+                       pi=ash_pi, beta_init=beta_init_np,
+                       update_pi=True, update_sigma=bool(update_sigma),
+                       method_q='sigma_dep_q', intercept=False,
+                       max_iter=1000, min_iter=1, convtol=convtol)
+    tau2 = float((sa2_np * out['pi']).sum() * out['sigma2'])   # susie_utils.R:2373
+    return out['beta'], out['sigma2'], out['pi'], tau2
+
+
 def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           residual_variance=None, prior_weights=None, null_weight=None,
           standardize=True, intercept=True,
@@ -551,6 +642,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           estimate_prior_method='EM',
           check_null_threshold=0, prior_tol=1e-9,
           residual_variance_upperbound=np.inf,
+          unmappable_effects=None,
           # s_init=None,
           coverage=0.95, min_abs_corr=0.5,
           median_abs_corr=None, cs_extension_corr=None,
@@ -571,10 +663,39 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     n, p = X_t.shape
     mean_y = y_t.mean()
 
+    # SuSiE-ash (Mr.ASH polygenic background). Between IBSS iterations a Mr.ASH
+    # fit absorbs a diffuse polygenic background theta on residuals with confident
+    # credible-set variants masked; the SER then sees residuals net of X@theta.
+    # Convergence is PIP-based (susieR forces convergence_method="pip" for
+    # unmappable-effects models, which have no well-defined ELBO).
+    use_ash = unmappable_effects == 'ash'
+    if use_ash and not estimate_residual_variance:
+        # susieR gates the in-loop refit on estimate_residual_variance=TRUE
+        # (update_model_variance early-returns otherwise); the shared sigma2 is
+        # driven by Mr.ASH. Enforce it so theta is actually fit inside the loop.
+        raise ValueError("unmappable_effects='ash' requires estimate_residual_variance=True.")
+
     if intercept:
         y_t = y_t - mean_y
 
     xattr = get_x_attributes(X_t, center=intercept, scale=standardize)
+
+    if use_ash:
+        # Materialize the standardized design x_std = (X - cm)/csd; the SER effects
+        # (mu/alpha) live in these units and compute_Xb(X_t, b) == x_std @ b, so
+        # running Mr.ASH here (intercept=False) puts theta in the same units and
+        # X_theta subtracts consistently. mr.ash is CPU/numpy, so keep a float64
+        # host copy for refits. w = colSums(x_std^2) = xattr['d']; the default sa2
+        # grid matches susieR (median(w), n).
+        x_std_t = (X_t - xattr['scaled_center']) / xattr['scaled_scale']
+        x_std_np = x_std_t.detach().cpu().numpy().astype(np.float64)
+        d_t = xattr['d']
+        sa2_np = mrash.default_sa2_grid(d_t.detach().cpu().numpy().astype(np.float64), n)
+        Xcorr_t = _ash_variant_corr(x_std_t, d_t)
+        theta_t = torch.zeros(p, dtype=X_t.dtype, device=device)
+        X_theta_t = torch.zeros(n, dtype=X_t.dtype, device=device)
+        ash_pi = None
+        ash_iter = 0
 
     # initialize susie fit
     s = init_setup(n, p, L, scaled_prior_variance, y_t.var(unbiased=True),
@@ -588,10 +709,51 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     tracking = []
     for i in range(1, max_iter+1):
 
-        s = update_each_effect(X_t, xattr, y_t, s,
+        if use_ash:
+            prev_alpha = s['alpha'].clone()
+            prev_pip_ash = _ash_pip(prev_alpha)
+
+        # SuSiE-ash: the SER regresses on residuals net of the polygenic
+        # background X@theta (theta is 0 on iter 1). Xr stays sparse-only, so
+        # subtracting X_theta from the target is the only ash-specific change.
+        y_eff = (y_t - X_theta_t.reshape(-1, 1)) if use_ash else y_t
+
+        s = update_each_effect(X_t, xattr, y_eff, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
                                check_null_threshold=0)
+        if use_ash:
+            # PIP-based convergence vs the previous iterate (susie_utils.R:278-338;
+            # unmappable-effects models force convergence_method="pip" -- no ELBO).
+            pip_new = _ash_pip(s['alpha'])
+            state_diff = float(torch.maximum((s['alpha'] - prev_alpha).abs().max(),
+                                             (pip_new - prev_pip_ash).abs().max()))
+            if verbose:
+                print(f'ash state_diff (iter {i}): {state_diff}')
+            if state_diff < tol:
+                s['converged'] = True
+                break   # the final unmasked ash pass runs after the loop
+            # end-of-iteration Mr.ASH refit on (y - X@b_confident), CS variants
+            # masked. ash_iter is bumped first so the first refit uses convtol 1e-3
+            # and later refits 1e-4 (susie_utils.R:1880, incremented at :1719).
+            ash_iter += 1
+            convtol_ash = 1e-3 if ash_iter < 2 else 1e-4
+            b_confident, mask_t = _ash_confident_mask(s['alpha'], s['mu'], Xcorr_t)
+            b_conf_fit = compute_Xb(X_t, b_confident, xattr['scaled_center'], xattr['scaled_scale'])
+            target_np = (y_t.squeeze() - b_conf_fit).detach().cpu().numpy().astype(np.float64)
+            mask_np = mask_t.detach().cpu().numpy()
+            beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
+            beta_init_np[mask_np] = 0.0                       # susie_utils.R:1871
+            theta_np, sig, ash_pi, s['tau2'] = _ash_refit(
+                x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
+                sa2_np, convtol_ash, estimate_residual_variance)
+            theta_np[mask_np] = 0.0                            # susie_utils.R:1889
+            s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
+                                      dtype=X_t.dtype, device=device)  # Mr.ASH drives sigma2
+            theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
+            X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])
+            continue
+
         # Both calculations use the same expected residual sum of squares.
         er2 = get_ER2(X_t, xattr, y_t, s)
         elbo[i] = get_objective(X_t, xattr, y_t, s, er2=er2)
@@ -617,12 +779,35 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         print(f"\n    WARNING: IBSS algorithm did not converge in {max_iter} iterations!")
         s['converged'] = False
 
+    if use_ash:
+        # Final unmasked pass (susie_utils.R:2447-2473): one Mr.ASH refit on
+        # residuals net of ALL sparse effects (no confident/uncertain split,
+        # c_hat ignored), warm-started from the last in-loop theta, convtol 1e-4,
+        # output NOT masked. Produces the reported dense theta / tau2 / ash_pi.
+        b_all_fit = compute_Xb(X_t, (s['alpha'] * s['mu']).sum(0),
+                               xattr['scaled_center'], xattr['scaled_scale'])
+        target_np = (y_t.squeeze() - b_all_fit).detach().cpu().numpy().astype(np.float64)
+        beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
+        theta_np, sig, ash_pi, s['tau2'] = _ash_refit(
+            x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
+            sa2_np, 1e-4, estimate_residual_variance)
+        s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
+                                      dtype=X_t.dtype, device=device)
+        theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
+        X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])
+        s['theta'] = theta_np      # dense polygenic background, standardized-X units (like mu)
+        s['ash_pi'] = ash_pi
+
     if intercept:
         s['intercept'] = mean_y - (xattr['scaled_center'] * ((s['alpha']*s['mu']).sum(0)/xattr['scaled_scale'])).sum()
         s['fitted'] = s['Xr'] + mean_y
     else:
         s['intercept'] = 0
         s['fitted'] = s['Xr']
+
+    if use_ash:
+        # fitted = sparse Xr + polygenic X_theta + intercept (get_fitted, IDM:480-488)
+        s['fitted'] = s['fitted'] + X_theta_t
 
     s['fitted'] = s['fitted'].squeeze()
     # if track_fit:
