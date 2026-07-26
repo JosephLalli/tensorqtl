@@ -63,10 +63,13 @@ def test_beta_binomial_initialization_and_warm_start():
         c_hat, torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.float64)
     )
 
-    with pytest.raises(ValueError, match='length L=3'):
-        susieslot.initialize_slot_state(
-            warm, 3, torch.float64, torch.device('cpu')
-        )
+    # Pinned susieR ignores a mismatched warm start and uses the prior mean.
+    c_hat, _ = susieslot.initialize_slot_state(
+        warm, 3, torch.float64, torch.device('cpu')
+    )
+    torch.testing.assert_close(
+        c_hat, torch.full((3,), 1 / 3, dtype=torch.float64)
+    )
 
 
 def test_gamma_poisson_initialization_uses_upstream_shape_parameters():
@@ -86,6 +89,14 @@ def test_gamma_poisson_initialization_uses_upstream_shape_parameters():
         warm, 4, torch.float64, torch.device('cpu')
     )
     assert warm_state['a_g'] == pytest.approx(9)
+
+    mismatched, mismatched_state = susieslot.initialize_slot_state(
+        warm, 3, torch.float64, torch.device('cpu')
+    )
+    torch.testing.assert_close(
+        mismatched, torch.full((3,), 1.0, dtype=torch.float64)
+    )
+    assert mismatched_state['a_g'] == pytest.approx(11)
 
 
 def test_beta_binomial_coordinate_update_matches_closed_form():
