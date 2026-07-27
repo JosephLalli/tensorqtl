@@ -206,15 +206,80 @@ final unmasked Mr.ASH pass after convergence. Mr.ASH refits currently run on
 the CPU. The returned raw-scale sparse and dense effects, intercept, fitted
 values, tau2, and residual variance describe the same final predictor.
 
-Three individual-data details intentionally preserve one coherent fitted model
-rather than literal behavior at the pinned commit: Mr.ASH receives the
-centered/standardized design used by the sparse effects, the final pass
-subtracts the c_hat-weighted sparse mean, and its residual variance is retained.
-If a finite residual-variance upper bound is active, beta and mixture weights
-are refit with sigma2 fixed at that bound. During in-loop masking, protected
-background coefficients are zeroed before and after Mr.ASH; the pinned
-coordinate solver still visits those variants internally, so this is not hard
-exclusion from optimization.
+##### Model-consistency deviations from the pinned implementation
+
+The state-transition policy is ported from susieR commit
+`dd9d9ce4693573e9dcd1ec8b3df94b63bac467d2`, but four individual-data details
+intentionally differ from its literal bookkeeping. These changes are designed
+to reproduce the intended SuSiE-ash result—a sparse posterior plus a dense
+background that describe one predictor—when the pinned behavior would combine
+incompatible scales or fit states.
+
+1. **Mr.ASH uses the same standardized design as sparse SuSiE.** The pinned
+   individual-data helper passes raw `X` to Mr.ASH, while sparse SER updates use
+   the centering and scaling attributes of `X`. Adding coefficients from those
+   two designs mixes units and can make the result depend on an arbitrary
+   shift or positive rescaling of a raw column. TensorQTL materializes the
+   standardized design for Mr.ASH and converts both sparse and dense effects
+   back to raw-variable units at finalization. This makes mathematically
+   equivalent raw encodings reproduce the same PIPs, `theta`, variance
+   components, and fitted values. The invariant is exercised by
+   `test_ash_is_invariant_to_raw_column_affine_transform` and the raw-design
+   reconstruction tests.
+
+2. **The final residual subtracts the `c_hat`-weighted sparse posterior mean.**
+   With slot activity, the reported sparse contribution is
+   `sum_l c_hat[l] * alpha[l] * mu[l]`. The pinned final pass instead subtracts
+   `sum_l alpha[l] * mu[l]`, as though every slot were certainly active.
+   TensorQTL uses the weighted mean so the residual refit by Mr.ASH is the
+   residual from the same sparse predictor used in PIPs, fitted values, and
+   reported effects. This prevents the dense background from compensating for
+   the inactive fraction of a sparse slot. The weighted fitted/residual
+   identities and final unmasked pass are covered by the slot-prior and ash
+   oracle tests.
+
+3. **The residual variance from the final Mr.ASH pass is retained.** The pinned
+   final pass uses its new `sigma2` when computing `tau2`, but leaves the model's
+   reported `sigma2` at its pre-pass value. TensorQTL stores the final value so
+   `theta`, `ash_pi`, `tau2`, and `sigma2` describe the same optimizer result,
+   with `tau2 = sigma2 * sum_k ash_pi[k] * sa2[k]`. The pinned scalar difference
+   is recorded explicitly in `susier_ash_state_reference.json`; the remaining
+   end-to-end outputs match its standardized individual-data oracle within the
+   declared numerical tolerances.
+
+4. **A binding residual-variance upper bound causes a constrained refit.**
+   Clipping only `sigma2` after optimization leaves `theta`, `ash_pi`, and
+   `tau2` fitted under the unconstrained variance. TensorQTL instead fixes
+   `sigma2` at the bound and refits the coefficients and mixture weights. This
+   reproduces a coherent constrained SuSiE-ash result rather than relabeling an
+   unconstrained fit. `test_finite_sigma2_bound_returns_one_consistent_ash_fit`
+   verifies the bound and the resulting variance-component identity.
+
+These corrections support a **model-consistent individual-data port** claim,
+not a bit-for-bit reproduction of every value or API exposed by susieR.
+
+##### Scope and implementation limits
+
+- **Masking protects the retained background; it is not hard coordinate
+  exclusion.** Protected coefficients are zeroed before and after an in-loop
+  Mr.ASH refit, matching the pinned policy, but the coordinate solver still
+  visits those variants internally. Therefore they can affect intermediate
+  residual, mixture-weight, and variance updates even though their returned
+  dense coefficients are zero.
+- **The parity claim is individual-data only.** TensorQTL does not yet expose
+  corresponding sufficient-statistics/RSS implementations for SuSiE-ash or all
+  other SuSiE derivatives. The archived `ash_filter_archived` policy and
+  unsupported fixed-variance/option combinations are also outside this claim.
+- **Oracle coverage targets the supported integration.** Retained susieR
+  fixtures exactly exercise the diffuse, uncertain, and confident states,
+  collisions, oscillation reversal, delayed exposure, second chance,
+  `c_hat`-weighted subtraction, and a representative standardized
+  end-to-end fit. They do not directly enumerate every standalone Mr.ASH
+  mixture grid, initialization, or solver option.
+- **Mr.ASH refits remain CPU-based.** Sparse SuSiE and the masking policy can
+  run on a PyTorch GPU, but the Mr.ASH Gauss-Seidel coordinate sweep is a
+  sequential NumPy implementation. CPU/GPU agreement is tested, but
+  SuSiE-ash should not be described as fully GPU-accelerated.
 
 #### *trans*-QTL mapping
 This mode computes nominal associations between all phenotypes and genotypes. tensorQTL generates sparse output by default (associations with p-value < 1e-5). *cis*-associations are filtered out. The output is in parquet format, with four columns: phenotype_id, variant_id, pval, maf.
