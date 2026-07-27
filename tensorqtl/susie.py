@@ -409,6 +409,12 @@ def get_purity(pos, X, Xcorr, squared=False, n=100):
         return np.ones(3)
     else:
         if len(pos) > n:
+            # FIXME(reproducibility): this samples from NumPy's global RNG
+            # without a caller-controlled seed. For credible sets larger than
+            # n, identical fits can therefore receive different purity values
+            # and cross the CS inclusion threshold on different runs. Replace
+            # this with exact or membership-deterministic sampling and add a
+            # regression test for RNG-state-independent CS inclusion.
             pos = np.random.choice(pos, n, replace=False)
         if Xcorr is None:
             X_sub = X[:, pos]
