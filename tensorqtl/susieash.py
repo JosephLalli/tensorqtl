@@ -62,7 +62,10 @@ def initialize_state(L, p, device):
 def _working_cs_purity(alpha_l, Xcorr_t, cs_threshold):
     """Return sentinel and minimum-correlation purity of the working CS."""
     p = alpha_l.numel()
-    order = torch.argsort(alpha_l, descending=True)
+    # R's order(..., decreasing=TRUE) preserves index order for ties. The
+    # default torch sort is unstable (and chooses different tied sentinels on
+    # CPU and CUDA), so request stability explicitly.
+    order = torch.argsort(alpha_l, descending=True, stable=True)
     cs_size = min(
         int((torch.cumsum(alpha_l[order], 0) <= cs_threshold).sum()) + 1,
         p,
@@ -84,9 +87,12 @@ def update_policy(alpha_t, mu_t, Xcorr_t, c_hat_t, state,
     """Advance the full diffuse/uncertain/confident ash masking policy.
 
     The returned ``b_confident`` is on the standardized-X coefficient scale and
-    includes slot activity weights. ``mask`` identifies variants excluded from
-    the corresponding in-loop Mr.ASH refit. Persistent arrays in ``state`` are
-    updated in place and also returned for convenience.
+    includes slot activity weights. ``mask`` identifies variants whose retained
+    background coefficients are zeroed before and after the corresponding
+    in-loop Mr.ASH refit. As in the pinned implementation, the coordinate solver
+    still visits all variants internally; this is protection of the retained
+    background, not hard exclusion from optimization. Persistent arrays in
+    ``state`` are updated in place and also returned for convenience.
     """
     diffuse_purity = 0.1
     cs_threshold = 0.9
@@ -281,22 +287,36 @@ def update_policy(alpha_t, mu_t, Xcorr_t, c_hat_t, state,
 
 
 def refit(x_std_np, target_np, sigma2, beta_init_np, ash_pi, sa2_np,
-          convtol, update_sigma):
+          convtol, update_sigma, sigma2_upperbound=np.inf):
     """Refit the Mr.ASH background on a standardized design."""
-    out = mrash.mr_ash(
-        x_std_np,
-        target_np,
-        sa2=sa2_np,
-        sigma2=float(sigma2),
-        pi=ash_pi,
-        beta_init=np.asarray(beta_init_np, dtype=np.float64).copy(),
-        update_pi=True,
-        update_sigma=bool(update_sigma),
-        method_q='sigma_dep_q',
-        intercept=False,
-        max_iter=1000,
-        min_iter=1,
-        convtol=convtol,
-    )
+    upperbound = float(sigma2_upperbound)
+    if upperbound <= 0 or np.isnan(upperbound):
+        raise ValueError('sigma2_upperbound must be positive.')
+
+    def run(fixed_sigma2, beta_init, pi_init, update):
+        return mrash.mr_ash(
+            x_std_np,
+            target_np,
+            sa2=sa2_np,
+            sigma2=float(fixed_sigma2),
+            pi=pi_init,
+            beta_init=np.asarray(beta_init, dtype=np.float64).copy(),
+            update_pi=True,
+            update_sigma=bool(update),
+            method_q='sigma_dep_q',
+            intercept=False,
+            max_iter=1000,
+            min_iter=1,
+            convtol=convtol,
+        )
+
+    out = run(sigma2, beta_init_np, ash_pi, update_sigma)
+    if out['sigma2'] > upperbound:
+        # A post-hoc sigma2 clip leaves beta, pi, and tau2 describing the
+        # unconstrained fit. Re-optimize beta/pi with sigma2 fixed at the bound
+        # so every returned variance component belongs to one constrained fit.
+        out = run(
+            upperbound, out['beta'], out['pi'], False
+        )
     tau2 = float((sa2_np * out['pi']).sum() * out['sigma2'])
     return out['beta'], out['sigma2'], out['pi'], tau2

@@ -206,6 +206,16 @@ final unmasked Mr.ASH pass after convergence. Mr.ASH refits currently run on
 the CPU. The returned raw-scale sparse and dense effects, intercept, fitted
 values, tau2, and residual variance describe the same final predictor.
 
+Three individual-data details intentionally preserve one coherent fitted model
+rather than literal behavior at the pinned commit: Mr.ASH receives the
+centered/standardized design used by the sparse effects, the final pass
+subtracts the c_hat-weighted sparse mean, and its residual variance is retained.
+If a finite residual-variance upper bound is active, beta and mixture weights
+are refit with sigma2 fixed at that bound. During in-loop masking, protected
+background coefficients are zeroed before and after Mr.ASH; the pinned
+coordinate solver still visits those variants internally, so this is not hard
+exclusion from optimization.
+
 #### *trans*-QTL mapping
 This mode computes nominal associations between all phenotypes and genotypes. tensorQTL generates sparse output by default (associations with p-value < 1e-5). *cis*-associations are filtered out. The output is in parquet format, with four columns: phenotype_id, variant_id, pval, maf.
 In Python:
