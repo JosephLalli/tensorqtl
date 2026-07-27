@@ -186,6 +186,27 @@ SuSiE cis discoveries, robustly to SuSiE's own (often miscalibrated) PIPs.
    design, not the generator.
 6. **Hardest-LD-corner test** — crank simulator LD strength + rare-variant
    fraction to r^2>0.5, MAF<0.01 to stress the Gaussian generator.
+7. **Make credible-set purity deterministic for sets larger than 100.**
+   `tensorqtl.susie.get_purity` currently calls unseeded
+   `np.random.choice(pos, 100, replace=False)`. Consequently, identical fitted
+   models can produce different purity estimates and, for sets near
+   `min_abs_corr`, different CS inclusion decisions. This was observed as a
+   reproducibility risk during the BrainVar SuSiE-ash analysis; about 3% of
+   retained CSs in the inspected snapshot exceeded 100 variants. Fix with exact
+   purity or a deterministic subset derived from CS membership, not ambient
+   NumPy RNG state. Acceptance test: repeated `susie_get_cs` calls for the same
+   fit must return identical purity and CS membership after changing the global
+   RNG state.
+8. **Rerun the BrainVar GRCh38/T2T SuSiE-ash analysis after implementation
+   completion.** The 5,760-eGene long run under
+   `/mnt/ssd/lalli/nf_stage/brainvar_eqtl_e36_susieash_20260726T053405Z`
+   used TensorQTL commit `6e6b866`, which is now understood to contain an
+   incomplete SuSiE-ash implementation. Its credible sets and the downstream
+   LiftoverIndel, annotation, and visualization artifacts are provisional
+   historical outputs, not a validation target or final scientific result.
+   After the implementation and deterministic purity fix are completed and
+   tested, rerun both reference builds from the frozen K4/E36 inputs and compare
+   the regenerated outputs against this snapshot.
 
 ---
 
