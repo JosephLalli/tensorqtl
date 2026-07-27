@@ -9,8 +9,9 @@
 # caisa_cpp) and its R wrapper (R/mr.ash.R). The coordinate sweep is inherently
 # sequential (Gauss-Seidel: each beta_j update mutates the residual seen by the
 # next coordinate), so it stays a CPU loop; K (mixture components) and the
-# per-coordinate work are vectorized. Verified numerically identical to
-# susieR:::caisa_cpp (see tests / verification harness).
+# per-coordinate work are vectorized. The checked-in pinned end-to-end oracle
+# exercises this core; focused arithmetic and solver properties live in
+# tests/test_mrash.py.
 import numpy as np
 
 

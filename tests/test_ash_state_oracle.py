@@ -156,6 +156,21 @@ def test_oracle_cases_activate_required_ash_branches():
     assert delayed[1]['ever_unmasked'][-1] is True
 
 
+def test_working_cs_ties_follow_r_index_order_on_cpu_and_cuda():
+    """R keeps input order for alpha ties; policy sentinels must do the same."""
+    p = 20
+    alpha = torch.full((p,), 1 / p, dtype=torch.float64)
+    Xcorr = torch.eye(p, dtype=torch.float64)
+    sentinel, _ = susieash._working_cs_purity(alpha, Xcorr, 0.9)
+    assert sentinel == 0
+
+    if torch.cuda.is_available():
+        sentinel_gpu, _ = susieash._working_cs_purity(
+            alpha.cuda(), Xcorr.cuda(), 0.9
+        )
+        assert sentinel_gpu == 0
+
+
 def test_end_to_end_ash_matches_pinned_standardized_design_oracle():
     fixture = _fixture()['end_to_end']
     X = torch.tensor(fixture['input']['X'], dtype=torch.float32)
@@ -228,7 +243,9 @@ def test_end_to_end_ash_matches_pinned_standardized_design_oracle():
         atol=2e-6,
     )
     total_raw = fit['sparse_effects'] + fit['theta_raw']
-    reconstructed = X @ total_raw + fit['intercept']
+    reconstructed = (
+        X.to(total_raw.device) @ total_raw + fit['intercept']
+    )
     torch.testing.assert_close(
         reconstructed, fit['fitted'], rtol=3e-5, atol=2e-6
     )

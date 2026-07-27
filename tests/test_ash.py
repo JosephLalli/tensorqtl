@@ -16,6 +16,7 @@ import sys
 import numpy as np
 import pytest
 import torch
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tensorqtl'))
@@ -26,6 +27,7 @@ if 'pandas_plink' not in sys.modules:
     _f.read_plink1_bin = lambda *a, **k: None
     sys.modules['pandas_plink'] = _f
 import susie as sm
+import susieash
 
 torch.set_num_threads(2)
 
@@ -178,6 +180,169 @@ def test_ash_intercept_reconstructs_predictions_on_raw_design():
     assert torch.allclose(s['fitted'], expected, rtol=1e-5, atol=1e-5)
 
 
+def test_ash_is_invariant_to_raw_column_affine_transform():
+    """Positive rescaling and shifting of raw columns preserves the fitted model."""
+    Xt, yt, _, _ = _sim(
+        seed=23, n=120, p=24, signal_cols=(4, 17),
+        signal_beta=1.8, bg_scale=0.06, noise=0.5,
+    )
+    scales = torch.logspace(-1, 1, Xt.shape[1])
+    shifts = torch.linspace(-7, 9, Xt.shape[1])
+    transformed = Xt * scales + shifts
+
+    base = _fit_ash(Xt, yt, coverage=None)
+    affine = _fit_ash(transformed, yt, coverage=None)
+
+    np.testing.assert_allclose(base['pip'], affine['pip'], rtol=2e-4, atol=2e-5)
+    np.testing.assert_allclose(
+        base['theta'], affine['theta'], rtol=3e-4, atol=3e-5
+    )
+    torch.testing.assert_close(
+        base['fitted'].cpu(), affine['fitted'].cpu(),
+        rtol=3e-4, atol=3e-5,
+    )
+    assert float(base['sigma2']) == pytest.approx(
+        float(affine['sigma2']), rel=3e-4, abs=3e-5
+    )
+    assert base['tau2'] == pytest.approx(
+        affine['tau2'], rel=3e-4, abs=3e-6
+    )
+
+
+def test_ash_forwards_check_null_threshold(monkeypatch):
+    """The public null threshold reaches every ash-mode SER update."""
+    Xt, yt, _, _ = _sim(seed=24, n=60, p=10, signal_cols=(3,))
+    seen = []
+    original = sm.single_effect_regression
+
+    def recording_ser(*args, **kwargs):
+        seen.append(kwargs['check_null_threshold'])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sm, 'single_effect_regression', recording_ser)
+    sm.susie(
+        Xt, yt, L=3, unmappable_effects='ash', coverage=None,
+        check_null_threshold=2.5, max_iter=1,
+    )
+    assert seen and set(seen) == {2.5}
+
+
+def test_short_cycle_averages_alpha_and_reconciles_sparse_fitted():
+    """Cycle convergence follows pinned alpha averaging without stale Xr."""
+    X = torch.tensor([
+        [0.0, 1.0, 2.0],
+        [1.0, 0.0, 1.0],
+        [2.0, 1.0, 0.0],
+        [3.0, 2.0, 1.0],
+    ])
+    xattr = sm.get_x_attributes(X)
+    current = torch.tensor([
+        [0.80, 0.15, 0.05],
+        [0.10, 0.20, 0.70],
+    ])
+    other = torch.tensor([
+        [0.10, 0.80, 0.10],
+        [0.65, 0.25, 0.10],
+    ])
+    state = {
+        'alpha': current.clone(),
+        'mu': torch.tensor([
+            [0.5, -0.3, 0.2],
+            [-0.4, 0.1, 0.6],
+        ]),
+        'V': torch.ones(2),
+        'null_index': 0,
+        'slot_weights': torch.tensor([0.4, 0.8]),
+    }
+
+    def snapshot(alpha):
+        tmp = dict(state)
+        tmp['alpha'] = alpha
+        return alpha.clone(), sm.susie_get_pip(tmp).clone()
+
+    history = [snapshot(current), snapshot(other)]
+    converged, _, lag = sm._pip_state_converged(
+        state, history, tol=1e-8, cycle_window=5
+    )
+    assert converged and lag == 2
+    expected_alpha = (current + other) / 2
+    torch.testing.assert_close(state['alpha'], expected_alpha)
+
+    sm._recompute_weighted_fitted(X, xattr, state)
+    expected_effect = (
+        state['slot_weights'][:, None] * expected_alpha * state['mu']
+    ).sum(0)
+    expected_fitted = sm.compute_Xb(
+        X, expected_effect,
+        xattr['scaled_center'], xattr['scaled_scale'],
+    )
+    torch.testing.assert_close(state['Xr'], expected_fitted)
+
+
+def test_finite_sigma2_bound_returns_one_consistent_ash_fit():
+    """A bound constrains the refit, and tau2 uses that same residual variance."""
+    Xt, yt, _, _ = _sim(
+        seed=25, n=100, p=20, signal_cols=(3,),
+        signal_beta=1.0, bg_scale=0.08, noise=1.0,
+    )
+    bound = 0.05
+    fit = sm.susie(
+        Xt, yt, L=4, unmappable_effects='ash', coverage=None,
+        max_iter=50, residual_variance_upperbound=bound,
+    )
+    assert float(fit['sigma2']) <= bound * (1 + 1e-6)
+
+    fit_device = fit['alpha'].device
+    xattr = sm.get_x_attributes(Xt.to(fit_device))
+    sa2 = susieash.default_sa2_grid(
+        xattr['d'].detach().cpu().numpy().astype(np.float64),
+        Xt.shape[0],
+    )
+    expected_tau2 = float(
+        (sa2 * fit['ash_pi']).sum() * float(fit['sigma2'])
+    )
+    assert fit['tau2'] == pytest.approx(expected_tau2, rel=2e-6, abs=1e-10)
+
+
+def test_refit_reoptimizes_beta_and_pi_at_sigma2_bound(monkeypatch):
+    """A hit bound triggers a fixed-sigma polish instead of a post-hoc clip."""
+    calls = []
+
+    def fake_mr_ash(X, y, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                'beta': np.array([0.4, -0.2]),
+                'sigma2': 2.0,
+                'pi': np.array([0.25, 0.75]),
+            }
+        assert kwargs['sigma2'] == 0.5
+        assert kwargs['update_sigma'] is False
+        np.testing.assert_array_equal(
+            kwargs['beta_init'], np.array([0.4, -0.2])
+        )
+        np.testing.assert_array_equal(
+            kwargs['pi'], np.array([0.25, 0.75])
+        )
+        return {
+            'beta': np.array([0.3, -0.1]),
+            'sigma2': 0.5,
+            'pi': np.array([0.4, 0.6]),
+        }
+
+    monkeypatch.setattr(susieash.mrash, 'mr_ash', fake_mr_ash)
+    beta, sigma2, pi, tau2 = susieash.refit(
+        np.eye(2), np.ones(2), 1.0, np.zeros(2), None,
+        np.array([0.0, 1.0]), 1e-4, True,
+        sigma2_upperbound=0.5,
+    )
+    assert len(calls) == 2
+    np.testing.assert_array_equal(beta, np.array([0.3, -0.1]))
+    np.testing.assert_array_equal(pi, np.array([0.4, 0.6]))
+    assert sigma2 == 0.5
+    assert tau2 == pytest.approx(0.3)
+
+
 def test_final_unmasked_pass_requires_convergence():
     """A max-iteration exit retains the last masked ash update, matching the
     upstream workhorse ordering, and does not claim a final unmasked refit."""
@@ -209,7 +374,13 @@ def test_ash_gpu_cpu_equivalence():
     if not torch.cuda.is_available():
         pytest.skip("no CUDA device visible")
     Xt, yt, _, _ = _sim(signal_cols=(10,))
+    with mock.patch.object(torch.cuda, 'is_available', return_value=False):
+        s_cpu = _fit_ash(Xt.cpu(), yt.cpu())
     s_gpu = _fit_ash(Xt.cuda(), yt.cuda())
-    s_cpu = _fit_ash(Xt.cpu(), yt.cpu())
     assert np.abs(s_gpu['pip'] - s_cpu['pip']).max() < 1e-5
     assert np.abs(s_gpu['theta'] - s_cpu['theta']).max() < 1e-4
+    assert np.array_equal(s_gpu['masked'], s_cpu['masked'])
+    torch.testing.assert_close(
+        s_gpu['fitted'].cpu(), s_cpu['fitted'].cpu(),
+        rtol=1e-5, atol=1e-5,
+    )

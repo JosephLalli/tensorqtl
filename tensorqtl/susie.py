@@ -478,10 +478,15 @@ def _recompute_weighted_fitted(X_t, xattr, s):
     )
 
 
-def _pip_state_converged(s, history, tol, cycle_window):
-    """Check the upstream alpha/PIP fixed point and short-cycle criterion."""
+def _pip_state_converged(s, history, tol, cycle_window, prior_tol=1e-9):
+    """Check the upstream alpha/PIP fixed point and short-cycle criterion.
+
+    The pinned implementation averages alpha across a detected short cycle.
+    This helper applies that transition in place; the caller is responsible for
+    reconciling fitted values with the averaged alpha.
+    """
     current_alpha = s['alpha'].detach().clone()
-    current_pip = susie_get_pip(s).detach().clone()
+    current_pip = susie_get_pip(s, prior_tol=prior_tol).detach().clone()
     max_lag = min(max(1, int(cycle_window)), len(history))
 
     for lag in range(1, max_lag + 1):
@@ -491,6 +496,12 @@ def _pip_state_converged(s, history, tol, cycle_window):
             float((current_pip - old_pip).abs().max()),
         )
         if state_diff < tol:
+            if lag > 1:
+                cycle_alpha = [
+                    alpha for alpha, _ in history[-(lag - 1):]
+                ]
+                cycle_alpha.append(current_alpha)
+                s['alpha'] = torch.stack(cycle_alpha).mean(0)
             return True, state_diff, lag
     return False, state_diff, None
 
@@ -815,9 +826,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         s = update_each_effect(X_t, xattr, y_eff, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
-                               check_null_threshold=(
-                                   0 if use_ash else check_null_threshold
-                               ))
+                               check_null_threshold=check_null_threshold)
         # Both calculations use the same expected residual sum of squares.
         objective_y = y_eff if use_ash else y_t
         er2 = get_ER2(X_t, xattr, objective_y, s)
@@ -828,11 +837,17 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
             print(f'Objective (iter {i}): {elbo[i]}')
         if convergence_method == 'pip':
             converged, state_diff, cycle_lag = _pip_state_converged(
-                s, state_history, tol, pip_stall_window
+                s, state_history, tol, pip_stall_window,
+                prior_tol=prior_tol,
             )
             if verbose:
                 print(f'max|d(alpha,PIP)| (iter {i}): {state_diff}')
             if i > 1 and converged:
+                if cycle_lag > 1:
+                    # Pinned susieR averages alpha across the detected cycle but
+                    # leaves Xr on the last phase. Recompute the weighted sparse
+                    # predictor so alpha, sparse_effects, and fitted agree.
+                    _recompute_weighted_fitted(X_t, xattr, s)
                 s['converged'] = True
                 s['convergence_reason'] = (
                     'alpha_pip_fixed_point' if cycle_lag == 1
@@ -877,10 +892,11 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
             theta_np, sig, ash_pi, ash_tau2 = susieash.refit(
                 x_std_np, target_np, float(s['sigma2']),
                 beta_init_np, ash_pi, sa2_np, convtol_ash, True,
+                sigma2_upperbound=residual_variance_upperbound,
             )
             theta_np[mask_np] = 0.0
             s['sigma2'] = torch.as_tensor(
-                min(sig, float(residual_variance_upperbound)),
+                sig,
                 dtype=X_t.dtype, device=device,
             )
             theta_t = torch.as_tensor(
@@ -933,8 +949,9 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         beta_init_np = theta_t.detach().cpu().numpy().astype(np.float64)
         theta_np, sig, ash_pi, ash_tau2 = susieash.refit(
             x_std_np, target_np, float(s['sigma2']), beta_init_np, ash_pi,
-            sa2_np, 1e-4, estimate_residual_variance)
-        s['sigma2'] = torch.as_tensor(min(sig, float(residual_variance_upperbound)),
+            sa2_np, 1e-4, estimate_residual_variance,
+            sigma2_upperbound=residual_variance_upperbound)
+        s['sigma2'] = torch.as_tensor(sig,
                                       dtype=X_t.dtype, device=device)
         theta_t = torch.as_tensor(theta_np, dtype=X_t.dtype, device=device)
         X_theta_t = compute_Xb(X_t, theta_t, xattr['scaled_center'], xattr['scaled_scale'])

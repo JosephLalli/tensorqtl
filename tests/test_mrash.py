@@ -2,14 +2,10 @@
 Regression tests for tensorqtl.mrash (Mr.ASH coordinate-ascent solver), the
 polygenic-background fitter used by SuSiE-ash.
 
-The core `_caisa` was verified numerically IDENTICAL to susieR 0.16.5's compiled
-caisa_cpp (max |dbeta| 4.4e-16, |dsigma2| 1.7e-16, |dpi| 1.1e-14) over 5 cases
-(n=60..120, p=30..80) run to full convergence, spanning method_q in
-{sigma_dep_q, sigma_indep_q}, update_pi/update_sigma on/off, and null / single /
-polygenic signals. NOTE the susieR oracle only computes correctly with a single
-BLAS preloaded (LD_PRELOAD=<one openblas>) -- the test R install has a dual-BLAS
-conflict that silently corrupts the compiled Armadillo. The checks below are the
-dependency-light property tests (no R needed).
+The checked-in pinned end-to-end SuSiE-ash fixture exercises `_caisa` through
+the individual-data integration. The checks below are dependency-light
+arithmetic and solver property tests (no R needed); they are not by themselves
+a multi-case direct oracle for every Mr.ASH option.
 """
 import sys
 import numpy as np
