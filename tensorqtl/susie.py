@@ -878,12 +878,12 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
 def _batched_compute_Xb(X_t, b_t, cm_t, csd_t):
     """Compute standardized-design fitted values for a batch of genes.
 
-    X_t has shape (B, n, p), b_t/cm_t/csd_t have shape (B, p), and the
+    X_t has shape (B, p, n), b_t/cm_t/csd_t have shape (B, p), and the
     returned tensor has shape (B, n).
     """
     scaled_b_t = b_t / csd_t
     return (
-        torch.bmm(X_t, scaled_b_t.unsqueeze(2)).squeeze(2)
+        torch.bmm(scaled_b_t.unsqueeze(1), X_t).squeeze(1)
         - (cm_t * scaled_b_t).sum(1, keepdim=True)
     )
 
@@ -891,7 +891,7 @@ def _batched_compute_Xb(X_t, b_t, cm_t, csd_t):
 def _batched_compute_Xty(X_t, y_t, cm_t, csd_t):
     """Compute cstd(X).T @ y independently for every gene in a batch."""
     return (
-        torch.bmm(X_t.transpose(1, 2), y_t.unsqueeze(2)).squeeze(2) / csd_t
+        torch.bmm(X_t, y_t.unsqueeze(2)).squeeze(2) / csd_t
         - (cm_t / csd_t) * y_t.sum(1, keepdim=True)
     )
 
@@ -899,7 +899,7 @@ def _batched_compute_Xty(X_t, y_t, cm_t, csd_t):
 def _batched_compute_MXt(M_t, X_t, cm_t, csd_t):
     """Compute M @ cstd(X).T independently for every gene."""
     return (
-        torch.bmm(M_t, (X_t / csd_t[:, None, :]).transpose(1, 2))
+        torch.bmm(M_t, X_t / csd_t[:, :, None])
         - torch.bmm(
             M_t, (cm_t / csd_t).unsqueeze(2)
         )
@@ -1062,6 +1062,52 @@ def _normalize_batched_prior_weights(
     return pi_t
 
 
+def _pack_variant_major_bucket(X_list, y_list, batch_indices):
+    """Pack heterogeneous designs into one variant-major tensor.
+
+    CPU inputs are first coalesced in pinned memory so a CUDA bucket requires
+    one host-to-device transfer rather than one allocation and transfer per
+    gene. GPU inputs are copied directly into the destination tensor.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float32
+    variant_counts = [X_list[i].shape[1] for i in batch_indices]
+    n = X_list[batch_indices[0]].shape[0]
+    p_max = max(variant_counts)
+    B = len(batch_indices)
+    all_cpu = all(
+        X_list[i].device.type == "cpu"
+        and torch.as_tensor(y_list[i]).device.type == "cpu"
+        for i in batch_indices
+    )
+    use_pinned_staging = device.type == "cuda" and all_cpu
+    staging_device = torch.device("cpu") if use_pinned_staging else device
+    X_t = torch.zeros(
+        (B, p_max, n),
+        dtype=dtype,
+        device=staging_device,
+        pin_memory=use_pinned_staging,
+    )
+    y_t = torch.empty(
+        (B, n),
+        dtype=dtype,
+        device=staging_device,
+        pin_memory=use_pinned_staging,
+    )
+    for local_i, (global_i, p) in enumerate(
+            zip(batch_indices, variant_counts)):
+        X_source_t = X_list[global_i]
+        y_source_t = torch.as_tensor(y_list[global_i]).reshape(-1)
+        X_t[local_i, :p].copy_(X_source_t.transpose(0, 1))
+        y_t[local_i].copy_(y_source_t)
+    staging_tensors = None
+    if use_pinned_staging:
+        staging_tensors = (X_t, y_t)
+        X_t = X_t.to(device=device, non_blocking=True)
+        y_t = y_t.to(device=device, non_blocking=True)
+    return X_t, y_t, variant_counts, staging_tensors
+
+
 def _susie_batched_bucket(
         X_list, y_list, batch_indices, L, scaled_prior_variance,
         residual_variance, prior_weights, standardize, intercept,
@@ -1069,44 +1115,59 @@ def _susie_batched_bucket(
         check_null_threshold, prior_tol, residual_variance_upperbound,
         coverage, min_abs_corr, median_abs_corr, cs_extension_corr,
         max_iter, tol, verbose):
-    """Fit one size bucket, vectorizing all arithmetic across genes."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float32
-    bucket_X = [
-        torch.as_tensor(X_list[i], dtype=dtype, device=device)
-        for i in batch_indices
-    ]
-    bucket_y = [
-        torch.as_tensor(y_list[i], dtype=dtype, device=device).reshape(-1)
-        for i in batch_indices
-    ]
-    n = bucket_X[0].shape[0]
-    variant_counts = [X_t.shape[1] for X_t in bucket_X]
-    p_max = max(variant_counts)
-    B = len(bucket_X)
-
-    X_t = torch.zeros((B, n, p_max), dtype=dtype, device=device)
-    y_t = torch.stack(bucket_y)
-    variant_mask_t = torch.zeros(
-        (B, p_max), dtype=torch.bool, device=device
+    """Pack and fit one heterogeneous size bucket."""
+    X_t, y_t, variant_counts, staging_tensors = (
+        _pack_variant_major_bucket(X_list, y_list, batch_indices)
     )
-    for i, (X_gene_t, p) in enumerate(zip(bucket_X, variant_counts)):
-        X_t[i, :, :p] = X_gene_t
-        variant_mask_t[i, :p] = True
+    results = _susie_batched_packed_bucket(
+        X_t, y_t, variant_counts, batch_indices, len(X_list),
+        L, scaled_prior_variance, residual_variance, prior_weights,
+        standardize, intercept, estimate_residual_variance,
+        estimate_prior_method, check_null_threshold, prior_tol,
+        residual_variance_upperbound, coverage, min_abs_corr,
+        median_abs_corr, cs_extension_corr, max_iter, tol, verbose,
+    )
+    # Keep asynchronous pinned-memory sources alive until all work using their
+    # transfers has completed. The result unpacking above synchronizes on CUDA.
+    del staging_tensors
+    return results
+
+
+def _susie_batched_packed_bucket(
+        X_t, y_t, variant_counts, batch_indices, n_genes,
+        L, scaled_prior_variance, residual_variance, prior_weights,
+        standardize, intercept, estimate_residual_variance,
+        estimate_prior_method, check_null_threshold, prior_tol,
+        residual_variance_upperbound, coverage, min_abs_corr,
+        median_abs_corr, cs_extension_corr, max_iter, tol, verbose):
+    """Fit one already-packed ``(genes, variants, samples)`` bucket."""
+    device = X_t.device
+    dtype = X_t.dtype
+    n = X_t.shape[2]
+    p_max = X_t.shape[1]
+    B = X_t.shape[0]
+    variant_count_t = torch.as_tensor(
+        variant_counts, dtype=torch.long, device=device
+    )
+    variant_mask_t = (
+        torch.arange(p_max, device=device)[None, :]
+        < variant_count_t[:, None]
+    )
 
     mean_y_t = y_t.mean(1)
     if intercept:
         y_t = y_t - mean_y_t[:, None]
 
-    cm_t = X_t.mean(1)
-    csd_t = X_t.std(1, unbiased=True)
+    cm_t = X_t.mean(2)
+    csd_t = X_t.std(2, unbiased=True)
     csd_t = torch.where(csd_t == 0, torch.ones_like(csd_t), csd_t)
     if not intercept:
         cm_t = torch.zeros_like(cm_t)
     if not standardize:
         csd_t = torch.ones_like(csd_t)
-    x_std_t = (X_t - cm_t[:, None, :]) / csd_t[:, None, :]
-    d_t = x_std_t.square().sum(1)
+    x_std_t = (X_t - cm_t[:, :, None]) / csd_t[:, :, None]
+    d_t = x_std_t.square().sum(2)
+    del x_std_t
     # Padded columns have d=0, which would produce 0/0 in SER before masking.
     d_t = torch.where(variant_mask_t, d_t, torch.ones_like(d_t))
     if bool(((d_t == 0) & variant_mask_t).any()):
@@ -1126,7 +1187,7 @@ def _susie_batched_bucket(
 
     pi_t = _normalize_batched_prior_weights(
         prior_weights, batch_indices, variant_counts, p_max, dtype, device,
-        len(X_list),
+        n_genes,
     )
     effect_counts = [min(L, p) for p in variant_counts]
     L_max = max(effect_counts)
@@ -1311,7 +1372,8 @@ def _susie_batched_bucket(
         }
         if coverage is not None:
             result['sets'] = susie_get_cs(
-                result, coverage=coverage, X=bucket_X[local_i],
+                result, coverage=coverage,
+                X=X_t[local_i, :p].transpose(0, 1),
                 min_abs_corr=min_abs_corr,
                 median_abs_corr=median_abs_corr,
                 cs_extension_corr=cs_extension_corr,
@@ -1321,6 +1383,133 @@ def _susie_batched_bucket(
         ).detach().cpu().numpy()
         results.append((global_i, result))
     return results
+
+
+def _validate_batched_options(
+        n_genes, L, scaled_prior_variance, residual_variance,
+        estimate_prior_variance, estimate_prior_method, max_iter):
+    """Validate options shared by list-backed and prepacked batched fits."""
+    if not isinstance(L, (int, np.integer)) or L < 1:
+        raise ValueError('L must be a positive integer.')
+    if scaled_prior_variance < 0:
+        raise ValueError('Scaled prior variance must be positive.')
+    if not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
+        raise ValueError('max_iter must be a positive integer.')
+    if estimate_prior_method is None:
+        estimate_prior_method = 'EM'
+    if not estimate_prior_variance:
+        estimate_prior_method = 'none'
+    if estimate_prior_method not in {'none', 'EM'}:
+        raise ValueError(
+            "susie_batched currently supports estimate_prior_method "
+            "'none' or 'EM'."
+        )
+    if residual_variance is not None:
+        residual_variance_t = torch.as_tensor(residual_variance)
+        if residual_variance_t.ndim > 1 or (
+            residual_variance_t.ndim == 1
+            and residual_variance_t.numel() != n_genes
+        ):
+            raise ValueError(
+                'residual_variance must be scalar or one value per gene.'
+            )
+    return estimate_prior_method
+
+
+def susie_batched_packed(
+        X_t, y_t, variant_counts, L=10, scaled_prior_variance=0.2,
+        residual_variance=None, prior_weights=None,
+        standardize=True, intercept=True,
+        estimate_residual_variance=True, estimate_prior_variance=True,
+        estimate_prior_method=None, check_null_threshold=0,
+        prior_tol=1e-9, residual_variance_upperbound=np.inf,
+        coverage=0.95, min_abs_corr=0.5,
+        median_abs_corr=None, cs_extension_corr=None,
+        max_iter=100, tol=0.001, verbose=False):
+    """Fit one prepacked variant-major batch of ordinary SuSiE models.
+
+    ``X_t`` must be a contiguous ``(genes, variants, samples)`` float32
+    tensor. ``variant_counts[i]`` gives the number of leading, non-padding
+    variants for gene ``i``; all remaining rows in that gene's capacity must
+    be zero. ``y_t`` has shape ``(genes, samples)`` or
+    ``(genes, samples, 1)`` and must already be on the same device.
+
+    This interface lets data loaders own and reuse their staging/workspace
+    buffers. Use :func:`susie_batched` for heterogeneous sample-major lists.
+    """
+    if not torch.is_tensor(X_t) or X_t.ndim != 3:
+        raise ValueError(
+            'X_t must be a three-dimensional variant-major tensor '
+            'with shape (genes, variants, samples).'
+        )
+    if X_t.dtype != torch.float32:
+        raise ValueError('X_t must have dtype torch.float32.')
+    if not X_t.is_contiguous():
+        raise ValueError('X_t must be contiguous in variant-major layout.')
+    if not torch.is_tensor(y_t) or y_t.ndim not in {2, 3}:
+        raise ValueError(
+            'y_t must have shape (genes, samples) or (genes, samples, 1).'
+        )
+    if y_t.ndim == 3:
+        if y_t.shape[2] != 1:
+            raise ValueError(
+                'y_t must have shape (genes, samples) or '
+                '(genes, samples, 1).'
+            )
+        y_t = y_t.squeeze(2)
+    if y_t.dtype != torch.float32:
+        raise ValueError('y_t must have dtype torch.float32.')
+    if y_t.device != X_t.device:
+        raise ValueError('X_t and y_t must be on the same device.')
+
+    B, p_capacity, n = X_t.shape
+    if B == 0:
+        return []
+    if p_capacity < 1 or n < 1:
+        raise ValueError('Packed batches require variants and samples.')
+    if y_t.shape != (B, n):
+        raise ValueError(
+            'X_t and y_t must have matching gene and sample dimensions.'
+        )
+    counts_t = torch.as_tensor(variant_counts)
+    if counts_t.ndim != 1 or counts_t.numel() != B:
+        raise ValueError('variant_counts must provide one value per gene.')
+    if counts_t.dtype == torch.bool or counts_t.is_floating_point():
+        raise ValueError('variant_counts must contain integers.')
+    counts = [int(value) for value in counts_t.detach().cpu().tolist()]
+    if any(p < 1 or p > p_capacity for p in counts):
+        raise ValueError(
+            'Each variant count must be between one and X_t.shape[1].'
+        )
+    if not bool(torch.isfinite(y_t).all()):
+        raise ValueError('susie_batched inputs must be finite.')
+    count_device_t = torch.as_tensor(
+        counts, dtype=torch.long, device=X_t.device
+    )
+    active_t = (
+        torch.arange(p_capacity, device=X_t.device)[None, :]
+        < count_device_t[:, None]
+    )
+    if bool((~torch.isfinite(X_t) & active_t[:, :, None]).any()):
+        raise ValueError('susie_batched inputs must be finite.')
+    if bool(((X_t != 0) & ~active_t[:, :, None]).any()):
+        raise ValueError('Packed variant padding must be zero.')
+
+    estimate_prior_method = _validate_batched_options(
+        B, L, scaled_prior_variance, residual_variance,
+        estimate_prior_variance, estimate_prior_method, max_iter,
+    )
+    batch_indices = list(range(B))
+    indexed_results = _susie_batched_packed_bucket(
+        X_t, y_t, counts, batch_indices, B, L, scaled_prior_variance,
+        residual_variance, prior_weights, standardize, intercept,
+        estimate_residual_variance, estimate_prior_method,
+        check_null_threshold, prior_tol, residual_variance_upperbound,
+        coverage, min_abs_corr, median_abs_corr, cs_extension_corr,
+        max_iter, tol, verbose,
+    )
+    indexed_results.sort(key=lambda item: item[0])
+    return [result for _, result in indexed_results]
 
 
 def susie_batched(
@@ -1365,30 +1554,10 @@ def susie_batched(
         return []
     if len(y_list) != n_genes:
         raise ValueError('X_list and y_list must contain the same number of genes.')
-    if not isinstance(L, (int, np.integer)) or L < 1:
-        raise ValueError('L must be a positive integer.')
-    if scaled_prior_variance < 0:
-        raise ValueError('Scaled prior variance must be positive.')
-    if not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
-        raise ValueError('max_iter must be a positive integer.')
-    if estimate_prior_method is None:
-        estimate_prior_method = 'EM'
-    if not estimate_prior_variance:
-        estimate_prior_method = 'none'
-    if estimate_prior_method not in {'none', 'EM'}:
-        raise ValueError(
-            "susie_batched currently supports estimate_prior_method "
-            "'none' or 'EM'."
-        )
-    if residual_variance is not None:
-        residual_variance_t = torch.as_tensor(residual_variance)
-        if residual_variance_t.ndim > 1 or (
-            residual_variance_t.ndim == 1
-            and residual_variance_t.numel() != n_genes
-        ):
-            raise ValueError(
-                'residual_variance must be scalar or one value per gene.'
-            )
+    estimate_prior_method = _validate_batched_options(
+        n_genes, L, scaled_prior_variance, residual_variance,
+        estimate_prior_variance, estimate_prior_method, max_iter,
+    )
 
     sample_count = None
     variant_counts = []

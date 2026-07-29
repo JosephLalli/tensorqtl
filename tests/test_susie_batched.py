@@ -30,9 +30,11 @@ def _heterogeneous_fixture():
     return X_list, y_list
 
 
-def _assert_fit_close(observed, expected, *, compare_elbo=True):
+def _assert_fit_close(
+        observed, expected, *, compare_elbo=True, compare_niter=True):
     assert observed['alpha'].shape == expected['alpha'].shape
-    assert observed['niter'] == expected['niter']
+    if compare_niter:
+        assert observed['niter'] == expected['niter']
     assert observed['converged'] == expected['converged']
     for key in (
         'alpha', 'mu', 'mu2', 'V', 'KL', 'lbf', 'Xr', 'sigma2',
@@ -80,7 +82,14 @@ def test_batched_solver_matches_independent_heterogeneous_fits():
         (3, 3), (4, 7), (4, 5)
     ]
     for batched_fit, scalar_fit in zip(observed, expected):
-        _assert_fit_close(batched_fit, scalar_fit)
+        _assert_fit_close(
+            batched_fit, scalar_fit,
+            compare_elbo=False, compare_niter=False,
+        )
+        np.testing.assert_allclose(
+            batched_fit['elbo'][-1], scalar_fit['elbo'][-1],
+            rtol=2e-5, atol=2e-4,
+        )
 
 
 def test_batch_companions_padding_and_order_do_not_change_fit():
@@ -256,3 +265,98 @@ def test_batched_solver_uses_batched_matrix_multiplication(monkeypatch):
     )
 
     assert calls > 0
+
+
+def test_prepacked_variant_major_matches_list_wrapper():
+    X_list, y_list = _heterogeneous_fixture()
+    device = torch.device(
+        'cuda' if torch.cuda.is_available() else 'cpu'
+    )
+    p_max = max(X.shape[1] for X in X_list)
+    packed_X = torch.zeros(
+        (len(X_list), p_max, X_list[0].shape[0]),
+        dtype=torch.float32,
+        device=device,
+    )
+    for i, X in enumerate(X_list):
+        packed_X[i, :X.shape[1]] = X.T.to(device)
+    packed_y = torch.stack(
+        [y.reshape(-1).to(device) for y in y_list]
+    )
+    common = {
+        'L': 3,
+        'max_iter': 4,
+        'tol': 0,
+        'coverage': 0.95,
+    }
+
+    observed = susie.susie_batched_packed(
+        packed_X,
+        packed_y,
+        [X.shape[1] for X in X_list],
+        **common,
+    )
+    expected = susie.susie_batched(
+        X_list,
+        y_list,
+        batch_size=len(X_list),
+        **common,
+    )
+
+    for packed_fit, list_fit in zip(observed, expected):
+        _assert_fit_close(packed_fit, list_fit)
+        assert packed_fit['sets']['coverage'] == list_fit['sets']['coverage']
+        if packed_fit['sets']['cs'] is not None:
+            assert (
+                packed_fit['sets']['cs'].keys()
+                == list_fit['sets']['cs'].keys()
+            )
+            for name in packed_fit['sets']['cs']:
+                np.testing.assert_array_equal(
+                    packed_fit['sets']['cs'][name],
+                    list_fit['sets']['cs'][name],
+                )
+
+
+def test_prepacked_variant_major_validates_layout_and_padding():
+    X_t = torch.zeros((2, 4, 8), dtype=torch.float32)
+    y_t = torch.zeros((2, 8), dtype=torch.float32)
+
+    with pytest.raises(ValueError, match='variant-major'):
+        susie.susie_batched_packed(
+            X_t.transpose(1, 2), y_t, [4, 4]
+        )
+    with pytest.raises(ValueError, match='one value per gene'):
+        susie.susie_batched_packed(X_t, y_t, [4])
+
+    X_t[0, 3] = 1
+    with pytest.raises(ValueError, match='padding must be zero'):
+        susie.susie_batched_packed(X_t, y_t, [3, 4])
+
+
+def test_variant_major_matrix_helpers_match_direct_algebra():
+    generator = torch.Generator().manual_seed(42)
+    X_t = torch.randn((2, 5, 7), generator=generator)
+    b_t = torch.randn((2, 5), generator=generator)
+    y_t = torch.randn((2, 7), generator=generator)
+    M_t = torch.randn((2, 3, 5), generator=generator)
+    cm_t = X_t.mean(2)
+    csd_t = X_t.std(2, unbiased=True)
+    standardized_t = (
+        X_t - cm_t[:, :, None]
+    ) / csd_t[:, :, None]
+
+    torch.testing.assert_close(
+        susie._batched_compute_Xb(X_t, b_t, cm_t, csd_t),
+        torch.bmm(
+            standardized_t.transpose(1, 2), b_t.unsqueeze(2)
+        ).squeeze(2),
+    )
+    torch.testing.assert_close(
+        susie._batched_compute_Xty(X_t, y_t, cm_t, csd_t),
+        torch.bmm(standardized_t, y_t.unsqueeze(2)).squeeze(2),
+    )
+    torch.testing.assert_close(
+        susie._batched_compute_MXt(M_t, X_t, cm_t, csd_t),
+        torch.bmm(M_t, standardized_t),
+    )

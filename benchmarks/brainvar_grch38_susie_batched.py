@@ -199,25 +199,83 @@ def select_scalar_baseline(
     return set(candidates.iloc[np.unique(positions)]["phenotype_id"].astype(str))
 
 
+def load_contig_variant_index(
+    variant_table: Path,
+    contigs: tuple[str, ...],
+    genotypes_module,
+) -> dict[str, pd.DataFrame] | None:
+    """Load and validate the variant TSV once, indexed by contig.
+
+    The immutable BrainVar adapter exposes the row-aware metadata loader used
+    by its per-contig API.  Keeping the source-row column here lets its
+    Parquet reader retain the same order and bounds validation for each
+    contig, without rereading the large TSV for every chromosome.
+    """
+    if not all(
+        hasattr(genotypes_module, name)
+        for name in ("variant_rows_for_contigs", "read_genotype_row_subset")
+    ):
+        return None
+    variants = genotypes_module.variant_rows_for_contigs(variant_table, contigs)
+    return {
+        contig: variants.loc[variants["chrom"].eq(contig)].copy()
+        for contig in contigs
+    }
+
+
+def build_genotype_contig_slice_from_index(
+    genotype_parquet: Path,
+    contig: str,
+    contig_variant_index: dict[str, pd.DataFrame],
+    genotypes_module,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    """Use cached row-aware metadata with the adapter's Parquet loader."""
+    variants = contig_variant_index[contig]
+    if variants.empty:
+        raise ValueError(f"No cached variants found on {contig}")
+    genotypes = genotypes_module.read_genotype_row_subset(
+        genotype_parquet,
+        variants,
+    )
+    output_variants = variants.drop(columns="source_row")
+    summary = {
+        "contigs": [contig],
+        "variants": int(len(output_variants)),
+        "samples": int(genotypes.shape[1]),
+        "source_first_row": int(variants["source_row"].iloc[0]),
+        "source_last_row": int(variants["source_row"].iloc[-1]),
+    }
+    return genotypes, output_variants, summary
+
+
 def prepare_contig(
     contig: str,
     egenes: pd.DataFrame,
     phenotypes: pd.DataFrame,
     positions: pd.DataFrame,
-    covariates: pd.DataFrame,
     arguments: argparse.Namespace,
-    core,
     finemapping,
     genotypes_module,
+    contig_variant_index: dict[str, pd.DataFrame] | None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     load_started = time.perf_counter()
-    genotype_table, variants, genotype_summary = (
-        genotypes_module.build_genotype_contig_slice(
-            arguments.genotype_parquet,
-            arguments.variant_table,
-            contigs=(contig,),
+    if contig_variant_index is None:
+        genotype_table, variants, genotype_summary = (
+            genotypes_module.build_genotype_contig_slice(
+                arguments.genotype_parquet,
+                arguments.variant_table,
+                contigs=(contig,),
+            )
         )
-    )
+    else:
+        genotype_table, variants, genotype_summary = (
+            build_genotype_contig_slice_from_index(
+                arguments.genotype_parquet,
+                contig,
+                contig_variant_index,
+                genotypes_module,
+            )
+        )
     genotype_table = genotypes_module.normalize_missing_dosages(genotype_table)
     genotype_table = map_genotype_samples(
         genotype_table,
@@ -226,20 +284,21 @@ def prepare_contig(
     )
     load_seconds = time.perf_counter() - load_started
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    covariate_t = torch.as_tensor(
-        covariates.to_numpy(dtype=np.float32),
-        dtype=torch.float32,
-        device=device,
+    prep_started = time.perf_counter()
+    genotype_values, retained_ids, _ = (
+        finemapping.impute_and_filter_genotypes(
+            genotype_table,
+            maf_threshold=arguments.maf_threshold,
+        )
     )
-    residualizer = core.Residualizer(covariate_t)
-    phenotype_ids = egenes["phenotype_id"].astype(str).tolist()
-
-    variant_positions = variants["pos"].to_numpy(dtype=np.int64)
+    retained_index = pd.Index(retained_ids.astype(str))
+    filtered_variants = variants.loc[retained_index]
+    if not filtered_variants.index.equals(retained_index):
+        raise ValueError(f"{contig} MAF filtering changed variant order")
+    variant_positions = filtered_variants["pos"].to_numpy(dtype=np.int64)
     if np.any(np.diff(variant_positions) < 0):
         raise ValueError(f"{contig} variants are not position sorted")
     prepared: list[dict[str, object]] = []
-    prep_started = time.perf_counter()
     for egene in egenes.itertuples(index=False):
         phenotype_id = str(egene.phenotype_id)
         lower, upper = locus_bounds(
@@ -248,41 +307,30 @@ def prepare_contig(
         )
         left = int(np.searchsorted(variant_positions, lower, side="left"))
         right = int(np.searchsorted(variant_positions, upper, side="right"))
-        locus = genotype_table.iloc[left:right]
-        locus_values, variant_ids, _ = finemapping.impute_and_filter_genotypes(
-            locus,
-            maf_threshold=arguments.maf_threshold,
-        )
-        genotype_t = torch.as_tensor(
-            locus_values,
-            dtype=torch.float32,
-            device=device,
-        )
-        X_t = residualizer.transform(genotype_t).T.contiguous().detach().cpu()
-        outcome_t = torch.as_tensor(
-            phenotypes.loc[phenotype_id].to_numpy(dtype=np.float32),
-            dtype=torch.float32,
-            device=device,
-        ).reshape(1, -1)
-        y_t = residualizer.transform(outcome_t).T.detach().cpu()
+        if right <= left:
+            raise ValueError(
+                f"{phenotype_id} has no variants after MAF filtering"
+            )
         prepared.append(
             {
                 "phenotype_id": phenotype_id,
-                "X": X_t,
-                "y": y_t,
-                "variant_count": int(len(variant_ids)),
+                # NumPy slicing produces a view into the one filtered contig
+                # matrix. Overlapping cis windows therefore share storage
+                # until they are packed into a GPU batch.
+                "X_variant_major": genotype_values[left:right],
+                "y": phenotypes.loc[phenotype_id].to_numpy(
+                    dtype=np.float32,
+                ),
+                "variant_count": right - left,
             }
         )
-    synchronize()
     prep_seconds = time.perf_counter() - prep_started
     prepared.sort(key=lambda job: (int(job["variant_count"]), str(job["phenotype_id"])))
-    del genotype_table, variants, residualizer, covariate_t
+    del genotype_table, variants, filtered_variants
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     return prepared, {
         "genotype_load_seconds": load_seconds,
-        "residualization_seconds": prep_seconds,
+        "genotype_preparation_seconds": prep_seconds,
         "genotype_slice": genotype_summary,
     }
 
@@ -291,15 +339,26 @@ def fit_contig(
     contig: str,
     jobs: list[dict[str, object]],
     scalar_ids: set[str],
+    covariates: pd.DataFrame,
     arguments: argparse.Namespace,
     susie,
+    core,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
     rows: list[dict[str, object]] = []
     comparisons: list[dict[str, object]] = []
     fit_seconds = 0.0
+    packing_seconds = 0.0
+    residualization_seconds = 0.0
     scalar_seconds = 0.0
     peak_memory = 0
     batch_count = 0
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    covariate_t = torch.as_tensor(
+        covariates.to_numpy(dtype=np.float32),
+        dtype=torch.float32,
+        device=device,
+    )
+    residualizer = core.Residualizer(covariate_t)
     fit_options = {
         "L": arguments.effects,
         "coverage": arguments.coverage,
@@ -314,19 +373,63 @@ def fit_contig(
     }
     for start in range(0, len(jobs), arguments.batch_size):
         batch = jobs[start : start + arguments.batch_size]
-        p_max = max(int(job["variant_count"]) for job in batch)
+        variant_counts = [int(job["variant_count"]) for job in batch]
+        p_max = max(variant_counts)
+        sample_count = int(np.asarray(batch[0]["y"]).size)
         padding_efficiency = (
-            sum(int(job["variant_count"]) for job in batch)
+            sum(variant_counts)
             / (len(batch) * p_max)
+        )
+        use_pinned_staging = device.type == "cuda"
+        packing_started = time.perf_counter()
+        host_X = torch.zeros(
+            (len(batch), p_max, sample_count),
+            dtype=torch.float32,
+            pin_memory=use_pinned_staging,
+        )
+        host_y = torch.empty(
+            (len(batch), sample_count),
+            dtype=torch.float32,
+            pin_memory=use_pinned_staging,
+        )
+        for local_i, (job, p) in enumerate(zip(batch, variant_counts)):
+            source_X = torch.from_numpy(
+                np.asarray(job["X_variant_major"])
+            )
+            if source_X.shape != (p, sample_count):
+                raise ValueError(
+                    f"{job['phenotype_id']} has an invalid genotype view"
+                )
+            host_X[local_i, :p].copy_(source_X)
+            host_y[local_i].copy_(
+                torch.from_numpy(np.asarray(job["y"], dtype=np.float32))
+            )
+        packed_X = host_X.to(device=device, non_blocking=use_pinned_staging)
+        packed_y = host_y.to(device=device, non_blocking=use_pinned_staging)
+        synchronize()
+        packing_seconds += time.perf_counter() - packing_started
+
+        residualization_started = time.perf_counter()
+        for local_i, p in enumerate(variant_counts):
+            packed_X[local_i, :p].copy_(
+                residualizer.transform(packed_X[local_i, :p])
+            )
+            outcome_t = packed_y[local_i].reshape(1, -1)
+            packed_y[local_i].copy_(
+                residualizer.transform(outcome_t).reshape(-1)
+            )
+        synchronize()
+        residualization_seconds += (
+            time.perf_counter() - residualization_started
         )
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         synchronize()
         started = time.perf_counter()
-        fits = susie.susie_batched(
-            [job["X"] for job in batch],
-            [job["y"] for job in batch],
-            batch_size=len(batch),
+        fits = susie.susie_batched_packed(
+            packed_X,
+            packed_y,
+            variant_counts,
             **fit_options,
         )
         synchronize()
@@ -336,7 +439,8 @@ def fit_contig(
         if torch.cuda.is_available():
             peak_memory = max(peak_memory, torch.cuda.max_memory_allocated())
 
-        for job, fit in zip(batch, fits):
+        for local_i, (job, fit, p) in enumerate(
+                zip(batch, fits, variant_counts)):
             phenotype_id = str(job["phenotype_id"])
             rows.append(
                 {
@@ -364,7 +468,11 @@ def fit_contig(
                 continue
             synchronize()
             scalar_started = time.perf_counter()
-            scalar = susie.susie(job["X"], job["y"], **fit_options)
+            scalar = susie.susie(
+                packed_X[local_i, :p].transpose(0, 1).contiguous(),
+                packed_y[local_i].reshape(-1, 1),
+                **fit_options,
+            )
             synchronize()
             elapsed = time.perf_counter() - scalar_started
             scalar_seconds += elapsed
@@ -396,13 +504,16 @@ def fit_contig(
                 }
             )
             del scalar
-        del fits
+        del fits, packed_X, packed_y, host_X, host_y
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+    del residualizer, covariate_t
     return pd.DataFrame(rows), pd.DataFrame(comparisons), {
         "batches": batch_count,
         "fit_seconds": fit_seconds,
+        "packing_seconds": packing_seconds,
+        "residualization_seconds": residualization_seconds,
         "scalar_baseline_seconds": scalar_seconds,
         "peak_gpu_memory_bytes": peak_memory,
     }
@@ -471,6 +582,11 @@ def main() -> int:
         selected_ids,
         arguments.scalar_baseline_genes,
     )
+    active_contigs = tuple(
+        contig
+        for contig in arguments.contigs
+        if (positions["chr"].eq(contig) & positions.index.isin(selected_ids)).any()
+    )
 
     run_configuration = {
         "status": "running",
@@ -528,6 +644,8 @@ def main() -> int:
 
     wall_started = time.perf_counter()
     contig_manifests = []
+    contig_variant_index: dict[str, pd.DataFrame] | None = None
+    variant_index_load_seconds = 0.0
     for contig in arguments.contigs:
         contig_ids = positions.index[
             positions["chr"].eq(contig)
@@ -557,24 +675,38 @@ def main() -> int:
             print(f"SKIP {contig} complete", flush=True)
             continue
         print(f"PREPARE {contig} genes={len(contig_egenes)}", flush=True)
+        if contig_variant_index is None:
+            index_started = time.perf_counter()
+            contig_variant_index = load_contig_variant_index(
+                arguments.variant_table,
+                active_contigs,
+                genotypes_module,
+            )
+            variant_index_load_seconds = time.perf_counter() - index_started
         prepared, prep_metrics = prepare_contig(
             contig,
             contig_egenes,
             phenotypes,
             positions,
-            covariates,
             arguments,
-            core,
             finemapping,
             genotypes_module,
+            contig_variant_index,
         )
+        prep_metrics["genotype_load_seconds"] += variant_index_load_seconds
+        prep_metrics["variant_index_load_seconds"] = (
+            variant_index_load_seconds
+        )
+        variant_index_load_seconds = 0.0
         print(f"FIT {contig} genes={len(prepared)}", flush=True)
         gene_table, comparison_table, fit_metrics = fit_contig(
             contig,
             prepared,
             scalar_ids,
+            covariates,
             arguments,
             susie,
+            core,
         )
         atomic_parquet(gene_table, contig_output / "gene_results.parquet")
         atomic_parquet(
@@ -628,6 +760,13 @@ def main() -> int:
     total_prep_seconds = sum(
         float(item["residualization_seconds"]) for item in contig_manifests
     )
+    total_packing_seconds = sum(
+        float(item.get("packing_seconds", 0)) for item in contig_manifests
+    )
+    total_genotype_preparation_seconds = sum(
+        float(item.get("genotype_preparation_seconds", 0))
+        for item in contig_manifests
+    )
     estimated_scalar_seconds = (
         total_scalar_seconds / len(comparisons) * len(genes)
         if len(comparisons)
@@ -647,6 +786,10 @@ def main() -> int:
         },
         "timing": {
             "genotype_load_seconds": total_load_seconds,
+            "genotype_preparation_seconds": (
+                total_genotype_preparation_seconds
+            ),
+            "packing_seconds": total_packing_seconds,
             "residualization_seconds": total_prep_seconds,
             "batched_fit_seconds": total_fit_seconds,
             "batched_genes_per_second": len(genes) / total_fit_seconds,

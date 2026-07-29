@@ -214,9 +214,27 @@ results = susie.susie_batched(
 ```
 Each design is `samples x variants`; all genes must have the same samples but
 may have different numbers of variants. The solver sorts genes by window size,
-forms padded buckets, masks padded variants and unavailable effect slots, and
-restores the original gene order in the returned list. Thus hundreds of
+packs each bucket internally as contiguous `genes x variants x samples`,
+masks padded variants and unavailable effect slots, and restores the original
+gene order in the returned list. The variant-major layout matches genotype
+row storage and keeps the fixed sample dimension contiguous. Thus hundreds of
 distinct cis-window sizes do not require hundreds of compiled graphs.
+
+Loaders that already own a padded variant-major workspace can bypass list
+packing and per-gene device transfers:
+```
+results = susie.susie_batched_packed(
+    X_variant_major,  # float32 [genes, variant_capacity, samples]
+    y,                # float32 [genes, samples]
+    variant_counts,   # number of leading real variants per gene
+    L=10,
+)
+```
+`X_variant_major` must be contiguous, reside on the same device as `y`, and
+contain zero padding after each gene's declared variant count. The list API
+coalesces CPU inputs in pinned memory before one asynchronous CUDA transfer;
+the packed API exists so production pipelines can reuse their own staging
+buffers and avoid that packing step entirely.
 
 The `L` effect updates remain ordered exactly as in IBSS; only the independent
 gene dimension is evaluated in parallel with batched matrix multiplication.
