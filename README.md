@@ -183,6 +183,55 @@ include these weights. Both constructors accept `c_hat_init` for a warm start,
 and the Poisson prior supports `update_schedule="sequential"` or `"batch"`.
 Leaving `slot_prior=None` preserves the ordinary SuSiE fit.
 
+#### Optional ordinary-SuSiE CUDA graph
+
+Repeated ordinary-SuSiE fits with the same `(n, p, L, dtype)` and sweep options
+can capture the complete ordered IBSS sweep once and replay it with:
+```
+result = susie.susie(X, y, compile_ibss=True)
+```
+The opt-in path uses CUDA graph capture rather than Inductor arithmetic fusion,
+so it executes the same ordered eager kernels and preserves their numerical
+outputs. It currently requires CUDA, inference-only inputs, no slot prior, and
+`estimate_prior_method="EM"` or `"none"`. The first fit pays a shape-specific
+capture cost; use the default `compile_ibss=False` for one-off or differently
+shaped loci. The process retains one captured signature and falls back to eager
+execution, with a warning, if a later call requests a different signature.
+This bounded cache is why the option is exposed on `susie.susie`, not
+heterogeneous `susie.map` runs.
+
+#### Opt-in gene-batched ordinary SuSiE
+
+Independent ordinary-SuSiE fits can share tensor operations across genes with
+`susie.susie_batched`:
+```
+results = susie.susie_batched(
+    [X_gene1, X_gene2, X_gene3],
+    [y_gene1, y_gene2, y_gene3],
+    L=10,
+    batch_size=32,
+)
+```
+Each design is `samples x variants`; all genes must have the same samples but
+may have different numbers of variants. The solver sorts genes by window size,
+forms padded buckets, masks padded variants and unavailable effect slots, and
+restores the original gene order in the returned list. Thus hundreds of
+distinct cis-window sizes do not require hundreds of compiled graphs.
+
+The `L` effect updates remain ordered exactly as in IBSS; only the independent
+gene dimension is evaluated in parallel with batched matrix multiplication.
+The current opt-in path supports float32 ordinary SuSiE with ELBO convergence
+and the `EM` or fixed prior-variance methods. It does not yet support slot
+priors, SuSiE-inf, SuSiE-ash, the scalar `optim` prior-variance method, or
+`null_weight`. Credible sets are computed independently after each fit is
+unpacked.
+
+Gene batching does not replace the existing scalar `susie.susie` or
+`susie.map` paths; both remain the defaults. Batched GEMM can use a different
+floating-point reduction order, so the new solver is validated for
+numerical/model equivalence rather than bitwise equality and is not yet the
+default map backend.
+
 #### SuSiE-ash fine-mapping
 
 SuSiE-ash adds a dense Mr.ASH adaptive-shrinkage background to the sparse

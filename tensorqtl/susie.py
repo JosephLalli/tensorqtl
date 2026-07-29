@@ -14,6 +14,7 @@ from collections import defaultdict
 import sys
 import os
 import time
+import warnings
 from scipy.optimize import minimize_scalar
 
 sys.path.insert(1, os.path.dirname(__file__))
@@ -28,6 +29,16 @@ from susieslot import (
     slot_prior_poisson,
     update_slot_weight,
 )
+
+
+def _is_compiling():
+    """Return False on PyTorch releases predating torch.compiler."""
+    if (
+        not hasattr(torch, 'compiler')
+        or not hasattr(torch.compiler, 'is_compiling')
+    ):
+        return False
+    return torch.compiler.is_compiling()
 
 
 def get_x_attributes(X_t, center=True, scale=True):
@@ -158,8 +169,20 @@ def compute_MXt(M_t, X_t, xattr):
 def loglik(V, betahat, shat2, prior_weights):
 
     # log(bf) on each SNP
-    lbf = torch.distributions.Normal(0, torch.sqrt(V+shat2)).log_prob(betahat) - torch.distributions.Normal(0, torch.sqrt(shat2)).log_prob(betahat)
-    lbf[torch.isinf(shat2)] = 0 # deal with special case of infinite shat2 (eg happens if X does not vary)
+    zero = (
+        torch.zeros((), dtype=betahat.dtype, device=betahat.device)
+        if _is_compiling()
+        else 0
+    )
+    lbf = (
+        torch.distributions.Normal(zero, torch.sqrt(V + shat2)).log_prob(betahat)
+        - torch.distributions.Normal(zero, torch.sqrt(shat2)).log_prob(betahat)
+    )
+    if _is_compiling():
+        lbf = torch.where(torch.isinf(shat2), torch.zeros_like(lbf), lbf)
+    else:
+        # deal with special case of infinite shat2 (eg happens if X does not vary)
+        lbf[torch.isinf(shat2)] = 0
 
     maxlbf = lbf.max()
     # w = np.exp(lbf - maxlbf)  # w =BF/BFmax
@@ -181,12 +204,23 @@ def optimize_prior_variance_brent(V_init, betahat, shat2, prior_weights,
     betahat64 = betahat.detach().to(torch.float64)
     shat264 = shat2.detach().to(torch.float64)
     weights64 = prior_weights.detach().to(torch.float64)
+    # Only V changes during the scalar search; cache the null likelihood term.
+    null_log_prob = torch.distributions.Normal(
+        0, torch.sqrt(shat264)
+    ).log_prob(betahat64)
+    infinite_shat2 = torch.isinf(shat264)
 
     def objective(log_variance):
-        value = neg_loglik_logscale(
-            torch.as_tensor(log_variance, dtype=torch.float64, device=device),
-            betahat64, shat264, weights64,
+        V = torch.exp(torch.as_tensor(
+            log_variance, dtype=torch.float64, device=device
+        ))
+        lbf = (
+            torch.distributions.Normal(0, torch.sqrt(V + shat264)).log_prob(betahat64)
+            - null_log_prob
         )
+        lbf[infinite_shat2] = 0
+        maxlbf = lbf.max()
+        value = -(torch.log((torch.exp(lbf - maxlbf) * weights64).sum()) + maxlbf)
         return float(value.detach().cpu())
 
     result = minimize_scalar(
@@ -228,14 +262,26 @@ def optimize_prior_variance(optimize_V, betahat, shat2, prior_weights,
     # But the idea is to be lenient to non-zeros estimates unless they are indeed small enough
     # to be neglible.
     # See more intuition at https://stephens999.github.io/fiveMinuteStats/LR_and_BF.html
-    if loglik(0, betahat, shat2, prior_weights) + check_null_threshold >= loglik(V, betahat, shat2, prior_weights):
+    use_null = (
+        loglik(0, betahat, shat2, prior_weights) + check_null_threshold
+        >= loglik(V, betahat, shat2, prior_weights)
+    )
+    if _is_compiling():
+        # Keep the default eager branch unchanged while expressing the
+        # data-dependent choice as a tensor operation inside a compiled sweep.
+        V = torch.where(use_null, torch.zeros_like(V), V)
+    elif use_null:
         V = 0
     return V
 
 
-def SER_posterior_e_loglik(X_t, xattr, Y_t, s2, Eb, Eb2):
+def SER_posterior_e_loglik(X_t, xattr, Y_t, s2, Eb, Eb2, fitted=None):
     n = X_t.shape[0]
-    return -0.5*n*torch.log(2*np.pi*s2) - (0.5/s2) * ((Y_t*Y_t).sum() - 2*(Y_t.squeeze()*compute_Xb(X_t, Eb, xattr['scaled_center'], xattr['scaled_scale'])).sum() + (xattr['d']*Eb2).sum())
+    if fitted is None:
+        fitted = compute_Xb(
+            X_t, Eb, xattr['scaled_center'], xattr['scaled_scale']
+        )
+    return -0.5*n*torch.log(2*np.pi*s2) - (0.5/s2) * ((Y_t*Y_t).sum() - 2*(Y_t.squeeze()*fitted).sum() + (xattr['d']*Eb2).sum())
 
 
 def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weights=None,
@@ -271,17 +317,36 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
             V = torch.zeros((), dtype=betahat.dtype, device=betahat.device)
 
     # lbf = stats.norm.logpdf(betahat, 0, np.sqrt(V+shat2)) - stats.norm.logpdf(betahat, 0, np.sqrt(shat2))
-    lbf = torch.distributions.Normal(0, torch.sqrt(V+shat2)).log_prob(betahat) - torch.distributions.Normal(0, torch.sqrt(shat2)).log_prob(betahat)
+    zero = (
+        torch.zeros((), dtype=betahat.dtype, device=betahat.device)
+        if _is_compiling()
+        else 0
+    )
+    lbf = (
+        torch.distributions.Normal(zero, torch.sqrt(V + shat2)).log_prob(betahat)
+        - torch.distributions.Normal(zero, torch.sqrt(shat2)).log_prob(betahat)
+    )
 
     # log(bf) on each SNP
-    lbf[torch.isinf(shat2)] = 0  # deal with special case of infinite shat2 (eg happens if X does not vary)
+    if _is_compiling():
+        lbf = torch.where(torch.isinf(shat2), torch.zeros_like(lbf), lbf)
+    else:
+        # deal with special case of infinite shat2 (eg happens if X does not vary)
+        lbf[torch.isinf(shat2)] = 0
     maxlbf = lbf.max()
     w = torch.exp(lbf - maxlbf)  # w is proportional to BF, but subtract max for numerical stability
     # posterior prob on each SNP
     w_weighted = w * prior_weights
     weighted_sum_w = w_weighted.sum()
     alpha = w_weighted / weighted_sum_w
-    if V == 0:
+    if _is_compiling():
+        nonzero_post_var = (
+            1 / V + xattr['d'] / residual_variance
+        ) ** (-1)
+        post_var = torch.where(
+            V == 0, torch.zeros_like(xattr['d']), nonzero_post_var
+        )
+    elif V == 0:
         post_var = torch.zeros(xattr['d'].shape).to(device)
     else:
         post_var = (1/V + xattr['d']/residual_variance)**(-1)  # posterior variance
@@ -298,7 +363,17 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
     # BF for single effect model
     lbf_model = maxlbf + torch.log(weighted_sum_w)
     # loglik = lbf_model + np.sum(stats.norm.logpdf(Y_t, 0, np.sqrt(residual_variance)))
-    loglik = lbf_model + torch.distributions.Normal(0, torch.sqrt(residual_variance)).log_prob(Y_t).sum()
+    zero_y = (
+        torch.zeros((), dtype=Y_t.dtype, device=Y_t.device)
+        if _is_compiling()
+        else 0
+    )
+    loglik = (
+        lbf_model
+        + torch.distributions.Normal(
+            zero_y, torch.sqrt(residual_variance)
+        ).log_prob(Y_t).sum()
+    )
 
     if optimize_V == 'EM':
         V = optimize_prior_variance(optimize_V, betahat, shat2, prior_weights, alpha,
@@ -357,10 +432,13 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
         s['V'][l] = res['V']
         s['lbf'][l] = res['lbf_model']
         s['lbf_variable'][l] = res['lbf']
-        s['KL'][l] = -res['loglik'] + SER_posterior_e_loglik(X_t, xattr, R_t, s['sigma2'], res['alpha']*res['mu'], res['alpha']*res['mu2'])
         effect_fitted = compute_Xb(
             X_t, s['alpha'][l, :] * s['mu'][l, :],
             xattr['scaled_center'], xattr['scaled_scale']
+        )
+        s['KL'][l] = -res['loglik'] + SER_posterior_e_loglik(
+            X_t, xattr, R_t, s['sigma2'], res['alpha'] * res['mu'],
+            res['alpha'] * res['mu2'], fitted=effect_fitted,
         )
         s['Xr'] = s['Xr'] + slot_weight * effect_fitted
 
@@ -372,6 +450,107 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
     if use_c_hat:
         finish_slot_sweep(s)
     return(s)
+
+
+_compiled_update_each_effect = None
+
+
+def _tensor_compile_signature(value):
+    if torch.is_tensor(value):
+        return (
+            tuple(value.shape),
+            tuple(value.stride()),
+            value.dtype,
+            value.device,
+            value.requires_grad,
+        )
+    return (type(value), value)
+
+
+def _ordinary_sweep_compile_signature(
+        X_t, xattr, Y_t, s, estimate_prior_variance,
+        estimate_prior_method, check_null_threshold):
+    state_keys = (
+        'alpha', 'mu', 'mu2', 'Xr', 'KL', 'lbf', 'lbf_variable',
+        'sigma2', 'V', 'pi', 'null_index',
+    )
+    return (
+        _tensor_compile_signature(X_t),
+        tuple(
+            (key, _tensor_compile_signature(xattr[key]))
+            for key in sorted(xattr)
+        ),
+        _tensor_compile_signature(Y_t),
+        tuple(
+            (key, _tensor_compile_signature(s[key]))
+            for key in state_keys
+        ),
+        bool(estimate_prior_variance),
+        estimate_prior_method,
+        float(check_null_threshold),
+        (
+            torch.get_float32_matmul_precision()
+            if hasattr(torch, 'get_float32_matmul_precision') else None
+        ),
+        torch.backends.cuda.matmul.allow_tf32,
+    )
+
+
+def _get_compiled_update_each_effect(signature):
+    """Lazily capture one complete ordered ordinary-SuSiE CUDA sweep."""
+    global _compiled_update_each_effect
+    if not hasattr(torch, 'compile'):
+        raise RuntimeError(
+            'compile_ibss=True requires a PyTorch version with torch.compile.'
+        )
+    if (
+        not hasattr(torch, 'compiler')
+        or not hasattr(torch.compiler, 'cudagraph_mark_step_begin')
+    ):
+        raise RuntimeError(
+            'compile_ibss=True requires CUDA graph step support in PyTorch.'
+        )
+    if _compiled_update_each_effect is not None:
+        captured_signature, replay_captured_sweep = (
+            _compiled_update_each_effect
+        )
+        if signature == captured_signature:
+            return replay_captured_sweep
+        warnings.warn(
+            'compile_ibss=True already captured a different sweep signature; '
+            'using eager execution for this fit to avoid shape recompilation '
+            'and CUDA-graph cache growth.',
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return update_each_effect
+
+    captured_sweep = torch.compile(
+        update_each_effect,
+        fullgraph=True,
+        dynamic=False,
+        backend='cudagraphs',
+    )
+
+    def replay_captured_sweep(*args, **kwargs):
+        # CUDA graphs reuse output storage on every replay. Mark each IBSS
+        # iteration as a new step and clone all returned tensors so neither the
+        # next iteration nor a later fit can overwrite earlier results.
+        torch.compiler.cudagraph_mark_step_begin()
+        with torch.no_grad():
+            result = captured_sweep(*args, **kwargs)
+            return {
+                key: (
+                    value.clone()
+                    if torch.is_tensor(value) else value
+                )
+                for key, value in result.items()
+            }
+
+    _compiled_update_each_effect = (
+        signature, replay_captured_sweep
+    )
+    return replay_captured_sweep
 
 
 def get_objective(X_t, xattr, Y_t, s, er2=None):
@@ -696,6 +875,577 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
             return {'cs':None, 'coverage':coverage}
 
 
+def _batched_compute_Xb(X_t, b_t, cm_t, csd_t):
+    """Compute standardized-design fitted values for a batch of genes.
+
+    X_t has shape (B, n, p), b_t/cm_t/csd_t have shape (B, p), and the
+    returned tensor has shape (B, n).
+    """
+    scaled_b_t = b_t / csd_t
+    return (
+        torch.bmm(X_t, scaled_b_t.unsqueeze(2)).squeeze(2)
+        - (cm_t * scaled_b_t).sum(1, keepdim=True)
+    )
+
+
+def _batched_compute_Xty(X_t, y_t, cm_t, csd_t):
+    """Compute cstd(X).T @ y independently for every gene in a batch."""
+    return (
+        torch.bmm(X_t.transpose(1, 2), y_t.unsqueeze(2)).squeeze(2) / csd_t
+        - (cm_t / csd_t) * y_t.sum(1, keepdim=True)
+    )
+
+
+def _batched_compute_MXt(M_t, X_t, cm_t, csd_t):
+    """Compute M @ cstd(X).T independently for every gene."""
+    return (
+        torch.bmm(M_t, (X_t / csd_t[:, None, :]).transpose(1, 2))
+        - torch.bmm(
+            M_t, (cm_t / csd_t).unsqueeze(2)
+        )
+    )
+
+
+def _batched_loglik(V_t, betahat_t, shat2_t, pi_t, variant_mask_t):
+    """Per-gene SER log likelihood with padded variants excluded."""
+    lbf_t = (
+        torch.distributions.Normal(
+            0, torch.sqrt(V_t[:, None] + shat2_t)
+        ).log_prob(betahat_t)
+        - torch.distributions.Normal(
+            0, torch.sqrt(shat2_t)
+        ).log_prob(betahat_t)
+    )
+    lbf_t = torch.where(torch.isinf(shat2_t), torch.zeros_like(lbf_t), lbf_t)
+    lbf_t = lbf_t.masked_fill(~variant_mask_t, -torch.inf)
+    maxlbf_t = lbf_t.max(1).values
+    return (
+        torch.log(
+            (torch.exp(lbf_t - maxlbf_t[:, None]) * pi_t).sum(1)
+        )
+        + maxlbf_t
+    )
+
+
+def _batched_single_effect_regression(
+        R_t, X_t, d_t, cm_t, csd_t, V_t, sigma2_t, pi_t,
+        variant_mask_t, estimate_prior_method, check_null_threshold):
+    """Run one SER update for all genes in a padded batch."""
+    Xty_t = _batched_compute_Xty(X_t, R_t, cm_t, csd_t)
+    betahat_t = Xty_t / d_t
+    shat2_t = sigma2_t[:, None] / d_t
+
+    lbf_t = (
+        torch.distributions.Normal(
+            0, torch.sqrt(V_t[:, None] + shat2_t)
+        ).log_prob(betahat_t)
+        - torch.distributions.Normal(
+            0, torch.sqrt(shat2_t)
+        ).log_prob(betahat_t)
+    )
+    lbf_t = torch.where(torch.isinf(shat2_t), torch.zeros_like(lbf_t), lbf_t)
+    lbf_t = lbf_t.masked_fill(~variant_mask_t, -torch.inf)
+    maxlbf_t = lbf_t.max(1).values
+    w_t = torch.exp(lbf_t - maxlbf_t[:, None])
+    weighted_sum_t = (w_t * pi_t).sum(1)
+    alpha_t = w_t * pi_t / weighted_sum_t[:, None]
+
+    nonzero_post_var_t = (
+        1 / V_t[:, None] + d_t / sigma2_t[:, None]
+    ) ** (-1)
+    post_var_t = torch.where(
+        V_t[:, None] == 0,
+        torch.zeros_like(nonzero_post_var_t),
+        nonzero_post_var_t,
+    )
+    mu_t = post_var_t * Xty_t / sigma2_t[:, None]
+    mu2_t = post_var_t + mu_t.square()
+
+    alpha_t = alpha_t.masked_fill(~variant_mask_t, 0)
+    mu_t = mu_t.masked_fill(~variant_mask_t, 0)
+    mu2_t = mu2_t.masked_fill(~variant_mask_t, 0)
+    lbf_model_t = maxlbf_t + torch.log(weighted_sum_t)
+    loglik_t = (
+        lbf_model_t
+        + torch.distributions.Normal(
+            0, torch.sqrt(sigma2_t[:, None])
+        ).log_prob(R_t).sum(1)
+    )
+
+    if estimate_prior_method == 'EM':
+        V_em_t = (alpha_t * mu2_t).sum(1)
+        use_null_t = (
+            _batched_loglik(
+                torch.zeros_like(V_em_t), betahat_t, shat2_t, pi_t,
+                variant_mask_t,
+            )
+            + check_null_threshold
+            >= _batched_loglik(
+                V_em_t, betahat_t, shat2_t, pi_t, variant_mask_t
+            )
+        )
+        V_t = torch.where(use_null_t, torch.zeros_like(V_em_t), V_em_t)
+
+    return {
+        'alpha': alpha_t,
+        'mu': mu_t,
+        'mu2': mu2_t,
+        'lbf': lbf_t,
+        'lbf_model': lbf_model_t,
+        'V': V_t,
+        'loglik': loglik_t,
+    }
+
+
+def _normalize_batched_residual_variance(
+        residual_variance, batch_indices, var_y_t, dtype, device):
+    """Select scalar or per-gene initial residual variances for one bucket."""
+    if residual_variance is None:
+        return var_y_t.clone()
+    values_t = torch.as_tensor(
+        residual_variance, dtype=dtype, device=device
+    )
+    if values_t.ndim == 0:
+        return values_t.expand(len(batch_indices)).clone()
+    if values_t.ndim != 1:
+        raise ValueError('residual_variance must be scalar or one value per gene.')
+    return values_t[torch.as_tensor(batch_indices, device=device)]
+
+
+def _normalize_batched_prior_weights(
+        prior_weights, batch_indices, variant_counts, p_max, dtype, device,
+        n_genes):
+    """Construct masked, normalized priors for one heterogeneous bucket."""
+    pi_t = torch.zeros(
+        (len(batch_indices), p_max), dtype=dtype, device=device
+    )
+    if prior_weights is None:
+        for local_i, p in enumerate(variant_counts):
+            pi_t[local_i, :p] = 1 / p
+        return pi_t
+
+    prior_vectors = prior_weights
+    if n_genes == 1:
+        array_like_single = (
+            torch.is_tensor(prior_weights)
+            or isinstance(prior_weights, np.ndarray)
+        )
+        nested_single = (
+            isinstance(prior_weights, (list, tuple))
+            and len(prior_weights) == 1
+            and (
+                torch.is_tensor(prior_weights[0])
+                or np.asarray(prior_weights[0]).ndim > 0
+            )
+        )
+        if array_like_single and prior_weights.ndim == 2:
+            prior_vectors = prior_weights
+        elif not nested_single:
+            prior_vectors = [prior_weights]
+    if len(prior_vectors) != n_genes:
+        raise ValueError('prior_weights must provide one vector per gene.')
+    for local_i, (global_i, p) in enumerate(
+            zip(batch_indices, variant_counts)):
+        weights_t = torch.as_tensor(
+            prior_vectors[global_i], dtype=dtype, device=device
+        )
+        if weights_t.ndim != 1 or len(weights_t) != p:
+            raise ValueError(
+                f'prior_weights[{global_i}] must have length {p}.'
+            )
+        if not torch.isfinite(weights_t).all() or (weights_t < 0).any():
+            raise ValueError('prior_weights must be finite and non-negative.')
+        weight_sum_t = weights_t.sum()
+        if weight_sum_t <= 0:
+            raise ValueError('Each prior-weight vector must have positive sum.')
+        pi_t[local_i, :p] = weights_t / weight_sum_t
+    return pi_t
+
+
+def _susie_batched_bucket(
+        X_list, y_list, batch_indices, L, scaled_prior_variance,
+        residual_variance, prior_weights, standardize, intercept,
+        estimate_residual_variance, estimate_prior_method,
+        check_null_threshold, prior_tol, residual_variance_upperbound,
+        coverage, min_abs_corr, median_abs_corr, cs_extension_corr,
+        max_iter, tol, verbose):
+    """Fit one size bucket, vectorizing all arithmetic across genes."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float32
+    bucket_X = [
+        torch.as_tensor(X_list[i], dtype=dtype, device=device)
+        for i in batch_indices
+    ]
+    bucket_y = [
+        torch.as_tensor(y_list[i], dtype=dtype, device=device).reshape(-1)
+        for i in batch_indices
+    ]
+    n = bucket_X[0].shape[0]
+    variant_counts = [X_t.shape[1] for X_t in bucket_X]
+    p_max = max(variant_counts)
+    B = len(bucket_X)
+
+    X_t = torch.zeros((B, n, p_max), dtype=dtype, device=device)
+    y_t = torch.stack(bucket_y)
+    variant_mask_t = torch.zeros(
+        (B, p_max), dtype=torch.bool, device=device
+    )
+    for i, (X_gene_t, p) in enumerate(zip(bucket_X, variant_counts)):
+        X_t[i, :, :p] = X_gene_t
+        variant_mask_t[i, :p] = True
+
+    mean_y_t = y_t.mean(1)
+    if intercept:
+        y_t = y_t - mean_y_t[:, None]
+
+    cm_t = X_t.mean(1)
+    csd_t = X_t.std(1, unbiased=True)
+    csd_t = torch.where(csd_t == 0, torch.ones_like(csd_t), csd_t)
+    if not intercept:
+        cm_t = torch.zeros_like(cm_t)
+    if not standardize:
+        csd_t = torch.ones_like(csd_t)
+    x_std_t = (X_t - cm_t[:, None, :]) / csd_t[:, None, :]
+    d_t = x_std_t.square().sum(1)
+    # Padded columns have d=0, which would produce 0/0 in SER before masking.
+    d_t = torch.where(variant_mask_t, d_t, torch.ones_like(d_t))
+    if bool(((d_t == 0) & variant_mask_t).any()):
+        raise ValueError(
+            'susie_batched requires monomorphic variants to be removed.'
+        )
+
+    var_y_t = y_t.var(1, unbiased=True)
+    sigma2_t = _normalize_batched_residual_variance(
+        residual_variance, batch_indices, var_y_t, dtype, device
+    )
+    if (sigma2_t <= 0).any():
+        raise ValueError(
+            "residual variance 'sigma2' must be positive "
+            "(is var(Y) zero?)"
+        )
+
+    pi_t = _normalize_batched_prior_weights(
+        prior_weights, batch_indices, variant_counts, p_max, dtype, device,
+        len(X_list),
+    )
+    effect_counts = [min(L, p) for p in variant_counts]
+    L_max = max(effect_counts)
+    effect_mask_t = (
+        torch.arange(L_max, device=device)[None, :]
+        < torch.as_tensor(effect_counts, device=device)[:, None]
+    )
+
+    alpha_t = torch.zeros(
+        (B, L_max, p_max), dtype=dtype, device=device
+    )
+    for i, (p, l_count) in enumerate(zip(variant_counts, effect_counts)):
+        alpha_t[i, :l_count, :p] = 1 / p
+    mu_t = torch.zeros_like(alpha_t)
+    mu2_t = torch.zeros_like(alpha_t)
+    effect_fitted_t = torch.zeros(
+        (B, L_max, n), dtype=dtype, device=device
+    )
+    Xr_t = torch.zeros((B, n), dtype=dtype, device=device)
+    KL_t = torch.zeros((B, L_max), dtype=dtype, device=device)
+    lbf_t = torch.full_like(KL_t, torch.nan)
+    lbf_variable_t = torch.full_like(alpha_t, torch.nan)
+    V_t = (
+        scaled_prior_variance
+        * var_y_t[:, None].expand(B, L_max).clone()
+    )
+    V_t = V_t.masked_fill(~effect_mask_t, 0)
+
+    active_t = torch.ones(B, dtype=torch.bool, device=device)
+    converged_t = torch.zeros(B, dtype=torch.bool, device=device)
+    niter_t = torch.full(
+        (B,), max_iter, dtype=torch.long, device=device
+    )
+    previous_elbo_t = torch.full(
+        (B,), -torch.inf, dtype=dtype, device=device
+    )
+    elbo_history_t = torch.full(
+        (B, max_iter), torch.nan, dtype=dtype, device=device
+    )
+
+    for iteration in range(1, max_iter + 1):
+        for l in range(L_max):
+            update_t = active_t & effect_mask_t[:, l]
+            old_fitted_t = effect_fitted_t[:, l]
+            Xr_without_t = Xr_t - old_fitted_t
+            sweep_Xr_t = torch.where(
+                update_t[:, None], Xr_without_t, Xr_t
+            )
+            R_t = y_t - sweep_Xr_t
+            res = _batched_single_effect_regression(
+                R_t, X_t, d_t, cm_t, csd_t, V_t[:, l], sigma2_t,
+                pi_t, variant_mask_t, estimate_prior_method,
+                check_null_threshold,
+            )
+
+            alpha_t[:, l] = torch.where(
+                update_t[:, None], res['alpha'], alpha_t[:, l]
+            )
+            mu_t[:, l] = torch.where(
+                update_t[:, None], res['mu'], mu_t[:, l]
+            )
+            mu2_t[:, l] = torch.where(
+                update_t[:, None], res['mu2'], mu2_t[:, l]
+            )
+            V_t[:, l] = torch.where(update_t, res['V'], V_t[:, l])
+            lbf_t[:, l] = torch.where(
+                update_t, res['lbf_model'], lbf_t[:, l]
+            )
+            lbf_variable_t[:, l] = torch.where(
+                update_t[:, None], res['lbf'], lbf_variable_t[:, l]
+            )
+
+            new_fitted_t = _batched_compute_Xb(
+                X_t, alpha_t[:, l] * mu_t[:, l], cm_t, csd_t
+            )
+            effect_fitted_t[:, l] = torch.where(
+                update_t[:, None], new_fitted_t, old_fitted_t
+            )
+            expected_loglik_t = (
+                -0.5 * n * torch.log(2 * np.pi * sigma2_t)
+                - 0.5 / sigma2_t * (
+                    R_t.square().sum(1)
+                    - 2 * (R_t * new_fitted_t).sum(1)
+                    + (
+                        d_t * res['alpha'] * res['mu2']
+                    ).sum(1)
+                )
+            )
+            new_KL_t = -res['loglik'] + expected_loglik_t
+            KL_t[:, l] = torch.where(
+                update_t, new_KL_t, KL_t[:, l]
+            )
+            Xr_t = torch.where(
+                update_t[:, None],
+                sweep_Xr_t + effect_fitted_t[:, l],
+                Xr_t,
+            )
+
+        Xr_L_t = _batched_compute_MXt(
+            alpha_t * mu_t, X_t, cm_t, csd_t
+        )
+        er2_t = (
+            (y_t - Xr_t).square().sum(1)
+            - Xr_L_t.square().sum((1, 2))
+            + (d_t[:, None, :] * alpha_t * mu2_t).sum((1, 2))
+        )
+        objective_t = (
+            -0.5 * n * torch.log(2 * np.pi * sigma2_t)
+            - er2_t / (2 * sigma2_t)
+            - KL_t.sum(1)
+        )
+        elbo_history_t[active_t, iteration - 1] = objective_t[active_t]
+        elbo_diff_t = objective_t - previous_elbo_t
+        just_converged_t = (
+            active_t & (elbo_diff_t >= 0) & (elbo_diff_t < tol)
+        )
+        converged_t |= just_converged_t
+        niter_t[just_converged_t] = iteration
+        remaining_t = active_t & ~just_converged_t
+
+        if estimate_residual_variance:
+            next_sigma2_t = er2_t / n
+            if np.isfinite(residual_variance_upperbound):
+                next_sigma2_t = torch.clamp(
+                    next_sigma2_t,
+                    max=float(residual_variance_upperbound),
+                )
+            sigma2_t = torch.where(
+                remaining_t, next_sigma2_t, sigma2_t
+            )
+        previous_elbo_t = torch.where(
+            active_t, objective_t, previous_elbo_t
+        )
+        active_t = remaining_t
+        if not bool(active_t.any()):
+            break
+
+    if verbose and bool((~converged_t).any()):
+        print(
+            f'WARNING: {(~converged_t).sum().item()} of {B} batched '
+            f'SuSiE fits did not converge in {max_iter} iterations.'
+        )
+
+    sparse_effect_std_t = (alpha_t * mu_t).sum(1)
+    sparse_effect_raw_t = sparse_effect_std_t / csd_t
+    if intercept:
+        intercept_t = (
+            mean_y_t - (cm_t * sparse_effect_raw_t).sum(1)
+        )
+        fitted_t = Xr_t + mean_y_t[:, None]
+    else:
+        intercept_t = torch.zeros(B, dtype=dtype, device=device)
+        fitted_t = Xr_t
+
+    results = []
+    for local_i, (global_i, p, l_count) in enumerate(
+            zip(batch_indices, variant_counts, effect_counts)):
+        result = {
+            'alpha': alpha_t[local_i, :l_count, :p].clone(),
+            'mu': mu_t[local_i, :l_count, :p].clone(),
+            'mu2': mu2_t[local_i, :l_count, :p].clone(),
+            'Xr': Xr_t[local_i].clone(),
+            'KL': KL_t[local_i, :l_count].clone(),
+            'lbf': lbf_t[local_i, :l_count].clone(),
+            'lbf_variable': lbf_variable_t[
+                local_i, :l_count, :p
+            ].detach().cpu().numpy(),
+            'sigma2': sigma2_t[local_i].clone(),
+            'V': V_t[local_i, :l_count].clone(),
+            'pi': pi_t[local_i, :p].clone(),
+            'null_index': 0,
+            'elbo': elbo_history_t[
+                local_i, :niter_t[local_i]
+            ].detach().cpu().numpy(),
+            'niter': int(niter_t[local_i]),
+            'converged': bool(converged_t[local_i]),
+            'sparse_effects': sparse_effect_raw_t[local_i, :p].clone(),
+            'intercept': (
+                intercept_t[local_i].clone() if intercept else 0
+            ),
+            'fitted': fitted_t[local_i].clone(),
+        }
+        if coverage is not None:
+            result['sets'] = susie_get_cs(
+                result, coverage=coverage, X=bucket_X[local_i],
+                min_abs_corr=min_abs_corr,
+                median_abs_corr=median_abs_corr,
+                cs_extension_corr=cs_extension_corr,
+            )
+        result['pip'] = susie_get_pip(
+            result, prune_by_cs=False, prior_tol=prior_tol
+        ).detach().cpu().numpy()
+        results.append((global_i, result))
+    return results
+
+
+def susie_batched(
+        X_list, y_list, L=10, scaled_prior_variance=0.2,
+        residual_variance=None, prior_weights=None,
+        standardize=True, intercept=True,
+        estimate_residual_variance=True, estimate_prior_variance=True,
+        estimate_prior_method=None, check_null_threshold=0,
+        prior_tol=1e-9, residual_variance_upperbound=np.inf,
+        coverage=0.95, min_abs_corr=0.5,
+        median_abs_corr=None, cs_extension_corr=None,
+        max_iter=100, tol=0.001, batch_size=32, verbose=False):
+    """Fit ordinary SuSiE to multiple genes with batched tensor arithmetic.
+
+    The input is a sequence of ``(n, p_i)`` designs and a matching sequence of
+    outcomes. Designs may have different numbers of variants but must share the
+    sample dimension. Genes are sorted by ``p_i`` into padded size buckets, fit
+    in parallel within each bucket, and returned in their original order.
+
+    This opt-in solver preserves the ordered per-effect IBSS algorithm but uses
+    batched GEMM/reductions across genes. Consequently, results are expected to
+    be numerically equivalent to independent ``susie`` calls, not bitwise
+    identical.
+    """
+    if torch.is_tensor(X_list):
+        if X_list.ndim != 3:
+            raise ValueError('A tensor X_list must have shape (genes, n, p).')
+        X_list = list(X_list.unbind(0))
+    else:
+        X_list = list(X_list)
+    if torch.is_tensor(y_list):
+        if y_list.ndim not in {2, 3}:
+            raise ValueError(
+                'A tensor y_list must have shape (genes, n) or (genes, n, 1).'
+            )
+        y_list = list(y_list.unbind(0))
+    else:
+        y_list = list(y_list)
+
+    n_genes = len(X_list)
+    if n_genes == 0:
+        return []
+    if len(y_list) != n_genes:
+        raise ValueError('X_list and y_list must contain the same number of genes.')
+    if not isinstance(L, (int, np.integer)) or L < 1:
+        raise ValueError('L must be a positive integer.')
+    if scaled_prior_variance < 0:
+        raise ValueError('Scaled prior variance must be positive.')
+    if not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
+        raise ValueError('max_iter must be a positive integer.')
+    if estimate_prior_method is None:
+        estimate_prior_method = 'EM'
+    if not estimate_prior_variance:
+        estimate_prior_method = 'none'
+    if estimate_prior_method not in {'none', 'EM'}:
+        raise ValueError(
+            "susie_batched currently supports estimate_prior_method "
+            "'none' or 'EM'."
+        )
+    if residual_variance is not None:
+        residual_variance_t = torch.as_tensor(residual_variance)
+        if residual_variance_t.ndim > 1 or (
+            residual_variance_t.ndim == 1
+            and residual_variance_t.numel() != n_genes
+        ):
+            raise ValueError(
+                'residual_variance must be scalar or one value per gene.'
+            )
+
+    sample_count = None
+    variant_counts = []
+    for i, (X_t, y_t) in enumerate(zip(X_list, y_list)):
+        if not torch.is_tensor(X_t) or X_t.ndim != 2:
+            raise ValueError(f'X_list[{i}] must be a two-dimensional tensor.')
+        if X_t.dtype != torch.float32:
+            raise ValueError(
+                f'X_list[{i}] must have dtype torch.float32.'
+            )
+        y_t = torch.as_tensor(y_t)
+        if y_t.ndim not in {1, 2} or (
+            y_t.ndim == 2 and y_t.shape[1] != 1
+        ):
+            raise ValueError(
+                f'y_list[{i}] must have shape (n,) or (n, 1).'
+            )
+        if y_t.dtype != torch.float32:
+            raise ValueError(
+                f'y_list[{i}] must have dtype torch.float32.'
+            )
+        if sample_count is None:
+            sample_count = X_t.shape[0]
+        if X_t.shape[0] != sample_count or y_t.numel() != sample_count:
+            raise ValueError('All genes must share the same sample dimension.')
+        if X_t.shape[1] < 1:
+            raise ValueError('Every gene must contain at least one variant.')
+        if not torch.isfinite(X_t).all() or not torch.isfinite(y_t).all():
+            raise ValueError('susie_batched inputs must be finite.')
+        variant_counts.append(X_t.shape[1])
+
+    if batch_size is None:
+        batch_size = n_genes
+    if (
+        not isinstance(batch_size, (int, np.integer))
+        or batch_size < 1
+    ):
+        raise ValueError('batch_size must be a positive integer or None.')
+
+    # Adjacent windows in sorted-p order have similar padding costs. Only this
+    # setup order changes; results are restored to the caller's original order.
+    ordered_indices = sorted(range(n_genes), key=variant_counts.__getitem__)
+    indexed_results = []
+    for start in range(0, n_genes, batch_size):
+        batch_indices = ordered_indices[start:start + batch_size]
+        indexed_results.extend(_susie_batched_bucket(
+            X_list, y_list, batch_indices, L, scaled_prior_variance,
+            residual_variance, prior_weights, standardize, intercept,
+            estimate_residual_variance, estimate_prior_method,
+            check_null_threshold, prior_tol, residual_variance_upperbound,
+            coverage, min_abs_corr, median_abs_corr, cs_extension_corr,
+            max_iter, tol, verbose,
+        ))
+    indexed_results.sort(key=lambda item: item[0])
+    return [result for _, result in indexed_results]
+
+
 def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           residual_variance=None, prior_weights=None, null_weight=None,
           standardize=True, intercept=True,
@@ -710,8 +1460,10 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           compute_univariate_zscore=False,
           na_rm=False, max_iter=100, tol=0.001,
           convergence_method='elbo', pip_stall_window=5,
-          verbose=False, track_fit=False):
+          verbose=False, track_fit=False, compile_ibss=False):
 
+    if not isinstance(compile_ibss, (bool, np.bool_)):
+        raise ValueError('compile_ibss must be True or False.')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Normalize caller-provided inputs onto the compute device. susie() allocates
@@ -721,6 +1473,19 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     # already build on `device`, making this a no-op for them.
     X_t = X_t.to(device)
     y_t = y_t.to(device)
+    if compile_ibss and device.type != 'cuda':
+        raise RuntimeError('compile_ibss=True currently requires a CUDA device.')
+    compile_inputs = (
+        X_t, y_t, prior_weights, residual_variance, scaled_prior_variance,
+    )
+    if compile_ibss and any(
+        torch.is_tensor(value) and value.requires_grad
+        for value in compile_inputs
+    ):
+        raise ValueError(
+            'compile_ibss=True is inference-only and requires tensors without '
+            'gradient tracking.'
+        )
 
     n, p = X_t.shape
     mean_y = y_t.mean()
@@ -750,6 +1515,17 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     if estimate_prior_method not in {'none', 'optim', 'EM', 'simple'}:
         raise ValueError(
             "estimate_prior_method must be 'none', 'optim', 'EM', or 'simple'."
+        )
+    effective_prior_method = (
+        estimate_prior_method if estimate_prior_variance else 'none'
+    )
+    if compile_ibss and (
+        use_ash or slot_prior is not None
+        or effective_prior_method not in {'none', 'EM'}
+    ):
+        raise ValueError(
+            'compile_ibss=True currently supports ordinary SuSiE with '
+            "estimate_prior_method='none' or 'EM' and no slot prior."
         )
     if use_ash and estimate_prior_method == 'EM':
         raise ValueError(
@@ -808,14 +1584,25 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         )
         _recompute_weighted_fitted(X_t, xattr, s)
 
+    if compile_ibss:
+        sweep_signature = _ordinary_sweep_compile_signature(
+            X_t, xattr, y_t, s, estimate_prior_variance,
+            effective_prior_method, check_null_threshold,
+        )
+        effect_sweep = _get_compiled_update_each_effect(sweep_signature)
+    else:
+        effect_sweep = update_each_effect
+
     # initialize elbo to NA
     elbo = torch.full([max_iter + 1], np.nan).to(device)
     elbo[0] = -np.inf;
     tracking = []
-    state_history = [(
-        s['alpha'].detach().clone(),
-        susie_get_pip(s, prior_tol=prior_tol).detach().clone(),
-    )]
+    state_history = []
+    if convergence_method == 'pip':
+        state_history.append((
+            s['alpha'].detach().clone(),
+            susie_get_pip(s, prior_tol=prior_tol).detach().clone(),
+        ))
     for i in range(1, max_iter+1):
 
         # SuSiE-ash: the SER regresses on residuals net of the polygenic
@@ -823,10 +1610,12 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
         # subtracting X_theta from the target is the only ash-specific change.
         y_eff = (y_t - X_theta_t.reshape(-1, 1)) if use_ash else y_t
 
-        s = update_each_effect(X_t, xattr, y_eff, s,
-                               estimate_prior_variance=estimate_prior_variance,
-                               estimate_prior_method=estimate_prior_method,
-                               check_null_threshold=check_null_threshold)
+        s = effect_sweep(
+            X_t, xattr, y_eff, s,
+            estimate_prior_variance=estimate_prior_variance,
+            estimate_prior_method=effective_prior_method,
+            check_null_threshold=check_null_threshold,
+        )
         # Both calculations use the same expected residual sum of squares.
         objective_y = y_eff if use_ash else y_t
         er2 = get_ER2(X_t, xattr, objective_y, s)
@@ -924,7 +1713,10 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
             if s['sigma2'] > residual_variance_upperbound:
                 s['sigma2'] = residual_variance_upperbound
             if verbose:
-                print(f'Objective (iter {i}): {get_objective(X_t, xattr, y_t, s)}')
+                print(
+                    f'Objective (iter {i}): '
+                    f'{get_objective(X_t, xattr, y_t, s, er2=er2)}'
+                )
 
     s['elbo'] = elbo[1:i+1].cpu().numpy()  # Remove first (infinite) entry, and trailing NAs.
     s['niter'] = i
