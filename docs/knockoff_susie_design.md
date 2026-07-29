@@ -35,6 +35,20 @@ selection, with **per-gene Gaussian knockoffs**. Concretely:
   `test_prior_variance_floor.py`, `test_genome_wide_fdr.py`,
   `test_knockoff_calibration_step3.py`, `tests/hprc_calibration.py` (real-data,
   opt-in), plus the pipeline tests.
+- **Detection-power caveat (2026-07): this KFc path is FDR-valid but is NOT the
+  most powerful way to call eGenes.** A head-to-head benchmark on real HPRC
+  v2.0 genotypes (N=232) found the standard permutation-based `cis` mode
+  (`cis.map_cis` + `calculate_qvalues`) calibrated and more powerful for eGene
+  DETECTION than this KFc path across every regime tested — power 0.11-0.57 for
+  KFc vs 0.97-1.00 for permutation-min-p+BH at matched PVE, because a cis-LD
+  knockoff is highly correlated with the real variant it stands in for
+  (~90%, forced by model-X exchangeability), which shrinks `W` for real signal.
+  See `docs/calibration_findings.md`, section 9, for the full comparison,
+  mechanism, and the parallel finding for SuSiE/SuSiE-inf (localization tools,
+  not detection tools). Recommendation: call eGenes with the standard `cis`
+  mode; use this knockoff path (and SuSiE/SuSiE-inf downstream) where
+  FDR-robust localization within already-detected eGenes — not raw detection
+  power — is the goal.
 
 The detailed STATUS items and design history below are the append-only record of
 how we got here; where they conflict with this block, this block wins.
@@ -258,6 +272,48 @@ validation phases. The authoritative current state is:
    p-value construction (off the critical path); low-N generator mitigation and
    the deferred long-term validations (#5 phasing-error, #6 Salmon-posterior,
    #8 real-data concordance).
+
+11. **Detection-power head-to-head (2026-07): KFc is FDR-valid but not the most
+   powerful eGene detector; SuSiE/SuSiE-inf are localization, not detection,
+   tools.** A benchmark on real HPRC v2.0 genotypes (N=232), holding the gene
+   set, statistic family (`-log10(min cis p)`), and target FDR fixed and
+   varying only the null construction, found permutation-min-p+BH (power
+   0.97-1.00) far outperforms the knockoff KFc null (power 0.11-0.57 at PVE
+   0.10-0.15) — the model-X Gaussian knockoff in cis-LD is measured to be
+   ~90% correlated with the real variant (an exchangeability requirement, not
+   an estimation failure), so a causal variant's knockoff nearly matches its
+   `imp`, shrinking `W_g` for true eGenes. Extending to a harder `p=1000`,
+   dense-polygenic-background regime, the standard `cis` mode
+   (`cis.map_cis` + `calculate_qvalues`) was calibrated (KS p=0.77 on null
+   p-values, realized FDR ≈ target) and the most powerful method tested,
+   beating KFc, standard SuSiE, and SuSiE-inf everywhere. Using "SuSiE emits a
+   credible set" as the eGene call is conservative (~0 false CS on true nulls)
+   but 40-55% less powerful than min-p — a **localization tax**: a credible
+   set only forms when SuSiE can concentrate posterior on a *pure* variant set
+   (`susie_get_cs`, `tensorqtl/susie.py:428`); dense LD smears the PIP and no
+   set forms, even though the gene truly carries signal. An earlier worry that
+   standard SuSiE emits spurious credible sets on true nulls under a polygenic
+   background did NOT hold up here (clean, ~0 false CS); that earlier signal
+   was a pooled-permutation-null artifact, not a defect in SuSiE's CS output —
+   the real standard-SuSiE issue at this scale is the null-collapse atom in
+   raw `maxPIP` (the legacy `'maxpip'` bullet in the RESOLUTION block above;
+   `optimize_prior_variance`/`prior_variance_floor`,
+   `tensorqtl/susie.py:169-194`). An external
+   reference implementation of SuSiE-inf (not shipped in tensorqtl) fixes that
+   atom via its infinitesimal `tausq` term, making `maxPIP` calibratable by
+   permutation, but `tausq` also absorbs real signal — disabling it was the
+   single biggest power gain for SuSiE-inf in this sweep, reproducing the
+   published SuSiE-inf finding (Cui, Kellis, Finucane et al., *Nat Genet*
+   2024: ~42% fewer credible sets, slightly lower recall than SuSiE) as a
+   genuine calibration/power trade-off. No published SuSiE / SuSiE-RSS /
+   SuSiE-inf benchmark evaluates region-level detection over a true-null/
+   non-null mix at this N/p/polygenicity, so this is unbenchmarked territory,
+   though qualitatively consistent with those papers' internal trends. Full
+   evidence, mechanism, and citations: `docs/calibration_findings.md`, section
+   9. **Practical upshot: prefer the standard `cis` mode for eGene detection;
+   keep this KFc path where its FDR-control properties are specifically
+   wanted; use SuSiE/SuSiE-inf downstream for localization within detected
+   eGenes, preferring SuSiE-inf under a polygenic background.**
 
 ---
 
@@ -597,16 +653,28 @@ quantify the power cost of calibration.
 
 ## 7. CLI
 
-New mode `cis_susie_knockoffs` in `tensorqtl.py`, mirroring `cis_susie`:
+**Built** as the `cis_egenes_knockoff` mode in `tensorqtl.py` (the original
+`cis_susie_knockoffs` proposal, renamed to describe what it does — eGene calling
+via knockoffs). It wraps `tensorqtl.susie.map_egenes_knockoffs`:
 
 ```
-python -m tensorqtl ${plink} ${expr_bed} ${prefix} \
-    --covariates ${cov} --mode cis_susie_knockoffs \
-    --fdr 0.05 --n_knockoffs 5 --knockoff gaussian
+python3 -m tensorqtl ${plink} ${expr_bed} ${prefix} \
+    --covariates ${cov} --mode cis_egenes_knockoff --fdr 0.10
 ```
 
-Writes `${prefix}.SuSiE_knockoff_summary.parquet` (the §2 table) and, if
-`--emit_diagnostics`, `${prefix}.SuSiE_knockoff_diagnostics.pickle`.
+Defaults are the HPRC-validated configuration (`--statistic kfc`, `--knockoff
+gaussian`, `--shrink 0.1`, `--knockoff_offset 1`, `--n_knockoffs 1`), so only
+`--fdr` is normally set; all five knobs are exposed as flags. Writes
+`${prefix}.cis_knockoff_egenes.txt.gz` (the per-gene eGene table),
+`${prefix}.cis_knockoff_egenes.SuSiE_summary.parquet` (SuSiE localization for the
+selected eGenes, same format as `cis_susie`), and
+`${prefix}.cis_knockoff_egenes.diagnostics.pickle`. See the README section
+"Knockoff-calibrated eGene FDR" and `docs/outputs.md` for the column schema, and
+`tests/test_cli_knockoff_mode.py` for the surface + config regression tests.
+
+The two-channel `hapmixqtl.map_egenes_knockoffs` remains Python-only (more
+experimental; phased-HMM knockoffs, lower power — see the RESOLUTION block at the
+top of this document).
 
 ---
 
@@ -618,7 +686,7 @@ Writes `${prefix}.SuSiE_knockoff_summary.parquet` (the §2 table) and, if
 3. **Null-permutation calibration test on synthetic data** — the gate. Do not
    proceed to real-data / CLI until empirical FDR ≈ q here.
 4. Spike-in power test.
-5. CLI mode.
+5. CLI mode — **done**: `cis_egenes_knockoff` (see §7).
 6. (later) hapmixQTL two-channel path; HMM generator; v2 knobs.
 
 Open question flagged for the two-channel phase (not v1): the augmented fit
