@@ -4,23 +4,27 @@
 This is deliberately a benchmark, not a replacement for the validated
 SuSiE-ash analysis. It reuses that analysis's immutable input freeze and
 preprocessing contract, writes only to a fresh output root, and checkpoints
-results by chromosome.
+results by chromosome. Variant metadata is parsed once, and a bounded Arrow
+loader can prepare the next contig while the GPU fits the current one.
 """
 
 from __future__ import annotations
 
 import argparse
-import gc
+from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
+import resource
 import subprocess
 import sys
 import time
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import torch
 
 
@@ -42,6 +46,21 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--contigs", nargs="+", default=list(CONTIGS))
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--contig-loader-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of contigs prepared ahead of GPU fitting. One is the "
+            "recommended default because each Arrow read is already threaded; "
+            "zero disables prefetch for comparison."
+        ),
+    )
+    parser.add_argument(
+        "--arrow-cpu-count",
+        type=int,
+        help="Override the CPU thread-pool size used by PyArrow.",
+    )
     parser.add_argument("--scalar-baseline-genes", type=int, default=128)
     parser.add_argument("--effects", type=int, default=10)
     parser.add_argument("--window", type=int, default=1_000_000)
@@ -84,6 +103,44 @@ def sha256(path: Path) -> str:
 def synchronize() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+def iter_prefetched(items, loader, max_workers: int):
+    """Yield ordered loader results with at most ``max_workers`` in flight."""
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+    item_iterator = iter(items)
+    with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="contig-loader") as executor:
+        queued: list[tuple[object, Future]] = []
+
+        def fill_queue() -> None:
+            while len(queued) < max_workers:
+                try:
+                    item = next(item_iterator)
+                except StopIteration:
+                    break
+                queued.append((item, executor.submit(loader, item)))
+
+        fill_queue()
+        while queued:
+            item, future = queued.pop(0)
+            wait_started = time.perf_counter()
+            result = future.result()
+            wait_seconds = time.perf_counter() - wait_started
+            # Submit replacement work before yielding so it runs while the
+            # consumer processes the current item.
+            fill_queue()
+            yield item, result, wait_seconds
+
+
+def iter_synchronous(items, loader):
+    """Yield loader results without overlapping producer and consumer work."""
+    for item in items:
+        started = time.perf_counter()
+        result = loader(item)
+        yield item, result, time.perf_counter() - started
 
 
 def git_state(path: Path) -> dict[str, object]:
@@ -211,12 +268,35 @@ def load_contig_variant_index(
     Parquet reader retain the same order and bounds validation for each
     contig, without rereading the large TSV for every chromosome.
     """
-    if not all(
-        hasattr(genotypes_module, name)
-        for name in ("variant_rows_for_contigs", "read_genotype_row_subset")
-    ):
+    if not hasattr(genotypes_module, "read_genotype_row_subset"):
         return None
-    variants = genotypes_module.variant_rows_for_contigs(variant_table, contigs)
+    variants = pd.read_csv(
+        variant_table,
+        sep="\t",
+        dtype=str,
+        engine="pyarrow",
+    )
+    required = {"id", "chrom", "pos"}
+    missing = required - set(variants)
+    if missing:
+        raise ValueError(
+            f"Variant table is missing slice columns: {sorted(missing)}"
+        )
+    variants["source_row"] = np.arange(len(variants), dtype=np.int64)
+    variants = variants.loc[variants["chrom"].isin(contigs)].copy()
+    if variants.empty:
+        raise ValueError(
+            f"No variants found on contigs {list(contigs)} in {variant_table}"
+        )
+    variants["pos"] = pd.to_numeric(
+        variants["pos"], errors="raise"
+    ).astype("int64")
+    variants = variants.set_index("id")
+    variants.index = variants.index.astype(str)
+    if variants.index.has_duplicates:
+        raise ValueError("Selected variant IDs are duplicated")
+    if not variants["source_row"].is_monotonic_increasing:
+        raise ValueError("Selected source variant rows are not sorted")
     return {
         contig: variants.loc[variants["chrom"].eq(contig)].copy()
         for contig in contigs
@@ -291,6 +371,13 @@ def prepare_contig(
             maf_threshold=arguments.maf_threshold,
         )
     )
+    # Fine-mapping performs imputation and MAF calculations in float64. The
+    # solver contract is float32, so cast the retained contig once rather than
+    # recasting every overlapping locus while filling a batch.
+    genotype_values = np.ascontiguousarray(
+        genotype_values,
+        dtype=np.float32,
+    )
     retained_index = pd.Index(retained_ids.astype(str))
     filtered_variants = variants.loc[retained_index]
     if not filtered_variants.index.equals(retained_index):
@@ -327,7 +414,6 @@ def prepare_contig(
     prep_seconds = time.perf_counter() - prep_started
     prepared.sort(key=lambda job: (int(job["variant_count"]), str(job["phenotype_id"])))
     del genotype_table, variants, filtered_variants
-    gc.collect()
     return prepared, {
         "genotype_load_seconds": load_seconds,
         "genotype_preparation_seconds": prep_seconds,
@@ -505,9 +591,6 @@ def fit_contig(
             )
             del scalar
         del fits, packed_X, packed_y, host_X, host_y
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
     del residualizer, covariate_t
     return pd.DataFrame(rows), pd.DataFrame(comparisons), {
         "batches": batch_count,
@@ -536,8 +619,21 @@ def main() -> int:
     arguments = parse_arguments()
     if set(arguments.contigs) - set(CONTIGS):
         raise ValueError("Only chr1 through chr22 are supported")
-    if arguments.batch_size < 1 or arguments.scalar_baseline_genes < 0:
-        raise ValueError("Batch size and scalar baseline count are invalid")
+    if (
+        arguments.batch_size < 1
+        or arguments.scalar_baseline_genes < 0
+        or arguments.contig_loader_workers < 0
+        or (
+            arguments.arrow_cpu_count is not None
+            and arguments.arrow_cpu_count < 1
+        )
+    ):
+        raise ValueError(
+            "Batch size, loader/Arrow workers, or scalar baseline count "
+            "is invalid"
+        )
+    if arguments.arrow_cpu_count is not None:
+        pa.set_cpu_count(arguments.arrow_cpu_count)
     if (arguments.output / "FINAL_BENCHMARK.json").exists():
         raise FileExistsError(
             f"Benchmark is already complete: {arguments.output}"
@@ -582,17 +678,13 @@ def main() -> int:
         selected_ids,
         arguments.scalar_baseline_genes,
     )
-    active_contigs = tuple(
-        contig
-        for contig in arguments.contigs
-        if (positions["chr"].eq(contig) & positions.index.isin(selected_ids)).any()
-    )
-
     run_configuration = {
         "status": "running",
         "started_at_epoch_seconds": time.time(),
         "parameters": {
+            "arrow_cpu_count": pa.cpu_count(),
             "batch_size": arguments.batch_size,
+            "contig_loader_workers": arguments.contig_loader_workers,
             "coverage": arguments.coverage,
             "effects": arguments.effects,
             "fdr": arguments.fdr,
@@ -611,6 +703,8 @@ def main() -> int:
         },
         "tensorqtl": source_state,
         "software": {
+            "available_cpu_count": os.cpu_count(),
+            "pyarrow": pa.__version__,
             "python": sys.version,
             "torch": torch.__version__,
             "cuda_available": torch.cuda.is_available(),
@@ -644,8 +738,7 @@ def main() -> int:
 
     wall_started = time.perf_counter()
     contig_manifests = []
-    contig_variant_index: dict[str, pd.DataFrame] | None = None
-    variant_index_load_seconds = 0.0
+    pending_tasks: list[dict[str, object]] = []
     for contig in arguments.contigs:
         contig_ids = positions.index[
             positions["chr"].eq(contig)
@@ -674,61 +767,104 @@ def main() -> int:
             contig_manifests.append(contig_manifest)
             print(f"SKIP {contig} complete", flush=True)
             continue
-        print(f"PREPARE {contig} genes={len(contig_egenes)}", flush=True)
-        if contig_variant_index is None:
-            index_started = time.perf_counter()
-            contig_variant_index = load_contig_variant_index(
-                arguments.variant_table,
-                active_contigs,
-                genotypes_module,
-            )
-            variant_index_load_seconds = time.perf_counter() - index_started
-        prepared, prep_metrics = prepare_contig(
-            contig,
-            contig_egenes,
-            phenotypes,
-            positions,
-            arguments,
-            finemapping,
+        pending_tasks.append(
+            {
+                "contig": contig,
+                "egenes": contig_egenes,
+                "output": contig_output,
+                "manifest_path": contig_manifest_path,
+            }
+        )
+
+    variant_index_load_seconds = 0.0
+    if pending_tasks:
+        index_started = time.perf_counter()
+        contig_variant_index = load_contig_variant_index(
+            arguments.variant_table,
+            tuple(str(task["contig"]) for task in pending_tasks),
             genotypes_module,
-            contig_variant_index,
         )
-        prep_metrics["genotype_load_seconds"] += variant_index_load_seconds
-        prep_metrics["variant_index_load_seconds"] = (
-            variant_index_load_seconds
+        variant_index_load_seconds = time.perf_counter() - index_started
+        loader_workers = min(
+            arguments.contig_loader_workers,
+            len(pending_tasks),
         )
-        variant_index_load_seconds = 0.0
-        print(f"FIT {contig} genes={len(prepared)}", flush=True)
-        gene_table, comparison_table, fit_metrics = fit_contig(
-            contig,
-            prepared,
-            scalar_ids,
-            covariates,
-            arguments,
-            susie,
-            core,
-        )
-        atomic_parquet(gene_table, contig_output / "gene_results.parquet")
-        atomic_parquet(
-            comparison_table,
-            contig_output / "scalar_comparisons.parquet",
-        )
-        contig_manifest = {
-            "status": "complete",
-            "contig": contig,
-            "genes": len(gene_table),
-            "scalar_comparisons": len(comparison_table),
-            **prep_metrics,
-            **fit_metrics,
-        }
-        atomic_json(contig_manifest, contig_manifest_path)
-        contig_manifests.append(contig_manifest)
-        print(
-            f"DONE {contig} fit_seconds={fit_metrics['fit_seconds']:.3f}",
-            flush=True,
-        )
-        del prepared, gene_table, comparison_table
-        gc.collect()
+
+        def load_task(task):
+            task_contig = str(task["contig"])
+            task_egenes = task["egenes"]
+            print(
+                f"PREFETCH {task_contig} genes={len(task_egenes)}",
+                flush=True,
+            )
+            return prepare_contig(
+                task_contig,
+                task_egenes,
+                phenotypes,
+                positions,
+                arguments,
+                finemapping,
+                genotypes_module,
+                contig_variant_index,
+            )
+
+        if loader_workers == 0:
+            prefetched = iter_synchronous(pending_tasks, load_task)
+        else:
+            prefetched = iter_prefetched(
+                pending_tasks,
+                load_task,
+                loader_workers,
+            )
+        for task_index, (task, prepared_result, wait_seconds) in enumerate(
+                prefetched):
+            contig = str(task["contig"])
+            prepared, prep_metrics = prepared_result
+            prep_metrics["loader_wait_seconds"] = wait_seconds
+            prep_metrics["loader_workers"] = loader_workers
+            prep_metrics["variant_index_load_seconds"] = (
+                variant_index_load_seconds if task_index == 0 else 0.0
+            )
+            if task_index == 0:
+                prep_metrics["genotype_load_seconds"] += (
+                    variant_index_load_seconds
+                )
+
+            print(f"FIT {contig} genes={len(prepared)}", flush=True)
+            gene_table, comparison_table, fit_metrics = fit_contig(
+                contig,
+                prepared,
+                scalar_ids,
+                covariates,
+                arguments,
+                susie,
+                core,
+            )
+            contig_output = task["output"]
+            atomic_parquet(
+                gene_table,
+                contig_output / "gene_results.parquet",
+            )
+            atomic_parquet(
+                comparison_table,
+                contig_output / "scalar_comparisons.parquet",
+            )
+            contig_manifest = {
+                "status": "complete",
+                "contig": contig,
+                "genes": len(gene_table),
+                "scalar_comparisons": len(comparison_table),
+                **prep_metrics,
+                **fit_metrics,
+            }
+            atomic_json(contig_manifest, task["manifest_path"])
+            contig_manifests.append(contig_manifest)
+            print(
+                f"DONE {contig} "
+                f"fit_seconds={fit_metrics['fit_seconds']:.3f}",
+                flush=True,
+            )
+            del prepared, gene_table, comparison_table
 
     gene_files = sorted(
         (arguments.output / "contigs").glob("chr*/gene_results.parquet")
@@ -767,48 +903,31 @@ def main() -> int:
         float(item.get("genotype_preparation_seconds", 0))
         for item in contig_manifests
     )
+    total_loader_wait_seconds = sum(
+        float(item.get("loader_wait_seconds", 0))
+        for item in contig_manifests
+    )
+    total_variant_index_seconds = sum(
+        float(item.get("variant_index_load_seconds", 0))
+        for item in contig_manifests
+    )
     estimated_scalar_seconds = (
         total_scalar_seconds / len(comparisons) * len(genes)
         if len(comparisons)
         else None
     )
-    final_manifest = {
-        **run_configuration,
-        "status": "complete",
-        "completed_at_epoch_seconds": time.time(),
-        "wall_seconds": time.perf_counter() - wall_started,
-        "counts": {
-            "genes": len(genes),
-            "batches": sum(int(item["batches"]) for item in contig_manifests),
-            "converged": int(genes["converged"].sum()),
-            "credible_sets": int(genes["credible_sets"].sum()),
-            "scalar_comparisons": len(comparisons),
-        },
-        "timing": {
-            "genotype_load_seconds": total_load_seconds,
-            "genotype_preparation_seconds": (
-                total_genotype_preparation_seconds
-            ),
-            "packing_seconds": total_packing_seconds,
-            "residualization_seconds": total_prep_seconds,
-            "batched_fit_seconds": total_fit_seconds,
-            "batched_genes_per_second": len(genes) / total_fit_seconds,
-            "scalar_baseline_seconds": total_scalar_seconds,
-            "estimated_full_scalar_seconds": estimated_scalar_seconds,
-            "estimated_solver_speedup": (
-                estimated_scalar_seconds / total_fit_seconds
-                if estimated_scalar_seconds is not None
-                else None
-            ),
-        },
-        "distributions": {
-            "variants": distribution(genes["variants_fine_mapped"]),
-            "iterations": distribution(genes["iterations"]),
-            "padding_efficiency": distribution(
-                genes["batch_padding_efficiency"]
-            ),
-        },
-        "parity": {
+    if comparisons.empty:
+        parity = {
+            "convergence_status_matches": 0,
+            "iteration_matches": 0,
+            "credible_sets_identical": 0,
+            "maximum_absolute_pip_difference": None,
+            "maximum_absolute_fitted_difference": None,
+            "maximum_absolute_alpha_difference": None,
+            "maximum_absolute_residual_variance_difference": None,
+        }
+    else:
+        parity = {
             "convergence_status_matches": int(
                 (
                     comparisons["batched_converged"]
@@ -833,9 +952,51 @@ def main() -> int:
             "maximum_absolute_residual_variance_difference": float(
                 comparisons["residual_variance_difference"].abs().max()
             ),
+        }
+    final_manifest = {
+        **run_configuration,
+        "status": "complete",
+        "completed_at_epoch_seconds": time.time(),
+        "wall_seconds": time.perf_counter() - wall_started,
+        "counts": {
+            "genes": len(genes),
+            "batches": sum(int(item["batches"]) for item in contig_manifests),
+            "converged": int(genes["converged"].sum()),
+            "credible_sets": int(genes["credible_sets"].sum()),
+            "scalar_comparisons": len(comparisons),
         },
+        "timing": {
+            "genotype_load_seconds": total_load_seconds,
+            "genotype_preparation_seconds": (
+                total_genotype_preparation_seconds
+            ),
+            "loader_wait_seconds": total_loader_wait_seconds,
+            "variant_index_load_seconds": total_variant_index_seconds,
+            "packing_seconds": total_packing_seconds,
+            "residualization_seconds": total_prep_seconds,
+            "batched_fit_seconds": total_fit_seconds,
+            "batched_genes_per_second": len(genes) / total_fit_seconds,
+            "scalar_baseline_seconds": total_scalar_seconds,
+            "estimated_full_scalar_seconds": estimated_scalar_seconds,
+            "estimated_solver_speedup": (
+                estimated_scalar_seconds / total_fit_seconds
+                if estimated_scalar_seconds is not None
+                else None
+            ),
+        },
+        "distributions": {
+            "variants": distribution(genes["variants_fine_mapped"]),
+            "iterations": distribution(genes["iterations"]),
+            "padding_efficiency": distribution(
+                genes["batch_padding_efficiency"]
+            ),
+        },
+        "parity": parity,
         "peak_gpu_memory_bytes": max(
             int(item["peak_gpu_memory_bytes"]) for item in contig_manifests
+        ),
+        "peak_host_memory_bytes": (
+            int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
         ),
         "contigs": contig_manifests,
     }
