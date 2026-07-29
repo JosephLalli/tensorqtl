@@ -44,6 +44,8 @@ def _caisa(X, w, sa2, pi, beta, r, sigma2, order, max_iter, min_iter,
         inv_sa2 = np.where(sa2 > 0, 1.0 / sa2, np.inf)
     S2inv = 1.0 / (inv_sa2[:, None] + w[None, :])   # (K, p)
     S2inv[0, :] = epstol
+    # Preserve the reference's np.log(1 + x) arithmetic (not np.log1p).
+    log1p_sa2w = np.log(1.0 + sa2[:, None] * w[None, :])
 
     varobj = np.zeros(max_iter)
     it = 0
@@ -51,6 +53,7 @@ def _caisa(X, w, sa2, pi, beta, r, sigma2, order, max_iter, min_iter,
         a1 = 0.0
         a2 = 0.0
         piold = pi.copy()
+        logpiold = np.log(piold + epstol)
         betaold = beta.copy()
         pi = np.zeros(K)
 
@@ -65,7 +68,7 @@ def _caisa(X, w, sa2, pi, beta, r, sigma2, order, max_iter, min_iter,
 
             muj = bjwj * s2inv_j                     # (K,) posterior means
             muj[0] = 0.0
-            phij = np.log(piold + epstol) - np.log(1.0 + sa2 * wj) / 2.0 + muj * (bjwj / 2.0 / sigma2)
+            phij = logpiold - log1p_sa2w[:, j] / 2.0 + muj * (bjwj / 2.0 / sigma2)
             phij = np.exp(phij - phij.max())
             phij = phij / phij.sum()
 
@@ -75,9 +78,8 @@ def _caisa(X, w, sa2, pi, beta, r, sigma2, order, max_iter, min_iter,
 
             a1 += bjwj * beta[j]
             a2 += phij @ np.log(phij + epstol)
-            phij0 = phij.copy()
-            phij0[0] = 0.0
-            a2 += -(phij0 @ np.log(s2inv_j)) / 2.0
+            phij[0] = 0.0
+            a2 += -(phij @ np.log(s2inv_j)) / 2.0
 
         varobj[it] = r @ r - (beta ** 2) @ w + a1
         if update_sigma:

@@ -22,6 +22,79 @@ def _design(n, p, seed):
     return X - X.mean(0)
 
 
+def _caisa_reference(X, w, sa2, pi, beta, r, sigma2, order, max_iter,
+                     min_iter, convtol, epstol, method_q, update_pi, update_sigma):
+    """Pre-optimization arithmetic for exact-regression comparison."""
+    n, p = X.shape
+    K = sa2.shape[0]
+    beta = beta.astype(np.float64).copy()
+    r = r.astype(np.float64).copy()
+    pi = pi.astype(np.float64).copy()
+    sa2 = sa2.astype(np.float64)
+    w = w.astype(np.float64)
+    with np.errstate(divide="ignore"):
+        inv_sa2 = np.where(sa2 > 0, 1.0 / sa2, np.inf)
+    S2inv = 1.0 / (inv_sa2[:, None] + w[None, :])
+    S2inv[0, :] = epstol
+
+    varobj = np.zeros(max_iter)
+    it = 0
+    while it < max_iter:
+        a1 = 0.0
+        a2 = 0.0
+        piold = pi.copy()
+        betaold = beta.copy()
+        pi = np.zeros(K)
+        for jj in range(p):
+            j = jj if order is None else int(order[it * p + jj])
+            xj = X[:, j]
+            wj = w[j]
+            s2inv_j = S2inv[:, j]
+            bjwj = r @ xj + beta[j] * wj
+            r += xj * beta[j]
+            muj = bjwj * s2inv_j
+            muj[0] = 0.0
+            phij = (np.log(piold + epstol) - np.log(1.0 + sa2 * wj) / 2.0
+                    + muj * (bjwj / 2.0 / sigma2))
+            phij = np.exp(phij - phij.max())
+            phij = phij / phij.sum()
+            pi += phij / p
+            beta[j] = phij @ muj
+            r += -xj * beta[j]
+            a1 += bjwj * beta[j]
+            a2 += phij @ np.log(phij + epstol)
+            phij0 = phij.copy()
+            phij0[0] = 0.0
+            a2 += -(phij0 @ np.log(s2inv_j)) / 2.0
+
+        varobj[it] = r @ r - (beta ** 2) @ w + a1
+        if update_sigma:
+            if method_q == "sigma_indep_q":
+                sigma2 = (varobj[it] + p * (1.0 - pi[0]) * sigma2) / (n + p * (1.0 - pi[0]))
+            elif method_q == "sigma_dep_q":
+                sigma2 = varobj[it] / n
+        if update_pi:
+            piold = pi
+        varobj[it] = (varobj[it] / sigma2 / 2.0
+                      + np.log(2.0 * np.pi * sigma2) / 2.0 * n
+                      - (pi @ np.log(piold + epstol)) * p + a2)
+        for k in range(1, K):
+            varobj[it] += pi[k] * np.log(sa2[k]) * p / 2.0
+        if not update_pi:
+            pi = piold
+
+        if it >= min_iter - 1:
+            beta_norm = np.linalg.norm(beta)
+            if np.linalg.norm(betaold - beta) < convtol * max(1.0, beta_norm):
+                it += 1
+                break
+            if it > 0 and varobj[it] > varobj[it - 1]:
+                break
+        it += 1
+    return {"beta": beta, "sigma2": float(sigma2), "pi": pi,
+            "iter": it, "varobj": varobj[:it]}
+
+
 def test_default_grid():
     """Default sa2 grid: 25 points, spike at 0, scaled by n/median(w)."""
     w = np.full(30, 80.0)
@@ -127,3 +200,25 @@ def test_matches_manual_single_variant():
     phij = np.exp(phij - phij.max()); phij /= phij.sum()
     beta_manual = float(phij @ muj)
     assert abs(out['beta'][0] - beta_manual) < 1e-12
+
+
+@pytest.mark.parametrize("seed, ordered", [(31, False), (32, True)])
+def test_caisa_optimization_preserves_reference_arithmetic(seed, ordered):
+    """Log hoisting and in-place spike removal retain every solver output exactly."""
+    rng = np.random.RandomState(seed)
+    n, p, K, max_iter = 37, 9, 5, 6
+    X = _design(n, p, seed)
+    w = (X * X).sum(0)
+    sa2 = np.r_[0.0, np.exp(rng.uniform(-2.0, 1.0, K - 1))]
+    pi = rng.dirichlet(np.ones(K))
+    beta = rng.randn(p) / 10.0
+    r = rng.randn(n) - X @ beta
+    order = (rng.permutation(p * max_iter) % p) if ordered else None
+    args = (X, w, sa2, pi, beta, r, 1.3, order, max_iter, max_iter,
+            1e-20, 1e-12, "sigma_indep_q", True, True)
+    reference = _caisa_reference(*args)
+    optimized = mrash._caisa(*args)
+    assert optimized["iter"] == reference["iter"]
+    for key in ("beta", "pi", "varobj"):
+        assert np.array_equal(optimized[key], reference[key])
+    assert optimized["sigma2"] == reference["sigma2"]
