@@ -210,3 +210,22 @@ python3 tests/ase_validation.py --reps 1500 --N 200 --tiers 0,1,2,3 --out result
 # fast smoke (~1 min):
 python3 tests/ase_validation.py --reps 60 --tiers 0
 ```
+
+## Hosting the annotatable report
+
+`docs/ase_validation_report.html` embeds [Hypothesis](https://web.hypothes.is/) for inline
+annotation. Hypothesis needs the page served over http(s) — it will not load from a
+`file://` path, and the Claude Artifact sandbox blocks the script at the CSP layer. To get
+working inline commenting, deploy to Cloudflare Pages:
+
+```bash
+./scripts/build_site.sh
+npx wrangler login    # one-time OAuth (or set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
+npx wrangler pages deploy site --project-name=hapmixqtl-calibration-audit
+```
+
+Lands at `https://hapmixqtl-calibration-audit.pages.dev`. Config in `wrangler.toml`;
+`site/` is generated and gitignored, so `docs/` stays the single source of truth.
+
+> Note: this deploy cannot be run from a Claude Code remote session — the egress policy
+> blocks `api.cloudflare.com`, and no Cloudflare credentials are present. Run it locally.

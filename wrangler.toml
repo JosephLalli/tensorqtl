@@ -1,0 +1,21 @@
+# Cloudflare Pages config for the hapmixQTL calibration audit report.
+#
+# Deploy (from the repo root):
+#   ./scripts/build_site.sh
+#   npx wrangler login                 # one-time OAuth, opens a browser
+#   npx wrangler pages deploy site --project-name=hapmixqtl-calibration-audit
+#
+# Non-interactive alternative (CI / no browser):
+#   export CLOUDFLARE_API_TOKEN=...    # needs the "Cloudflare Pages: Edit" permission
+#   export CLOUDFLARE_ACCOUNT_ID=...
+#   npx wrangler pages deploy site --project-name=hapmixqtl-calibration-audit
+#
+# The site lands at https://hapmixqtl-calibration-audit.pages.dev (and a
+# per-deploy preview URL). Cloudflare Pages serves no restrictive
+# Content-Security-Policy by default, so the Hypothesis embed loads and inline
+# annotation works -- which is the whole reason for hosting it rather than
+# opening the file locally.
+
+name = "hapmixqtl-calibration-audit"
+pages_build_output_dir = "site"
+compatibility_date = "2026-09-07"
