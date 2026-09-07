@@ -15,6 +15,14 @@
 # Content-Security-Policy by default, so the Hypothesis embed loads and inline
 # annotation works -- which is the whole reason for hosting it rather than
 # opening the file locally.
+#
+# PRIVATE BY DEFAULT: a pages.dev URL is world-readable. Apply Cloudflare Access
+# BEFORE the first deploy, and protect preview deployments separately -- each
+# deploy's <hash>.<project>.pages.dev URL stays reachable forever otherwise.
+# Access does NOT make Hypothesis annotations private (they live on Hypothesis's
+# servers and public ones expose the quoted passage); use a Hypothesis private
+# group as well. Full instructions: docs/ase_validation.md -> "Making it private
+# by default".
 
 name = "hapmixqtl-calibration-audit"
 pages_build_output_dir = "site"

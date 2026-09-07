@@ -488,12 +488,17 @@
 python3 tests/ase_validation.py --reps 60 --tiers 0</pre>
 
   <div class="annot">
-    <strong>Commenting.</strong> This page loads
+    <p style="margin:0 0 10px"><strong>Commenting.</strong> This page loads
     <a href="https://web.hypothes.is/">Hypothesis</a> for inline annotation — select any
     passage and the sidebar lets you highlight or comment on that exact text. Hypothesis
     requires the page to be served over http(s); opening the file directly from disk
     (<code>file://</code>) will not load the sidebar, and the Artifact sandbox blocks the
-    script at the CSP layer, so use the repo copy served over HTTP for annotation.
+    script at the CSP layer, so use the hosted copy for annotation.</p>
+    <p style="margin:0"><strong>Before you annotate:</strong> select the project's
+    <strong>private Hypothesis group</strong> in the sidebar rather than "Public."
+    Annotations live on Hypothesis's servers, not on this host, and public ones are
+    world-readable through their API — <em>including the quoted passage each is anchored
+    to</em>. Access control on this page does not cover them.</p>
   </div>
 
   <footer>

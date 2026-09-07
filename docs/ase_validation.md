@@ -229,3 +229,51 @@ Lands at `https://hapmixqtl-calibration-audit.pages.dev`. Config in `wrangler.to
 
 > Note: this deploy cannot be run from a Claude Code remote session — the egress policy
 > blocks `api.cloudflare.com`, and no Cloudflare credentials are present. Run it locally.
+
+### Making it private by default
+
+A `pages.dev` URL is world-readable by default. Two separate things have to be locked
+down, and they are protected by two different mechanisms.
+
+**1. The page — Cloudflare Access** (Zero Trust; free up to 50 users).
+
+> **The gotcha:** protecting `hapmixqtl-calibration-audit.pages.dev` is *not enough*. Every
+> deploy also gets its own immutable preview URL
+> (`<hash>.hapmixqtl-calibration-audit.pages.dev`) which stays publicly reachable forever
+> unless protected separately. Cover both.
+
+- **Preview deployments** — Pages has a native toggle:
+  `Pages → project → Settings → General → Enable Access policy`. This is the one people
+  miss. (Cloudflare moves its UI around; if it is not under General, look under the
+  project's Deployments settings.)
+- **Production** — `Zero Trust → Access → Applications → Add → Self-hosted`, with
+  application domain `hapmixqtl-calibration-audit.pages.dev`, an **Allow** policy including
+  either specific emails or an email domain (e.g. `wisc.edu`), and **One-time PIN** as the
+  identity method — no IdP or SSO setup required.
+- **Ordering is the control.** Cloudflare has no "create as private" flag, so create the
+  project and apply Access *before* the first `pages deploy`; otherwise there is a window
+  where the report is open.
+
+**2. The commentary — a Hypothesis private group.**
+
+Cloudflare Access does **not** make annotations private. Annotations live on Hypothesis's
+servers, not on the Pages origin, and public annotations are world-readable through the
+Hypothesis API — *including the quoted text of the passage each one anchors to*. Someone
+could therefore read collaborators' comments, and the excerpts being commented on, without
+ever passing the Access gate.
+
+Fix: create a private group (`hypothes.is → Groups → Create new private group`), share the
+join link with collaborators, and have everyone select that group in the sidebar before
+annotating. Access gates the page; the private group gates the commentary. **Both are
+needed.**
+
+Also note annotations are anchored to the exact URL, so moving the report to a custom
+domain later will orphan existing annotations.
+
+### Simpler alternatives
+
+- **Local only:** `cd site && python3 -m http.server` — Hypothesis does load over
+  `http://localhost`. Fine for reading it yourself; useless for collaborators, since
+  localhost URLs are per-machine and annotations will not be shared.
+- **GitHub Pages on a private repo** requires a paid GitHub plan, so it is not a free
+  shortcut for private hosting.
