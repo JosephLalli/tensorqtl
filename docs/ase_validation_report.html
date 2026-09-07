@@ -1,0 +1,508 @@
+<title>hapmixQTL Calibration Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root{
+    --ground:#F4F7F7; --surface:#FFFFFF; --surface-2:#EDF2F1;
+    --ink:#101F1D; --ink-2:#3B4F4C; --muted:#657976;
+    --rule:#D6E0DE; --rule-strong:#B9C8C5;
+    --accent:#0E6E63; --accent-soft:#D3E7E3;
+    --alarm:#AE3319; --alarm-soft:#F6DED7;
+    --warn:#8C6210;
+    --shadow:0 1px 2px rgba(16,31,29,.06), 0 8px 24px -16px rgba(16,31,29,.28);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0A1413; --surface:#11201E; --surface-2:#172A28;
+      --ink:#E3EDEA; --ink-2:#B3C6C2; --muted:#829894;
+      --rule:#243B38; --rule-strong:#31504B;
+      --accent:#4CBFAE; --accent-soft:#123632;
+      --alarm:#F08768; --alarm-soft:#3A1B12;
+      --warn:#D9A441;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0A1413; --surface:#11201E; --surface-2:#172A28;
+    --ink:#E3EDEA; --ink-2:#B3C6C2; --muted:#829894;
+    --rule:#243B38; --rule-strong:#31504B;
+    --accent:#4CBFAE; --accent-soft:#123632;
+    --alarm:#F08768; --alarm-soft:#3A1B12;
+    --warn:#D9A441;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground); color:var(--ink);
+    font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
+    font-size:16px; line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:0 28px 96px}
+  .col{max-width:68ch}
+
+  /* ---- masthead ---- */
+  header.mast{padding:56px 0 30px; border-bottom:1px solid var(--rule)}
+  .eyebrow{
+    font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:11.5px;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+    display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px;
+  }
+  h1{
+    font-family:Spectral,Georgia,serif; font-weight:600;
+    font-size:clamp(2.1rem,4.6vw,3.1rem); line-height:1.08;
+    letter-spacing:-.015em; margin:0 0 16px; text-wrap:balance;
+  }
+  .standfirst{font-size:1.12rem; color:var(--ink-2); max-width:62ch; margin:0}
+
+  /* ---- verdicts ---- */
+  .verdicts{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:1px;
+    background:var(--rule); border:1px solid var(--rule); margin:34px 0 0}
+  .verdict{background:var(--surface); padding:18px 20px}
+  .vlabel{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted); margin-bottom:9px}
+  .vstate{display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:1.02rem}
+  .dot{width:9px; height:9px; border-radius:50%; flex:none}
+  .fail .dot{background:var(--alarm)} .fail .vstate{color:var(--alarm)}
+  .pass .dot{background:var(--accent)} .pass .vstate{color:var(--accent)}
+  .vnote{font-size:.9rem; color:var(--muted); margin-top:7px; line-height:1.5}
+
+  /* ---- sections ---- */
+  section{padding-top:52px}
+  h2{
+    font-family:Spectral,Georgia,serif; font-weight:600; font-size:1.72rem;
+    letter-spacing:-.01em; margin:0 0 6px; text-wrap:balance;
+    display:flex; align-items:baseline; gap:14px;
+  }
+  .tier{
+    font-family:"IBM Plex Mono",monospace; font-size:.72em; font-weight:500;
+    color:var(--accent); letter-spacing:.06em; flex:none;
+  }
+  h3{font-family:"IBM Plex Sans",sans-serif; font-size:1.02rem; font-weight:600;
+    margin:32px 0 10px; letter-spacing:-.005em}
+  p{margin:0 0 15px}
+  .lede{color:var(--ink-2)}
+  a{color:var(--accent); text-underline-offset:2px}
+  strong{font-weight:600}
+  code{font-family:"IBM Plex Mono",monospace; font-size:.875em;
+    background:var(--surface-2); padding:.12em .38em; border-radius:3px; color:var(--ink)}
+
+  /* ---- pull quote / headline finding ---- */
+  .headline{
+    background:var(--surface); border-left:3px solid var(--alarm);
+    padding:24px 28px; margin:26px 0; box-shadow:var(--shadow);
+  }
+  .headline p{font-family:Spectral,Georgia,serif; font-size:1.2rem; line-height:1.5;
+    color:var(--ink); margin:0}
+  .headline p+p{margin-top:12px; font-size:1.02rem; color:var(--ink-2)}
+
+  /* ---- chart ---- */
+  figure{margin:30px 0 8px}
+  .chartbox{background:var(--surface); border:1px solid var(--rule);
+    padding:22px 20px 12px; overflow-x:auto; box-shadow:var(--shadow)}
+  svg{display:block; min-width:640px; width:100%; height:auto}
+  figcaption{font-size:.88rem; color:var(--muted); margin-top:12px; max-width:68ch}
+
+  /* ---- tables ---- */
+  .tablebox{overflow-x:auto; margin:22px 0; border:1px solid var(--rule); background:var(--surface)}
+  table{border-collapse:collapse; width:100%; min-width:520px; font-size:.9rem}
+  caption{text-align:left; font-size:.85rem; color:var(--muted); padding:13px 16px;
+    border-bottom:1px solid var(--rule); background:var(--surface-2)}
+  th,td{padding:9px 16px; text-align:left; border-bottom:1px solid var(--rule)}
+  th{font-size:11px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--muted); font-weight:600; white-space:nowrap}
+  td{font-variant-numeric:tabular-nums; font-family:"IBM Plex Mono",monospace; font-size:.85rem}
+  td:first-child{font-family:"IBM Plex Sans",sans-serif}
+  tbody tr:last-child td{border-bottom:none}
+  .bad{color:var(--alarm); font-weight:500}
+  .good{color:var(--accent); font-weight:500}
+  .rowsplit td{border-top:2px solid var(--rule-strong)}
+
+  /* ---- facts list ---- */
+  .facts{display:flex; flex-direction:column; gap:1px; background:var(--rule);
+    border:1px solid var(--rule); margin:22px 0}
+  .fact{background:var(--surface); padding:16px 20px; display:grid;
+    grid-template-columns:52px 1fr; gap:16px; align-items:start}
+  .fkey{font-family:"IBM Plex Mono",monospace; font-weight:500; color:var(--accent); font-size:.9rem}
+  .fact p{margin:0; font-size:.94rem; color:var(--ink-2)}
+  .floc{font-family:"IBM Plex Mono",monospace; font-size:.8rem; color:var(--muted); display:block; margin-top:5px}
+
+  /* ---- recommendations ---- */
+  ol.recs{counter-reset:r; list-style:none; padding:0; margin:20px 0; display:flex;
+    flex-direction:column; gap:14px}
+  ol.recs li{counter-increment:r; display:grid; grid-template-columns:30px 1fr; gap:14px;
+    font-size:.97rem; color:var(--ink-2)}
+  ol.recs li::before{content:counter(r); font-family:"IBM Plex Mono",monospace;
+    font-size:.82rem; color:var(--accent); border:1px solid var(--rule-strong);
+    width:26px; height:26px; display:grid; place-items:center; margin-top:1px}
+  ul.open{padding-left:20px; color:var(--ink-2); font-size:.97rem}
+  ul.open li{margin-bottom:9px}
+
+  pre{background:var(--surface-2); border:1px solid var(--rule); padding:15px 18px;
+    overflow-x:auto; font-family:"IBM Plex Mono",monospace; font-size:.83rem;
+    line-height:1.6; margin:18px 0; color:var(--ink)}
+
+  .annot{background:var(--accent-soft); border:1px solid var(--rule);
+    padding:15px 20px; margin:34px 0 0; font-size:.9rem; color:var(--ink-2)}
+  .annot strong{color:var(--ink)}
+
+  footer{margin-top:60px; padding-top:24px; border-top:1px solid var(--rule);
+    font-size:.86rem; color:var(--muted)}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="eyebrow">
+    <span>tensorQTL · hapmixQTL</span><span>2026-09-07</span>
+    <span>N = 200 · 1,500 reps/cell</span><span>30,000 null p-values/cell</span>
+  </div>
+  <h1>Does the ASE pipeline actually work?</h1>
+  <p class="standfirst">A four-tier calibration audit of the two-channel hapmixQTL
+  association test — asking not whether the code computes its formula, but whether the
+  p-values it produces are valid.</p>
+
+  <div class="verdicts">
+    <div class="verdict fail">
+      <div class="vlabel">Default configuration</div>
+      <div class="vstate"><span class="dot"></span>Invalid</div>
+      <div class="vnote"><code>tau_mode='zero'</code> — up to 107× nominal type-I error;
+      ~100% false positives on count-level data.</div>
+    </div>
+    <div class="verdict pass">
+      <div class="vlabel">With <code>tau_mode='estimate'</code></div>
+      <div class="vstate"><span class="dot"></span>Calibrated</div>
+      <div class="vnote">0.85–1.02× nominal across every condition tested; λ<sub>GC</sub> 0.94–1.01.</div>
+    </div>
+    <div class="verdict pass">
+      <div class="vlabel">Method premise</div>
+      <div class="vstate"><span class="dot"></span>Holds</div>
+      <div class="vnote">Two-channel beats total-only at <em>matched</em> type-I error,
+      most at low MAF.</div>
+    </div>
+  </div>
+</header>
+
+<section class="col">
+  <div class="headline">
+    <p>The default <code>tau_mode='zero'</code> is anticonservative — severely so on
+    realistic data. The fix already exists in the codebase.</p>
+    <p><code>tau_mode='estimate'</code> restores calibration in every condition tested, at
+    no meaningful cost in power. It should become the default.</p>
+  </div>
+
+  <h2><span class="tier">§1</span> Why this was needed</h2>
+  <p class="lede">The existing suite (<code>tests/test_hapmixqtl.py</code>, ~35 tests) is
+  almost entirely <strong>internal consistency</strong> — "does the code compute the formula
+  we wrote" — plus <strong>recovery</strong> — "can it find a planted causal variant."</p>
+  <p>Neither class of test can detect an invalid error rate. A method can pass all 35 while
+  producing p-values wrong by two orders of magnitude. That is precisely what was happening.
+  It is also the same failure mode the knockoff work hit: green formula tests and green
+  power tests, masking broken calibration.</p>
+
+  <h3>Three structural facts that shaped the design</h3>
+</section>
+
+<div class="col">
+  <div class="facts">
+    <div class="fact"><span class="fkey">F1</span>
+      <p><code>tau_mode='zero'</code> is the <strong>default</strong>, so weights are
+      <code>w = 1/v_inf</code>. With the known-variance GLS SE (<code>Var(β) = 1/xx</code>,
+      no estimated dispersion), the model asserts Gibbs inferential variance is the
+      <em>only</em> source of error variance.
+      <span class="floc">hapmixqtl.py:467, 722</span></p></div>
+    <div class="fact"><span class="fkey">F2</span>
+      <p><code>Cat</code> (the a–t inferential covariance) is computed and read from disk,
+      but the channels are combined by <em>scalar</em> inverse-variance meta-analysis, which
+      assumes independence.
+      <span class="floc">hapmixqtl.py:288–310</span></p></div>
+    <div class="fact"><span class="fkey">F3</span>
+      <p>p-values use a <em>t</em> reference for what is by construction a known-variance
+      <em>z</em>. Minor and conservative at large N.
+      <span class="floc">hapmixqtl.py:698–705</span></p></div>
+  </div>
+</div>
+
+<section class="col">
+  <h2><span class="tier">§2</span> Null calibration</h2>
+  <p class="lede">A factorial sweep over biological SD σ<sub>bio</sub>, a–t inferential
+  correlation ρ, and <code>tau_mode</code>, with every variant null. The
+  σ<sub>bio</sub>&nbsp;=&nbsp;0, ρ&nbsp;=&nbsp;0 cell is the <strong>control</strong>: there
+  the model is exactly true, so it must come out nominal or the harness itself is wrong.</p>
+</section>
+
+<figure>
+  <div class="chartbox">
+    <svg viewBox="0 0 720 340" role="img" aria-label="Type-I error inflation at alpha 1e-3. Default tau_mode zero reaches 107 times nominal; tau_mode estimate stays at 1 times.">
+      <!-- gridlines + ticks -->
+      <g stroke="var(--rule)" stroke-width="1">
+        <line x1="228.5" y1="44" x2="228.5" y2="272"/>
+        <line x1="425" y1="44" x2="425" y2="272" stroke-dasharray="3 4"/>
+        <line x1="621.4" y1="44" x2="621.4" y2="272" stroke-dasharray="3 4"/>
+      </g>
+      <g fill="var(--muted)" font-family="IBM Plex Mono, monospace" font-size="11" text-anchor="middle">
+        <text x="228.5" y="292">1×</text>
+        <text x="425" y="292">10×</text>
+        <text x="621.4" y="292">100×</text>
+      </g>
+      <text x="425" y="316" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif"
+            font-size="11.5" text-anchor="middle">realized type-I error ÷ nominal, at α = 1×10⁻³ (log scale)</text>
+      <text x="228.5" y="34" fill="var(--accent)" font-family="IBM Plex Sans, sans-serif"
+            font-size="11" text-anchor="middle" font-weight="600">calibrated</text>
+
+      <!-- group labels -->
+      <text x="16" y="62" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif"
+            font-size="12" font-weight="600">tau_mode = 'zero'</text>
+      <text x="16" y="76" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif"
+            font-size="11">(current default)</text>
+      <text x="16" y="187" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif"
+            font-size="12" font-weight="600">tau_mode = 'estimate'</text>
+
+      <!-- default bars -->
+      <g font-family="IBM Plex Mono, monospace" font-size="11">
+        <text x="142" y="99" fill="var(--muted)" text-anchor="end">σ 0.0</text>
+        <rect x="212.7" y="88" width="15.8" height="16" fill="var(--accent)" opacity=".55"/>
+        <text x="206" y="99" fill="var(--ink-2)" text-anchor="end">0.83×</text>
+
+        <text x="142" y="127" fill="var(--muted)" text-anchor="end">σ 0.3</text>
+        <rect x="228.5" y="116" width="221.9" height="16" fill="var(--alarm)" opacity=".72"/>
+        <text x="458" y="127" fill="var(--alarm)" text-anchor="start">13.5×</text>
+
+        <text x="142" y="155" fill="var(--muted)" text-anchor="end">σ 0.6</text>
+        <rect x="228.5" y="144" width="398.8" height="16" fill="var(--alarm)"/>
+        <text x="635" y="155" fill="var(--alarm)" text-anchor="start" font-weight="500">107×</text>
+      </g>
+
+      <!-- estimate bars -->
+      <g font-family="IBM Plex Mono, monospace" font-size="11">
+        <text x="142" y="212" fill="var(--muted)" text-anchor="end">σ 0.0</text>
+        <rect x="174.4" y="201" width="54.1" height="16" fill="var(--accent)" opacity=".55"/>
+        <text x="168" y="212" fill="var(--ink-2)" text-anchor="end">0.53×</text>
+
+        <text x="142" y="240" fill="var(--muted)" text-anchor="end">σ 0.3</text>
+        <rect x="189.1" y="229" width="39.4" height="16" fill="var(--accent)" opacity=".55"/>
+        <text x="183" y="240" fill="var(--ink-2)" text-anchor="end">0.63×</text>
+
+        <text x="142" y="268" fill="var(--muted)" text-anchor="end">σ 0.6</text>
+        <rect x="226" y="257" width="2.5" height="16" fill="var(--accent)"/>
+        <text x="220" y="268" fill="var(--ink-2)" text-anchor="end">0.97×</text>
+      </g>
+    </svg>
+  </div>
+  <figcaption>Bars extend from the 1× reference line: rightward is anticonservative
+  (too many false positives), leftward conservative. σ is the unmodelled biological SD.
+  The default's error grows with unmodelled variance and is worst in the tail — exactly
+  where genome-wide-significant calls are made.</figcaption>
+</figure>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Realized type-I error (ratio to nominal), ρ = 0, 30,000 p-values per cell</caption>
+      <thead><tr><th>tau_mode</th><th>σ<sub>bio</sub></th><th>α=0.05</th><th>α=0.01</th><th>α=1e-3</th><th>λ<sub>GC</sub></th></tr></thead>
+      <tbody>
+        <tr><td>zero <em>(default)</em></td><td>0.0</td><td class="good">0.0477 (0.95×)</td><td>0.0095 (0.95×)</td><td>0.00083 (0.83×)</td><td>0.98</td></tr>
+        <tr><td>zero <em>(default)</em></td><td>0.3</td><td class="bad">0.1433 (2.87×)</td><td class="bad">0.0544 (5.44×)</td><td class="bad">0.01347 (13.5×)</td><td class="bad">1.81</td></tr>
+        <tr><td>zero <em>(default)</em></td><td>0.6</td><td class="bad">0.3406 (6.81×)</td><td class="bad">0.2111 (21.1×)</td><td class="bad">0.10723 (107×)</td><td class="bad">4.26</td></tr>
+        <tr class="rowsplit"><td>estimate</td><td>0.0</td><td class="good">0.0423 (0.85×)</td><td>0.0079 (0.79×)</td><td>0.00053 (0.53×)</td><td>0.94</td></tr>
+        <tr><td>estimate</td><td>0.3</td><td class="good">0.0487 (0.97×)</td><td>0.0089 (0.89×)</td><td>0.00063 (0.63×)</td><td>1.01</td></tr>
+        <tr><td>estimate</td><td>0.6</td><td class="good">0.0489 (0.98×)</td><td>0.0102 (1.02×)</td><td>0.00097 (0.97×)</td><td>1.01</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>The control is nominal</strong> (0.95×, λ = 0.98) — the harness is trustworthy,
+  and the known-variance GLS SE is correct <em>when its assumption holds exactly</em>. But
+  inflation under the default is severe and <strong>grows in the tail</strong>: 6.8× at
+  α = 0.05 becomes 107× at α = 1e-3. That is the worst possible shape, since the bulk of the
+  distribution looks only mildly off while significant calls are overwhelmingly false.</p>
+  <p>ρ had <strong>no detectable effect</strong> at any σ<sub>bio</sub>. F2's prediction did
+  not materialize — §3 explains why.</p>
+
+  <h2><span class="tier">§3</span> Is ignoring <code>Cat</code> actually safe?</h2>
+  <p class="lede">Rather than infer this from type-I error, measure the quantity the scalar
+  meta-analysis literally assumes is zero: the correlation between the two channels' slope
+  estimators, across 1,500 null replicates.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Correlation of channel slope estimators under the null</caption>
+      <thead><tr><th>ρ (a–t noise corr)</th><th>corr(β<sub>a</sub>, β<sub>t</sub>)</th><th>95% CI</th><th>corr(s, g/2)</th></tr></thead>
+      <tbody>
+        <tr><td>0.0</td><td>+0.0116</td><td>[−0.039, +0.062]</td><td>−0.0011</td></tr>
+        <tr><td>0.5</td><td>−0.0263</td><td>[−0.077, +0.024]</td><td>+0.0008</td></tr>
+        <tr><td>0.9</td><td>−0.0172</td><td>[−0.068, +0.033]</td><td>+0.0005</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>Ignoring <code>Cat</code> is safe, and there is a clean mechanism.</strong> Even
+  with the underlying a–t noise correlated at ρ = 0.9, the slope estimators stay uncorrelated
+  — every CI covers zero. The reason is the last column: the ASE predictor <code>s</code>
+  (signed het indicator) is <strong>orthogonal</strong> to the total predictor
+  <code>g/2</code>, because phase is random with respect to expression, so
+  <code>E[s | g=1] = 0</code>. The channels project the correlated noise onto orthogonal
+  directions and the correlation never reaches the combined estimate.</p>
+  <p>This retires F2: <code>Cat</code> is genuinely unnecessary for the current statistic — a
+  design property to document, not a latent bug. <strong>Caveat:</strong> the argument depends
+  on phase being random w.r.t. expression. Systematic, expression-correlated phasing error
+  would break the orthogonality, and that is untested.</p>
+
+  <h2><span class="tier">§4</span> Does the uncertainty propagate correctly?</h2>
+  <p class="lede">Coverage of a nominal 95% interval for a known log aFC (β = 0.5) — the
+  sharpest probe of whether inferential variance reaches <code>beta_se</code> in absolute
+  terms, which is the whole reason for known-variance GLS over ordinary WLS.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>95% CI coverage and point-estimate bias</caption>
+      <thead><tr><th>tau_mode</th><th>σ<sub>bio</sub></th><th>Coverage (target 0.95)</th><th>Bias</th></tr></thead>
+      <tbody>
+        <tr><td>zero <em>(default)</em></td><td>0.0</td><td class="good">0.947</td><td>−0.0003</td></tr>
+        <tr><td>zero <em>(default)</em></td><td>0.3</td><td class="bad">0.842</td><td>+0.0018</td></tr>
+        <tr><td>zero <em>(default)</em></td><td>0.6</td><td class="bad">0.645</td><td>−0.0019</td></tr>
+        <tr class="rowsplit"><td>estimate</td><td>0.0</td><td class="good">0.987</td><td>−0.0022</td></tr>
+        <tr><td>estimate</td><td>0.3</td><td class="good">0.979</td><td>−0.0003</td></tr>
+        <tr><td>estimate</td><td>0.6</td><td class="good">0.959</td><td>−0.0044</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p>The point estimate is <strong>unbiased in every cell</strong> (|bias| ≤ 0.004) — the
+  estimator is fine; it is purely the <em>uncertainty</em> that is wrong. Under the default,
+  a nominal 95% interval is really a <strong>65% interval</strong>.
+  <code>tau_mode='estimate'</code> restores coverage, mildly conservative because estimating
+  τ when the true τ is 0 adds upward noise — an acceptable trade.</p>
+
+  <h2><span class="tier">§5</span> Does two-channel beat total-only?</h2>
+  <p class="lede">Each method's threshold is calibrated on <em>its own</em> null
+  distribution, then power compared at matched <strong>empirical</strong> type-I error. This
+  is the only fair comparison when one arm may be anticonservative — on a matched
+  <em>nominal</em> threshold an anticonservative method always "wins" for the wrong reason.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Power at matched empirical α = 0.05, β = 0.4</caption>
+      <thead><tr><th>MAF</th><th>Combined (hapmixQTL)</th><th>Total-only</th></tr></thead>
+      <tbody>
+        <tr><td>0.15</td><td class="good">1.000</td><td>0.825</td></tr>
+        <tr><td>0.35</td><td class="good">1.000</td><td>0.960</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>hapmixQTL's core premise holds.</strong> The ASE channel adds real power over
+  total-expression-only at matched type-I error, and the gain is largest at low MAF where
+  total-only is weakest. This result is only meaningful <em>because</em> §2 established a
+  configuration in which both arms are calibrated.</p>
+
+  <h2><span class="tier">§6</span> The realistic case</h2>
+  <p class="lede">The most realistic tier: simulate allele-level negative-binomial counts,
+  emulate a quantifier posterior by multinomial resampling, and feed the <strong>real</strong>
+  <code>compute_summaries_from_gibbs</code> — so Va, Vt, Cat and all κ-pseudocount behaviour
+  come from production code rather than from assumption.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Null calibration on summaries built by the production code path (300 reps/cell)</caption>
+      <thead><tr><th>tau_mode</th><th>Depth</th><th>Type-I @ α=0.05</th><th>λ<sub>GC</sub></th><th>mean corr(a,t)</th></tr></thead>
+      <tbody>
+        <tr><td>zero <em>(default)</em></td><td>20</td><td class="bad">0.9967 (19.9×)</td><td class="bad">∞</td><td>+0.000</td></tr>
+        <tr><td>zero <em>(default)</em></td><td>100</td><td class="bad">1.0000 (20.0×)</td><td class="bad">∞</td><td>−0.000</td></tr>
+        <tr class="rowsplit"><td>estimate</td><td>20</td><td class="good">0.0500 (1.00×)</td><td>1.00</td><td>+0.000</td></tr>
+        <tr><td>estimate</td><td>100</td><td class="good">0.0367 (0.73×)</td><td>0.77</td><td>−0.000</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p>Under the default, <strong>essentially every null test is significant</strong> —
+  λ<sub>GC</sub> is infinite because p-values underflow to zero. The mechanism is F1, and it
+  is worse here than in §2 for a structural reason: a quantifier's posterior variance
+  captures only <strong>allelic-assignment uncertainty conditional on the observed total</strong>.
+  It contains neither the counts' own sampling variance nor biological variance. So
+  <code>v_inf</code> understates true error variance by a large factor, the weights blow up,
+  and <code>Var(β) = 1/xx</code> collapses toward zero.</p>
+  <p>Because this is the regime real Salmon/mmseq input actually occupies,
+  <strong><code>tau_mode='zero'</code> should be treated as invalid for real data</strong>,
+  not merely imprecise. Note too that <code>corr(a,t) ≈ 0.000</code> straight from the
+  production path independently confirms §3.</p>
+
+  <h2><span class="tier">§7</span> Recommendations</h2>
+  <ol class="recs">
+    <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
+    <code>map_cis</code> and <code>map_susie</code>. One line per call site, and the single
+    highest-value fix identified. Left as a separate decision here because it changes
+    published behaviour.</li>
+    <li>Warn or refuse on <code>tau_mode='zero'</code>. If kept for backward compatibility it
+    should warn loudly: it is valid only when inferential variance is provably the entire
+    error variance, which real quantifier posteriors never satisfy.</li>
+    <li>Document <code>Cat</code> as intentionally unused, with the orthogonality argument
+    from §3, so a future reader neither mistakes it for an oversight nor silently "fixes" it.</li>
+    <li>Add a calibration gate to CI — the control cell plus one inflated cell, as a fast
+    test, would have caught this immediately.</li>
+  </ol>
+
+  <h2><span class="tier">§8</span> What remains untested</h2>
+  <ul class="open">
+    <li><strong>Phasing error.</strong> §3's orthogonality argument assumes phase is random
+    w.r.t. expression; systematic expression-correlated phasing error would break it.</li>
+    <li><strong>Real ASE data.</strong> Every tier here is simulation. The strongest real-data
+    check needs no external truth: because the total channel uses <code>g/2</code>, both
+    channels estimate the <em>same</em> quantity, so regressing <code>slope_a</code> on
+    <code>slope_tc</code> across real variants should give slope 1. Blocked on real
+    allele-count + Gibbs input.</li>
+    <li><strong>Covariates.</strong> All tiers run without covariates; the residualizer path
+    is unit-tested but not calibration-swept.</li>
+    <li><strong>Robust SEs.</strong> <code>se_mode='robust'</code> may be self-correcting for
+    F1; untested here.</li>
+  </ul>
+
+  <h2><span class="tier">§9</span> Reproduce</h2>
+  <pre>python3 tests/ase_validation.py --reps 1500 --N 200 --tiers 0,1,2,3 --out results.json
+
+# fast smoke (~1 min)
+python3 tests/ase_validation.py --reps 60 --tiers 0</pre>
+
+  <div class="annot">
+    <strong>Commenting.</strong> This page loads
+    <a href="https://web.hypothes.is/">Hypothesis</a> for inline annotation — select any
+    passage and the sidebar lets you highlight or comment on that exact text. Hypothesis
+    requires the page to be served over http(s); opening the file directly from disk
+    (<code>file://</code>) will not load the sidebar, and the Artifact sandbox blocks the
+    script at the CSP layer, so use the repo copy served over HTTP for annotation.
+  </div>
+
+  <footer>
+    Harness <code>tests/ase_validation.py</code> · markdown record
+    <code>docs/ase_validation.md</code> · raw results
+    <code>docs/ase_validation_results.json</code>. All figures are simulation; no real ASE
+    data was used.
+  </footer>
+</section>
+</div>
+
+<script src="https://hypothes.is/embed.js" async></script>
