@@ -574,7 +574,16 @@ This is the third independent consequence of the same root cause, after invalid 
 (§2, §6, §7d) and 64.5% CI coverage (§4). With `tau_mode='estimate'`, PIP calibration is
 near-perfect (weighted MAE 0.001) and credible-set coverage is 0.987 against a 0.95 target.
 
-## 7h. hapmixQTL vs RASQUAL, measured
+## 7h. hapmixQTL vs a RASQUAL-style model, measured
+
+> **Scope — read this first.** Sections 7h and 7i do **not** run the RASQUAL package.
+> They run `RASQUAL-like`: our own Python/scipy model carrying RASQUAL's two
+> distinguishing features (the shared θ, and the δ/φ nuisance terms). It omits RASQUAL's
+> iterative genotype correction, its genotype likelihoods, its purpose-built optimizer, and
+> its no-data-filtering strategy — so it is a *lower bound* on the real package. The actual
+> RASQUAL binary now builds and runs in this repo (`scripts/build_rasqual.sh`, verified
+> against the authors' bundled C11orf21 example, recovering φ̂ = 0.525 and δ̂ = 3.3e-5); a
+> head-to-head against the real binary is future work.
 
 **Harness:** `tests/ase_rasqual_comparison.py` · **Raw:** `docs/ase_rasqual_comparison.json`
 N = 100, θ = 0.2, 400 loci per cell, power at **matched empirical FPR = 10%** (RASQUAL's metric).
@@ -648,7 +657,7 @@ correction made no difference on GTEx. Both are consistent with the above once y
   between two already-filtered matrices.
 
 So the honest synthesis: **reference bias is minor in practice only because pipelines
-filter it out beforehand.** RASQUAL carries an internal defence and degrades gracefully
+filter it out beforehand.** A φ-fitting model carries an internal defence and degrades gracefully
 when filtering is imperfect; **hapmixQTL has none, and fails catastrophically rather than
 gradually.** Its validity is therefore *contingent on upstream mapping-bias filtering* in a
 way the earlier sections did not reveal — §7d could not have found this, because it only
@@ -694,7 +703,7 @@ aFC 1.25, N = 100, 250 loci/cell.
 | within gene (per-site) | .064 / .500 | **.860** / .008 | **.072 / .768** | **.832** / .000 |
 | within gene, severe | .064 / .500 | **.952** / .020 | **.076 / .720** | **.960** / .000 |
 
-**RASQUAL degrades gracefully; everything else falls off a cliff.** Fitting φ keeps type-I
+**The φ-fitting model degrades gracefully; everything else falls off a cliff.** Fitting φ keeps type-I
 error at 0.068–0.104 across every regime — including **within-gene per-site heterogeneity,
 which its single-φ model cannot represent** — while retaining 64–78% power. TReCASE and
 hapmixQTL reach type-I of 0.28–1.00 and lose essentially all power once thresholded on

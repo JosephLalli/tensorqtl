@@ -11,3 +11,6 @@ output_prefix*
 
 # generated static site (build with ./scripts/build_site.sh)
 site/
+
+# real RASQUAL source (build with ./scripts/build_rasqual.sh)
+rasqual_src/

@@ -829,7 +829,7 @@
   phASER matrices explicitly exclude sites in low-mappability regions or showing simulated
   mapping bias — §7d compared two already-filtered matrices.</p>
   <p>So: <strong>reference bias is minor in practice only because pipelines filter it out
-  beforehand.</strong> RASQUAL carries an internal defence and degrades gracefully when
+  beforehand.</strong> A φ-fitting model carries an internal defence and degrades gracefully when
   filtering is imperfect; hapmixQTL has none and fails catastrophically rather than
   gradually. Its validity is <em>contingent on upstream mapping-bias filtering</em> in a way
   §7d could not reveal, because that section only compared two clean inputs.</p>
@@ -861,7 +861,7 @@
 </div>
 
 <section class="col">
-  <p><strong>RASQUAL degrades gracefully; everything else falls off a cliff.</strong>
+  <p><strong>The φ-fitting model degrades gracefully; everything else falls off a cliff.</strong>
   Fitting φ holds type-I error at 0.068–0.104 across every regime — <em>including
   within-gene per-site heterogeneity its single-φ model cannot represent</em> — while
   keeping 64–78% power. TReCASE and hapmixQTL reach 0.28–1.00 type-I and lose essentially
