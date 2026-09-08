@@ -780,6 +780,60 @@
   not merely re-thresholded. With the fix, PIP calibration is near-perfect and credible-set
   coverage is 0.987 against a 0.95 target.</p>
 
+  <h2><span class="tier">§7h</span> hapmixQTL vs RASQUAL, measured</h2>
+  <p class="lede">Earlier sections compared against TReCASE only and explicitly disclaimed
+  implementing RASQUAL. This closes that gap by adding its two distinguishing features: the
+  <strong>shared θ</strong> (their supplement derives both components from one gamma-Poisson
+  process, so a single θ sets the NB shape <em>and</em> the beta-binomial precision, where
+  TReCASE fits them separately), and the nuisance terms δ (sequencing error) and φ
+  (reference bias).</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Power at matched empirical FPR 10%, aFC = 1.25, N = 100, 400 loci</caption>
+      <thead><tr><th>Method</th><th>clean</th><th>δ = 0.02</th><th>φ = 0.60</th></tr></thead>
+      <tbody>
+        <tr><td>trcQTL (total only)</td><td>0.537</td><td>0.537</td><td>0.537</td></tr>
+        <tr><td>TReCASE (separate disp.)</td><td>0.748</td><td>0.730</td><td class="bad">0.005</td></tr>
+        <tr><td>TReCASE <strong>shared-θ</strong></td><td class="good">0.760</td><td class="good">0.743</td><td class="bad">0.003</td></tr>
+        <tr><td><strong>RASQUAL-like</strong> (fits δ, φ)</td><td>0.537</td><td>0.535</td><td class="good">0.530</td></tr>
+        <tr><td>hapmixQTL <code>tau='estimate'</code></td><td>0.703</td><td>0.693</td><td class="bad">0.003</td></tr>
+        <tr class="rowsplit"><td><em>nominal type-I @0.05 under φ=0.60</em></td><td colspan="2"><em>trcQTL 0.033 · RASQUAL-like 0.033</em></td><td class="bad"><em>TReCASE 0.517 · shared-θ 0.600 · hapmix 0.635</em></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>The shared θ is real but small.</strong> It buys <strong>+0.012</strong> over
+  separate dispersions — consistent in direction across scenarios, but modest, matching
+  RASQUAL's own framing of it as improving model <em>stability</em> rather than a large
+  power claim. hapmixQTL's additive τ sits <strong>~0.05 below</strong> the joint
+  likelihoods at aFC 1.25 (≈7.5% relative) and is indistinguishable at aFC 1.10. Against
+  §7e's ~3,400× speed advantage, that is the trade — a constant-factor cost, not a
+  structural deficiency, and far smaller than the ~19% gap previously inferred.</p>
+
+  <p><strong>But reference bias is not minor, and it is hapmixQTL's real exposure.</strong>
+  At φ = 0.60, every method that does not model it breaks: nominal type-I error goes to
+  0.52–0.64, a 10–13× inflation, and power at matched FPR collapses to ~0. hapmixQTL is the
+  worst affected (0.635). RASQUAL-like, which fits φ, is <strong>completely
+  unaffected</strong>. The total-only channel is immune, as it must be — <code>g/2</code>
+  carries no allelic information to bias.</p>
+
+  <h3>Reconciling this with "reference bias had a minor impact"</h3>
+  <p>RASQUAL's ablation found removing φ cost nothing, and §7d found WASP correction made no
+  difference on GTEx. Both were measured on data where the bias had <em>already been removed
+  upstream</em>: RASQUAL estimated φ̂ as small at most loci in their own data, and GTEx's
+  phASER matrices explicitly exclude sites in low-mappability regions or showing simulated
+  mapping bias — §7d compared two already-filtered matrices.</p>
+  <p>So: <strong>reference bias is minor in practice only because pipelines filter it out
+  beforehand.</strong> RASQUAL carries an internal defence and degrades gracefully when
+  filtering is imperfect; hapmixQTL has none and fails catastrophically rather than
+  gradually. Its validity is <em>contingent on upstream mapping-bias filtering</em> in a way
+  §7d could not reveal, because that section only compared two clean inputs.</p>
+
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
     <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
@@ -793,6 +847,11 @@
     from §3, so a future reader neither mistakes it for an oversight nor silently "fixes" it.</li>
     <li>Add a calibration gate to CI — the control cell plus one inflated cell, as a fast
     test, would have caught this immediately.</li>
+    <li><strong>Document the mapping-bias precondition and add a φ diagnostic (§7h).</strong>
+    hapmixQTL requires mapping-bias-filtered input — a hard precondition, not a suggestion.
+    A cheap detector: the pooled allelic ratio at heterozygotes across genes should sit at
+    0.5; a systematic departure flags the failure before it silently inflates every p-value.
+    Fitting φ outright is the single highest-value remaining feature.</li>
     <li>Ship the cis/trans test (§7c) as a per-gene diagnostic column. It is ~10 lines given
     what <code>calculate_hapmixqtl_nominal</code> already returns, it validates the
     assumption the meta-analysis rests on, and it adds cis-vs-trans classification. Genes

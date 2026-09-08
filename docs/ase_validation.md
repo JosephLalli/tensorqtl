@@ -350,10 +350,17 @@ TReCASE-over-total-only advantage (≈3.5×) is larger than their TReCASE-over-L
 because our simulation has a cleaner allele-specific signal than real data. The ordering —
 joint > AS-only > total-only, and RASQUAL > TReCASE — reproduces.
 
-**Implication for expectations:** RASQUAL beats TReCASE by ~19% relative on real data
-(42.2% vs 35.5%) via genotype uncertainty, mapping bias φ and sequencing error δ. Since
-fixed hapmixQTL ≈ TReCASE, it should be expected to sit ~19% below RASQUAL on real data
-until it models those nuisance terms.
+> **Correction (§7h).** An earlier version of this section stated that hapmixQTL "should
+> be expected to sit ~19% below RASQUAL on real data until it models those nuisance terms."
+> That was an inference by transitivity (RASQUAL beats TReCASE by 19% on their data;
+> hapmixQTL ≈ TReCASE), **never a measurement**, and RASQUAL's own ablation shows the
+> attribution was wrong. Their Fig. 3e decomposes their advantage as: no overdispersion
+> costs 20.9 points, no genotype correction 2.4, no sequencing error δ 3.6, and **removing
+> reference-bias modelling costs nothing at all** (36.8% vs 35.9% — marginally better
+> without it). Their text agrees: *"power and fine-mapping were mostly influenced by better
+> estimation of overdispersion and by genotype correction … reference bias had a minor
+> impact."* The dominant term is overdispersion, which is exactly what `tau_mode='estimate'`
+> supplies. §7h measures the comparison directly instead of inferring it.
 
 ## 7c. The cis/trans test — an assumption hapmixQTL makes but never checks
 
@@ -566,6 +573,98 @@ manufactured 432 credible sets where the calibrated fit finds 77 — most of the
 This is the third independent consequence of the same root cause, after invalid p-values
 (§2, §6, §7d) and 64.5% CI coverage (§4). With `tau_mode='estimate'`, PIP calibration is
 near-perfect (weighted MAE 0.001) and credible-set coverage is 0.987 against a 0.95 target.
+
+## 7h. hapmixQTL vs RASQUAL, measured
+
+**Harness:** `tests/ase_rasqual_comparison.py` · **Raw:** `docs/ase_rasqual_comparison.json`
+N = 100, θ = 0.2, 400 loci per cell, power at **matched empirical FPR = 10%** (RASQUAL's metric).
+
+Earlier sections compared against TReCASE only, and §7 explicitly disclaimed implementing
+RASQUAL. This closes that gap. Two RASQUAL features are added on top of the shared joint
+likelihood:
+
+**The shared θ.** RASQUAL's supplement derives both components from one gamma-Poisson
+process: if the haplotype counts are Gamma-Poisson with shapes (α, β), the *total* is NB
+with shape α+β and the *conditional* allelic split is beta-binomial with parameters (α, β).
+So a single θ sets both — NB shape `r = 1/θ`, BB precision `ν = 1/θ` — where TReCASE fits
+an NB dispersion and a beta-binomial overdispersion **separately**. This is the "single
+overdispersion parameter shared across the between-individual and allele-specific model
+components to further improve model stability" their discussion credits.
+
+**The nuisance terms** (their multiplicative model): sequencing/mapping error δ, giving
+`π_err = (1−δ)π + δ(1−π)`, and reference bias φ, giving
+`π_obs = (1−φ)π_err / [(1−φ)π_err + φ(1−π_err)]` with φ = 0.5 unbiased.
+
+### Result 1 — the shared θ is real but small, and hapmixQTL is close behind
+
+Power at aFC = 1.25, no nuisance distortion:
+
+| method | clean | δ = 0.02 |
+|---|---|---|
+| trcQTL (total only) | 0.537 | 0.537 |
+| TReCASE (separate dispersions) | 0.748 | 0.730 |
+| **TReCASE shared-θ** | **0.760** | **0.743** |
+| hapmixQTL `tau='estimate'` | 0.703 | 0.693 |
+
+The shared-θ trick buys **+0.012** over separate dispersions — real, consistent in
+direction across scenarios and effect sizes, but small. That matches RASQUAL's own framing
+("improve model **stability**"), not a large power claim. hapmixQTL's additive τ lands
+**~0.05 below** the joint likelihoods at aFC 1.25 (0.703 vs 0.760, ≈7.5% relative) and is
+statistically indistinguishable at aFC 1.10 (0.258 vs 0.273). Set against §7e's ~3,400×
+speed advantage, that is the trade.
+
+**So: hapmixQTL does not quite beat RASQUAL's overdispersion handling — it is a few points
+behind — but the gap is far smaller than the ~19% previously inferred, and it is a
+constant-factor cost, not a structural deficiency.**
+
+### Result 2 — reference bias is NOT minor, and it is hapmixQTL's real exposure
+
+With φ = 0.60 (a 10-point reference-allele bias), everything changes:
+
+| method | nominal type-I @0.05 | power @ matched FPR (aFC 1.25) |
+|---|---|---|
+| trcQTL (total only) | 0.033 | 0.537 |
+| TReCASE (separate) | **0.517** | 0.005 |
+| TReCASE shared-θ | **0.600** | 0.003 |
+| **RASQUAL-like (fits δ, φ)** | **0.033** | **0.530** |
+| **hapmixQTL `tau='estimate'`** | **0.635** | **0.003** |
+
+**Reference bias destroys every method that does not model it.** Nominal type-I error goes
+to 0.52–0.64 — a 10–13× inflation — and once thresholded on that inflated null, power
+collapses to ~0. hapmixQTL is the worst affected (0.635). RASQUAL-like, which fits φ, is
+**completely unaffected** (0.033 type-I, 0.530 power). The total-only channel is immune, as
+it must be: `g/2` carries no allelic information to bias.
+
+### Reconciling this with "reference bias had a minor impact"
+
+RASQUAL's ablation found removing φ cost nothing (36.8% vs 35.9%), and §7d found WASP
+correction made no difference on GTEx. Both are consistent with the above once you notice
+**they were measured on data where the bias had already been removed upstream**:
+
+- RASQUAL measured φ̂ as small at most loci in their own data (Supp. Table 3), so there was
+  little bias left for the correction to remove.
+- GTEx's phASER matrices explicitly exclude "sites that overlap low mappability regions
+  (ENCODE mappability < 1), or show mapping bias in simulations" — the §7d comparison was
+  between two already-filtered matrices.
+
+So the honest synthesis: **reference bias is minor in practice only because pipelines
+filter it out beforehand.** RASQUAL carries an internal defence and degrades gracefully
+when filtering is imperfect; **hapmixQTL has none, and fails catastrophically rather than
+gradually.** Its validity is therefore *contingent on upstream mapping-bias filtering* in a
+way the earlier sections did not reveal — §7d could not have found this, because it only
+compared two clean inputs.
+
+### Implications
+
+1. **Document the dependency.** hapmixQTL requires mapping-bias-filtered input (WASP,
+   phASER-style site filtering, or a variant-aware aligner). This is a hard precondition,
+   not a recommendation.
+2. **Add a φ diagnostic.** Even without fitting φ, the global allelic ratio at
+   heterozygotes is a cheap detector: a systematic departure from 0.5 pooled across genes
+   flags the failure before it silently inflates every p-value.
+3. **Consider fitting φ.** The RASQUAL-like arm shows it fully neutralizes the problem at
+   no cost in the clean case (0.537 vs 0.537 for trcQTL). This is the single highest-value
+   remaining feature — larger than the shared-θ gap it would also partly close.
 
 ## 8. Recommendations
 

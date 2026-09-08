@@ -1,0 +1,103 @@
+{
+  "config": {
+    "reps": 400,
+    "N": 100,
+    "theta": 0.2,
+    "kappas": "1.1,1.25",
+    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/rasqual.json"
+  },
+  "scenarios": {
+    "clean (delta=0, phi=0.5)": {
+      "1.1": {
+        "trcQTL (total only)": 0.225,
+        "TReCASE (separate disp.)": 0.25,
+        "TReCASE shared-theta": 0.2725,
+        "RASQUAL-like (+delta,phi)": 0.2325,
+        "hapmixQTL tau='estimate'": 0.2575
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.5375,
+        "TReCASE (separate disp.)": 0.7475,
+        "TReCASE shared-theta": 0.76,
+        "RASQUAL-like (+delta,phi)": 0.5375,
+        "hapmixQTL tau='estimate'": 0.7025
+      },
+      "nominal_typeI": {
+        "trcQTL (total only)": 0.0325,
+        "TReCASE (separate disp.)": 0.06,
+        "TReCASE shared-theta": 0.06,
+        "RASQUAL-like (+delta,phi)": 0.03,
+        "hapmixQTL tau='estimate'": 0.06
+      }
+    },
+    "sequencing error delta=0.02": {
+      "1.1": {
+        "trcQTL (total only)": 0.225,
+        "TReCASE (separate disp.)": 0.245,
+        "TReCASE shared-theta": 0.255,
+        "RASQUAL-like (+delta,phi)": 0.2325,
+        "hapmixQTL tau='estimate'": 0.235
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.5375,
+        "TReCASE (separate disp.)": 0.73,
+        "TReCASE shared-theta": 0.7425,
+        "RASQUAL-like (+delta,phi)": 0.535,
+        "hapmixQTL tau='estimate'": 0.6925
+      },
+      "nominal_typeI": {
+        "trcQTL (total only)": 0.0325,
+        "TReCASE (separate disp.)": 0.06,
+        "TReCASE shared-theta": 0.06,
+        "RASQUAL-like (+delta,phi)": 0.03,
+        "hapmixQTL tau='estimate'": 0.06
+      }
+    },
+    "reference bias phi=0.60": {
+      "1.1": {
+        "trcQTL (total only)": 0.225,
+        "TReCASE (separate disp.)": 0.01,
+        "TReCASE shared-theta": 0.0125,
+        "RASQUAL-like (+delta,phi)": 0.22,
+        "hapmixQTL tau='estimate'": 0.02
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.5375,
+        "TReCASE (separate disp.)": 0.005,
+        "TReCASE shared-theta": 0.0025,
+        "RASQUAL-like (+delta,phi)": 0.53,
+        "hapmixQTL tau='estimate'": 0.0025
+      },
+      "nominal_typeI": {
+        "trcQTL (total only)": 0.0325,
+        "TReCASE (separate disp.)": 0.5175,
+        "TReCASE shared-theta": 0.6,
+        "RASQUAL-like (+delta,phi)": 0.0325,
+        "hapmixQTL tau='estimate'": 0.635
+      }
+    },
+    "both (delta=0.02, phi=0.60)": {
+      "1.1": {
+        "trcQTL (total only)": 0.225,
+        "TReCASE (separate disp.)": 0.015,
+        "TReCASE shared-theta": 0.015,
+        "RASQUAL-like (+delta,phi)": 0.22,
+        "hapmixQTL tau='estimate'": 0.0175
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.5375,
+        "TReCASE (separate disp.)": 0.0025,
+        "TReCASE shared-theta": 0.0025,
+        "RASQUAL-like (+delta,phi)": 0.5275,
+        "hapmixQTL tau='estimate'": 0.0025
+      },
+      "nominal_typeI": {
+        "trcQTL (total only)": 0.0325,
+        "TReCASE (separate disp.)": 0.5175,
+        "TReCASE shared-theta": 0.6,
+        "RASQUAL-like (+delta,phi)": 0.0325,
+        "hapmixQTL tau='estimate'": 0.635
+      }
+    }
+  }
+}
