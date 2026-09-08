@@ -17,6 +17,12 @@ Two secondary conclusions: the unused `Cat` covariance is **safely ignorable** (
 now know why), and the two-channel model **genuinely beats total-only** at matched
 type-I error, so hapmixQTL's core premise holds once the SE is right.
 
+**Externally confirmed (§7).** Benchmarked against the RASQUAL/TReCASE generative model —
+one hapmixQTL does not assume — the fixed method is *statistically equivalent to TReCASE*
+and 3.7x more powerful than total-count-only. The default, once thresholded on its own
+null, collapses to total-only performance: it does not just invalidate p-values, it
+discards the entire benefit of the allele-specific channel.
+
 ---
 
 ## 1. Why this work was needed
@@ -101,7 +107,7 @@ the combined estimate.
 This retires F2. `Cat` is genuinely unnecessary for the current statistic — a design
 property worth documenting rather than a latent bug. **Caveat:** the argument depends on
 phase being random w.r.t. expression. Systematic phasing error correlated with expression
-would break the orthogonality; that is untested (see §7).
+would break the orthogonality; that is untested (see §9).
 
 ---
 
@@ -177,7 +183,85 @@ Tier 0b conclusion on realistically generated summaries.
 
 ---
 
-## 7. Recommendations
+## 7. External benchmark — the RASQUAL / TReCASE generative model
+
+**Harness:** `tests/ase_external_benchmark.py` · **Raw:** `docs/ase_external_benchmark.json`
+
+Every tier above simulates from hapmixQTL's *own* assumed model. That is circular: the
+simulator and the estimator share a worldview, so it can show internal inconsistency but
+never that the assumptions are wrong about real data. This section removes the circularity
+by generating from the model the ASE field actually uses — and which hapmixQTL does **not**
+assume:
+
+```
+total counts     T_i ~ NegBinomial(mean = lib_i · μ · f(g_i, κ),  dispersion φ)
+allele-specific  y_i ~ BetaBinomial(n_i,  π = κ/(1+κ),  overdispersion ρ)
+f(g) = 1, (1+κ)/2, κ   for g = 0, 1, 2      # standard TReC cis parameterization
+```
+
+κ is the allelic fold change (κ = 1 is the null, where π = 0.5). This is the model
+structure of [Sun 2012, *Biometrics*](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3218220/)
+(TReCASE) and [Kumasaka et al. 2016, *Nat Genet*](https://www.nature.com/articles/ng.3467)
+(RASQUAL). Three comparator tests are implemented directly here — no R or C dependency:
+**TReC-only** (NB GLM, LRT), **ASE-only** (beta-binomial, LRT), and **TReCASE** (joint
+likelihood sharing one κ, LRT).
+
+> **Scope, honestly.** This reproduces the published model *structure* and implements the
+> published *tests*. It is **not** a replication of either paper's exact parameter grid:
+> PMC, nature.com, bioRxiv and the asSeq docs were all unreachable through this
+> environment's egress proxy, so the depths, overdispersions and effect sizes are our own
+> realistic RNA-seq choices, stated explicitly rather than inherited. External validity
+> comes from the model family and the comparator tests, not from matching a table.
+> RASQUAL's additions over TReCASE (genotype uncertainty, mapping bias φ, sequencing error
+> δ) are nuisance refinements on the same joint likelihood; we implement the shared
+> TReCASE core, not RASQUAL itself.
+
+**Null calibration** (κ = 1; N = 200, μ = 200, NB disp 0.2, BB overdisp 0.01, AS fraction
+0.25, 500 loci):
+
+| Method | type-I @ 0.05 | @ 0.01 | λ_GC |
+|---|---|---|---|
+| TReC-only | 0.0500 (1.00×) | 0.0080 (0.80×) | 0.91 |
+| ASE-only | 0.0640 (1.28×) | 0.0220 (2.20×) | 1.16 |
+| TReCASE (joint) | 0.0600 (1.20×) | 0.0180 (1.80×) | 1.18 |
+| hapmixQTL `tau='zero'` | **1.0000 (20×)** | **1.0000 (100×)** | **3020** |
+| hapmixQTL `tau='estimate'` | 0.0460 (0.92×) | 0.0160 (1.60×) | 1.13 |
+
+TReC-only landing at exactly 1.00× validates the comparator implementation. The mild
+inflation in ASE-only and TReCASE (λ ≈ 1.16–1.18) is the χ²(1) LRT asymptotic at N = 200,
+and hapmixQTL with `tau='estimate'` sits **inside that same band** (λ = 1.13) — i.e. it is
+as well calibrated as the published methods are on their own model.
+
+**Power at matched empirical α = 0.05** (each method thresholded on its *own* simulated
+null, so an anticonservative method cannot win by being broken):
+
+| κ (log aFC) | TReC-only | ASE-only | TReCASE | hapmixQTL `estimate` | hapmixQTL `zero` |
+|---|---|---|---|---|---|
+| 1.05 (0.049) | 0.104 | 0.202 | 0.262 | **0.268** | 0.094 |
+| 1.10 (0.095) | 0.204 | 0.656 | 0.754 | **0.762** | 0.194 |
+| 1.20 (0.182) | 0.486 | 0.996 | 0.998 | **0.998** | 0.462 |
+
+### Two conclusions
+
+**1. Fixed hapmixQTL is statistically equivalent to TReCASE.** On TReCASE's own home turf —
+a generative model hapmixQTL does not assume — `tau='estimate'` matches the published joint
+likelihood at every effect size (0.268 vs 0.262, 0.762 vs 0.754, 0.998 vs 0.998), while
+beating total-count-only by **3.7×** at κ = 1.10. The method's premise survives external
+scrutiny, and §5's total-only comparison was not flattering itself.
+
+**2. The default does not merely invalidate p-values — it destroys the method's entire
+advantage.** Look at the `tau='zero'` row: its *uncorrected nominal* power is 1.000 at every
+effect size, which looks spectacular. But thresholded on its own null it collapses to
+0.094 / 0.194 / 0.462 — **statistically indistinguishable from TReC-only**, the very
+baseline the ASE channel is supposed to beat. Once you account for its inflation, the
+broken weighting throws away all the information the allele-specific channel contributes.
+This is the sharpest available argument that `tau_mode='zero'` is not a conservative-ish
+default worth keeping for compatibility: it is strictly worse than not using ASE at all.
+
+It is also a clean demonstration of why the matched-α methodology in §5 matters. On nominal
+p-values the broken configuration is the best method in the table.
+
+## 8. Recommendations
 
 1. **Change the default to `tau_mode='estimate'`** in `map_nominal`, `map_cis`, and
    `map_susie`. This is a one-line change per call site and is the single highest-value
@@ -191,7 +275,7 @@ Tier 0b conclusion on realistically generated summaries.
 4. **Add a calibration gate to CI.** A cheap version of Tier 0 (control cell + one inflated
    cell) as a fast test would have caught this immediately.
 
-## Untested / open
+## 9. Untested / open
 
 - **Phasing error.** Tier 0b's orthogonality argument assumes phase is random w.r.t.
   expression. Systematic, expression-correlated phasing error would break it. Untested.

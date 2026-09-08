@@ -1,0 +1,112 @@
+{
+  "config": {
+    "reps": 500,
+    "N": 200,
+    "mu": 200.0,
+    "phi": 0.2,
+    "rho": 0.01,
+    "as_frac": 0.25,
+    "kappas": "1.05,1.1,1.2",
+    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/bench.json"
+  },
+  "null": {
+    "TReC-only": {
+      "n": 500,
+      "t05": 0.05,
+      "t01": 0.008,
+      "lam": 0.9128879848540986
+    },
+    "ASE-only": {
+      "n": 500,
+      "t05": 0.064,
+      "t01": 0.022,
+      "lam": 1.1590651564602639
+    },
+    "TReCASE (joint)": {
+      "n": 500,
+      "t05": 0.06,
+      "t01": 0.018,
+      "lam": 1.1822021455082816
+    },
+    "hapmixQTL tau='zero'": {
+      "n": 500,
+      "t05": 1.0,
+      "t01": 1.0,
+      "lam": 3019.9222603491044
+    },
+    "hapmixQTL tau='estimate'": {
+      "n": 500,
+      "t05": 0.046,
+      "t01": 0.016,
+      "lam": 1.1332138913210412
+    }
+  },
+  "power": {
+    "1.05": {
+      "TReC-only": {
+        "matched": 0.104,
+        "nominal": 0.096
+      },
+      "ASE-only": {
+        "matched": 0.202,
+        "nominal": 0.248
+      },
+      "TReCASE (joint)": {
+        "matched": 0.262,
+        "nominal": 0.29
+      },
+      "hapmixQTL tau='zero'": {
+        "matched": 0.094,
+        "nominal": 1.0
+      },
+      "hapmixQTL tau='estimate'": {
+        "matched": 0.268,
+        "nominal": 0.264
+      }
+    },
+    "1.1": {
+      "TReC-only": {
+        "matched": 0.204,
+        "nominal": 0.188
+      },
+      "ASE-only": {
+        "matched": 0.656,
+        "nominal": 0.714
+      },
+      "TReCASE (joint)": {
+        "matched": 0.754,
+        "nominal": 0.776
+      },
+      "hapmixQTL tau='zero'": {
+        "matched": 0.194,
+        "nominal": 1.0
+      },
+      "hapmixQTL tau='estimate'": {
+        "matched": 0.762,
+        "nominal": 0.758
+      }
+    },
+    "1.2": {
+      "TReC-only": {
+        "matched": 0.486,
+        "nominal": 0.458
+      },
+      "ASE-only": {
+        "matched": 0.996,
+        "nominal": 0.998
+      },
+      "TReCASE (joint)": {
+        "matched": 0.998,
+        "nominal": 0.998
+      },
+      "hapmixQTL tau='zero'": {
+        "matched": 0.462,
+        "nominal": 1.0
+      },
+      "hapmixQTL tau='estimate'": {
+        "matched": 0.998,
+        "nominal": 0.998
+      }
+    }
+  }
+}

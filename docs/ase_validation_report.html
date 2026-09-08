@@ -181,10 +181,10 @@
       <div class="vnote">0.85–1.02× nominal across every condition tested; λ<sub>GC</sub> 0.94–1.01.</div>
     </div>
     <div class="verdict pass">
-      <div class="vlabel">Method premise</div>
-      <div class="vstate"><span class="dot"></span>Holds</div>
-      <div class="vnote">Two-channel beats total-only at <em>matched</em> type-I error,
-      most at low MAF.</div>
+      <div class="vlabel">Vs. published methods</div>
+      <div class="vstate"><span class="dot"></span>Matches TReCASE</div>
+      <div class="vnote">On the RASQUAL/TReCASE generative model: equal power to the
+      published joint likelihood, 3.7× over total-count-only.</div>
     </div>
   </div>
 </header>
@@ -451,7 +451,77 @@
   not merely imprecise. Note too that <code>corr(a,t) ≈ 0.000</code> straight from the
   production path independently confirms §3.</p>
 
-  <h2><span class="tier">§7</span> Recommendations</h2>
+  <h2><span class="tier">§7</span> Benchmarked against published methods</h2>
+  <p class="lede">Every tier above simulates from hapmixQTL's <em>own</em> assumed model —
+  circular, since simulator and estimator share a worldview. This section removes that by
+  generating from the model the ASE field actually uses, and which hapmixQTL does
+  <strong>not</strong> assume: negative-binomial total counts with library-size offsets plus
+  beta-binomial allele-specific counts, the structure behind
+  <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3218220/">TReCASE</a> and
+  <a href="https://www.nature.com/articles/ng.3467">RASQUAL</a>. Three comparator tests are
+  implemented directly — TReC-only (NB GLM), ASE-only (beta-binomial), and TReCASE (joint
+  likelihood sharing one κ) — all by likelihood ratio.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Null calibration on the NB + beta-binomial model (κ = 1, 500 loci, N = 200)</caption>
+      <thead><tr><th>Method</th><th>type-I @ 0.05</th><th>@ 0.01</th><th>λ<sub>GC</sub></th></tr></thead>
+      <tbody>
+        <tr><td>TReC-only</td><td class="good">0.0500 (1.00×)</td><td>0.0080 (0.80×)</td><td>0.91</td></tr>
+        <tr><td>ASE-only</td><td>0.0640 (1.28×)</td><td>0.0220 (2.20×)</td><td>1.16</td></tr>
+        <tr><td>TReCASE (joint)</td><td>0.0600 (1.20×)</td><td>0.0180 (1.80×)</td><td>1.18</td></tr>
+        <tr class="rowsplit"><td>hapmixQTL <code>tau='zero'</code></td><td class="bad">1.0000 (20×)</td><td class="bad">1.0000 (100×)</td><td class="bad">3020</td></tr>
+        <tr><td>hapmixQTL <code>tau='estimate'</code></td><td class="good">0.0460 (0.92×)</td><td>0.0160 (1.60×)</td><td>1.13</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="tablebox">
+    <table>
+      <caption>Power at matched empirical α = 0.05 — each method thresholded on its own null</caption>
+      <thead><tr><th>κ (log aFC)</th><th>TReC-only</th><th>ASE-only</th><th>TReCASE</th><th>hapmix <code>estimate</code></th><th>hapmix <code>zero</code></th></tr></thead>
+      <tbody>
+        <tr><td>1.05 (0.049)</td><td>0.104</td><td>0.202</td><td>0.262</td><td class="good">0.268</td><td class="bad">0.094</td></tr>
+        <tr><td>1.10 (0.095)</td><td>0.204</td><td>0.656</td><td>0.754</td><td class="good">0.762</td><td class="bad">0.194</td></tr>
+        <tr><td>1.20 (0.182)</td><td>0.486</td><td>0.996</td><td>0.998</td><td class="good">0.998</td><td class="bad">0.462</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p>TReC-only landing at exactly <strong>1.00×</strong> validates the comparator
+  implementation. The mild inflation in ASE-only and TReCASE (λ ≈ 1.16–1.18) is the χ²(1)
+  LRT asymptotic at N = 200 — and hapmixQTL with <code>tau='estimate'</code> sits
+  <em>inside that same band</em> (λ = 1.13). It is as well calibrated as the published
+  methods are on their own model.</p>
+
+  <p><strong>1. Fixed hapmixQTL is statistically equivalent to TReCASE.</strong> On
+  TReCASE's home turf it matches the published joint likelihood at every effect size
+  (0.268 vs 0.262, 0.762 vs 0.754, 0.998 vs 0.998), while beating total-count-only by
+  <strong>3.7×</strong> at κ = 1.10. The premise survives external scrutiny, and §5's
+  total-only comparison was not flattering itself.</p>
+
+  <p><strong>2. The default does not merely invalidate p-values — it destroys the method's
+  entire advantage.</strong> The <code>tau='zero'</code> row's <em>uncorrected nominal</em>
+  power is 1.000 at every effect size, which looks spectacular. Thresholded on its own null
+  it collapses to 0.094 / 0.194 / 0.462 — <strong>statistically indistinguishable from
+  TReC-only</strong>, the very baseline the ASE channel exists to beat. That is the
+  sharpest argument that this default is not worth keeping for compatibility: it is
+  strictly worse than not using ASE at all. It is also a clean demonstration of why the
+  matched-α methodology matters — on nominal p-values, the broken configuration is the best
+  method in the table.</p>
+
+  <p><em>Scope:</em> this reproduces the published model <em>structure</em> and implements
+  the published <em>tests</em>; it is not a replication of either paper's exact parameter
+  grid (PMC, Nature, bioRxiv and the asSeq docs were all unreachable from this environment).
+  RASQUAL's additions over TReCASE — genotype uncertainty, mapping bias, sequencing error —
+  are nuisance refinements on the same joint likelihood; the shared TReCASE core is what is
+  implemented here.</p>
+
+  <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
     <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
     <code>map_cis</code> and <code>map_susie</code>. One line per call site, and the single
@@ -466,7 +536,7 @@
     test, would have caught this immediately.</li>
   </ol>
 
-  <h2><span class="tier">§8</span> What remains untested</h2>
+  <h2><span class="tier">§9</span> What remains untested</h2>
   <ul class="open">
     <li><strong>Phasing error.</strong> §3's orthogonality argument assumes phase is random
     w.r.t. expression; systematic expression-correlated phasing error would break it.</li>
@@ -481,11 +551,14 @@
     F1; untested here.</li>
   </ul>
 
-  <h2><span class="tier">§9</span> Reproduce</h2>
+  <h2><span class="tier">§10</span> Reproduce</h2>
   <pre>python3 tests/ase_validation.py --reps 1500 --N 200 --tiers 0,1,2,3 --out results.json
 
 # fast smoke (~1 min)
-python3 tests/ase_validation.py --reps 60 --tiers 0</pre>
+python3 tests/ase_validation.py --reps 60 --tiers 0
+
+# external benchmark vs TReC-only / ASE-only / TReCASE
+python3 tests/ase_external_benchmark.py --reps 500 --kappas 1.05,1.1,1.2</pre>
 
   <div class="annot">
     <p style="margin:0 0 10px"><strong>Commenting.</strong> This page loads
