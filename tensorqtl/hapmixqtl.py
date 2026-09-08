@@ -242,6 +242,21 @@ def _estimate_tau(y_t, v_inf_t, covariates_t, device):
 #  Association tests
 # ---------------------------------------------------------------------------
 
+def _warn_tau_zero(tau_mode):
+    """tau_mode='zero' is anticonservative on real data (see docs/ase_validation.md)."""
+    if tau_mode == 'zero':
+        import warnings
+        warnings.warn(
+            "hapmixQTL: tau_mode='zero' asserts that Gibbs inferential variance is the "
+            "ENTIRE error variance, which real quantifier posteriors never satisfy. "
+            "Measured consequences: up to 107x nominal type-I error at alpha=1e-3, ~100% "
+            "false positives on count-level simulations, 64.5% coverage of nominal 95% "
+            "CIs, and -- at matched empirical type-I error -- no more power than using "
+            "total counts alone. Use tau_mode='estimate' unless reproducing prior "
+            "results. See docs/ase_validation.md.",
+            RuntimeWarning, stacklevel=3)
+
+
 def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
                                  sqrt_wa_t, sqrt_wt_t,
                                  residualizer_a, residualizer_t,
@@ -464,7 +479,7 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
 def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 phenotype_pos_df, xL_df=None, xR_df=None, prefix='',
                 covariates_df=None, maf_threshold=0, window=1000000,
-                tau_mode='zero', se_mode='model',
+                tau_mode='estimate', se_mode='model',
                 output_dir='.', logger=None, verbose=True):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
@@ -486,7 +501,33 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         covariates_df:    covariates [samples x covariates] or None
         maf_threshold:    minimum minor allele frequency
         window:           cis-window size in bases
-        tau_mode:         'zero' (default) or 'estimate'
+        tau_mode:         'estimate' (default) or 'zero'.
+
+            'estimate' adds a moment-estimated overdispersion term tau to the
+            per-sample variance, so the weights are w_i = 1/(v_inf_i + tau).
+
+            'zero' uses w_i = 1/v_inf_i, i.e. it asserts the Gibbs inferential
+            variance is the ENTIRE error variance. That is essentially never
+            true of real data -- a quantifier's posterior captures only
+            allelic-assignment uncertainty conditional on the observed total,
+            not the counts' sampling variance and not biological variance -- so
+            the weights come out uniformly too large, the known-variance GLS SE
+            (Var(beta) = 1/xx) collapses, and p-values are severely
+            anticonservative. Measured: up to 107x the nominal type-I error at
+            alpha=1e-3 on Gaussian simulations and ~100% false positives on
+            count-level simulations (lambda_GC -> inf); nominal 95% CIs cover
+            64.5%. At matched empirical type-I error it also loses all the power
+            the allele-specific channel provides, performing no better than
+            total-count-only. See docs/ase_validation.md.
+
+            This mirrors the parent method: mixQTL (Liang et al. 2021) writes the
+            ASE error as N(0, sigma^2 * (1/Y1 + 1/Y2)) where the counts set only
+            the SHAPE of the weights and sigma^2 is a free scale parameter it
+            infers from the data (Supplementary Notes 5.2). 'zero' is what you
+            get by dropping that free scale; 'estimate' restores it.
+
+            'zero' is retained only for reproducing prior results and emits a
+            warning.
         se_mode:          'model' (default) or 'robust' (sandwich)
         output_dir:       output directory
         logger:           SimpleLogger instance
@@ -594,6 +635,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
             vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
 
+            _warn_tau_zero(tau_mode)
             if tau_mode == 'estimate':
                 tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
                 tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
@@ -719,7 +761,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             phenotype_pos_df, xL_df=None, xR_df=None,
             covariates_df=None, maf_threshold=0, beta_approx=True,
-            nperm=10000, window=1000000, tau_mode='zero', se_mode='model',
+            nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
             logger=None, seed=None, verbose=True, warn_monomorphic=True):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
@@ -804,6 +846,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
 
+        _warn_tau_zero(tau_mode)
         if tau_mode == 'estimate':
             tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
             tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
@@ -965,7 +1008,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
               covariates_df=None, L=10, scaled_prior_variance=0.2,
               estimate_residual_variance=False, estimate_prior_variance=True,
               coverage=0.95, min_abs_corr=0.5, maf_threshold=0,
-              tau_mode='zero', max_iter=500, window=1000000, tol=1e-3,
+              tau_mode='estimate', max_iter=500, window=1000000, tol=1e-3,
               summary_only=True, logger=None, verbose=True,
               warn_monomorphic=False):
     """
@@ -1058,6 +1101,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
 
+        _warn_tau_zero(tau_mode)
         if tau_mode == 'estimate':
             tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
             tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
