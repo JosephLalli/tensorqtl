@@ -584,6 +584,56 @@
   and sequencing error, hapmixQTL should be expected to sit ~19% below RASQUAL on real data
   until it models those nuisance terms.</p>
 
+  <h2><span class="tier">§7c</span> The assumption nobody checks</h2>
+  <p class="lede">Sun (2012) and its descendants let the two channels carry their own effect
+  sizes and test whether they agree. In CSeQTL's notation
+  (<a href="https://www.nature.com/articles/s41467-023-38795-w">Little et al. 2023</a>):
+  <code>η<sup>(A)</sup> = η<sup>(T)</sup>·α</code>, and the effect is <em>cis</em> exactly
+  when <code>α = 1</code>.</p>
+
+  <p><strong>hapmixQTL's inverse-variance meta-analysis assumes α = 1</strong> — that is the
+  entire justification for putting both channels on a common log-aFC scale and averaging
+  them — and it never tests it. When α ≠ 1 the meta-analysis averages two <em>different
+  estimands</em>. And α ≠ 1 is not exotic: a trans component acting on total expression only,
+  reference mapping bias attenuating the ASE channel, systematic phasing error, or
+  feature-level misquantification all produce it.</p>
+
+  <p>Because §3 established the two slope estimators are <strong>uncorrelated</strong>, the
+  difference has variance <code>se_a² + se_t²</code> with no covariance term, so a simple
+  Wald test is valid — the same orthogonality that let us retire <code>Cat</code> is what
+  makes this diagnostic cheap.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>What the missing test costs — true total effect β_t = 0.4, N = 200, 800 reps</caption>
+      <thead><tr><th>α</th><th>Detection rate</th><th>Combined slope reported</th><th>Bias vs true β_t</th></tr></thead>
+      <tbody>
+        <tr><td>1.00 (true cis)</td><td>0.040</td><td class="good">0.3991</td><td>−0.0009</td></tr>
+        <tr><td>0.75</td><td>0.116</td><td>0.3209</td><td>−0.0791</td></tr>
+        <tr><td>0.50</td><td>0.379</td><td>0.2399</td><td>−0.1601</td></tr>
+        <tr><td>0.25</td><td>0.711</td><td>0.1576</td><td>−0.2424</td></tr>
+        <tr><td>0.00 (pure trans)</td><td>0.919</td><td class="bad">0.0759</td><td class="bad">−0.3241</td></tr>
+        <tr><td>−0.50 (opposing)</td><td>1.000</td><td class="bad">−0.0787</td><td class="bad">−0.4787 (sign flip)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>For a gene whose eQTL is not purely cis, hapmixQTL silently reports a badly
+  attenuated effect.</strong> At α = 0 — a real total-expression effect with no
+  allele-specific component, i.e. a trans-eQTL — it reports <strong>0.076 instead of
+  0.400, an 81% attenuation</strong>, with no warning. At α = −0.5 the reported effect
+  <strong>changes sign</strong>. The test catches these 92% and 100% of the time.</p>
+
+  <p>The honest limitation: detection power is weakest (11.6%) exactly where the bias is
+  mildest but not negligible — α = 0.75 still attenuates by 20%. This is a screen for gross
+  violations, not a guarantee of consistency. It also gives hapmixQTL something it currently
+  cannot do at all: <strong>distinguish cis from trans eQTLs</strong>, a headline capability
+  of the TReCASE family.</p>
+
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
     <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
@@ -597,6 +647,10 @@
     from §3, so a future reader neither mistakes it for an oversight nor silently "fixes" it.</li>
     <li>Add a calibration gate to CI — the control cell plus one inflated cell, as a fast
     test, would have caught this immediately.</li>
+    <li>Ship the cis/trans test (§7c) as a per-gene diagnostic column. It is ~10 lines given
+    what <code>calculate_hapmixqtl_nominal</code> already returns, it validates the
+    assumption the meta-analysis rests on, and it adds cis-vs-trans classification. Genes
+    failing it should be flagged, not silently reported with an attenuated effect.</li>
   </ol>
 
   <h2><span class="tier">§9</span> What remains untested</h2>
