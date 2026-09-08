@@ -170,10 +170,9 @@
 
   <div class="verdicts">
     <div class="verdict fail">
-      <div class="vlabel">Default configuration</div>
-      <div class="vstate"><span class="dot"></span>Invalid</div>
-      <div class="vnote"><code>tau_mode='zero'</code> — up to 107× nominal type-I error;
-      ~100% false positives on count-level data.</div>
+      <div class="vlabel">Old default — now fixed</div>
+      <div class="vstate"><span class="dot"></span>Was invalid</div>
+      <div class="vnote"><code>tau_mode='zero'</code> made <em>every</em> null test significant on real GTEx data (λ=3020). Default is now <code>'estimate'</code>.</div>
     </div>
     <div class="verdict pass">
       <div class="vlabel">With <code>tau_mode='estimate'</code></div>
@@ -633,6 +632,77 @@
   violations, not a guarantee of consistency. It also gives hapmixQTL something it currently
   cannot do at all: <strong>distinguish cis from trans eQTLs</strong>, a headline capability
   of the TReCASE family.</p>
+
+  <h2><span class="tier">§7d</span> Real data</h2>
+  <p class="lede">Everything above is simulation. This is GTEx v8 haplotype-expression
+  from phASER — genuine per-gene, per-sample <code>yL | yR</code> counts, which is exactly
+  hapmixQTL's input. <strong>400 genes × 706 Muscle-Skeletal samples</strong>, median
+  allele-specific depth 54 reads.</p>
+  <p>GTEx genotypes are dbGaP-protected, so real cis-QTL mapping is not possible from
+  public data. But the sharper check is available: real haplotype counts supply the real
+  variance structure — genuine overdispersion, depth distribution, zero inflation,
+  biological variability — and genotypes drawn <em>independently of expression</em> make
+  every test a true null. Same logic as RASQUAL's permutation null.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Null calibration on real GTEx haplotype counts</caption>
+      <thead><tr><th>Matrix</th><th>tau_mode</th><th>type-I @0.05</th><th>@1e-3</th><th>λ<sub>GC</sub></th></tr></thead>
+      <tbody>
+        <tr><td>phASER</td><td><code>zero</code></td><td class="bad">1.0000 (20×)</td><td class="bad">1.00000</td><td class="bad">3020</td></tr>
+        <tr><td>phASER</td><td><code>estimate</code></td><td class="good">0.0533 (1.07×)</td><td>0.00167</td><td class="good">0.98</td></tr>
+        <tr class="rowsplit"><td>phASER + WASP</td><td><code>zero</code></td><td class="bad">0.9992 (20×)</td><td class="bad">0.99917</td><td class="bad">3020</td></tr>
+        <tr><td>phASER + WASP</td><td><code>estimate</code></td><td class="good">0.0583 (1.17×)</td><td>0.00083</td><td class="good">0.90</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>The defect is confirmed on real data at full severity</strong> — on genuine
+  GTEx haplotype counts, <code>tau_mode='zero'</code> makes <em>every single null test
+  significant</em>. This is no longer an inference from simulation. <strong>The fix works
+  on real data</strong>: 1.07× nominal type-I error, λ = 0.98.</p>
+  <p><strong>Calibration is insensitive to reference mapping bias.</strong> The
+  WASP-corrected matrix gives essentially the same answer. hapmixQTL has no analogue of
+  RASQUAL's φ, so this is reassuring — its validity does not depend on upstream WASP
+  correction. (Calibration only; mapping bias could still distort effect <em>sizes</em>,
+  which needs genotypes to test.)</p>
+
+  <h2><span class="tier">§7e</span> What it costs to run</h2>
+  <p class="lede">RASQUAL reports cost as a headline result (539.9 CPU-days vs TReCASE 4.6
+  vs Lm 0.4), and mixQTL's whole framing is that joint likelihood methods are intractable
+  at scale. hapmixQTL inherits that log-linear framing, so its cost is a claim worth
+  measuring.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>N = 500, 2,000 variants/gene; genome-wide = 20,000 genes × 2,000 variants, single core</caption>
+      <thead><tr><th>Method</th><th>sec/test</th><th>Relative</th><th>CPU-days genome-wide</th></tr></thead>
+      <tbody>
+        <tr><td>total-only OLS (Lm)</td><td>3.2e−06</td><td>0.2×</td><td>0.00</td></tr>
+        <tr><td>hapmixQTL <code>tau='zero'</code></td><td>1.1e−05</td><td>0.6×</td><td>0.01</td></tr>
+        <tr><td>hapmixQTL <code>tau='estimate'</code></td><td class="good">1.7e−05</td><td class="good">1.0×</td><td class="good">0.01</td></tr>
+        <tr><td>TReC-only (NB GLM, LRT)</td><td>1.1e−02</td><td>617×</td><td>4.89</td></tr>
+        <tr><td>TReCASE (joint LRT)</td><td>5.9e−02</td><td class="bad">3446×</td><td class="bad">27.32</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>hapmixQTL is ~3,400× faster than TReCASE at statistically equivalent power.</strong>
+  That is the trade the log-linear approximation buys — now measured rather than asserted,
+  and the strongest argument for the method's existence alongside its calibration. The τ fix
+  costs ~60% more than the broken default: negligible in absolute terms.</p>
+  <p><em>Caveat:</em> our TReCASE is a Python/scipy reference implementation, not asSeq's
+  optimized C, so 3,446× is an upper bound. Our 27.3 CPU-days against RASQUAL's published
+  4.6 for TReCASE suggests roughly a 6× implementation penalty; even correcting for it,
+  hapmixQTL remains ~500× faster.</p>
 
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">

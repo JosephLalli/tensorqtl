@@ -412,6 +412,72 @@ gross violations, not a guarantee of consistency.
 This also gives hapmixQTL something it currently cannot do: **distinguish cis from trans
 eQTLs**, which is one of the headline capabilities of the TReCASE family.
 
+## 7d. REAL DATA — GTEx v8 phASER haplotype expression
+
+**Harness:** `tests/ase_gtex_real_data.py` · **Raw:** `docs/ase_gtex_real_data.json`
+
+Every tier above is simulation. This is the real thing: GTEx v8 haplotype-expression
+matrices produced by phASER (Castel et al. 2016) from the public
+`gs://adult-gtex/haplotype-expression/v8/` bucket — genuine per-gene, per-sample
+haplotype counts `yL | yR`, which is exactly hapmixQTL's input. **400 genes × 706
+Muscle-Skeletal samples**, median allele-specific depth 54 reads.
+
+**Design.** GTEx genotypes are dbGaP-protected, so real cis-QTL mapping is not possible
+from public data. But the more important check is: real haplotype counts supply the real
+variance structure — genuine overdispersion, depth distribution, zero inflation,
+biological variability — and genotypes drawn *independently of expression* make every test
+a true null. This is the same logic as RASQUAL's permutation null. Any method whose
+p-values are not uniform here is miscalibrated on real data, whatever simulations say.
+
+| matrix | tau_mode | type-I @0.05 | @0.01 | @1e-3 | λ_GC |
+|---|---|---|---|---|---|
+| phASER | `zero` | **1.0000 (20×)** | **1.0000 (100×)** | **1.00000** | **3020** |
+| phASER | `estimate` | 0.0533 (1.07×) | 0.0117 (1.17×) | 0.00167 | 0.98 |
+| phASER + WASP | `zero` | **0.9992 (20×)** | **0.9992 (100×)** | **0.99917** | **3020** |
+| phASER + WASP | `estimate` | 0.0583 (1.17×) | 0.0117 (1.17×) | 0.00083 | 0.90 |
+
+**Findings.**
+
+1. **The defect is confirmed on real data, at full severity.** On real GTEx haplotype
+   counts, `tau_mode='zero'` makes **every single null test significant** (λ_GC = 3020).
+   This is no longer an inference from simulation.
+2. **The fix works on real data.** `tau_mode='estimate'` gives 1.07× nominal type-I error
+   and λ_GC = 0.98 — properly calibrated on genuine GTEx expression variance.
+3. **Calibration is insensitive to reference mapping bias.** The WASP-corrected matrix
+   gives essentially the same answer (1.17×, λ = 0.90). hapmixQTL does not model reference
+   bias at all — it has no analogue of RASQUAL's φ — so this is reassuring: its validity
+   does not depend on upstream WASP correction. (This addresses calibration only; mapping
+   bias could still bias effect *sizes*, which needs genotypes to test.)
+
+## 7e. Compute cost
+
+**Harness:** `tests/ase_compute_benchmark.py` · **Raw:** `docs/ase_compute_benchmark.json`
+
+RASQUAL reports cost as a headline result (539.9 CPU-days vs TReCASE 4.6 vs Lm 0.4), and
+mixQTL's entire framing is that likelihood-based joint methods are intractable at scale.
+hapmixQTL inherits that log-linear framing, so its cost is a claim worth measuring.
+N = 500, 2,000 variants/gene; genome-wide = 20,000 genes × 2,000 variants = 40M tests,
+single core.
+
+| method | sec/test | relative | CPU-days genome-wide |
+|---|---|---|---|
+| total-only OLS (Lm) | 3.2e-06 | 0.2× | 0.00 |
+| hapmixQTL `tau='zero'` | 1.1e-05 | 0.6× | 0.01 |
+| **hapmixQTL `tau='estimate'`** | **1.7e-05** | **1.0×** | **0.01** |
+| TReC-only (NB GLM, LRT) | 1.1e-02 | 617× | 4.89 |
+| TReCASE (joint LRT) | 5.9e-02 | **3446×** | 27.32 |
+
+**Finding: hapmixQTL is ~3,400× faster than TReCASE at statistically equivalent power**
+(§7, §7b). That is the trade the log-linear approximation buys, now measured rather than
+asserted, and it is the strongest argument for the method's existence alongside its
+calibration. The τ fix costs ~60% more than the broken default — negligible in absolute
+terms (0.01 CPU-days either way).
+
+*Caveat:* our TReCASE is a reference implementation in Python/scipy, not asSeq's optimized
+C, so 3,446× is an upper bound on the true ratio. Our 27.3 CPU-days versus RASQUAL's
+published 4.6 for TReCASE is consistent with roughly a 6× implementation penalty; even
+correcting for it, hapmixQTL remains ~500× faster.
+
 ## 8. Recommendations
 
 1. **Change the default to `tau_mode='estimate'`** in `map_nominal`, `map_cis`, and

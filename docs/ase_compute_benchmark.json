@@ -1,0 +1,35 @@
+{
+  "config": {
+    "reps": 40,
+    "N": 500,
+    "n_var": 2000,
+    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/compute.json"
+  },
+  "results": {
+    "total-only OLS (Lm)": {
+      "sec_per_test": 3.2454861000019262e-06,
+      "relative": 0.18951125759949,
+      "cpu_days_genomewide": 0.0015025398611120029
+    },
+    "hapmixQTL (tau=zero)": {
+      "sec_per_test": 1.080371628750072e-05,
+      "relative": 0.630853375212773,
+      "cpu_days_genomewide": 0.005001720503472556
+    },
+    "hapmixQTL (tau=estimate)": {
+      "sec_per_test": 1.712555834999989e-05,
+      "relative": 1.0,
+      "cpu_days_genomewide": 0.007928499236111062
+    },
+    "TReC-only (NB GLM, LRT)": {
+      "sec_per_test": 0.010558380325005601,
+      "relative": 616.5276547030461,
+      "cpu_days_genomewide": 4.888139039354445
+    },
+    "TReCASE (joint LRT)": {
+      "sec_per_test": 0.05901328077499102,
+      "relative": 3445.9186421207337,
+      "cpu_days_genomewide": 27.3209633217551
+    }
+  }
+}
