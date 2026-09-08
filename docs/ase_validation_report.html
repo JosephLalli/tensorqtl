@@ -834,6 +834,90 @@
   gradually. Its validity is <em>contingent on upstream mapping-bias filtering</em> in a way
   §7d could not reveal, because that section only compared two clean inputs.</p>
 
+  <h2><span class="tier">§7i</span> Reference bias on unfiltered data</h2>
+  <p class="lede">§7h used a <em>uniform</em> φ = 0.60 — the easiest bias for a single-φ
+  model to absorb. Real unfiltered data is harder two ways: <strong>across genes</strong>
+  (most clean, a minority badly biased), and <strong>within a gene</strong>, where counts
+  are summed over several het sites each with its own bias — the case RASQUAL's one-φ-per-
+  feature model structurally cannot represent. All scenarios draw φ ≥ 0.5, because
+  reference bias is mechanistically directional and so does not average away.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>t1 = nominal type-I @0.05 (target 0.05) · pw = power at matched empirical FPR 10%, aFC 1.25, N=100</caption>
+      <thead><tr><th>Scenario</th><th>trcQTL</th><th>TReCASE</th><th>RASQUAL-like (fits φ)</th><th>hapmixQTL</th></tr></thead>
+      <tbody>
+        <tr><td>clean</td><td>.064 / .500</td><td>.048 / <strong>.956</strong></td><td>.068 / .788</td><td>.048 / <strong>.964</strong></td></tr>
+        <tr><td>uniform φ=0.60</td><td>.064 / .500</td><td class="bad">.968 / .000</td><td class="good">.080 / .776</td><td class="bad">.960 / .000</td></tr>
+        <tr><td>uniform φ=0.75</td><td>.064 / .500</td><td class="bad">.992 / .008</td><td class="good">.104 / .636</td><td class="bad">1.000 / .000</td></tr>
+        <tr><td>across genes (25% biased)</td><td>.064 / .500</td><td class="bad">.292 / .040</td><td class="good">.084 / .780</td><td class="bad">.284 / .016</td></tr>
+        <tr><td>within gene (per-site)</td><td>.064 / .500</td><td class="bad">.860 / .008</td><td class="good">.072 / .768</td><td class="bad">.832 / .000</td></tr>
+        <tr><td>within gene, severe</td><td>.064 / .500</td><td class="bad">.952 / .020</td><td class="good">.076 / .720</td><td class="bad">.960 / .000</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>RASQUAL degrades gracefully; everything else falls off a cliff.</strong>
+  Fitting φ holds type-I error at 0.068–0.104 across every regime — <em>including
+  within-gene per-site heterogeneity its single-φ model cannot represent</em> — while
+  keeping 64–78% power. TReCASE and hapmixQTL reach 0.28–1.00 type-I and lose essentially
+  all power once thresholded on their own inflated nulls.</p>
+
+  <p><strong>But the insurance has a premium.</strong> On clean data RASQUAL-like scores
+  0.788 against TReCASE's 0.956 and hapmixQTL's 0.964 — two unnecessary nuisance parameters
+  cost ~17% power. That is exactly RASQUAL's own ablation, where fixing φ = 0.5 <em>improved</em>
+  power. So φ-fitting is a real trade, worth it precisely when you cannot guarantee filtered
+  input. (Note hapmixQTL now <em>matches</em> TReCASE on clean data, 0.964 vs 0.956 — the
+  §7h gap closes once homozygotes are correctly included in the comparator.)</p>
+
+  <h3>The shipped diagnostic</h3>
+  <p><code>hapmixqtl.reference_bias_diagnostic(yL, yR, sign)</code> pools across genes:
+  whether a real cis-eQTL's increasing allele is REF or ALT is arbitrary, so genuine ASE
+  cancels while bias accumulates. The test is <strong>clustered at the gene level</strong>,
+  because the gene is the unit of that randomization.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Specificity (rows 1–2) and power (rest)</caption>
+      <thead><tr><th>Scenario</th><th>gene-mean ref fraction</th><th>detection rate</th></tr></thead>
+      <tbody>
+        <tr><td>clean, null genes</td><td>0.5001</td><td class="good">0.000</td></tr>
+        <tr><td><strong>clean, STRONG real ASE (aFC 2.0)</strong></td><td>0.5064</td><td class="good">0.000</td></tr>
+        <tr><td>uniform φ=0.55</td><td>0.5503</td><td class="good">1.000</td></tr>
+        <tr><td>uniform φ=0.60</td><td>0.6006</td><td class="good">1.000</td></tr>
+        <tr><td>uniform φ=0.70</td><td>0.7006</td><td class="good">1.000</td></tr>
+        <tr><td>across genes (25% biased)</td><td>0.5583</td><td>0.583</td></tr>
+        <tr><td>within gene (per-site)</td><td>0.5975</td><td class="good">1.000</td></tr>
+        <tr><td>φ=0.60 with strong real ASE</td><td>0.5966</td><td>0.750</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>Perfect specificity, full power from φ ≥ 0.55.</strong> Row 2 is the critical
+  control — strong genuine allele-specific expression does not trigger it. Sparse
+  across-gene bias is hardest (0.583), as expected when only a quarter of genes carry it;
+  the per-gene fractions the function returns are the right tool there.</p>
+
+  <div class="headline" style="border-left-color:var(--warn)">
+    <p style="font-size:1.02rem">Two bugs this run found, both worth recording.</p>
+    <p>The first diagnostic tested at the gene-<em>sample</em> level and false-positived on
+    genuine ASE <strong>37.5%</strong> of the time — real cis effects are randomized once per
+    gene, so gene-samples are not independent and the between-gene variance was missing from
+    the standard error. Clustering by gene took it to <strong>0.000</strong> with no loss of
+    power. Separately, the RASQUAL-like comparator initially fit φ on heterozygotes only,
+    leaving φ and κ confounded (both shift the allelic ratio), which collapsed its power to
+    the total-only channel. Homozygotes carry the bias but no genetic effect and are what
+    identify φ — CSeQTL states it directly. Including them: <strong>0.383 → 0.788</strong>.</p>
+  </div>
+
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
     <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
@@ -849,9 +933,10 @@
     test, would have caught this immediately.</li>
     <li><strong>Document the mapping-bias precondition and add a φ diagnostic (§7h).</strong>
     hapmixQTL requires mapping-bias-filtered input — a hard precondition, not a suggestion.
-    A cheap detector: the pooled allelic ratio at heterozygotes across genes should sit at
-    0.5; a systematic departure flags the failure before it silently inflates every p-value.
-    Fitting φ outright is the single highest-value remaining feature.</li>
+    <strong>Now shipped</strong> as <code>hapmixqtl.reference_bias_diagnostic()</code> —
+    perfect specificity, full power from φ ≥ 0.55 (§7i). Run it before trusting any result;
+    if it flags, filter rather than proceed. Fitting φ outright remains the highest-value
+    feature when filtered input cannot be guaranteed, at ~17% clean-data power.</li>
     <li>Ship the cis/trans test (§7c) as a per-gene diagnostic column. It is ~10 lines given
     what <code>calculate_hapmixqtl_nominal</code> already returns, it validates the
     assumption the meta-analysis rests on, and it adds cis-vs-trans classification. Genes

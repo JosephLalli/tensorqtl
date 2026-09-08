@@ -82,6 +82,121 @@ def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
     return A_df, T_df, Va_df, Vt_df, Cat_df, pos_df
 
 
+def reference_bias_diagnostic(yL, yR, sign, min_total=10, min_sites=20):
+    """
+    Detect reference mapping bias from haplotype counts (RASQUAL's phi).
+
+    WHY THIS MATTERS
+    ----------------
+    hapmixQTL does not model reference mapping bias. It has no analogue of
+    RASQUAL's phi, and it degrades catastrophically rather than gracefully when
+    bias is present: at phi = 0.60 the nominal type-I error rises to 0.635 (a
+    13x inflation) and power at matched FPR collapses to ~0, while a phi-fitting
+    model is completely unaffected (docs/ase_validation.md sec 7h). hapmixQTL's
+    validity is therefore contingent on mapping-bias-filtered input (WASP,
+    phASER-style site filtering, or a variant-aware aligner). This function
+    checks that precondition instead of assuming it.
+
+    HOW IT SEPARATES BIAS FROM REAL SIGNAL
+    --------------------------------------
+    A single gene's allelic ratio confounds mapping bias with genuine
+    allele-specific expression. Pooling across genes separates them: whether a
+    real cis-eQTL's increasing allele happens to be the REFERENCE or the
+    ALTERNATE allele is arbitrary, so true ASE contributes random-sign deviations
+    that cancel in the pool. Reference mapping bias always favours the reference
+    allele, so it accumulates. A pooled reference fraction significantly above
+    0.5 is therefore evidence of bias, not of biology.
+
+    Args:
+        yL, yR:   [genes, samples] haplotype-L and haplotype-R counts.
+        sign:     [genes, samples] signed het indicator s = xL - xR (+1 when the
+                  ALTERNATE allele is on haplotype L, -1 when on R, 0 for
+                  homozygotes, which carry no allelic information and are
+                  ignored).
+        min_total: minimum allele-specific depth for a gene-sample to count.
+        min_sites: minimum usable gene-samples before a verdict is issued.
+
+    Returns:
+        dict with
+          ref_fraction   pooled reference-allele fraction (0.5 = unbiased)
+          implied_phi    the same quantity on RASQUAL's phi scale
+          z, pvalue      test of ref_fraction against 0.5
+          n_obs, n_reads counts entering the pool
+          per_gene       [genes] per-gene reference fraction (NaN if unusable),
+                         for flagging individual genes
+          flag           True when bias is detected at p < 1e-3
+          message        a human-readable verdict
+    """
+    yL = np.asarray(yL, dtype=float)
+    yR = np.asarray(yR, dtype=float)
+    sign = np.asarray(sign, dtype=float)
+    if yL.ndim == 1:
+        yL, yR, sign = yL[None, :], yR[None, :], sign[None, :]
+
+    # ALT allele sits on L when s > 0, on R when s < 0; REF is the other one.
+    alt = np.where(sign > 0, yL, yR)
+    ref = np.where(sign > 0, yR, yL)
+    tot = alt + ref
+    usable = (np.abs(sign) > 0) & (tot >= min_total)
+
+    n_obs = int(usable.sum())
+    if n_obs < min_sites:
+        return dict(ref_fraction=float('nan'), implied_phi=float('nan'),
+                    z=float('nan'), pvalue=float('nan'), n_obs=n_obs,
+                    n_reads=0, per_gene=np.full(yL.shape[0], np.nan),
+                    flag=False,
+                    message=f'insufficient data ({n_obs} usable gene-samples)')
+
+    ref_tot = float(ref[usable].sum())
+    all_tot = float(tot[usable].sum())
+    frac = ref_tot / max(all_tot, 1.0)
+
+    # The test must be clustered at the GENE level. Whether a real cis effect
+    # raises the reference or the alternate allele is decided once per gene, so
+    # the gene is the unit of randomization; treating gene-samples as
+    # independent omits the between-gene variance and false-positives on
+    # genuine ASE (measured at 37.5% before this was fixed). Reads within a
+    # gene-sample are also overdispersed, so a binomial test on pooled counts
+    # would be worse still.
+    per_gene = np.full(yL.shape[0], np.nan)
+    for g in range(yL.shape[0]):
+        u = usable[g]
+        if u.sum() >= 3:
+            per_gene[g] = float(ref[g][u].sum() / max(tot[g][u].sum(), 1.0))
+
+    gene_frac = per_gene[np.isfinite(per_gene)]
+    if gene_frac.size < 5:
+        return dict(ref_fraction=float(ref[usable].sum() / max(all_tot, 1.0)),
+                    implied_phi=float('nan'), z=float('nan'), pvalue=float('nan'),
+                    n_obs=n_obs, n_reads=int(all_tot), per_gene=per_gene,
+                    flag=False,
+                    message=f'insufficient genes ({gene_frac.size}) for a '
+                            f'gene-clustered test')
+    m = float(gene_frac.mean())
+    sd = float(gene_frac.std(ddof=1))
+    z = (m - 0.5) / (sd / np.sqrt(gene_frac.size)) if sd > 0 else 0.0
+    pval = float(2 * stats.norm.sf(abs(z)))
+    n_genes = int(gene_frac.size)
+
+    flag = bool(pval < 1e-3)
+    if flag:
+        direction = 'reference' if m > 0.5 else 'alternate'
+        message = (f'REFERENCE BIAS DETECTED: pooled allelic fraction {m:.4f} '
+                   f'favours the {direction} allele (z={z:.1f}, p={pval:.2e}). '
+                   f'hapmixQTL does not model mapping bias and is severely '
+                   f'anticonservative in its presence -- filter with WASP or a '
+                   f'variant-aware aligner before trusting these results. '
+                   f'See docs/ase_validation.md sec 7h.')
+    else:
+        message = (f'no significant reference bias (gene-mean fraction '
+                   f'{m:.4f}, p={pval:.2g}, {n_genes} genes)')
+
+    return dict(ref_fraction=float(m), implied_phi=float(m), z=float(z),
+                pvalue=pval, n_obs=n_obs, n_genes=n_genes,
+                n_reads=int(all_tot), per_gene=per_gene, flag=flag,
+                message=message)
+
+
 def compute_summaries_from_gibbs(yL, yR, kappa=0.5):
     """
     Compute hapmixQTL summary statistics from Gibbs draws.

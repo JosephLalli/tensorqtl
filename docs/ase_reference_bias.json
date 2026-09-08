@@ -1,0 +1,128 @@
+{
+  "config": {
+    "reps": 250,
+    "N": 100,
+    "kappa": 1.25,
+    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/refbias.json"
+  },
+  "A_unfiltered": {
+    "clean (no bias)": {
+      "nominal_typeI": {
+        "trcQTL": 0.064,
+        "TReCASE": 0.048,
+        "RASQUAL-like (fits phi)": 0.068,
+        "hapmixQTL": 0.048
+      },
+      "power_matched": {
+        "trcQTL": 0.5,
+        "TReCASE": 0.956,
+        "RASQUAL-like (fits phi)": 0.788,
+        "hapmixQTL": 0.964
+      }
+    },
+    "uniform  phi=0.60": {
+      "nominal_typeI": {
+        "trcQTL": 0.064,
+        "TReCASE": 0.968,
+        "RASQUAL-like (fits phi)": 0.08,
+        "hapmixQTL": 0.96
+      },
+      "power_matched": {
+        "trcQTL": 0.5,
+        "TReCASE": 0.0,
+        "RASQUAL-like (fits phi)": 0.776,
+        "hapmixQTL": 0.0
+      }
+    },
+    "uniform  phi=0.75": {
+      "nominal_typeI": {
+        "trcQTL": 0.064,
+        "TReCASE": 0.992,
+        "RASQUAL-like (fits phi)": 0.104,
+        "hapmixQTL": 1.0
+      },
+      "power_matched": {
+        "trcQTL": 0.5,
+        "TReCASE": 0.008,
+        "RASQUAL-like (fits phi)": 0.636,
+        "hapmixQTL": 0.0
+      }
+    },
+    "across genes (25% badly biased)": {
+      "nominal_typeI": {
+        "trcQTL": 0.064,
+        "TReCASE": 0.292,
+        "RASQUAL-like (fits phi)": 0.084,
+        "hapmixQTL": 0.284
+      },
+      "power_matched": {
+        "trcQTL": 0.5,
+        "TReCASE": 0.04,
+        "RASQUAL-like (fits phi)": 0.78,
+        "hapmixQTL": 0.016
+      }
+    },
+    "WITHIN gene (per-site bias)": {
+      "nominal_typeI": {
+        "trcQTL": 0.064,
+        "TReCASE": 0.86,
+        "RASQUAL-like (fits phi)": 0.072,
+        "hapmixQTL": 0.832
+      },
+      "power_matched": {
+        "trcQTL": 0.5,
+        "TReCASE": 0.008,
+        "RASQUAL-like (fits phi)": 0.768,
+        "hapmixQTL": 0.0
+      }
+    },
+    "WITHIN gene, severe": {
+      "nominal_typeI": {
+        "trcQTL": 0.064,
+        "TReCASE": 0.952,
+        "RASQUAL-like (fits phi)": 0.076,
+        "hapmixQTL": 0.96
+      },
+      "power_matched": {
+        "trcQTL": 0.5,
+        "TReCASE": 0.02,
+        "RASQUAL-like (fits phi)": 0.72,
+        "hapmixQTL": 0.0
+      }
+    }
+  },
+  "B_diagnostic": {
+    "clean, null genes": {
+      "mean_ref_fraction": 0.5000652056196256,
+      "detect_rate": 0.0
+    },
+    "clean, STRONG real ASE (aFC 2.0)": {
+      "mean_ref_fraction": 0.5064164640038689,
+      "detect_rate": 0.0
+    },
+    "uniform phi=0.55": {
+      "mean_ref_fraction": 0.5503492280470159,
+      "detect_rate": 1.0
+    },
+    "uniform phi=0.60": {
+      "mean_ref_fraction": 0.6005896606750131,
+      "detect_rate": 1.0
+    },
+    "uniform phi=0.70": {
+      "mean_ref_fraction": 0.7006359509278206,
+      "detect_rate": 1.0
+    },
+    "across genes (25% biased)": {
+      "mean_ref_fraction": 0.5582538314474125,
+      "detect_rate": 0.5833333333333334
+    },
+    "WITHIN gene (per-site)": {
+      "mean_ref_fraction": 0.5974976962052718,
+      "detect_rate": 1.0
+    },
+    "phi=0.60 AND strong real ASE": {
+      "mean_ref_fraction": 0.596570508213405,
+      "detect_rate": 0.75
+    }
+  }
+}

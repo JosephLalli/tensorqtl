@@ -154,12 +154,18 @@ def _shared_nll(params, d, null=False, fit_delta=False, fit_phi=False):
     ll = np.sum(gammaln(T + r) - gammaln(r) - gammaln(T + 1)
                 + r * np.log(r / (r + mean)) + T * np.log(mean / (r + mean)))
 
-    m = d['het'] & (d['n_as'] > 0)
-    if m.sum() >= 1:
-        pi = kappa / (1.0 + kappa)
+    # Heterozygotes carry the genetic effect; HOMOZYGOTES carry the mapping bias
+    # with no genetic effect (pi = 0.5), which is what makes phi identifiable
+    # separately from kappa. Fitting phi on hets alone leaves the two confounded
+    # -- an allelic shift can be explained as bias or as genotype effect -- and
+    # collapses power to the total-only channel.
+    for mask, pi in ((d['het'] & (d['n_as'] > 0), kappa / (1.0 + kappa)),
+                     (~d['het'] & (d['n_as'] > 0), 0.5)):
+        if mask.sum() < 1:
+            continue
         po = observed_pi(pi, delta, phi)
         a_ = max(po / theta, 1e-8); b_ = max((1 - po) / theta, 1e-8)
-        y, n = d['y_alt'][m], d['n_as'][m]
+        y, n = d['y_alt'][mask], d['n_as'][mask]
         ll += np.sum(betaln(y + a_, n - y + b_) - betaln(a_, b_))
     return -ll if np.isfinite(ll) else 1e12
 
