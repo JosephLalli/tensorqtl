@@ -314,6 +314,11 @@ def hapmix_pval(d, rng, tau_mode='estimate', n_draws=80, kappa_pseudo=0.5):
         sqrt_wa = torch.sqrt(1.0 / (va_t + ta)); sqrt_wt = torch.sqrt(1.0 / (vt_t + tt))
     else:
         sqrt_wa = torch.sqrt(1.0 / va_t); sqrt_wt = torch.sqrt(1.0 / vt_t)
+    # Samples with no allele-specific coverage have v_inf EXACTLY 0 and a = 0;
+    # weighting by 1/v_inf would hand them the largest weight in the dataset
+    # while they carry no information. Matches the shipped guard
+    # hapmixqtl._zero_degenerate_ase_weights.
+    sqrt_wa = torch.where(va_t > 1e-12, sqrt_wa, torch.zeros_like(sqrt_wa))
     res_a = WeightedResidualizer(None, sqrt_wa)
     res_t = WeightedResidualizer(None, sqrt_wt)
     ts, *_ = calculate_hapmixqtl_nominal(g_t, s_t, a_t, t_t,

@@ -82,6 +82,28 @@ def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
     return A_df, T_df, Va_df, Vt_df, Cat_df, pos_df
 
 
+def _zero_degenerate_ase_weights(sqrt_wa_t, va_t, eps=1e-12):
+    """Zero the ASE weight of samples carrying NO allele-specific information.
+
+    A sample with no reads over any heterozygous feature SNP has a degenerate
+    Gibbs posterior: every draw is identical, so v_inf is EXACTLY 0 and its
+    allelic contrast a = log(0+kappa) - log(0+kappa) is exactly 0. Weighting by
+    1/v_inf then hands those samples the LARGEST weight in the dataset (1/eps)
+    while they carry zero information, and their a = 0 drags the ASE slope
+    toward the null.
+
+    Measured: with 24 of 80 samples lacking allele-specific coverage, they
+    received weights ~1e8 against a median ~6.7 for informative samples -- about
+    1e7 times more -- and hapmixQTL's power fell BELOW total-counts-only.
+    tau_mode='estimate' softens but does not fix this: the weight becomes 1/tau,
+    still the largest in the dataset.
+
+    The correct weight for a sample with no information is zero.
+    """
+    keep = va_t > eps
+    return torch.where(keep, sqrt_wa_t, torch.zeros_like(sqrt_wa_t))
+
+
 def reference_bias_diagnostic(yL, yR, sign, min_total=10, min_sites=20):
     """
     Detect reference mapping bias from haplotype counts (RASQUAL's phi).
@@ -754,10 +776,12 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             if tau_mode == 'estimate':
                 tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
                 tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
-                sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+                sqrt_wa_t = _zero_degenerate_ase_weights(
+                    torch.sqrt(1.0 / (va_t + tau_a)), va_t)
                 sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
             else:
-                sqrt_wa_t = torch.sqrt(1.0 / va_t)
+                sqrt_wa_t = _zero_degenerate_ase_weights(
+                    torch.sqrt(1.0 / va_t), va_t)
                 sqrt_wt_t = torch.sqrt(1.0 / vt_t)
 
             residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
@@ -965,10 +989,12 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         if tau_mode == 'estimate':
             tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
             tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
-            sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+            sqrt_wa_t = _zero_degenerate_ase_weights(
+                    torch.sqrt(1.0 / (va_t + tau_a)), va_t)
             sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
         else:
-            sqrt_wa_t = torch.sqrt(1.0 / va_t)
+            sqrt_wa_t = _zero_degenerate_ase_weights(
+                    torch.sqrt(1.0 / va_t), va_t)
             sqrt_wt_t = torch.sqrt(1.0 / vt_t)
 
         residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
@@ -1220,10 +1246,12 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         if tau_mode == 'estimate':
             tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
             tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
-            sqrt_wa_t = torch.sqrt(1.0 / (va_t + tau_a))
+            sqrt_wa_t = _zero_degenerate_ase_weights(
+                    torch.sqrt(1.0 / (va_t + tau_a)), va_t)
             sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
         else:
-            sqrt_wa_t = torch.sqrt(1.0 / va_t)
+            sqrt_wa_t = _zero_degenerate_ase_weights(
+                    torch.sqrt(1.0 / va_t), va_t)
             sqrt_wt_t = torch.sqrt(1.0 / vt_t)
 
         residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
