@@ -478,6 +478,95 @@ C, so 3,446× is an upper bound on the true ratio. Our 27.3 CPU-days versus RASQ
 published 4.6 for TReCASE is consistent with roughly a 6× implementation penalty; even
 correcting for it, hapmixQTL remains ~500× faster.
 
+## 7f. Parameter recovery and robustness
+
+**Harness:** `tests/ase_robustness.py` · **Raw:** `docs/ase_robustness.json` (N = 200, 1,000 reps)
+
+**Parameter recovery (axis 3).** RASQUAL validates by showing estimated parameters track
+simulated ones (Supp. Figs 8–10). The τ fix rests entirely on `_estimate_tau`, so:
+
+| true τ | mean estimate | relative bias |
+|---|---|---|
+| 0.00 | 0.0056 | — (clamped at 0) |
+| 0.04 | 0.0405 | +1.3% |
+| 0.16 | 0.1609 | +0.6% |
+| 0.36 | 0.3613 | +0.4% |
+
+Effect recovery is likewise essentially exact — bias ≤ 0.001 at true β of 0, 0.1, 0.2, 0.4
+and 0.8, with overall corr(estimated, true) = **0.987**.
+
+**Phasing error — the §3 caveat, resolved favourably.** §3 argued `Cat` is safe to ignore
+because `s` is orthogonal to `g/2` under *random* phase, and flagged systematic phasing
+error as the untested threat. Flipping a fraction `f` of heterozygote phase calls:
+
+| f | null type-I @0.05 | λ_GC | β_a retained | corr(β_a, β_t) |
+|---|---|---|---|---|
+| 0.00 | 0.0510 (1.02×) | 1.03 | 1.004 | +0.024 |
+| 0.05 | 0.0570 (1.14×) | 0.97 | 0.908 | +0.047 |
+| 0.10 | 0.0550 (1.10×) | 1.03 | 0.808 | +0.068 |
+| 0.25 | 0.0640 (1.28×) | 1.09 | 0.510 | +0.069 |
+| 0.50 | 0.0440 (0.88×) | 1.02 | 0.003 | +0.053 |
+
+Three findings. Calibration **survives entirely** — even 50% phase error (i.e. random
+phase) leaves λ_GC at 1.02. Attenuation follows the textbook (1 − 2f) exactly (0.908,
+0.808, 0.510, 0.003 against 0.90, 0.80, 0.50, 0.00). And **corr(β_a, β_t) stays at zero
+throughout**, so the orthogonality justifying the scalar meta-analysis survives phasing
+error. **Phasing error costs power, not validity** — and the §3 caveat is closed.
+
+**Covariates.** The residualizer path had never been calibration-swept. Across 0, 2, 10 and
+30 covariates that genuinely drive expression: type-I error 0.94–1.06× at α = 0.05, λ_GC
+1.07–1.14. Calibrated.
+
+**Robust (sandwich) SEs — an independent second fix.** `se_mode='robust'` existed but was
+never evaluated. It does not assume the variance model is correct, so it is a plausible
+alternative route:
+
+| tau_mode | se_mode | σ_bio | type-I @0.05 | λ_GC |
+|---|---|---|---|---|
+| `zero` | model | 0.6 | **0.3610 (7.22×)** | **4.89** |
+| `zero` | **robust** | 0.6 | 0.0650 (1.30×) | 1.21 |
+| `estimate` | model | 0.6 | 0.0537 (1.07×) | 1.03 |
+| `estimate` | robust | 0.6 | 0.0660 (1.32×) | 1.00 |
+
+**`se_mode='robust'` substantially repairs the broken default on its own** (7.22× → 1.30×)
+without any τ estimation. It is slightly less exact than `tau_mode='estimate'` and there is
+no benefit to combining them, but it is a genuine independent safeguard — useful when the
+variance model is suspect for reasons τ does not capture.
+
+## 7g. Fine-mapping calibration (axis 8) — the third casualty
+
+**Harness:** `tests/ase_susie_pip_calibration.py` · **Raw:** `docs/ase_susie_pip_calibration.json`
+
+`map_susie` is a shipped feature that had never been validated. mixQTL validates fine-mapping
+by two criteria (Liang et al. 2021, Fig. 3): PIPs must be **calibrated** — the fraction of
+truly causal variants within a PIP bin should match the bin's mean PIP — and 95% credible
+sets must cover the causal variant. N = 150, 40 variants at LD ρ = 0.995, effect sizes
+0.04–0.22, 300 loci per arm.
+
+| PIP bin | `estimate`: mean PIP → frac causal | `zero`: mean PIP → frac causal |
+|---|---|---|
+| [0.10, 0.25) | 0.239 → 0.000 (n=1) | 0.158 → **0.018** (n=868) |
+| [0.25, 0.50) | 0.394 → 0.000 (n=1) | 0.329 → **0.024** (n=292) |
+| [0.50, 0.75) | 0.670 → 0.000 (n=1) | 0.641 → **0.054** (n=74) |
+| [0.75, 0.90) | 0.763 → 0.500 (n=2) | 0.832 → **0.026** (n=78) |
+| [0.90, 1.01) | 0.991 → **0.987** (n=76) | 0.982 → **0.340** (n=459) |
+
+| | `tau='estimate'` | `tau='zero'` |
+|---|---|---|
+| weighted mean \|frac causal − mean PIP\| | **0.001** | **0.075** |
+| 95% credible-set coverage | **0.987** | **0.368** |
+| credible sets found | 77 | 432 |
+| mean CS size | 1.0 | 1.1 |
+
+**Finding: the τ defect corrupts variant-level localization, not just gene-level p-values.**
+Under the old default a variant with PIP 0.98 was truly causal only **34%** of the time, and
+a nominal **95% credible set contained the causal variant 36.8%** of the time. It also
+manufactured 432 credible sets where the calibrated fit finds 77 — most of them spurious.
+
+This is the third independent consequence of the same root cause, after invalid p-values
+(§2, §6, §7d) and 64.5% CI coverage (§4). With `tau_mode='estimate'`, PIP calibration is
+near-perfect (weighted MAE 0.001) and credible-set coverage is 0.987 against a 0.95 target.
+
 ## 8. Recommendations
 
 1. **Change the default to `tau_mode='estimate'`** in `map_nominal`, `map_cis`, and
@@ -495,22 +584,42 @@ correcting for it, hapmixQTL remains ~500× faster.
    0b, so a future reader does not mistake it for an oversight — or silently "fix" it.
 4. **Add a calibration gate to CI.** A cheap version of Tier 0 (control cell + one inflated
    cell) as a fast test would have caught this immediately.
-5. **Ship the cis/trans test (§7c)** as a per-gene diagnostic column. It is ~10 lines given
+5. **Re-run any existing `map_susie` fine-mapping.** §7g shows the old default produced
+   95% credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants
+   that were truly causal 34% of the time. Fine-mapping done under `tau_mode='zero'` should
+   be treated as invalid and redone, not merely re-thresholded.
+6. **Ship the cis/trans test (§7c)** as a per-gene diagnostic column. It is ~10 lines given
    what `calculate_hapmixqtl_nominal` already returns, it validates the assumption the
    meta-analysis rests on, and it adds cis-vs-trans classification. Genes failing it should
    be flagged rather than silently reported with an attenuated effect.
 
 ## 9. Untested / open
 
-- **Phasing error.** Tier 0b's orthogonality argument assumes phase is random w.r.t.
-  expression. Systematic, expression-correlated phasing error would break it. Untested.
-- **Real ASE data.** Every tier here is simulation. The strongest real-data check needs no
-  external truth: because the total channel uses `g/2`, both channels estimate the *same*
-  quantity, so regressing `slope_a` on `slope_tc` across real variants should give slope 1.
-  Deviation localizes bias to a channel. Blocked on real allele-count + Gibbs input.
-- **Covariates.** All tiers run with no covariates; the residualizer path is exercised by
-  the existing unit tests but not by a calibration sweep.
-- **`se_mode='robust'`.** The sandwich SE may be self-correcting for F1; untested here.
+**Resolved since first writing:**
+
+- ~~Phasing error~~ → **§7f.** Calibration survives entirely (λ_GC ≈ 1.0 even at 50% phase
+  error), attenuation follows (1 − 2f) exactly, and corr(β_a, β_t) stays at zero, so §3's
+  orthogonality argument holds. Phasing error costs power, not validity.
+- ~~Covariates~~ → **§7f.** Calibrated across 0–30 covariates (0.94–1.06×, λ_GC 1.07–1.14).
+- ~~`se_mode='robust'`~~ → **§7f.** It *is* substantially self-correcting (7.22× → 1.30× at
+  σ_bio = 0.6) — an independent second fix needing no τ estimation.
+- ~~Real ASE data~~ → **§7d.** Done on GTEx v8 phASER haplotype expression.
+
+**Still open — all blocked on dbGaP/AnVIL authorization for GTEx genotypes:**
+
+- **Effect-size concordance.** Compare hapmixQTL's log aFC against GTEx's published aFC —
+  the check mixQTL used (their Supp. Fig. 10), and the natural external validation for a
+  method whose output *is* log aFC.
+- **Replication of GTEx eGenes.** Does hapmixQTL recover the known eQTLs?
+- **Functional / motif enrichment.** RASQUAL's most persuasive axis: are top hits enriched
+  for motif-disrupting variants?
+- **The `slope_a` vs `slope_tc` concordance check on real data.** Because the total channel
+  uses `g/2`, both channels estimate the same quantity, so the regression should have
+  slope 1; deviation localizes bias to a channel. §7c implements the test — it just needs
+  real genotypes to run on.
+
+All four need genotypes paired with the haplotype expression. Public GTEx supplies the
+expression but not the genotypes.
 
 ## Reproduce
 

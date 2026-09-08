@@ -704,6 +704,82 @@
   4.6 for TReCASE suggests roughly a 6× implementation penalty; even correcting for it,
   hapmixQTL remains ~500× faster.</p>
 
+  <h2><span class="tier">§7f</span> Recovery and robustness</h2>
+  <p class="lede">Four things that were open. <strong>Parameter recovery:</strong> the whole
+  fix rests on <code>_estimate_tau</code>, and it recovers τ to within 0.4–1.3% relative
+  bias; effect estimates are unbiased to ≤0.001 with corr(estimated, true) = 0.987.
+  <strong>Covariates:</strong> the residualizer path is calibrated across 0–30 covariates
+  (0.94–1.06×).</p>
+
+  <p><strong>Phasing error — the §3 caveat, resolved favourably.</strong> §3 argued
+  <code>Cat</code> is ignorable because <code>s</code> is orthogonal to <code>g/2</code>
+  under random phase, and flagged systematic phasing error as the untested threat. Flipping
+  a fraction <em>f</em> of heterozygote phase calls: calibration <strong>survives
+  entirely</strong> (λ<sub>GC</sub> 0.97–1.09 even at f = 0.50), attenuation follows the
+  textbook (1 − 2f) exactly, and <strong>corr(β_a, β_t) stays at zero</strong> throughout
+  (+0.02 to +0.07). <strong>Phasing error costs power, not validity</strong> — and the
+  orthogonality that retires <code>Cat</code> holds.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Robust (sandwich) SEs — an independent second fix, previously unevaluated</caption>
+      <thead><tr><th>tau_mode</th><th>se_mode</th><th>σ_bio</th><th>type-I @0.05</th><th>λ<sub>GC</sub></th></tr></thead>
+      <tbody>
+        <tr><td><code>zero</code></td><td>model</td><td>0.6</td><td class="bad">0.3610 (7.22×)</td><td class="bad">4.89</td></tr>
+        <tr><td><code>zero</code></td><td><strong>robust</strong></td><td>0.6</td><td class="good">0.0650 (1.30×)</td><td class="good">1.21</td></tr>
+        <tr><td><code>estimate</code></td><td>model</td><td>0.6</td><td class="good">0.0537 (1.07×)</td><td class="good">1.03</td></tr>
+        <tr><td><code>estimate</code></td><td>robust</td><td>0.6</td><td>0.0660 (1.32×)</td><td>1.00</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><code>se_mode='robust'</code> <strong>substantially repairs the broken default on its
+  own</strong> (7.22× → 1.30×) with no τ estimation at all. Slightly less exact than
+  <code>tau_mode='estimate'</code>, no benefit from combining the two — but a genuine
+  independent safeguard when the variance model is suspect for reasons τ does not capture.</p>
+
+  <h2><span class="tier">§7g</span> Fine-mapping: the third casualty</h2>
+  <p class="lede"><code>map_susie</code> is a shipped feature that had never been validated.
+  mixQTL validates fine-mapping on two criteria: PIPs must be <strong>calibrated</strong> —
+  the fraction truly causal in a PIP bin should match the bin's mean PIP — and 95% credible
+  sets must cover the causal variant. N = 150, 40 variants at LD ρ = 0.995, 300 loci per arm.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>PIP calibration — mean PIP vs. fraction truly causal</caption>
+      <thead><tr><th>PIP bin</th><th><code>estimate</code>: PIP → causal</th><th><code>zero</code>: PIP → causal</th></tr></thead>
+      <tbody>
+        <tr><td>[0.10, 0.25)</td><td>0.239 → 0.000 <em>(n=1)</em></td><td class="bad">0.158 → 0.018 <em>(n=868)</em></td></tr>
+        <tr><td>[0.25, 0.50)</td><td>0.394 → 0.000 <em>(n=1)</em></td><td class="bad">0.329 → 0.024 <em>(n=292)</em></td></tr>
+        <tr><td>[0.50, 0.75)</td><td>0.670 → 0.000 <em>(n=1)</em></td><td class="bad">0.641 → 0.054 <em>(n=74)</em></td></tr>
+        <tr><td>[0.75, 0.90)</td><td>0.763 → 0.500 <em>(n=2)</em></td><td class="bad">0.832 → 0.026 <em>(n=78)</em></td></tr>
+        <tr><td>[0.90, 1.01)</td><td class="good">0.991 → 0.987 <em>(n=76)</em></td><td class="bad">0.982 → 0.340 <em>(n=459)</em></td></tr>
+        <tr class="rowsplit"><td><strong>weighted mean |gap|</strong></td><td class="good">0.001</td><td class="bad">0.075</td></tr>
+        <tr><td><strong>95% CS coverage</strong></td><td class="good">0.987</td><td class="bad">0.368</td></tr>
+        <tr><td>credible sets found</td><td>77</td><td class="bad">432</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>The τ defect corrupts variant-level localization, not just gene-level
+  p-values.</strong> Under the old default a variant with PIP 0.98 was truly causal only
+  <strong>34%</strong> of the time, and a nominal <strong>95% credible set contained the
+  causal variant 36.8%</strong> of the time. It manufactured 432 credible sets where the
+  calibrated fit finds 77 — most of them spurious.</p>
+  <p>This is the third independent consequence of one root cause, after invalid p-values
+  (§2, §6, §7d) and 64.5% CI coverage (§4). Practical implication: <strong>any fine-mapping
+  run under <code>tau_mode='zero'</code> should be treated as invalid and redone</strong>,
+  not merely re-thresholded. With the fix, PIP calibration is near-perfect and credible-set
+  coverage is 0.987 against a 0.95 target.</p>
+
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
     <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
