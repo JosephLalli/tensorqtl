@@ -1,0 +1,236 @@
+{
+  "config": {
+    "reps": 200,
+    "mu": 200.0,
+    "phi": 0.2,
+    "rho": 0.01,
+    "as_frac": 0.25,
+    "Ns": "25,50,100",
+    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/published.json"
+  },
+  "design": "mixQTL aFC grid x RASQUAL N grid",
+  "results": {
+    "25": {
+      "1.01": {
+        "trcQTL (total only)": 0.08,
+        "ascQTL (AS only)": 0.04,
+        "TReCASE (joint)": 0.075,
+        "hapmix tau='zero'": 0.105,
+        "hapmix +mixQTL weight cap": 0.105,
+        "hapmix tau='estimate'": 0.07,
+        "hapmix nested scale+offset": 0.07
+      },
+      "1.05": {
+        "trcQTL (total only)": 0.115,
+        "ascQTL (AS only)": 0.15,
+        "TReCASE (joint)": 0.175,
+        "hapmix tau='zero'": 0.12,
+        "hapmix +mixQTL weight cap": 0.12,
+        "hapmix tau='estimate'": 0.155,
+        "hapmix nested scale+offset": 0.15
+      },
+      "1.1": {
+        "trcQTL (total only)": 0.125,
+        "ascQTL (AS only)": 0.155,
+        "TReCASE (joint)": 0.24,
+        "hapmix tau='zero'": 0.13,
+        "hapmix +mixQTL weight cap": 0.13,
+        "hapmix tau='estimate'": 0.255,
+        "hapmix nested scale+offset": 0.265
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.205,
+        "ascQTL (AS only)": 0.58,
+        "TReCASE (joint)": 0.72,
+        "hapmix tau='zero'": 0.23,
+        "hapmix +mixQTL weight cap": 0.23,
+        "hapmix tau='estimate'": 0.68,
+        "hapmix nested scale+offset": 0.67
+      },
+      "1.5": {
+        "trcQTL (total only)": 0.4,
+        "ascQTL (AS only)": 0.915,
+        "TReCASE (joint)": 0.97,
+        "hapmix tau='zero'": 0.405,
+        "hapmix +mixQTL weight cap": 0.405,
+        "hapmix tau='estimate'": 0.97,
+        "hapmix nested scale+offset": 0.97
+      },
+      "2.0": {
+        "trcQTL (total only)": 0.845,
+        "ascQTL (AS only)": 0.99,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 0.85,
+        "hapmix +mixQTL weight cap": 0.85,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "3.0": {
+        "trcQTL (total only)": 0.985,
+        "ascQTL (AS only)": 0.99,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 0.975,
+        "hapmix +mixQTL weight cap": 0.975,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "null_nominal_typeI": {
+        "trcQTL (total only)": 0.095,
+        "ascQTL (AS only)": 0.055,
+        "TReCASE (joint)": 0.05,
+        "hapmix tau='zero'": 1.0,
+        "hapmix +mixQTL weight cap": 1.0,
+        "hapmix tau='estimate'": 0.035,
+        "hapmix nested scale+offset": 0.035
+      }
+    },
+    "50": {
+      "1.01": {
+        "trcQTL (total only)": 0.12,
+        "ascQTL (AS only)": 0.1,
+        "TReCASE (joint)": 0.115,
+        "hapmix tau='zero'": 0.14,
+        "hapmix +mixQTL weight cap": 0.14,
+        "hapmix tau='estimate'": 0.085,
+        "hapmix nested scale+offset": 0.095
+      },
+      "1.05": {
+        "trcQTL (total only)": 0.165,
+        "ascQTL (AS only)": 0.12,
+        "TReCASE (joint)": 0.13,
+        "hapmix tau='zero'": 0.135,
+        "hapmix +mixQTL weight cap": 0.135,
+        "hapmix tau='estimate'": 0.11,
+        "hapmix nested scale+offset": 0.11
+      },
+      "1.1": {
+        "trcQTL (total only)": 0.17,
+        "ascQTL (AS only)": 0.265,
+        "TReCASE (joint)": 0.295,
+        "hapmix tau='zero'": 0.175,
+        "hapmix +mixQTL weight cap": 0.175,
+        "hapmix tau='estimate'": 0.24,
+        "hapmix nested scale+offset": 0.23
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.3,
+        "ascQTL (AS only)": 0.9,
+        "TReCASE (joint)": 0.94,
+        "hapmix tau='zero'": 0.285,
+        "hapmix +mixQTL weight cap": 0.285,
+        "hapmix tau='estimate'": 0.925,
+        "hapmix nested scale+offset": 0.91
+      },
+      "1.5": {
+        "trcQTL (total only)": 0.66,
+        "ascQTL (AS only)": 1.0,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 0.63,
+        "hapmix +mixQTL weight cap": 0.63,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "2.0": {
+        "trcQTL (total only)": 0.975,
+        "ascQTL (AS only)": 1.0,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 0.96,
+        "hapmix +mixQTL weight cap": 0.96,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "3.0": {
+        "trcQTL (total only)": 1.0,
+        "ascQTL (AS only)": 1.0,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 1.0,
+        "hapmix +mixQTL weight cap": 1.0,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "null_nominal_typeI": {
+        "trcQTL (total only)": 0.03,
+        "ascQTL (AS only)": 0.055,
+        "TReCASE (joint)": 0.06,
+        "hapmix tau='zero'": 1.0,
+        "hapmix +mixQTL weight cap": 1.0,
+        "hapmix tau='estimate'": 0.045,
+        "hapmix nested scale+offset": 0.035
+      }
+    },
+    "100": {
+      "1.01": {
+        "trcQTL (total only)": 0.14,
+        "ascQTL (AS only)": 0.155,
+        "TReCASE (joint)": 0.19,
+        "hapmix tau='zero'": 0.1,
+        "hapmix +mixQTL weight cap": 0.1,
+        "hapmix tau='estimate'": 0.185,
+        "hapmix nested scale+offset": 0.14
+      },
+      "1.05": {
+        "trcQTL (total only)": 0.165,
+        "ascQTL (AS only)": 0.32,
+        "TReCASE (joint)": 0.39,
+        "hapmix tau='zero'": 0.135,
+        "hapmix +mixQTL weight cap": 0.135,
+        "hapmix tau='estimate'": 0.375,
+        "hapmix nested scale+offset": 0.335
+      },
+      "1.1": {
+        "trcQTL (total only)": 0.255,
+        "ascQTL (AS only)": 0.54,
+        "TReCASE (joint)": 0.62,
+        "hapmix tau='zero'": 0.2,
+        "hapmix +mixQTL weight cap": 0.2,
+        "hapmix tau='estimate'": 0.615,
+        "hapmix nested scale+offset": 0.575
+      },
+      "1.25": {
+        "trcQTL (total only)": 0.535,
+        "ascQTL (AS only)": 0.995,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 0.495,
+        "hapmix +mixQTL weight cap": 0.495,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "1.5": {
+        "trcQTL (total only)": 0.925,
+        "ascQTL (AS only)": 1.0,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 0.87,
+        "hapmix +mixQTL weight cap": 0.87,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "2.0": {
+        "trcQTL (total only)": 1.0,
+        "ascQTL (AS only)": 1.0,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 1.0,
+        "hapmix +mixQTL weight cap": 1.0,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "3.0": {
+        "trcQTL (total only)": 1.0,
+        "ascQTL (AS only)": 1.0,
+        "TReCASE (joint)": 1.0,
+        "hapmix tau='zero'": 1.0,
+        "hapmix +mixQTL weight cap": 1.0,
+        "hapmix tau='estimate'": 1.0,
+        "hapmix nested scale+offset": 1.0
+      },
+      "null_nominal_typeI": {
+        "trcQTL (total only)": 0.045,
+        "ascQTL (AS only)": 0.05,
+        "TReCASE (joint)": 0.035,
+        "hapmix tau='zero'": 1.0,
+        "hapmix +mixQTL weight cap": 1.0,
+        "hapmix tau='estimate'": 0.03,
+        "hapmix nested scale+offset": 0.035
+      }
+    }
+  }
+}

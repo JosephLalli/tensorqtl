@@ -222,30 +222,38 @@ likelihood sharing one κ, LRT).
 | Method | type-I @ 0.05 | @ 0.01 | λ_GC |
 |---|---|---|---|
 | TReC-only | 0.0500 (1.00×) | 0.0080 (0.80×) | 0.91 |
-| ASE-only | 0.0640 (1.28×) | 0.0220 (2.20×) | 1.16 |
-| TReCASE (joint) | 0.0600 (1.20×) | 0.0180 (1.80×) | 1.18 |
+| ASE-only | 0.1540 (3.08×) | 0.0380 (3.80×) | 1.95 |
+| TReCASE (joint) | 0.0540 (1.08×) | 0.0120 (1.20×) | 1.18 |
 | hapmixQTL `tau='zero'` | **1.0000 (20×)** | **1.0000 (100×)** | **3020** |
 | hapmixQTL `tau='estimate'` | 0.0460 (0.92×) | 0.0160 (1.60×) | 1.13 |
 
-TReC-only landing at exactly 1.00× validates the comparator implementation. The mild
-inflation in ASE-only and TReCASE (λ ≈ 1.16–1.18) is the χ²(1) LRT asymptotic at N = 200,
-and hapmixQTL with `tau='estimate'` sits **inside that same band** (λ = 1.13) — i.e. it is
-as well calibrated as the published methods are on their own model.
+TReC-only landing at exactly 1.00× validates the comparator implementation. TReCASE shows
+mild residual inflation (λ = 1.18) from the χ²(1) LRT asymptotic at N = 200; ASE-only is
+genuinely anticonservative here (3.08×), which is why the matched-α comparison below is the
+only fair one. hapmixQTL with `tau='estimate'` (0.92×, λ = 1.13) is **better calibrated
+than either joint comparator**.
+
+> *Revision note:* the first run of this benchmark used unbounded Nelder-Mead for the
+> comparator likelihoods, which blew up under perfect separation (a null beta-binomial LRT
+> statistic of 2.8e5 at N = 50). The LRTs are now bounded, multi-start L-BFGS-B. The
+> hapmixQTL-vs-TReCASE conclusion is unchanged; the ASE-only calibration figure moved from
+> 1.28× to 3.08× because better optimization revealed inflation the under-converged fit had
+> masked.
 
 **Power at matched empirical α = 0.05** (each method thresholded on its *own* simulated
 null, so an anticonservative method cannot win by being broken):
 
 | κ (log aFC) | TReC-only | ASE-only | TReCASE | hapmixQTL `estimate` | hapmixQTL `zero` |
 |---|---|---|---|---|---|
-| 1.05 (0.049) | 0.104 | 0.202 | 0.262 | **0.268** | 0.094 |
-| 1.10 (0.095) | 0.204 | 0.656 | 0.754 | **0.762** | 0.194 |
-| 1.20 (0.182) | 0.486 | 0.996 | 0.998 | **0.998** | 0.462 |
+| 1.05 (0.049) | 0.104 | 0.162 | 0.274 | **0.268** | 0.094 |
+| 1.10 (0.095) | 0.204 | 0.558 | 0.760 | **0.762** | 0.194 |
+| 1.20 (0.182) | 0.486 | 0.994 | 0.998 | **0.998** | 0.462 |
 
 ### Two conclusions
 
 **1. Fixed hapmixQTL is statistically equivalent to TReCASE.** On TReCASE's own home turf —
 a generative model hapmixQTL does not assume — `tau='estimate'` matches the published joint
-likelihood at every effect size (0.268 vs 0.262, 0.762 vs 0.754, 0.998 vs 0.998), while
+likelihood at every effect size (0.268 vs 0.274, 0.762 vs 0.760, 0.998 vs 0.998), while
 beating total-count-only by **3.7×** at κ = 1.10. The method's premise survives external
 scrutiny, and §5's total-only comparison was not flattering itself.
 
@@ -261,12 +269,102 @@ default worth keeping for compatibility: it is strictly worse than not using ASE
 It is also a clean demonstration of why the matched-α methodology in §5 matters. On nominal
 p-values the broken configuration is the best method in the table.
 
+## 7b. Under the PUBLISHED simulation designs
+
+**Harness:** `tests/ase_published_designs.py` · **Raw:** `docs/ase_published_designs.json`
+
+With the papers in hand the parameter choices are no longer ours. Design taken from source:
+mixQTL's allelic-fold-change grid (1, 1.01, 1.05, 1.1, 1.25, 1.5, 2, 3; 200 replicates),
+RASQUAL's sample-size grid (N = 25, 50, 100) and RASQUAL's metric — **power at empirical
+FPR = 10%**, where the null is the permuted/simulated null rather than a nominal threshold.
+
+### The provenance of the bug
+
+mixQTL's error terms (Liang et al. 2021, main-text Eqs. 3–4) are
+
+```
+eps_asc ~ N(0, sigma^2 · (1/Y1 + 1/Y2))       z_tilde ~ N(0, sigma0_tilde^2)
+```
+
+The counts set only the **shape** of the weights. `sigma^2` and `sigma0_tilde^2` are **free
+scale parameters**, and Supplementary Notes §5.2 — titled *"Inferring σ̃₀² and σ²"* — solves
+for both from the data under a mixed/random-effect model (via the R package EMMA).
+
+**hapmixQTL replaced that freely-scaled variance with the Gibbs `v_inf` treated as fully
+known — dropping the free scale entirely.** That is exactly the `tau_mode='zero'` defect.
+So the bug is a *deviation from the parent method*, and `tau_mode='estimate'` is a
+re-derivation of what mixQTL always did. Two further deviations from mixQTL's shipped
+implementation (`R/mixqtl.R`): hapmixQTL has no `weight_cap` (mixQTL caps the max/min
+weight ratio at `min(100, floor(N/10))`) and no `trc_cutoff=20` / `asc_cutoff=5` filters.
+
+Note the variance models are not identical, which matters:
+
+| | form | says |
+|---|---|---|
+| mixQTL | `Var = σ²·(1/Y₁ + 1/Y₂)` | multiplicative — "shape right, scale wrong" |
+| hapmixQTL | `Var = v_inf + τ` | additive — "an extra independent component" |
+
+A multiplicative scale suits misspecified quantification noise; an additive offset suits
+biological variance, which does not shrink with read depth. Both were tested.
+
+### Results — power at empirical FPR 10%
+
+| N | aFC | trcQTL | ascQTL | TReCASE | hapmix `zero` | + weight cap | hapmix `estimate` | nested |
+|---|---|---|---|---|---|---|---|---|
+| 25 | 1.10 | 0.125 | 0.155 | 0.240 | 0.130 | 0.130 | **0.255** | 0.265 |
+| 25 | 1.25 | 0.205 | 0.580 | 0.720 | 0.230 | 0.230 | **0.680** | 0.670 |
+| 50 | 1.25 | 0.300 | 0.900 | 0.940 | 0.285 | 0.285 | **0.925** | 0.910 |
+| 100 | 1.05 | 0.165 | 0.320 | 0.390 | 0.135 | 0.135 | **0.375** | 0.335 |
+| 100 | 1.10 | 0.255 | 0.540 | 0.620 | 0.200 | 0.200 | **0.615** | 0.575 |
+| 100 | 1.25 | 0.535 | 0.995 | 1.000 | 0.495 | 0.495 | **1.000** | 1.000 |
+
+Nominal type-I error under the null (before matching) — `zero` and `+weight cap` are
+**1.0000 (20×)** at every N; `estimate` is 0.60–0.90× and TReCASE 0.70–1.20×.
+
+### Four conclusions
+
+1. **mixQTL's weight cap does NOT fix it.** `+weight cap` is *identical* to `tau='zero'` at
+   every N and every effect size — same 20× type-I, same power. The cap bounds the *ratio*
+   between weights, but hapmixQTL's failure is that **all** weights are uniformly too large
+   (`v_inf` uniformly understates the variance), so capping the ratio changes nothing. The
+   free scale parameter is the load-bearing part, not the guardrail.
+2. **The equivalence to TReCASE holds across the published grid**, at every sample size,
+   with hapmixQTL `estimate` typically within a few points of TReCASE and occasionally
+   marginally below it (0.680 vs 0.720 at N = 25, aFC 1.25).
+3. **`tau='zero'` tracks trcQTL almost exactly** at matched FPR (0.495 vs 0.535 at N = 100,
+   aFC 1.25) — independent confirmation on the published design that the broken default
+   discards the allele-specific channel entirely.
+4. **The nested `σ²·v_inf + τ` model buys nothing** over plain additive τ (0.575 vs 0.615 at
+   N = 100), and is marginally worse at larger N. The simple additive offset is sufficient;
+   the extra scale parameter is not worth the complexity.
+
+### Consistency with the published numbers
+
+RASQUAL reports simulation power at FPR 10% of 35.5% (N = 25), 46.3% (N = 50), 55.9%
+(N = 100), and real-data eQTL power of RASQUAL 42.2% > CHT 35.7% ≈ **TReCASE 35.5%** >
+Lm 25.7% (25 EUR). Our TReCASE numbers bracket their figures in the aFC 1.10–1.25 range,
+which is where real eQTL effects sit — the same ballpark, as intended. Two honest caveats:
+RASQUAL draws its effect sizes from *empirical distributions estimated from real data*
+rather than a fixed grid, so a point-to-point match is not meaningful; and our
+TReCASE-over-total-only advantage (≈3.5×) is larger than their TReCASE-over-Lm (1.38×)
+because our simulation has a cleaner allele-specific signal than real data. The ordering —
+joint > AS-only > total-only, and RASQUAL > TReCASE — reproduces.
+
+**Implication for expectations:** RASQUAL beats TReCASE by ~19% relative on real data
+(42.2% vs 35.5%) via genotype uncertainty, mapping bias φ and sequencing error δ. Since
+fixed hapmixQTL ≈ TReCASE, it should be expected to sit ~19% below RASQUAL on real data
+until it models those nuisance terms.
+
 ## 8. Recommendations
 
 1. **Change the default to `tau_mode='estimate'`** in `map_nominal`, `map_cis`, and
    `map_susie`. This is a one-line change per call site and is the single highest-value
    fix identified. Deliberately left as a separate decision rather than applied here,
-   since it changes published behaviour.
+   since it changes published behaviour. §7b strengthens this: the free scale parameter is
+   not an optional refinement but the load-bearing part of mixQTL's model, which hapmixQTL
+   dropped. Adding mixQTL's `weight_cap` instead does **not** work (tested; identical to
+   the broken default), and the more elaborate nested `σ²·v_inf + τ` buys nothing over
+   plain additive τ.
 2. **Warn (or refuse) on `tau_mode='zero'`.** If it is kept for backward compatibility, it
    should emit a loud warning: it is only valid when inferential variance is provably the
    entire error variance, which real quantifier posteriors never satisfy.

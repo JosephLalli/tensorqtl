@@ -172,15 +172,17 @@ def trec_lrt(d):
     b0_init = np.log(max(T.mean() / lib.mean(), 1e-3))
     try:
         f0 = optimize.minimize(_nb_nll, [b0_init, np.log(0.2)],
-                               args=(T, g, lib, True), method='Nelder-Mead',
-                               options=dict(maxiter=800, fatol=1e-6, xatol=1e-6))
+                               args=(T, g, lib, True), method='L-BFGS-B',
+                               bounds=[B0_B, LOGPHI_B])
         f1 = optimize.minimize(_nb_nll, [b0_init, 0.0, np.log(0.2)],
-                               args=(T, g, lib, None), method='Nelder-Mead',
-                               options=dict(maxiter=1500, fatol=1e-6, xatol=1e-6))
+                               args=(T, g, lib, None), method='L-BFGS-B',
+                               bounds=[B0_B, LOGK_B, LOGPHI_B])
         stat = 2 * (f0.fun - f1.fun)
     except Exception:
         return 1.0, 0.0
-    stat = max(stat, 0.0)
+    if not np.isfinite(stat):
+        return 1.0, 0.0
+    stat = float(np.clip(stat, 0.0, 1e4))
     return float(stats.chi2.sf(stat, 1)), stat
 
 
@@ -188,13 +190,24 @@ def trec_lrt(d):
 #  Comparator 2: ASE-only  (beta-binomial, LRT)
 # ---------------------------------------------------------------------------
 
+# Bounds keep the likelihoods away from the boundary singularities that make an
+# unconstrained fit blow up (pi -> 0/1 under perfect separation sends betaln to
+# -inf and produces nonsense LRT statistics; observed as a null statistic of
+# ~2.8e5 at N=50 before this was fixed).
+LOGIT_B = (-6.0, 6.0)       # pi in ~(0.0025, 0.9975)
+LOGNU_B = (np.log(1.5), np.log(1e6))
+LOGPHI_B = (np.log(1e-4), np.log(50.0))
+B0_B = (-5.0, 20.0)
+LOGK_B = (np.log(0.05), np.log(20.0))
+
+
 def _bb_nll(params, y, n, fix_null=False):
-    lognu = params[-1]
-    nu = np.exp(lognu)
-    pi = 0.5 if fix_null else 1.0 / (1.0 + np.exp(-params[0]))
-    a_, b_ = pi * nu, (1 - pi) * nu
-    ll = (betaln(y + a_, n - y + b_) - betaln(a_, b_))
-    return -np.sum(ll)
+    nu = np.exp(np.clip(params[-1], *LOGNU_B))
+    pi = 0.5 if fix_null else 1.0 / (1.0 + np.exp(-np.clip(params[0], *LOGIT_B)))
+    a_, b_ = max(pi * nu, 1e-8), max((1 - pi) * nu, 1e-8)
+    ll = betaln(y + a_, n - y + b_) - betaln(a_, b_)
+    v = -np.sum(ll)
+    return v if np.isfinite(v) else 1e12
 
 
 def ase_lrt(d):
@@ -205,13 +218,19 @@ def ase_lrt(d):
     y, n = d['y_alt'][m], d['n_as'][m]
     try:
         f0 = optimize.minimize(_bb_nll, [np.log(50.0)], args=(y, n, True),
-                               method='Nelder-Mead', options=dict(maxiter=600))
-        f1 = optimize.minimize(_bb_nll, [0.0, np.log(50.0)], args=(y, n, False),
-                               method='Nelder-Mead', options=dict(maxiter=1000))
-        stat = 2 * (f0.fun - f1.fun)
+                               method='L-BFGS-B', bounds=[LOGNU_B])
+        best = None
+        for start in (0.0, -0.5, 0.5):     # multi-start guards local optima
+            f1 = optimize.minimize(_bb_nll, [start, np.log(50.0)], args=(y, n, False),
+                                   method='L-BFGS-B', bounds=[LOGIT_B, LOGNU_B])
+            if best is None or f1.fun < best.fun:
+                best = f1
+        stat = 2 * (f0.fun - best.fun)
     except Exception:
         return 1.0, 0.0
-    stat = max(stat, 0.0)
+    if not np.isfinite(stat):
+        return 1.0, 0.0
+    stat = float(np.clip(stat, 0.0, 1e4))
     return float(stats.chi2.sf(stat, 1)), stat
 
 
@@ -225,33 +244,40 @@ def _joint_nll(params, d, null=False):
         kappa = 1.0
         logphi, lognu = params[1], params[2]
     else:
-        kappa = np.exp(params[1])
+        kappa = np.exp(np.clip(params[1], *LOGK_B))
         logphi, lognu = params[2], params[3]
     nll = _nb_nll(np.array([b0, np.log(kappa), logphi]), d['T'], d['g'], d['lib'],
                   fix_kappa=(True if null else None))
     m = d['het'] & (d['n_as'] > 0)
     if m.sum() >= 1:
         pi = kappa / (1.0 + kappa)
-        nu = np.exp(lognu)
-        a_, b_ = pi * nu, (1 - pi) * nu
+        nu = np.exp(np.clip(lognu, *LOGNU_B))
+        a_, b_ = max(pi * nu, 1e-8), max((1 - pi) * nu, 1e-8)
         y, n = d['y_alt'][m], d['n_as'][m]
         nll = nll - np.sum(betaln(y + a_, n - y + b_) - betaln(a_, b_))
-    return nll
+    return nll if np.isfinite(nll) else 1e12
 
 
 def trecase_lrt(d):
     b0_init = np.log(max(d['T'].mean() / d['lib'].mean(), 1e-3))
     try:
         f0 = optimize.minimize(_joint_nll, [b0_init, np.log(0.2), np.log(50.0)],
-                               args=(d, True), method='Nelder-Mead',
-                               options=dict(maxiter=1500, fatol=1e-6))
-        f1 = optimize.minimize(_joint_nll, [b0_init, 0.0, np.log(0.2), np.log(50.0)],
-                               args=(d, False), method='Nelder-Mead',
-                               options=dict(maxiter=2500, fatol=1e-6))
-        stat = 2 * (f0.fun - f1.fun)
+                               args=(d, True), method='L-BFGS-B',
+                               bounds=[B0_B, LOGPHI_B, LOGNU_B])
+        best = None
+        for start in (0.0, -0.3, 0.3):
+            f1 = optimize.minimize(_joint_nll,
+                                   [b0_init, start, np.log(0.2), np.log(50.0)],
+                                   args=(d, False), method='L-BFGS-B',
+                                   bounds=[B0_B, LOGK_B, LOGPHI_B, LOGNU_B])
+            if best is None or f1.fun < best.fun:
+                best = f1
+        stat = 2 * (f0.fun - best.fun)
     except Exception:
         return 1.0, 0.0
-    stat = max(stat, 0.0)
+    if not np.isfinite(stat):
+        return 1.0, 0.0
+    stat = float(np.clip(stat, 0.0, 1e4))
     return float(stats.chi2.sf(stat, 1)), stat
 
 

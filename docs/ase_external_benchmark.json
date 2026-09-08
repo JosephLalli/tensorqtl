@@ -7,26 +7,26 @@
     "rho": 0.01,
     "as_frac": 0.25,
     "kappas": "1.05,1.1,1.2",
-    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/bench.json"
+    "out": "/tmp/claude-0/-home-user-tensorqtl/070f1155-f1f9-5482-ad66-067858f12991/scratchpad/bench2.json"
   },
   "null": {
     "TReC-only": {
       "n": 500,
       "t05": 0.05,
       "t01": 0.008,
-      "lam": 0.9128879848540986
+      "lam": 0.9128879756044442
     },
     "ASE-only": {
       "n": 500,
-      "t05": 0.064,
-      "t01": 0.022,
-      "lam": 1.1590651564602639
+      "t05": 0.154,
+      "t01": 0.038,
+      "lam": 1.9515952309807667
     },
     "TReCASE (joint)": {
       "n": 500,
-      "t05": 0.06,
-      "t01": 0.018,
-      "lam": 1.1822021455082816
+      "t05": 0.054,
+      "t01": 0.012,
+      "lam": 1.1822023173408382
     },
     "hapmixQTL tau='zero'": {
       "n": 500,
@@ -48,12 +48,12 @@
         "nominal": 0.096
       },
       "ASE-only": {
-        "matched": 0.202,
-        "nominal": 0.248
+        "matched": 0.162,
+        "nominal": 0.338
       },
       "TReCASE (joint)": {
-        "matched": 0.262,
-        "nominal": 0.29
+        "matched": 0.274,
+        "nominal": 0.288
       },
       "hapmixQTL tau='zero'": {
         "matched": 0.094,
@@ -70,11 +70,11 @@
         "nominal": 0.188
       },
       "ASE-only": {
-        "matched": 0.656,
-        "nominal": 0.714
+        "matched": 0.558,
+        "nominal": 0.742
       },
       "TReCASE (joint)": {
-        "matched": 0.754,
+        "matched": 0.76,
         "nominal": 0.776
       },
       "hapmixQTL tau='zero'": {
@@ -92,7 +92,7 @@
         "nominal": 0.458
       },
       "ASE-only": {
-        "matched": 0.996,
+        "matched": 0.994,
         "nominal": 0.998
       },
       "TReCASE (joint)": {

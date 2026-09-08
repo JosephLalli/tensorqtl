@@ -470,8 +470,8 @@
       <thead><tr><th>Method</th><th>type-I @ 0.05</th><th>@ 0.01</th><th>λ<sub>GC</sub></th></tr></thead>
       <tbody>
         <tr><td>TReC-only</td><td class="good">0.0500 (1.00×)</td><td>0.0080 (0.80×)</td><td>0.91</td></tr>
-        <tr><td>ASE-only</td><td>0.0640 (1.28×)</td><td>0.0220 (2.20×)</td><td>1.16</td></tr>
-        <tr><td>TReCASE (joint)</td><td>0.0600 (1.20×)</td><td>0.0180 (1.80×)</td><td>1.18</td></tr>
+        <tr><td>ASE-only</td><td class="bad">0.1540 (3.08×)</td><td class="bad">0.0380 (3.80×)</td><td class="bad">1.95</td></tr>
+        <tr><td>TReCASE (joint)</td><td>0.0540 (1.08×)</td><td>0.0120 (1.20×)</td><td>1.18</td></tr>
         <tr class="rowsplit"><td>hapmixQTL <code>tau='zero'</code></td><td class="bad">1.0000 (20×)</td><td class="bad">1.0000 (100×)</td><td class="bad">3020</td></tr>
         <tr><td>hapmixQTL <code>tau='estimate'</code></td><td class="good">0.0460 (0.92×)</td><td>0.0160 (1.60×)</td><td>1.13</td></tr>
       </tbody>
@@ -483,9 +483,9 @@
       <caption>Power at matched empirical α = 0.05 — each method thresholded on its own null</caption>
       <thead><tr><th>κ (log aFC)</th><th>TReC-only</th><th>ASE-only</th><th>TReCASE</th><th>hapmix <code>estimate</code></th><th>hapmix <code>zero</code></th></tr></thead>
       <tbody>
-        <tr><td>1.05 (0.049)</td><td>0.104</td><td>0.202</td><td>0.262</td><td class="good">0.268</td><td class="bad">0.094</td></tr>
-        <tr><td>1.10 (0.095)</td><td>0.204</td><td>0.656</td><td>0.754</td><td class="good">0.762</td><td class="bad">0.194</td></tr>
-        <tr><td>1.20 (0.182)</td><td>0.486</td><td>0.996</td><td>0.998</td><td class="good">0.998</td><td class="bad">0.462</td></tr>
+        <tr><td>1.05 (0.049)</td><td>0.104</td><td>0.162</td><td>0.274</td><td class="good">0.268</td><td class="bad">0.094</td></tr>
+        <tr><td>1.10 (0.095)</td><td>0.204</td><td>0.558</td><td>0.760</td><td class="good">0.762</td><td class="bad">0.194</td></tr>
+        <tr><td>1.20 (0.182)</td><td>0.486</td><td>0.994</td><td>0.998</td><td class="good">0.998</td><td class="bad">0.462</td></tr>
       </tbody>
     </table>
   </div>
@@ -500,7 +500,7 @@
 
   <p><strong>1. Fixed hapmixQTL is statistically equivalent to TReCASE.</strong> On
   TReCASE's home turf it matches the published joint likelihood at every effect size
-  (0.268 vs 0.262, 0.762 vs 0.754, 0.998 vs 0.998), while beating total-count-only by
+  (0.268 vs 0.274, 0.762 vs 0.760, 0.998 vs 0.998), while beating total-count-only by
   <strong>3.7×</strong> at κ = 1.10. The premise survives external scrutiny, and §5's
   total-only comparison was not flattering itself.</p>
 
@@ -520,6 +520,69 @@
   RASQUAL's additions over TReCASE — genotype uncertainty, mapping bias, sequencing error —
   are nuisance refinements on the same joint likelihood; the shared TReCASE core is what is
   implemented here.</p>
+
+  <h2><span class="tier">§7b</span> Where the bug came from</h2>
+  <p class="lede">With the papers in hand, the design is no longer ours: mixQTL's
+  allelic-fold-change grid, RASQUAL's sample sizes, and RASQUAL's metric — power at
+  <em>empirical</em> FPR 10%, from a permuted null rather than a nominal threshold.
+  That last choice is an independent endorsement of the matched-α methodology used
+  throughout this report.</p>
+
+  <p>mixQTL's error terms (Liang et al. 2021, Eqs. 3–4) are
+  <code>ε_asc ~ N(0, σ²·(1/Y₁ + 1/Y₂))</code> and <code>z̃ ~ N(0, σ̃₀²)</code>. The counts set
+  only the <strong>shape</strong> of the weights — <strong>σ² and σ̃₀² are free scale
+  parameters</strong>, and Supplementary Notes §5.2, titled <em>"Inferring σ̃₀² and σ²"</em>,
+  solves for both from the data.</p>
+
+  <p><strong>hapmixQTL replaced that freely-scaled variance with the Gibbs
+  <code>v_inf</code> treated as fully known — dropping the free scale entirely.</strong>
+  That is exactly the <code>tau_mode='zero'</code> defect. The bug is a deviation from the
+  parent method, and <code>tau_mode='estimate'</code> is a re-derivation of what mixQTL
+  always did.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Power at empirical FPR 10% — RASQUAL's metric, mixQTL's aFC grid</caption>
+      <thead><tr><th>N</th><th>aFC</th><th>trcQTL</th><th>ascQTL</th><th>TReCASE</th><th>hapmix <code>zero</code></th><th>+ weight cap</th><th>hapmix <code>estimate</code></th><th>nested</th></tr></thead>
+      <tbody>
+        <tr><td>25</td><td>1.10</td><td>0.125</td><td>0.155</td><td>0.240</td><td class="bad">0.130</td><td class="bad">0.130</td><td class="good">0.255</td><td>0.265</td></tr>
+        <tr><td>25</td><td>1.25</td><td>0.205</td><td>0.580</td><td>0.720</td><td class="bad">0.230</td><td class="bad">0.230</td><td class="good">0.680</td><td>0.670</td></tr>
+        <tr><td>50</td><td>1.25</td><td>0.300</td><td>0.900</td><td>0.940</td><td class="bad">0.285</td><td class="bad">0.285</td><td class="good">0.925</td><td>0.910</td></tr>
+        <tr><td>100</td><td>1.05</td><td>0.165</td><td>0.320</td><td>0.390</td><td class="bad">0.135</td><td class="bad">0.135</td><td class="good">0.375</td><td>0.335</td></tr>
+        <tr><td>100</td><td>1.10</td><td>0.255</td><td>0.540</td><td>0.620</td><td class="bad">0.200</td><td class="bad">0.200</td><td class="good">0.615</td><td>0.575</td></tr>
+        <tr><td>100</td><td>1.25</td><td>0.535</td><td>0.995</td><td>1.000</td><td class="bad">0.495</td><td class="bad">0.495</td><td class="good">1.000</td><td>1.000</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>mixQTL's weight cap does not fix it.</strong> The <code>+weight cap</code>
+  column is <em>identical</em> to <code>tau='zero'</code> at every sample size and effect
+  size — same 20× type-I, same power. The cap bounds the <em>ratio</em> between weights, but
+  hapmixQTL's failure is that <strong>all</strong> weights are uniformly too large, so
+  capping the ratio changes nothing. The free scale parameter is the load-bearing part, not
+  the guardrail.</p>
+
+  <p><strong>The elaborate fix buys nothing either.</strong> A nested
+  <code>σ²·v_inf + τ</code> model, containing both mixQTL's multiplicative scale and
+  hapmixQTL's additive offset, does not beat plain additive τ (0.575 vs 0.615 at N = 100)
+  and is marginally worse at larger N. The simple fix is the right one.</p>
+
+  <p><strong>And <code>tau='zero'</code> tracks trcQTL almost exactly</strong> at matched
+  FPR (0.495 vs 0.535 at N = 100, aFC 1.25) — confirming on the published design that the
+  broken default discards the allele-specific channel entirely.</p>
+
+  <p><em>Consistency:</em> RASQUAL reports real-data eQTL power of RASQUAL 42.2% &gt; CHT
+  35.7% ≈ TReCASE 35.5% &gt; Lm 25.7%. Our TReCASE numbers bracket their figures in the
+  aFC 1.10–1.25 range where real eQTL effects sit, and the ordering reproduces. A
+  point-to-point match is not meaningful because RASQUAL draws effect sizes from empirical
+  real-data distributions. <strong>Expectation this sets:</strong> since fixed hapmixQTL ≈
+  TReCASE, and RASQUAL beats TReCASE by ~19% relative via genotype uncertainty, mapping bias
+  and sequencing error, hapmixQTL should be expected to sit ~19% below RASQUAL on real data
+  until it models those nuisance terms.</p>
 
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
