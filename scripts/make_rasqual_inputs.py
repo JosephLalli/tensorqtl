@@ -204,8 +204,34 @@ def as_from_phaser(manifest, samples):
     return store
 
 
+def _keep_read(min_mq):
+    """Read filter for count_coverage.
+
+    Passing a callable as read_callback REPLACES pysam's default 'all' filter,
+    which silently drops unmapped/secondary/QC-fail/duplicate reads. So those
+    exclusions have to be restated here or duplicates leak into the counts.
+    """
+    def keep(r):
+        return (r.mapping_quality >= min_mq and not r.is_unmapped
+                and not r.is_secondary and not r.is_supplementary
+                and not r.is_qcfail and not r.is_duplicate)
+    return keep
+
+
 def as_from_bams(manifest, samples, vdf, xL, xR, min_bq=10, min_mq=20):
-    """Pileup ref/alt at each sample's HET sites. Needs pysam."""
+    """Pileup ref/alt at each sample's HET sites. Needs pysam.
+
+    Counts only at sites where the sample is heterozygous, since a homozygous
+    site carries no allelic information. Reads are kept if MAPQ >= min_mq and
+    base quality >= min_bq, and are not unmapped/secondary/supplementary/
+    QC-fail/duplicate -- mirroring GTEx phASER's settings.
+
+    KNOWN LIMITATION: overlapping mates of a paired-end fragment are counted
+    twice at a site both cover. phASER de-duplicates these; count_coverage
+    does not. This inflates depth symmetrically (both alleles), so it acts as
+    extra overdispersion rather than bias, but prefer --allelic-counts from
+    phASER when available.
+    """
     try:
         import pysam
     except ImportError:
@@ -233,7 +259,7 @@ def as_from_bams(manifest, samples, vdf, xL, xR, min_bq=10, min_mq=20):
             pos0 = int(vdf.pos.iat[v]) - 1
             try:
                 cov = af.count_coverage(c, pos0, pos0 + 1, quality_threshold=min_bq,
-                                        read_callback=lambda r: r.mapping_quality >= min_mq)
+                                        read_callback=_keep_read(min_mq))
             except ValueError:
                 continue
             base = {b: int(cov[i][0]) for i, b in enumerate('ACGT')}
@@ -518,6 +544,70 @@ def selftest():
           '--genes', str(td / 'genes.tsv'), '--counts', str(td / 'counts.tsv'),
           '--allelic-counts', str(td / 'ac.tsv'), '--out', str(td / 'rq')])
     out = td / 'rq'
+
+    # --- BAM path: write reads with KNOWN ref/alt bases, verify the pileup ---
+    try:
+        import pysam
+    except ImportError:
+        pysam = None
+    if pysam is not None:
+        print('\nBAM path: fabricating BAMs with known ref/alt reads')
+        truth = {}
+        bman = []
+        hdr = {'HD': {'VN': '1.6', 'SO': 'coordinate'},
+               'SQ': [{'LN': 10000 * G + 5000, 'SN': '1'}]}
+        for i, s in enumerate(samples):
+            unsorted = td / f'{s}.unsorted.bam'
+            with pysam.AlignmentFile(str(unsorted), 'wb', header=hdr) as bf:
+                for g in range(G):
+                    if (g, i) not in hets:
+                        continue
+                    pos = 10000 * g + 500          # 1-based fSNP position
+                    nref, nalt = int(rng.poisson(12)) + 1, int(rng.poisson(12)) + 1
+                    truth[(s, g)] = (nref, nalt)
+                    # one duplicate-flagged read per site MUST be excluded
+                    specs = [('A', 0)] * nref + [('G', 0)] * nalt + [('G', 0x400)]
+                    for k, (base, flag) in enumerate(specs):
+                        a = pysam.AlignedSegment()
+                        a.query_name = f'{s}_{g}_{k}'
+                        a.query_sequence = 'C' * 20 + base + 'C' * 20
+                        a.flag = flag
+                        a.reference_id = 0
+                        a.reference_start = pos - 1 - 20      # 0-based
+                        a.mapping_quality = 60
+                        a.cigar = ((0, 41),)
+                        a.query_qualities = pysam.qualitystring_to_array('I' * 41)
+                        bf.write(a)
+            bam = td / f'{s}.bam'
+            pysam.sort('-o', str(bam), str(unsorted))
+            pysam.index(str(bam))
+            bman.append(f'{s}\t{bam}')
+        (td / 'bams.tsv').write_text('\n'.join(bman))
+        main(['--vcf', str(td / 'p.vcf'), '--samples', str(td / 'samples.txt'),
+              '--genes', str(td / 'genes.tsv'), '--counts', str(td / 'counts.tsv'),
+              '--bams', str(td / 'bams.tsv'), '--out', str(td / 'rq_bam')])
+        # read back the AS field and compare to what was written
+        got = {}
+        with gzip.open(td / 'rq_bam' / 'as.vcf.gz', 'rt') as fh:
+            for line in fh:
+                if line.startswith('#'):
+                    continue
+                f = line.rstrip('\n').split('\t')
+                if not f[2].startswith('f'):
+                    continue
+                g = int(f[2][1:])
+                for k, s in enumerate(samples):
+                    r_, a_ = f[9 + k].split(':')[1].split(',')
+                    if (s, g) in truth:
+                        got[(s, g)] = (int(r_), int(a_))
+        bad = [(k, truth[k], got.get(k)) for k in truth if got.get(k) != truth[k]]
+        if bad:
+            raise SystemExit(f'SELF-TEST FAILED: pileup mismatch at {len(bad)} '
+                             f'sites, e.g. {bad[:3]}')
+        print(f'  pileup recovered all {len(truth)} het-site counts exactly '
+              f'(duplicate-flagged reads correctly excluded)')
+    else:
+        print('\n(pysam not installed: --bams path not exercised)')
     # verify the binary layout matches the authors' convention
     Yb = np.fromfile(out / 'Y.bin', dtype=np.float64).reshape(G, N)
     assert np.allclose(Yb, Y.values), 'Y.bin layout mismatch'
