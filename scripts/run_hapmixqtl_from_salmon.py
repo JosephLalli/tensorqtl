@@ -220,6 +220,106 @@ def read_phased_vcf(path, want_samples):
 
 
 # ---------------------------------------------------------------------------
+#  Per-feature-SNP allele-specific counts: RASQUAL's NATIVE input
+# ---------------------------------------------------------------------------
+
+def load_allelic_counts(manifest, samples):
+    """Read per-sample, per-variant allele counts.
+
+    SOLVES THE INPUT MISMATCH. RASQUAL's likelihood is per FEATURE SNP:
+    p(Y1_il | Y_il, D_il; ...) with D_il set by the rSNP genotype AND the fSNP
+    genotype. Salmon diploid quantification cannot supply that -- it assigns
+    each fragment to a haplotype using all variants jointly and reports a
+    gene-level total, so the per-site breakdown does not exist in its output.
+    It is not recoverable by redistributing the gene total either: splitting one
+    aggregate across L sites would present RASQUAL with L observations where one
+    was measured, inflating its effective sample size and its statistic.
+
+    So the per-site counts have to come from the alignments. The natural source
+    is phASER, which you already need for the reference-bias gate: it writes a
+    per-sample `<prefix>.allelic_counts.txt` with columns
+
+        contig  start  stop  variantID  refAllele  altAllele
+        refCount  altCount  totalCount  ...
+
+    Manifest format:  <sample_id> <TAB> <path to that sample's allelic_counts.txt>
+
+    Returns {(chrom, pos): {sample: (ref, alt)}}.
+    """
+    idx = {s: i for i, s in enumerate(samples)}
+    store = {}
+    rows = [l.split('\t') for l in Path(manifest).read_text().strip().split('\n')
+            if l.strip() and not l.startswith('#')]
+    for r in rows:
+        samp, path = r[0].strip(), r[1].strip()
+        if samp not in idx:
+            continue
+        op = gzip.open if path.endswith('.gz') else open
+        with op(path, 'rt') as fh:
+            hdr = fh.readline().rstrip('\n').split('\t')
+            try:
+                ci, pi = hdr.index('contig'), hdr.index('start')
+                ri, ai = hdr.index('refCount'), hdr.index('altCount')
+            except ValueError:
+                raise SystemExit(
+                    f'{path} does not look like a phASER allelic_counts file '
+                    f'(need contig/start/refCount/altCount). Columns: {hdr[:8]}')
+            for line in fh:
+                f = line.rstrip('\n').split('\t')
+                if len(f) <= max(ci, pi, ri, ai):
+                    continue
+                try:
+                    key = (str(f[ci]), int(f[pi]))
+                    store.setdefault(key, {})[samp] = (int(f[ri]), int(f[ai]))
+                except ValueError:
+                    continue
+    if not store:
+        raise SystemExit(f'no allelic counts parsed from {manifest}')
+    return store
+
+
+def _rasqual_gene_vcf_native(gene_row, vdf, xL, xR, ac, order, window,
+                             min_count=1):
+    """VCF for one gene using REAL per-fSNP allele counts -- RASQUAL native.
+
+    fSNPs are the variants inside the gene body that carry allelic counts; the
+    tested rSNPs are every variant in the cis window. Both are written with the
+    genuine phased GT, and the fSNPs carry their measured (ref, alt).
+    """
+    chrom = str(gene_row['chr'])
+    tss = int(gene_row['pos'])
+    gstart = int(gene_row.get('start', tss))
+    gend = int(gene_row.get('end', tss + 1))
+    pos = vdf['pos'].values
+    same = vdf['chrom'].values == chrom
+    fmask = same & (pos >= gstart) & (pos <= gend)
+    fidx = [v for v in np.where(fmask)[0]
+            if (chrom, int(pos[v])) in ac]
+    if not fidx:
+        return None, 0, None, 0
+    rmask = same & (np.abs(pos - tss) <= window)
+    ridx = [v for v in np.where(rmask)[0] if v not in set(fidx)]
+
+    rows = []
+    for v in fidx:                                   # feature SNPs, real counts
+        counts = ac[(chrom, int(pos[v]))]
+        fl = []
+        for k, samp in enumerate(order):
+            r, a = counts.get(samp, (0, 0))
+            if r + a < min_count:
+                r = a = 0
+            fl.append(f'{int(xL[v, k])}|{int(xR[v, k])}:{r},{a}')
+        rows.append([chrom, str(int(pos[v])), str(vdf.index[v]), 'A', 'G',
+                     '100', 'PASS', 'RSQ=1.0', 'GT:AS'] + fl)
+    for v in ridx:                                   # tested regulatory SNPs
+        gl = [f'{int(xL[v, k])}|{int(xR[v, k])}:0,0' for k in range(len(order))]
+        rows.append([chrom, str(int(pos[v])), str(vdf.index[v]), 'A', 'G',
+                     '100', 'PASS', 'RSQ=1.0', 'GT:AS'] + gl)
+    return ('\n'.join('\t'.join(r) for r in rows) + '\n',
+            len(rows), (gstart, gend), len(fidx))
+
+
+# ---------------------------------------------------------------------------
 #  Optional comparison run: the REAL RASQUAL binary
 # ---------------------------------------------------------------------------
 
@@ -265,13 +365,38 @@ def _rasqual_gene_vcf(gene_pos, vdf, dos, xL, xR, yLm, yRm, gi, window):
 
 
 def run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
-                           yLm, yRm, T_counts, lib, out, window, max_genes):
-    """Run the real RASQUAL over the same genes; return a per-gene DataFrame."""
+                           yLm, yRm, T_counts, lib, out, window, max_genes,
+                           allelic=None, order=None, mode='pseudo'):
+    """Run the real RASQUAL over the same genes; return a per-gene DataFrame.
+
+    mode='pseudo'  gene-level haplotype totals as one pseudo-fSNP (both methods
+                   see identical information -- fair, but not RASQUAL native)
+    mode='native'  REAL per-feature-SNP allele counts (RASQUAL as intended);
+                   requires `allelic` from load_allelic_counts
+    mode='both'    run each and return both, so the INPUT effect is separated
+                   from the METHOD effect. Any difference between the two arms
+                   is attributable to input modality alone, since the binary,
+                   the genes and the tested variants are identical.
+    """
+    if mode in ('native', 'both') and not allelic:
+        raise SystemExit("--rasqual-input %s needs --allelic-counts" % mode)
+    if mode == 'both':
+        a = run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
+                                   yLm, yRm, T_counts, lib, out, window,
+                                   max_genes, allelic, order, 'pseudo')
+        b = run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
+                                   yLm, yRm, T_counts, lib, out, window,
+                                   max_genes, allelic, order, 'native')
+        if a is not None:
+            a['input'] = 'pseudo'
+        if b is not None:
+            b['input'] = 'native'
+        return pd.concat([x for x in (a, b) if x is not None], ignore_index=True)
     import subprocess, tempfile
     order_genes = [g for g in genes if g in pos_df.index][:max_genes]
     if not order_genes:
         return None
-    print(f'\nRASQUAL comparison on {len(order_genes)} genes '
+    print(f'\nRASQUAL [{mode}] on {len(order_genes)} genes '
           f'(RASQUAL is ~1e3x slower than hapmixQTL -- docs sec 7e)')
     td = Path(tempfile.mkdtemp())
     gidx = {g: i for i, g in enumerate(genes)}
@@ -282,13 +407,23 @@ def run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
     N = dos.shape[1]
     recs = []
     for j, g in enumerate(order_genes):
-        vcf, nrow, tss = _rasqual_gene_vcf(pos_df.loc[g], vdf, dos, xL, xR,
-                                           yLm, yRm, gidx[g], window)
-        if vcf is None:
-            continue
+        n_fsnp = 1
+        if mode == 'native':
+            vcf, nrow, span, n_fsnp = _rasqual_gene_vcf_native(
+                pos_df.loc[g], vdf, xL, xR, allelic, order, window)
+            if vcf is None:
+                recs.append(dict(gene=g, status='no_fsnp_with_counts'))
+                continue
+            s_arg, e_arg = str(span[0]), str(span[1])
+        else:
+            vcf, nrow, tss = _rasqual_gene_vcf(pos_df.loc[g], vdf, dos, xL, xR,
+                                               yLm, yRm, gidx[g], window)
+            if vcf is None:
+                continue
+            s_arg, e_arg = str(tss), str(tss + 1)
         cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
-               '-n', str(N), '-j', str(j + 1), '-l', str(nrow), '-m', '1',
-               '-s', str(tss), '-e', str(tss + 1), '-f', str(g), '-z']
+               '-n', str(N), '-j', str(j + 1), '-l', str(nrow),
+               '-m', str(n_fsnp), '-s', s_arg, '-e', e_arg, '-f', str(g), '-z']
         try:
             pr = subprocess.run(cmd, input=vcf, capture_output=True,
                                 text=True, timeout=600)
@@ -307,7 +442,7 @@ def run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
             except ValueError:
                 continue
             if best is None or chi2 > best['chi2']:
-                best = dict(gene=g, variant=fl[1], chi2=chi2,
+                best = dict(gene=g, n_fsnp=n_fsnp, variant=fl[1], chi2=chi2,
                             pi=float(fl[11]), delta=float(fl[12]),
                             phi=float(fl[13]), theta=float(fl[14]),
                             status='ok')
@@ -315,6 +450,38 @@ def run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
         if (j + 1) % 25 == 0:
             print(f'   {j+1}/{len(order_genes)}', flush=True)
     return pd.DataFrame(recs)
+
+
+def _input_effect(rq):
+    """How much does the INPUT modality alone change RASQUAL?
+
+    Same binary, same genes, same tested variants -- only the allele-specific
+    representation differs. Any gap is attributable to input, not method.
+    """
+    from scipy import stats as sps
+    if 'input' not in rq.columns:
+        return None
+    ok = rq[rq['status'] == 'ok']
+    a = ok[ok['input'] == 'pseudo'].set_index('gene')['chi2']
+    b = ok[ok['input'] == 'native'].set_index('gene')['chi2']
+    both = a.index.intersection(b.index)
+    if len(both) < 10:
+        return {'n_paired': int(len(both)), 'note': 'too few paired genes'}
+    x, y = a.loc[both].values, b.loc[both].values
+    rho, _ = sps.spearmanr(x, y)
+    return {
+        'n_paired': int(len(both)),
+        'median_chi2_pseudo': float(np.median(x)),
+        'median_chi2_native': float(np.median(y)),
+        'median_ratio_native_over_pseudo': float(np.median(y / np.maximum(x, 1e-9))),
+        'spearman_rho': float(rho),
+        'mean_n_fsnp_native': (float(ok[ok['input'] == 'native']['n_fsnp'].mean())
+                               if 'n_fsnp' in ok else None),
+        'interpretation': (
+            'ratio > 1 means RASQUAL gains from per-feature-SNP resolution that '
+            'Salmon gene-level totals cannot supply; ratio ~ 1 means the '
+            'pseudo-fSNP encoding costs it nothing and the earlier comparisons '
+            'were fair. rho near 1 means the two inputs rank genes the same.')}
 
 
 def add_rasqual_to_bundle(bundle, rq, res_df, diag):
@@ -365,6 +532,14 @@ def add_rasqual_to_bundle(bundle, rq, res_df, diag):
                         'spearman_rho': float(rho),
                         'interpretation': ('rank correlation of the two methods\' '
                                            'test statistics over the same genes')}
+    ie = _input_effect(rq)
+    if ie:
+        b['input_effect'] = ie
+    if 'input' in rq.columns:
+        b['by_input'] = {
+            m: {'n_converged': int(((rq['input'] == m) &
+                                    (rq['status'] == 'ok')).sum())}
+            for m in rq['input'].unique()}
     bundle['rasqual'] = b
     return bundle
 
@@ -470,6 +645,16 @@ def main():
     ap.add_argument('--rasqual', default=None,
                     help='path to the real RASQUAL binary (build it with '
                          'scripts/build_rasqual.sh) to add a comparison run')
+    ap.add_argument('--allelic-counts', default=None,
+                    help='manifest: sample_id <TAB> phASER .allelic_counts.txt. '
+                         'Supplies RASQUAL its NATIVE per-feature-SNP counts, '
+                         'which Salmon diploid output cannot provide.')
+    ap.add_argument('--rasqual-input', default='pseudo',
+                    choices=['pseudo', 'native', 'both'],
+                    help="'pseudo': gene totals as one pseudo-fSNP (matched "
+                         "information); 'native': real per-fSNP counts; "
+                         "'both': run each so the INPUT effect is separated "
+                         "from the METHOD effect. 'both' is the informative one.")
     ap.add_argument('--rasqual-genes', type=int, default=200,
                     help='cap the comparison at N genes; RASQUAL is ~1e3x '
                          'slower than hapmixQTL (docs sec 7e), so a '
@@ -525,11 +710,16 @@ def main():
         # chromosome must be a STRING and must match the VCF's CHROM exactly.
         # pandas otherwise infers int for a "1"-style column, and every
         # phenotype is then silently dropped as "on a chr. without genotypes".
-        gp = pd.read_csv(args.gene_pos, sep='\t', header=None,
-                         names=['gene', 'chr', 'pos'],
+        probe = pd.read_csv(args.gene_pos, sep='\t', header=None, nrows=1)
+        cols = (['gene', 'chr', 'pos', 'start', 'end'][:probe.shape[1]]
+                if probe.shape[1] >= 3 else None)
+        if cols is None:
+            raise SystemExit('--gene-pos needs at least gene, chr, TSS')
+        gp = pd.read_csv(args.gene_pos, sep='\t', header=None, names=cols,
                          dtype={'chr': str}).set_index('gene')
         gp['chr'] = gp['chr'].astype(str).str.strip()
-        pos_df = gp.loc[[g for g in genes if g in gp.index], ['chr', 'pos']]
+        keepc = [c for c in ('chr', 'pos', 'start', 'end') if c in gp.columns]
+        pos_df = gp.loc[[g for g in genes if g in gp.index], keepc]
     else:
         raise SystemExit('--gene-pos is required for cis mapping '
                          '(TSV: gene_id, chr, TSS)')
@@ -545,10 +735,11 @@ def main():
     common = [g for g in genes if g in pos_df.index]
     sdf, tdf, vadf, vtdf = (df.loc[common] for df in (sdf, tdf, vadf, vtdf))
     pos_df = pos_df.loc[common]
+    map_pos = pos_df[['chr', 'pos']]
 
     print(f'\nRunning map_cis on {len(common)} genes '
           f"(tau_mode='estimate', the validated default)")
-    res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, pos_df,
+    res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window, verbose=True)
     res.to_csv(out / 'hapmixqtl_cis.tsv.gz', sep='\t', index=False)
 
@@ -564,11 +755,25 @@ def main():
                              'Build it with scripts/build_rasqual.sh')
         Tcounts = np.expm1(tdf.values) if np.nanmax(tdf.values) < 30 else tdf.values
         libsz = np.ones(len(order))
+        allelic = None
+        if args.allelic_counts:
+            print('Reading per-feature-SNP allelic counts (RASQUAL native input)')
+            allelic = load_allelic_counts(args.allelic_counts, order)
+            print(f'  {len(allelic)} variants with allele counts')
+        elif args.rasqual_input in ('native', 'both'):
+            raise SystemExit(
+                f'--rasqual-input {args.rasqual_input} requires --allelic-counts.\n'
+                'RASQUAL models each FEATURE SNP separately; Salmon diploid '
+                'quantification reports only gene-level haplotype totals, and '
+                'that per-site breakdown cannot be recovered by splitting the '
+                'total (it would fabricate independent observations and inflate '
+                "RASQUAL's statistic). Supply phASER allelic_counts files.")
         rq = run_rasqual_comparison(
             args.rasqual, list(sdf.index), pos_df, vdf, dos, xL, xR,
             YLm[[list(genes).index(g) for g in sdf.index]],
             YRm[[list(genes).index(g) for g in sdf.index]],
-            Tcounts, libsz, out, args.window, args.rasqual_genes)
+            Tcounts, libsz, out, args.window, args.rasqual_genes,
+            allelic=allelic, order=order, mode=args.rasqual_input)
         if rq is not None:
             rq.to_csv(out / 'rasqual_cis.tsv.gz', sep='\t', index=False)
             print(f'wrote {out}/rasqual_cis.tsv.gz')
@@ -602,8 +807,23 @@ def selftest():
             fh.write(f'1\t{1000*gi+500}\tv{gi}\tA\tG\t.\tPASS\t.\tGT\t'
                      + '\t'.join(gts) + '\n')
     (td / 't2g.tsv').write_text('\n'.join(f'{t}\tG{i:05d}' for i, t in enumerate(txs)))
+    # gene-pos gains start/end so native mode can locate feature SNPs
     (td / 'genepos.tsv').write_text(
-        '\n'.join(f'G{i:05d}\t1\t{1000*i+500}' for i in range(G)))
+        '\n'.join(f'G{i:05d}\t1\t{1000*i+500}\t{1000*i+400}\t{1000*i+600}'
+                  for i in range(G)))
+    # fabricate phASER-style per-variant allelic counts (RASQUAL native input)
+    ac_man = []
+    for s_ in samples:
+        f = td / f'{s_}.allelic_counts.txt'
+        with open(f, 'w') as fh:
+            fh.write('contig\tstart\tstop\tvariantID\trefAllele\taltAllele'
+                     '\trefCount\taltCount\ttotalCount\n')
+            for gi2 in range(G):
+                pos = 1000 * gi2 + 500
+                r, a = rng.poisson(20), rng.poisson(20)
+                fh.write(f'1\t{pos}\t{pos+1}\tv{gi2}\tA\tG\t{r}\t{a}\t{r+a}\n')
+        ac_man.append(f'{s_}\t{f}')
+    (td / 'ac_manifest.tsv').write_text('\n'.join(ac_man))
     man = []
     for si, s in enumerate(samples):
         sd = td / s / 'aux_info' / 'bootstraps'
@@ -625,7 +845,9 @@ def selftest():
     rq_bin = os.environ.get('RASQUAL_BIN')
     if rq_bin and Path(rq_bin).exists():
         print(f'(also exercising the RASQUAL comparison via {rq_bin})')
-        argv += ['--rasqual', rq_bin, '--rasqual-genes', '5']
+        argv += ['--rasqual', rq_bin, '--rasqual-genes', '14',
+                 '--allelic-counts', str(td / 'ac_manifest.tsv'),
+                 '--rasqual-input', 'both']
     sys.argv = argv
     print('running the real pipeline on the fabricated inputs...\n')
     main()
