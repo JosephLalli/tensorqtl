@@ -40,7 +40,9 @@ WHAT IT DOES
      bias is detected.
   6. Runs hapmixqtl.map_cis with tau_mode='estimate' (the default; do not
      override -- sec 2, 6, 7d).
-  7. Writes an EVAL BUNDLE of aggregate statistics only.
+  7. Optionally runs the REAL RASQUAL binary on the same genes (--rasqual)
+     for a side-by-side comparison.
+  8. Writes an EVAL BUNDLE of aggregate statistics only.
 
 THE EVAL BUNDLE
 ===============
@@ -53,6 +55,10 @@ previously blocked on having real genotypes:
   * the slope_a vs slope_tc concordance regression (docs sec 7c). Because the
     total channel uses g/2, both channels estimate the SAME quantity, so the
     regression should have slope 1; deviation localizes bias to a channel.
+  * with --rasqual: the distribution of RASQUAL's fitted phi, delta and theta,
+    and the rank correlation between the two methods' statistics. RASQUAL's phi
+    is an INDEPENDENT estimate of reference mapping bias, so comparing it to our
+    diagnostic's ref_fraction cross-validates that diagnostic on real data.
 
 SELF-TEST
 =========
@@ -212,6 +218,157 @@ def read_phased_vcf(path, want_samples):
     return vdf, XL + XR, XL, XR, order
 
 
+
+# ---------------------------------------------------------------------------
+#  Optional comparison run: the REAL RASQUAL binary
+# ---------------------------------------------------------------------------
+
+def _rasqual_gene_vcf(gene_pos, vdf, dos, xL, xR, yLm, yRm, gi, window):
+    """VCF lines for one gene: a pseudo-fSNP carrying the gene's haplotype
+    counts, followed by the cis variants to be tested.
+
+    HONEST NOTE. RASQUAL natively consumes allele-specific counts at each
+    FEATURE SNP. Salmon diploid quantification yields gene-level haplotype
+    totals instead, with no per-site breakdown. Those totals are therefore
+    encoded as ONE pseudo-fSNP at the TSS, heterozygous in every sample that
+    has allele-specific coverage, with AS = (hapA, hapB).
+
+    This keeps the comparison FAIR -- both methods see exactly the same
+    information -- but it is not RASQUAL's native input, and it removes any
+    benefit RASQUAL would get from resolving multiple feature SNPs separately.
+    Read the comparison as "RASQUAL given hapmixQTL's data", not as "RASQUAL at
+    its best".
+    """
+    chrom, tss = str(gene_pos['chr']), int(gene_pos['pos'])
+    inwin = (vdf['chrom'].values == chrom) & \
+            (np.abs(vdf['pos'].values - tss) <= window)
+    idx = np.where(inwin)[0]
+    if idx.size == 0:
+        return None, 0, None
+    N = dos.shape[1]
+    rows = []
+    # pseudo-fSNP: het wherever there is allele-specific coverage.
+    # GT 0|1 means REF on haplotype 1, so AS is written as (hapA, hapB).
+    f = []
+    for i in range(N):
+        a, b = int(round(yLm[gi, i])), int(round(yRm[gi, i]))
+        f.append(f'0|1:{a},{b}' if (a + b) > 0 else f'0|0:0,0')
+    rows.append([chrom, str(tss), f'psf_{gi}', 'A', 'G', '100', 'PASS',
+                 'RSQ=1.0', 'GT:AS'] + f)
+    for v in idx:
+        gt = []
+        for i in range(N):
+            gt.append(f'{int(xL[v, i])}|{int(xR[v, i])}:0,0')
+        rows.append([chrom, str(int(vdf['pos'].values[v])), str(vdf.index[v]),
+                     'A', 'G', '100', 'PASS', 'RSQ=1.0', 'GT:AS'] + gt)
+    return '\n'.join('\t'.join(r) for r in rows) + '\n', len(rows), tss
+
+
+def run_rasqual_comparison(binary, genes, pos_df, vdf, dos, xL, xR,
+                           yLm, yRm, T_counts, lib, out, window, max_genes):
+    """Run the real RASQUAL over the same genes; return a per-gene DataFrame."""
+    import subprocess, tempfile
+    order_genes = [g for g in genes if g in pos_df.index][:max_genes]
+    if not order_genes:
+        return None
+    print(f'\nRASQUAL comparison on {len(order_genes)} genes '
+          f'(RASQUAL is ~1e3x slower than hapmixQTL -- docs sec 7e)')
+    td = Path(tempfile.mkdtemp())
+    gidx = {g: i for i, g in enumerate(genes)}
+    sel = [gidx[g] for g in order_genes]
+    np.asarray(T_counts[sel], dtype=np.float64).tofile(td / 'Y.bin')
+    np.asarray((lib[None, :] * T_counts[sel].mean(1, keepdims=True)),
+               dtype=np.float64).tofile(td / 'K.bin')
+    N = dos.shape[1]
+    recs = []
+    for j, g in enumerate(order_genes):
+        vcf, nrow, tss = _rasqual_gene_vcf(pos_df.loc[g], vdf, dos, xL, xR,
+                                           yLm, yRm, gidx[g], window)
+        if vcf is None:
+            continue
+        cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
+               '-n', str(N), '-j', str(j + 1), '-l', str(nrow), '-m', '1',
+               '-s', str(tss), '-e', str(tss + 1), '-f', str(g), '-z']
+        try:
+            pr = subprocess.run(cmd, input=vcf, capture_output=True,
+                                text=True, timeout=600)
+        except Exception as e:
+            recs.append(dict(gene=g, status=f'error:{type(e).__name__}'))
+            continue
+        best = None
+        for line in pr.stdout.strip().split('\n'):
+            fl = line.split('\t')
+            if len(fl) < 25 or fl[1] == 'SKIPPED' or fl[1].startswith('psf_'):
+                continue
+            try:
+                chi2 = float(fl[10])
+                if int(float(fl[22])) != 0:      # convergence status
+                    continue
+            except ValueError:
+                continue
+            if best is None or chi2 > best['chi2']:
+                best = dict(gene=g, variant=fl[1], chi2=chi2,
+                            pi=float(fl[11]), delta=float(fl[12]),
+                            phi=float(fl[13]), theta=float(fl[14]),
+                            status='ok')
+        recs.append(best or dict(gene=g, status='no_converged_row'))
+        if (j + 1) % 25 == 0:
+            print(f'   {j+1}/{len(order_genes)}', flush=True)
+    return pd.DataFrame(recs)
+
+
+def add_rasqual_to_bundle(bundle, rq, res_df, diag):
+    """Aggregate-only summaries plus the cross-checks worth having."""
+    from scipy import stats as sps
+    if rq is None or not len(rq):
+        bundle['rasqual'] = {'note': 'not run'}
+        return bundle
+    ok = rq[rq['status'] == 'ok'] if 'status' in rq else rq
+    b = {'n_genes_attempted': int(len(rq)), 'n_converged': int(len(ok)),
+         'note': ('gene-level haplotype totals encoded as one pseudo-fSNP; '
+                  'both methods see identical information, which is fair but '
+                  'is not RASQUAL native input')}
+    if len(ok):
+        for c in ('phi', 'delta', 'theta', 'chi2'):
+            if c in ok:
+                v = pd.to_numeric(ok[c], errors='coerce').dropna().values
+                if v.size:
+                    b[c] = {'median': float(np.median(v)),
+                            'quantiles': np.quantile(
+                                v, [.05, .25, .5, .75, .95]).round(5).tolist()}
+        # RASQUAL's phi is an INDEPENDENT estimate of reference bias; our
+        # diagnostic measures the same thing a different way.
+        if 'phi' in b and isinstance(diag.get('ref_fraction'), float):
+            b['phi_vs_diagnostic'] = {
+                'rasqual_median_phi': b['phi']['median'],
+                'diagnostic_ref_fraction': diag['ref_fraction'],
+                'interpretation': ('both estimate reference mapping bias; 0.5 is '
+                                   'unbiased. Agreement cross-validates the '
+                                   'diagnostic on real data (docs sec 7i).')}
+        # concordance of the two methods across genes
+        if res_df is not None and len(res_df):
+            gcol = next((c for c in ('phenotype_id', 'gene_id', 'gene')
+                         if c in res_df.columns), None)
+            pcol = next((c for c in ('pval_nominal', 'pval_beta', 'pval_perm')
+                         if c in res_df.columns), None)
+            if gcol and pcol:
+                m = res_df[[gcol, pcol]].copy()
+                m.columns = ['gene', 'p']
+                m = m.merge(ok[['gene', 'chi2']], on='gene', how='inner')
+                m['p'] = pd.to_numeric(m['p'], errors='coerce')
+                m = m[np.isfinite(m['p']) & (m['p'] > 0)]
+                if len(m) > 20:
+                    hm = sps.chi2.isf(m['p'].values, 1)
+                    rho, pv = sps.spearmanr(hm, m['chi2'].values)
+                    b['concordance_with_hapmixqtl'] = {
+                        'n_genes': int(len(m)),
+                        'spearman_rho': float(rho),
+                        'interpretation': ('rank correlation of the two methods\' '
+                                           'test statistics over the same genes')}
+    bundle['rasqual'] = b
+    return bundle
+
+
 # ---------------------------------------------------------------------------
 #  Eval bundle: aggregate statistics only
 # ---------------------------------------------------------------------------
@@ -310,6 +467,13 @@ def main():
     ap.add_argument('--window', type=int, default=1_000_000)
     ap.add_argument('--force', action='store_true',
                     help='proceed despite a reference-bias flag (NOT recommended)')
+    ap.add_argument('--rasqual', default=None,
+                    help='path to the real RASQUAL binary (build it with '
+                         'scripts/build_rasqual.sh) to add a comparison run')
+    ap.add_argument('--rasqual-genes', type=int, default=200,
+                    help='cap the comparison at N genes; RASQUAL is ~1e3x '
+                         'slower than hapmixQTL (docs sec 7e), so a '
+                         'genome-wide run is days of CPU')
     args = ap.parse_args()
 
     if args.selftest:
@@ -393,6 +557,24 @@ def main():
         'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
         'tau_mode': 'estimate'})
+
+    if args.rasqual:
+        if not Path(args.rasqual).exists():
+            raise SystemExit(f'--rasqual binary not found: {args.rasqual}\n'
+                             'Build it with scripts/build_rasqual.sh')
+        Tcounts = np.expm1(tdf.values) if np.nanmax(tdf.values) < 30 else tdf.values
+        libsz = np.ones(len(order))
+        rq = run_rasqual_comparison(
+            args.rasqual, list(sdf.index), pos_df, vdf, dos, xL, xR,
+            YLm[[list(genes).index(g) for g in sdf.index]],
+            YRm[[list(genes).index(g) for g in sdf.index]],
+            Tcounts, libsz, out, args.window, args.rasqual_genes)
+        if rq is not None:
+            rq.to_csv(out / 'rasqual_cis.tsv.gz', sep='\t', index=False)
+            print(f'wrote {out}/rasqual_cis.tsv.gz')
+        bundle = add_rasqual_to_bundle(bundle, rq, res, diag)
+    else:
+        bundle['rasqual'] = {'note': 'not run (pass --rasqual to enable)'}
     (out / 'eval_bundle.json').write_text(json.dumps(bundle, indent=2))
     print(f'\nwrote {out}/hapmixqtl_cis.tsv.gz   (full results, keep local)')
     print(f'wrote {out}/eval_bundle.json      (aggregate only -- safe to share)')
@@ -437,13 +619,20 @@ def selftest():
         man.append(f'{s}\t{td/s}')
     (td / 'manifest.tsv').write_text('\n'.join(man))
 
-    sys.argv = ['x', '--vcf', str(td / 'p.vcf'), '--manifest', str(td / 'manifest.tsv'),
-                '--tx2gene', str(td / 't2g.tsv'), '--gene-pos', str(td / 'genepos.tsv'),
-                '--out', str(td / 'out')]
+    argv = ['x', '--vcf', str(td / 'p.vcf'), '--manifest', str(td / 'manifest.tsv'),
+            '--tx2gene', str(td / 't2g.tsv'), '--gene-pos', str(td / 'genepos.tsv'),
+            '--out', str(td / 'out')]
+    rq_bin = os.environ.get('RASQUAL_BIN')
+    if rq_bin and Path(rq_bin).exists():
+        print(f'(also exercising the RASQUAL comparison via {rq_bin})')
+        argv += ['--rasqual', rq_bin, '--rasqual-genes', '5']
+    sys.argv = argv
     print('running the real pipeline on the fabricated inputs...\n')
     main()
     b = json.loads((td / 'out' / 'eval_bundle.json').read_text())
     print('\nSELF-TEST OK. eval_bundle keys:', list(b))
+    if 'rasqual' in b:
+        print('  rasqual:', json.dumps(b['rasqual'])[:220])
     print('  meta:', b.get('meta'))
     return 0
 
