@@ -121,12 +121,14 @@ Open:
 
   On real data this is no longer blocked on tooling: `compare_pipelines.py`
   gives each method its native input on the same genes and the same phase, and
-  `docs/brainvar_deploy_runbook.md` is the procedure. The personalized diploid
-  quantifications it needs are on the server — 37 samples under
-  `reference_comparison_results_RNA/Personalized_T2T_calls_NCBI110/star_salmon`,
-  haplotype-suffixed `_L`/`_R` — so what remains is phASER and the run itself.
-  The one substantive caveat is that those draws are 30 bootstrap samples
-  rather than 200 Gibbs samples; the runbook says what that costs.
+  `docs/brainvar_deploy_runbook.md` is the procedure. The inputs are all on the
+  server. Personalized diploid quantifications with 200 Gibbs draws cover 228
+  subjects (`personalized_T2T_NCBI110_pseudoalignment`), and reference-aligned
+  T2T BAMs for phASER cover 93 — **92 subjects in common**, which is the usable
+  N. That arm has no aligned reads of its own, so the allelic counts come from
+  the reference-aligned arm, and its BAMs are named by RefSeq accession where
+  the VCF uses `chr`; both are handled in the runbook. What remains is phASER
+  and the run itself.
 - **Four axes blocked on genotypes** (§9): effect-size concordance against GTEx
   aFC, eGene replication, functional/motif enrichment, and the `slope_a` vs
   `slope_tc` concordance check. BrainVar unblocks all four.

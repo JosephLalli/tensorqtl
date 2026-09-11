@@ -101,91 +101,107 @@ itself.
 
 ### State of this prerequisite on the current machine
 
-Surveyed 2026-09-10 on the server at `/mnt/ssd/lalli`. **The personalized
-diploid quantifications exist.** They are under
+Surveyed 2026-09-10. Every Salmon run on both mounts was enumerated -- 1,158
+`meta_info.json` files -- and tabulated by sampling type:
+
+| sampling | draws | runs |
+| --- | --- | --- |
+| gibbs | 200 | 359 |
+| bootstrap | 30 | 371 |
+| bootstrap | 100 | 12 |
+| none | 0 | 416 |
+
+**Personalized diploid quantifications with 200 Gibbs samples exist.** 229 of
+the 359 are one coherent published set; the remainder are unpublished `work/`
+copies of the same run.
 
 ```
-/mnt/data/lalli/nf_stage/reference_comparison_results_RNA/
-    Personalized_T2T_calls_NCBI110/star_salmon/<sample>/
+/mnt/ssd/lalli/nf_stage/RNA_reference_comparison_results/reference_comparison_results/
+    bv2/personalized_T2T_NCBI110_pseudoalignment/expression_results/salmon_pseudocounts/<sample>/
 ```
 
-with **37 samples** carrying a bootstrap payload (of 45 sample directories).
-Read back through `read_salmon_bootstraps`, each holds roughly 215,000
-transcripts of which about 107,500 are haplotype-paired.
+229 samples (228 distinct subjects), `samp_type = gibbs`, `num_bootstraps =
+200`, ~272k-292k transcripts each, haplotype-paired `_L`/`_R` at 92k-115k pairs
+per sample. Read back through `read_salmon_bootstraps` without complaint.
 
-Four things about this data differ from the defaults and have to be passed or
-accounted for.
+**But that arm has no aligned reads.** It is the pseudoalignment path: zero
+BAM or CRAM files anywhere under it. phASER needs aligned reads, so on its own
+this arm supports hapmixQTL and nothing else -- `compare_pipelines.py` requires
+`--allelic-counts` and cannot run without RASQUAL's native input.
 
-**The haplotype suffix is `_L`/`_R`,** not `_hapA`/`_hapB`. Transcripts are
-named `NR_109817.1_L` and `NR_109817.1_R`. Pass `--hap-suffix _L,_R` to
-`compare_pipelines.py`; with the default, `load_counts` pairs nothing and
-raises the standard-reference error at data that is in fact diploid.
+#### The combination that gives the full head-to-head
 
-**Use `star_salmon/`, not the `salmon/` sibling.** Both directories exist under
-that arm. `salmon/` has been stripped -- 1 of 42 sample directories still has
-a bootstrap payload and only 1 still has a `quant.sf`. `star_salmon/` is the
-live output, which matches the run's own parameters (`aligner = star_salmon`,
-`skip_pseudo_alignment = true`).
+Take the allelic counts from a **reference-aligned** arm. That is what phASER
+wants anyway: reads aligned to the reference the VCF was called against, not to
+a personalized genome.
 
-**The draws are 30 bootstrap samples, not 200 Gibbs samples.**
-`meta_info.json` records `samp_type = bootstrap`, `num_bootstraps = 30`. The
-code path is the same -- Salmon writes both to the same place and hapmixQTL
-propagates either as inferential replicates -- but 30 draws estimate the
-per-gene inferential variance less precisely than 200, and that variance is
-exactly what hapmixQTL's expression-uncertainty weighting consumes. Whether 30
-is enough for the weighting to behave is not established here and should be
-checked before quoting a result; re-quantifying with `--numGibbsSamples 200`
-is the alternative, and the recipe for it is recorded in
-`.../bv2/personalized_T2T_NCBI110_star_alignment/pipeline_info/params_2025-05-22_14-28-55.json`
-(`num_gibbs_samples = 200`).
+| role | source | n |
+| --- | --- | --- |
+| hapmixQTL input | `personalized_T2T_NCBI110_pseudoalignment/expression_results/salmon_pseudocounts` | 228 subjects, 200 Gibbs draws |
+| phASER / RASQUAL input | `reference_comparison_results_RNA/T2T_NCBI110/star_salmon/*.bam` | 93 subjects, reference T2T |
+| genotypes | `nf_stage/brainvar2/gatk_t2t_haplotypecaller.joint_called.phased...nostar.bcf` | 2.4G, phased, 25 contigs |
 
-**Transcript sets differ between samples,** because a personalized
-transcriptome is built per sample from that sample's own variants. Two real
-samples shared 215,047 transcripts with a handful unique to each. This is
-handled -- the gene set is the union over all samples -- but it is the reason
-the manifest order used to matter, and it means the per-sample matrices are
-sparse at sample-specific genes rather than complete.
+The two sample-ID schemes differ but correspond: the BAMs are `HSB<n>` and the
+quantifications are `<n>_R1`. Normalising both to `<n>` gives **92 subjects in
+common** (93 BAM subjects, one without a quantification). That is the usable N
+for the comparison, at 200 Gibbs draws.
 
-The reference for this arm is **T2T**, so the GTF and the VCF used downstream
-must be T2T as well. Its transcripts are RefSeq accessions
-(`NR_109817.1`, `XM_047444567.1`) and, in an NCBI GTF, genes are named by
-symbol -- so an eGene list keyed on `ENSG...` will not join to it.
+#### Two things must be fixed before phASER will run
 
-### tx2gene for this data comes from a different file than genes.tsv
-
-The per-sample diploid annotations are in `Personalized_T2T_calls_NCBI110/convert/`
-as `<sample>-diploid_specific.gtf`, 42 of them. They carry the haplotype suffix
-on **both** identifiers:
-
-```
-gene_id "SEPTIN14P6_L"; transcript_id "NR_109817.1_L"; gene "SEPTIN14P6";
-```
-
-`load_counts` pairs the two haplotype transcripts first and then looks the gene
-up by the **unsuffixed** base, `NR_109817.1`. A tx2gene keyed on
-`NR_109817.1_L` therefore matches nothing, and the run dies claiming Salmon was
-run against a standard reference transcriptome -- the same misleading message,
-from the opposite cause. Build it with:
+**Contig names disagree between the BAM and the VCF.** The T2T BAMs are named
+by RefSeq accession (`NC_060925.1`); the phased BCF and the reference GTF use
+`chr1`. phASER requires them to match and will otherwise find nothing. Both
+have exactly 25 contigs and they correspond 1:1 -- matching the BAM header
+lengths against `chm13v2.0_maskedY_rCRS.fasta.fai` maps all 25 with none left
+over on either side, and the 25 targets are exactly the BCF's contig set.
+Derive the map and apply it to whichever file you would rather rewrite:
 
 ```bash
-python3 scripts/diploid_tx2gene.py     --gtf .../convert/HSB238-diploid_specific.gtf     --hap-suffix _L,_R --out annot/tx2gene.tsv
+samtools view -H <bam> | awk '/^@SQ/{for(i=1;i<=NF;i++){if($i~/^SN:/)n=substr($i,4);if($i~/^LN:/)l=substr($i,4)}print n"\t"l}' \
+  > bam_ctg.tsv
+# join on length against the chr-named reference index
+awk 'NR==FNR{a[$2]=$1;next} ($2 in a){print $1"\t"a[$2]}' \
+    chm13v2.0_maskedY_rCRS.fasta.fai bam_ctg.tsv > rename_chrs.tsv
 ```
 
-On `HSB238-diploid_specific.gtf` that turns 216,175 transcript rows into
-108,088 unique pairs over 41,498 genes, and it resolves **100%** of that
-sample's 107,505 haplotype-paired transcripts, collapsing them to 40,917 genes.
+Renaming the BAM header (`samtools reheader`) keeps the GTF and VCF, which
+already agree on `chr`, as the reference convention.
 
-Take `genes.tsv` and `genes.bed` from the **reference** T2T annotation with
-`gtf_to_tables.py`, not from these files. A personalized annotation has
-personalized coordinates -- positions in that sample's own haplotype, not in
-the reference the VCF is called against -- so its spans and TSS values do not
-belong in a cis-window definition shared across samples.
+**`tx2gene` must come from the reference annotation, not the per-sample GTFs.**
+The arm's `personalized_references/*.gtf` are 229 **dangling symlinks** -- they
+list but do not open. This turns out not to matter: the transcript bases under
+the `_L`/`_R` suffixes are ordinary RefSeq accessions, so the reference
+annotation resolves them. Running `gtf_to_tables.py` on
 
-Two non-personalized arms are quantified the same way and make natural
-baselines: `T2T_NCBI110/star_salmon` (94 payloads) and
-`GRCh38_p14_NCBI110/star_salmon` (103 payloads). Neither carries allelic
-information, so neither can feed hapmixQTL -- they are the standard-reference
-comparison, not an input.
+```
+genome_refs/T2T-CHM13_v2_ncbi110/GCF_009914755.1_RS_2024_08-T2T-CHM13v2.0_genomic.UCSC_chr.with_GRCh38_rCDS_chrM.exon_ids.gtf
+```
+
+gives 58,516 genes and 183,140 transcripts on `chr`-style names, and resolves
+**100%** of a sample's 115,297 haplotype-paired transcripts into 24,437 genes.
+`diploid_tx2gene.py` is not needed for this arm -- it is for the case below,
+where the per-sample diploid GTFs are present and the bases are not reference
+accessions.
+
+#### The fallback, if you would rather not renumber contigs
+
+`reference_comparison_results_RNA/Personalized_T2T_calls_NCBI110/star_salmon`
+has personalized quantifications **and** 34 readable BAMs in the same arm, with
+per-sample diploid GTFs present in `convert/` rather than dangling. Everything
+is self-consistent there, so no contig rename is needed and
+`diploid_tx2gene.py` applies directly. The costs are that it is 34 samples
+rather than 92, its draws are 30 bootstrap samples rather than 200 Gibbs, and
+its BAMs are aligned to each sample's personalized genome rather than to the
+reference -- which is the wrong input for phASER in principle, since the
+coordinates are not the VCF's.
+
+Prefer the 92-subject, 200-Gibbs combination. It is better on both axes that
+matter, and the contig rename is a header rewrite, not a re-run.
+
+Two non-personalized arms make natural baselines and are quantified the same
+way: `T2T_NCBI110/star_salmon` (94 payloads) and `GRCh38_p14_NCBI110/star_salmon`
+(103). Neither carries allelic information, so neither can feed hapmixQTL --
+they are the standard-reference comparison, not an input.
 
 ## Building the annotation tables
 
