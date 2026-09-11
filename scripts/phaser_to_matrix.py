@@ -197,6 +197,15 @@ def _phase_rows(vcf_path, contig=None):
 def load_sample_phase(vcf_path, contig=None):
     """{(chrom,pos,ref,alt): 'a|b'} for one sample's phASER re-phased VCF.
 
+    Only HETEROZYGOUS genotypes are kept. A homozygous genotype has no phase to
+    correct and overwriting it is a no-op, but in a jointly-called cohort most
+    of any one sample's genotypes are homozygous, so keeping them was the bulk
+    of the memory: the first contig alone passed 55GB and was still climbing at
+    about 7GB/min. Restricting to hets also makes the reported rate the right
+    quantity -- a switch error is only definable where the two alleles differ,
+    so flips over het genotypes IS the switch-error rate, where flips over all
+    genotypes would carry a meaningless denominator.
+
     Pass `contig` to load only that contig. Loading the whole genome for every
     sample at once does not fit: at roughly 2.5M phased het sites per sample,
     92 samples is ~230M dict entries keyed by a tuple, which is tens of GB
@@ -210,8 +219,12 @@ def load_sample_phase(vcf_path, contig=None):
         fmt = f[8].split(':')
         gi = fmt.index('GT') if 'GT' in fmt else 0
         gt = f[9].split(':')[gi]
-        if '|' in gt and '.' not in gt:
-            out[(str(f[0]), int(f[1]), f[3], f[4])] = gt
+        if '|' not in gt or '.' in gt:
+            continue
+        a, b = gt.split('|', 1)
+        if a == b:
+            continue       # homozygous: phase is meaningless, overwrite a no-op
+        out[(str(f[0]), int(f[1]), f[3], f[4])] = gt
     return out
 
 
@@ -394,7 +407,8 @@ def selftest():
                 gt = f'{b}|{a}' if (a != b and v % 4 == 0) else f'{a}|{b}'
                 if gt != pop[(v, s_)]:
                     exp_flip += 1
-                exp_re += 1; expect[(v, s_)] = gt
+                if a != b:          # homozygous genotypes are not overlaid
+                    exp_re += 1; expect[(v, s_)] = gt
                 fh.write(f'1\t{100*v+1}\tv{v}\tA\tG\t.\tPASS\t.\tGT\t{gt}\n')
     print('SELF-TEST: assembling fabricated phaser_gene_ae outputs\n')
     main(['--manifest', str(td / 'man.tsv'), '--out', str(td / 'out'),
