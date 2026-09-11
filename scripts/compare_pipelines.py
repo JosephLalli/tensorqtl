@@ -247,6 +247,83 @@ def nonstandard_block(obs_x, sp_obs, sp_nulls, vtype):
 
 
 # ---------------------------------------------------------------------------
+#  Knockoff null: an LD-preserving negative control
+# ---------------------------------------------------------------------------
+
+def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
+                        seed=0, verbose=True):
+    """Knockoff haplotypes for every variant, [M, V, N] each for L and R.
+
+    WHY NOT PERMUTE. Permuting rSNP genotypes across samples breaks their LD
+    with everything else, and two artifacts in this comparison live in exactly
+    that LD, pulling in opposite directions:
+
+      * hapmixQTL's gene totals are missing wherever a sample has no
+        heterozygous transcript, and that missingness tracks local
+        heterozygosity, which is in LD with the tested rSNPs. Permutation
+        removes it from the null but not from the observed statistic, so it
+        inflates hapmixQTL.
+      * RASQUAL's evidence comes from individuals heterozygous at BOTH an rSNP
+        and an fSNP. Real cis LD enriches those; permutation makes them
+        independent, so RASQUAL's null sits too low and its threshold too
+        permissive.
+
+    A knockoff variant is exchangeable with the real one -- same joint
+    distribution, hence the same LD with everything in the region -- but
+    carries no association with the phenotype. Both artifacts therefore appear
+    in the null as well as the observed, and the matched-FPR comparison is
+    calibrated for both arms at once.
+
+    Knockoffs are drawn over the WHOLE region including the feature SNPs, not
+    only the tested ones. The structural-zero pattern is a function of
+    gene-body heterozygosity, so a knockoff region that excluded gene bodies
+    would not reproduce it and the exercise would buy nothing on that axis.
+
+    Blocks are contiguous in genome order and never span a chromosome, so the
+    HMM is fitted on real local LD. One fit per block is reused for all M
+    draws: the fit dominates (~13 s per 5-6k variants against ~1 s per extra
+    draw), which is what makes M draws affordable.
+
+    This uses knockoffs as a negative CONTROL, not as the knockoff filter --
+    no W statistics, no swap-antisymmetry requirement, so the experimental
+    variant-level FDR path in tensorqtl/knockoffs.py is not being relied on.
+    """
+    import time
+    from tensorqtl import knockoffs as _ko
+    V, N = xL.shape
+    kL = np.empty((draws, V, N), np.int8)
+    kR = np.empty((draws, V, N), np.int8)
+    chrom = vdf['chrom'].values
+    starts = []
+    i = 0
+    while i < V:
+        j = min(i + block, V)
+        c = chrom[i]
+        # never let a block straddle two chromosomes
+        while j > i + 1 and chrom[j - 1] != c:
+            j -= 1
+        if chrom[i] != c:
+            j = i + 1
+        starts.append((i, j))
+        i = j
+    t0 = time.time()
+    for bi, (i, j) in enumerate(starts, 1):
+        X = xL[i:j].T.astype(np.int64)
+        Y = xR[i:j].T.astype(np.int64)
+        out = _ko.haplotype_hmm_knockoffs(X, Y, K=K, M=draws,
+                                          n_em_iter=n_em_iter, seed=seed + i,
+                                          return_phased=True)
+        (xkL, xkR) = out[1]
+        for m in range(draws):
+            kL[m, i:j, :] = xkL[m].T.astype(np.int8)
+            kR[m, i:j, :] = xkR[m].T.astype(np.int8)
+        if verbose and (bi % 10 == 0 or bi == len(starts)):
+            el = time.time() - t0
+            print(f'    knockoffs: block {bi}/{len(starts)} '
+                  f'({el/60:.1f} min elapsed)', flush=True)
+    return kL, kR
+
+# ---------------------------------------------------------------------------
 #  RASQUAL arm: native per-fSNP counts, tested rSNPs permuted, fSNPs fixed
 # ---------------------------------------------------------------------------
 
@@ -469,12 +546,18 @@ def run(args):
     if args.known_egenes:
         known = set(l.strip() for l in open(args.known_egenes) if l.strip())
 
-    def both(perm, tag):
+    def both(perm, tag, XL=None, XR=None, DOS=None):
+        # XL/XR/DOS override the real genotypes. The knockoff null substitutes
+        # knockoff haplotypes at the tested variants and leaves perm=None;
+        # the permutation null leaves them None and passes a perm vector.
+        XL = xL if XL is None else XL
+        XR = xR if XR is None else XR
+        DOS = dos if DOS is None else DOS
         t0 = time.time()
-        h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, dos, xL, xR,
+        h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
                        pos_df[['chr', 'pos']], args.window, tested, perm)
         th = time.time() - t0; t0 = time.time()
-        r = rasqual_arm(args.rasqual, usable, pos_df, vdf, xL, xR, allelic,
+        r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
                         order, Ytot, K, args.window, perm,
                         tested=tested, maf=args.maf)
         tr = time.time() - t0
@@ -494,9 +577,29 @@ def run(args):
     print('\nObserved')
     obs_h, obs_r, th, tr, obs_x, sp_obs, tx_obs = both(None, 'observed')
     nulls_h, nulls_r, nulls_x, sp_nulls = [], [], [], []
+    kL = kR = win_row = None
+    if args.null == 'knockoff':
+        win_idx = np.where(in_win)[0]
+        print(f'\nKnockoff null: {len(win_idx)} variants across the selected '
+              f'cis windows (gene bodies included, so the structural-zero '
+              f'pattern is reproduced in the null)')
+        kL, kR = knockoff_haplotypes(xL[win_idx], xR[win_idx],
+                                     vdf.iloc[win_idx], args.n_perm,
+                                     K=args.knockoff_k, seed=args.seed)
+        win_row = {int(v): i for i, v in enumerate(win_idx)}
+    sel_t = np.where(tested)[0]
     for p in range(args.n_perm):
-        perm = rng.permutation(len(order))
-        h, r, _, _, x, sp, _ = both(perm, f'perm {p+1}/{args.n_perm}')
+        if args.null == 'knockoff':
+            rows = [win_row[int(v)] for v in sel_t]
+            XLm = xL.copy(); XRm = xR.copy()
+            XLm[sel_t] = kL[p][rows]; XRm[sel_t] = kR[p][rows]
+            DOSm = (XLm + XRm).astype(np.int8)
+            h, r, _, _, x, sp, _ = both(None, f'knockoff {p+1}/{args.n_perm}',
+                                        XLm, XRm, DOSm)
+            del XLm, XRm, DOSm
+        else:
+            perm = rng.permutation(len(order))
+            h, r, _, _, x, sp, _ = both(perm, f'perm {p+1}/{args.n_perm}')
         nulls_h.append(h); nulls_r.append(r)
         if x is not None:
             nulls_x.append(x); sp_nulls.append(sp)
@@ -509,8 +612,12 @@ def run(args):
                    'hapmixqtl_input': 'Salmon diploid Gibbs (native)',
                    'shared': ['samples', 'genes', 'tested variants outside gene '
                               'bodies', 'phase (rephased.vcf.gz)', 'permutation'],
-                   'null': 'tested rSNPs permuted across samples as a block; '
-                           'fSNP genotypes + allele counts fixed with expression',
+                   'null': ('LD-preserving knockoff haplotypes substituted at the '
+                            'tested rSNPs; fSNP genotypes + allele counts real'
+                            if args.null == 'knockoff' else
+                            'tested rSNPs permuted across samples as a block; '
+                            'fSNP genotypes + allele counts fixed with expression'),
+                   'null_kind': args.null,
                    'n_genes': len(usable), 'n_samples': len(order),
                    'n_tested_variants': int(tested.sum()), 'n_perm': args.n_perm,
                    'window': args.window, 'seed': args.seed},
@@ -605,6 +712,13 @@ def main(argv=None):
     ap.add_argument('--n-genes', type=int, default=300)
     ap.add_argument('--n-perm', type=int, default=10)
     ap.add_argument('--window', type=int, default=1_000_000)
+    ap.add_argument('--null', choices=('permute', 'knockoff'), default='permute',
+                    help="'permute' shuffles rSNP genotypes across samples, "
+                         'which destroys their LD and mis-calibrates BOTH arms '
+                         'in opposite directions. "knockoff" substitutes '
+                         'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--knockoff-k', type=int, default=4,
+                    help='haplotype clusters in the knockoff HMM (default 4)')
     ap.add_argument('--maf', type=float, default=0.05,
                     help='minor-allele frequency floor for TESTED cis variants. '
                          'Feature SNPs in gene bodies are deliberately exempt: '
@@ -720,12 +834,24 @@ def selftest():
         tx2gene=str(td / 't2g.tsv'), allelic_counts=str(td / 'ac.tsv'), rasqual=rq,
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
+        null='permute', knockoff_k=4,
         str_vcf=None, multiallelic=False, min_hap=10)
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
     print('\n' + (td / 'deploy' / 'deploy_comparison.md').read_text())
     for m in ('RASQUAL', 'hapmixQTL'):
         assert 'power' in r[m], f'{m} produced no power estimate'
+    # the knockoff null must run end to end and produce a usable null
+    # n_perm=2 so the pooled null clears score()'s 20-statistic floor; with
+    # one draw over 16 fabricated genes it does not, and the arm reports
+    # 'too few statistics' rather than a power estimate.
+    ko_args = dict(base_args); ko_args.update(null='knockoff', knockoff_k=2,
+                                              n_perm=2)
+    rk = run(argparse.Namespace(**ko_args, out=str(td / 'deploy_ko')))
+    assert rk['design']['null_kind'] == 'knockoff', rk['design']
+    for m in ('RASQUAL', 'hapmixQTL'):
+        assert 'power' in rk[m], f'{m}: no power estimate under knockoffs'
+        assert rk[m]['n_null_stats'] > 0, (m, rk[m])
     # the MAF floor must gate TESTED variants and leave fSNPs alone: raising it
     # above every simulated frequency must drop tested variants without
     # touching the fSNPs the allelic channel needs
