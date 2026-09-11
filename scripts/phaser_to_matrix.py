@@ -161,9 +161,27 @@ def write_matrix(path, samples, genes, meta, A, B):
 #  Re-phased genotypes: phASER's read-backed phase, feeding BOTH methods
 # ---------------------------------------------------------------------------
 
-def load_sample_phase(vcf_path):
-    """{(chrom,pos,ref,alt): 'a|b'} for one sample's phASER re-phased VCF."""
-    out = {}
+def _phase_rows(vcf_path, contig=None):
+    """Yield (chrom, pos, ref, alt, gt) for one sample's phASER VCF.
+
+    Uses the tabix index phASER writes alongside its VCF when a contig is
+    asked for, so a per-contig pass reads only that contig. Falls back to a
+    filtered full scan when there is no index or no pysam.
+    """
+    if contig is not None:
+        tbi = Path(str(vcf_path) + '.tbi')
+        if tbi.exists():
+            try:
+                import pysam
+                with pysam.TabixFile(str(vcf_path)) as tf:
+                    if contig in tf.contigs:
+                        for line in tf.fetch(contig):
+                            f = line.rstrip('\n').split('\t')
+                            if len(f) >= 10:
+                                yield f
+                    return
+            except Exception:
+                pass                      # fall through to the plain scan
     with _open(vcf_path) as fh:
         for line in fh:
             if line.startswith('#'):
@@ -171,11 +189,29 @@ def load_sample_phase(vcf_path):
             f = line.rstrip('\n').split('\t')
             if len(f) < 10:
                 continue
-            fmt = f[8].split(':')
-            gi = fmt.index('GT') if 'GT' in fmt else 0
-            gt = f[9].split(':')[gi]
-            if '|' in gt and '.' not in gt:
-                out[(str(f[0]), int(f[1]), f[3], f[4])] = gt
+            if contig is not None and f[0] != contig:
+                continue
+            yield f
+
+
+def load_sample_phase(vcf_path, contig=None):
+    """{(chrom,pos,ref,alt): 'a|b'} for one sample's phASER re-phased VCF.
+
+    Pass `contig` to load only that contig. Loading the whole genome for every
+    sample at once does not fit: at roughly 2.5M phased het sites per sample,
+    92 samples is ~230M dict entries keyed by a tuple, which is tens of GB
+    before Python's per-object overhead. That is what this used to do, and it
+    was killed by the OOM reaper partway through a 92-sample cohort, after the
+    matrices had been written and with nothing in the log, because the process
+    died before its buffered stdout was flushed.
+    """
+    out = {}
+    for f in _phase_rows(vcf_path, contig):
+        fmt = f[8].split(':')
+        gi = fmt.index('GT') if 'GT' in fmt else 0
+        gt = f[9].split(':')[gi]
+        if '|' in gt and '.' not in gt:
+            out[(str(f[0]), int(f[1]), f[3], f[4])] = gt
     return out
 
 
@@ -197,14 +233,19 @@ def rephase_vcf(original, samples, prefixes, out_path):
     Returns (n_sites_rephased, n_sites_flipped): flipped = phASER's phase
     disagreed with the population phase, i.e. a switch error it corrected.
     """
-    per = {}
+    paths = {}
     for s, pre in zip(samples, prefixes):
         vp = next((Path(f'{pre}{ext}') for ext in ('.vcf.gz', '.vcf')
                    if Path(f'{pre}{ext}').exists()), None)
         if vp is None:
             raise SystemExit(f'no phASER VCF for {s} at {pre}.vcf[.gz]; run '
                              'phASER with --write_vcf 1')
-        per[s] = load_sample_phase(vp)
+        paths[s] = vp
+    # Phase is loaded one contig at a time. Holding every sample's whole genome
+    # at once is tens of GB and gets the process OOM-killed on a real cohort;
+    # the population VCF is contig-sorted, so a contig's worth is all that is
+    # ever needed. `done` guards against reloading if a contig reappears.
+    per, cur, done_contigs = {}, None, set()
     n_re = n_flip = 0
     with _open(original) as fh, gzip.open(out_path, 'wt') as oh:
         col = None
@@ -212,6 +253,18 @@ def rephase_vcf(original, samples, prefixes, out_path):
             if line.startswith('##'):
                 oh.write(line); continue
             f = line.rstrip('\n').split('\t')
+            if not line.startswith('#CHROM') and f[0] != cur:
+                if f[0] in done_contigs:
+                    raise SystemExit(
+                        f'contig {f[0]} reappears after another contig; the '
+                        'input VCF must be sorted by contig for the per-contig '
+                        'phase load to be correct')
+                if cur is not None:
+                    done_contigs.add(cur)
+                cur = f[0]
+                per = {x: load_sample_phase(paths[x], cur) for x in samples}
+                print(f'  rephase: {cur} ({sum(len(v) for v in per.values())} '
+                      'phased genotypes loaded)', flush=True)
             if line.startswith('#CHROM'):
                 vs = f[9:]
                 missing = [x for x in samples if x not in vs]
