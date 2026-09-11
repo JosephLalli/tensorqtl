@@ -1,0 +1,14 @@
+build deps already present (gsl, lapack, blas, zlib) -- skipping apt-get
+Cloning into 'rasqual_src'...
+sh makeUsage.sh
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -c usage.c
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -c parseVCF.c
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -c sort.c
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -c nbglm.c
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -c nbem.c
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -c util.c
+gcc  -std=gnu99 -fcommon -Icompat -I/usr/include -I/usr/include/gsl -fpic -g -O2 -o rasqual main.c usage.o parseVCF.o sort.o nbglm.o nbem.o util.o -L/mnt/ssd/lalli/.linuxbrew/opt/openssl@3/lib:-L/mnt/ssd/lalli/.linuxbrew/opt/openssl@3/lib -L/mnt/ssd/lalli/.linuxbrew/opt/libomp/lib -L/mnt/ssd/lalli/.linuxbrew/lib -lgslcblas -lgsl -llapack -lblas  -lm -lz -lpthread
+built: /mnt/ssd/lalli/tensorqtl/.claude/worktrees/hapmix-runbook/rasqual_src/src/rasqual
+C11orf21	rs2521269	0.000033	0.525453
+(expect: C11orf21  rs2521269  phi~0.525  delta~3.3e-5)
+EXIT=0

@@ -12,8 +12,26 @@
 set -euo pipefail
 DEST="${1:-rasqual_src}"
 
-sudo=""; [ "$(id -u)" -eq 0 ] || sudo=sudo
-$sudo apt-get install -y libgsl-dev liblapack-dev libblas-dev zlib1g-dev
+# Install the build dependencies only if they are actually missing. This ran
+# apt-get unconditionally, which made the script unusable for anyone without
+# root -- including on the controlled-access server this is meant for, where
+# the libraries are typically already present and sudo typically is not.
+have_deps() {
+    { pkg-config --exists gsl 2>/dev/null || [ -e /usr/include/gsl/gsl_version.h ]; } \
+      && ls /usr/lib/*/liblapack* >/dev/null 2>&1 \
+      && ls /usr/lib/*/libblas* >/dev/null 2>&1 \
+      && { [ -e /usr/include/zlib.h ] || ls /usr/include/*/zlib.h >/dev/null 2>&1; }
+}
+if have_deps; then
+    echo "build deps already present (gsl, lapack, blas, zlib) -- skipping apt-get"
+else
+    sudo=""; [ "$(id -u)" -eq 0 ] || sudo=sudo
+    if ! $sudo apt-get install -y libgsl-dev liblapack-dev libblas-dev zlib1g-dev; then
+        echo "could not install build deps automatically." >&2
+        echo "Install libgsl-dev liblapack-dev libblas-dev zlib1g-dev and re-run." >&2
+        exit 1
+    fi
+fi
 
 [ -d "$DEST" ] || git clone --depth 1 https://github.com/natsuhiko/rasqual.git "$DEST"
 cd "$DEST/src"

@@ -1,0 +1,79 @@
+SELF-TEST: deploy comparison on fabricated native inputs
+
+hapmixQTL input: Salmon diploid Gibbs
+  16 haplotype pairs -> 16 genes (union over 40 samples), 40 draws
+  [1/40] S000
+  [2/40] S001
+  [3/40] S002
+  [4/40] S003
+  [5/40] S004
+  [6/40] S005
+  [7/40] S006
+  [8/40] S007
+  [9/40] S008
+  [10/40] S009
+  [11/40] S010
+  [12/40] S011
+  [13/40] S012
+  [14/40] S013
+  [15/40] S014
+  [16/40] S015
+  [17/40] S016
+  [18/40] S017
+  [19/40] S018
+  [20/40] S019
+  [21/40] S020
+  [22/40] S021
+  [23/40] S022
+  [24/40] S023
+  [25/40] S024
+  [26/40] S025
+  [27/40] S026
+  [28/40] S027
+  [29/40] S028
+  [30/40] S029
+  [31/40] S030
+  [32/40] S031
+  [33/40] S032
+  [34/40] S033
+  [35/40] S034
+  [36/40] S035
+  [37/40] S036
+  [38/40] S037
+  [39/40] S038
+  [40/40] S039
+Genotypes (use rephased.vcf.gz from phaser_to_matrix.py)
+RASQUAL input: phASER per-feature-SNP counts
+  16 genes usable by both (of 16); 40 samples
+  32 tested cis variants (window, outside gene bodies)
+
+Observed
+  observed: hapmixQTL 1s, RASQUAL 6s (15/16 converged)
+  perm 1/2: hapmixQTL 0s, RASQUAL 10s (13/16 converged)
+  perm 2/2: hapmixQTL 0s, RASQUAL 9s (13/16 converged)
+
+wrote /tmp/tmpu9bjp41z/deploy/deploy_comparison.json  (aggregate -- shareable)
+wrote /tmp/tmpu9bjp41z/deploy/deploy_comparison.md
+
+# Deploy comparison: RASQUAL vs hapmixQTL, each on its native input
+
+16 genes, 40 samples, 32 tested variants, 2 permutations
+
+| | RASQUAL | hapmixQTL |
+|---|---|---|
+| power @ empirical FPR 10% | 0.600 | 0.500 |
+| power @ empirical FPR 5% | 0.600 | 0.500 |
+| λ_GC on permuted null | 0.28 | 0.96 |
+| wall time (observed run) | 6s | 1s |
+| known-eGene fraction of discoveries (RASQUAL) | 0.778 (baseline 0.467) | |
+| known-eGene fraction of discoveries (hapmixQTL) | 1.000 (baseline 0.500) | |
+
+## Agreement
+
+- Spearman of gene statistics: 0.804
+- top-5 overlap: 0.60
+- log-aFC slope (hapmixQTL on RASQUAL): 0.959 ± 0.044, r = 0.987, n = 15  (1.0 = same quantity)
+- RASQUAL φ̂ median on this data: 0.503 (0.5 = no reference bias)
+
+SELF-TEST OK
+EXIT=0
