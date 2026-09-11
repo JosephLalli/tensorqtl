@@ -257,11 +257,20 @@ Salmon names *and* strip the eGene list, or keep versions on all three.
 `--strip-version` affects only the tables `gtf_to_tables.py` writes; nothing
 downstream strips anything for you.
 
-**Chromosome names.** `chr1` and `1` are different strings. `gtf_to_tables.py`
-emits chromosome names exactly as they appear in the GTF and prints the first
-few, and `compare_pipelines.py` compares them against the VCF as strings. If
-they disagree, no variant falls in any gene window and the usable-gene count
-collapses to zero.
+**Chromosome names.** `chr1` and `1` are different strings.
+`gtf_to_tables.py` emits chromosome names exactly as they appear in the GTF
+and prints the first few, and `compare_pipelines.py` compares them against the
+VCF as strings. If they disagree, no variant falls in any gene window and the
+usable-gene count collapses to zero.
+
+There is a third form, and the server has one on disk. An NCBI RefSeq
+annotation names chromosomes by accession -- running the builder over
+`genome_refs/GRCh38_p14_ncbi110/GCF_000001405.40_GRCh38.p14_genomic.gtf.gz`
+prints `NC_000001.11, NC_000002.12, NC_000003.12`. Those match no VCF written
+against `chr1` or `1`. That GTF also names genes by symbol (`OR4F5`) rather
+than by Ensembl ID, so eGene lists keyed on `ENSG...` will not join to it
+either. If you want GENCODE-style identifiers, use a GENCODE GTF; if you use
+this one, make the VCF and the eGene list agree with it.
 
 Both failures surface in the comparison as `too few genes usable by both
 methods`.

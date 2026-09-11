@@ -60,7 +60,14 @@ _ATTR = re.compile(r'(\w+) "([^"]*)"')
 
 
 def _open(p):
-    return gzip.open(p, 'rt') if str(p).endswith('.gz') else open(p)
+    # Sniff the gzip magic number rather than trusting the extension. Reference
+    # annotations are routinely mis-named in both directions, and the extension
+    # is only a claim about the bytes: a plain-text file called .gtf.gz raises
+    # BadGzipFile from inside the stdlib, and a real gzip called .gtf dies with
+    # a UnicodeDecodeError partway through the parse. Neither names the file.
+    with open(p, 'rb') as fh:
+        gzipped = fh.read(2) == b'\x1f\x8b'
+    return gzip.open(p, 'rt') if gzipped else open(p)
 
 
 def _attrs(s):
@@ -82,13 +89,13 @@ def parse_gtf(path, gene_types=None, strip=False):
             if len(f) < 9 or f[2] not in ('gene', 'transcript'):
                 continue
             a = _attrs(f[8])
-            gt = a.get('gene_type') or a.get('gene_biotype')
-            if gene_types and gt not in gene_types:
-                continue
             gid = _strip(a.get('gene_id', ''), strip)
             if not gid:
                 continue
             if f[2] == 'gene':
+                gt = a.get('gene_type') or a.get('gene_biotype')
+                if gene_types and gt not in gene_types:
+                    continue
                 start, end, strand = int(f[3]), int(f[4]), f[6]
                 tss = start if strand == '+' else end
                 genes[gid] = (f[0], start, end, tss, strand)
@@ -96,10 +103,24 @@ def parse_gtf(path, gene_types=None, strip=False):
             else:
                 tid = _strip(a.get('transcript_id', ''), strip)
                 if tid:
-                    tx2gene.append((tid, gid)); n_tx += 1
+                    tx2gene.append((tid, gid))
     if not genes:
         raise SystemExit('no gene records parsed -- is this a GENCODE/Ensembl GTF '
                          'with "gene" feature rows and gene_id/gene_type attributes?')
+    # --gene-type selects GENES; a transcript is kept because its gene was kept,
+    # not because its own row repeats the biotype. GENCODE repeats gene_type on
+    # transcript rows, NCBI RefSeq does not (it writes transcript_biotype), so
+    # filtering transcript rows on gene_type drops every transcript in a RefSeq
+    # GTF and writes an empty tx2gene.tsv. Membership is format-independent and
+    # does not depend on gene rows preceding their transcripts.
+    tx2gene = [(t, g) for t, g in tx2gene if g in genes]
+    n_tx = len(tx2gene)
+    if not tx2gene:
+        raise SystemExit(
+            f'{n_gene} genes parsed but no transcripts belong to any of them. '
+            'tx2gene.tsv would be empty, and collapsing Salmon to genes would '
+            'then yield nothing. Check that the GTF has "transcript" feature '
+            'rows whose gene_id matches the gene rows.')
     return genes, tx2gene, n_gene, n_tx
 
 
@@ -161,6 +182,40 @@ def selftest():
         'chr3\tHAVANA\ttranscript\t100\t900\t.\t+\t.\tgene_id "ENSG00000000003.1"; transcript_id "ENST00000000031.1"; gene_type "lncRNA";',
     ]) + '\n')
     print('SELF-TEST: parsing a fabricated GENCODE-style GTF\n')
+    # the extension is a claim about the bytes, not a fact: parse the same
+    # content named both ways round, gzipped and not
+    mislabelled = td / 'plain_named_gz.gtf.gz'
+    mislabelled.write_text(gtf.read_text())
+    really_gz = td / 'gzipped_named_plain.gtf'
+    with gzip.open(really_gz, 'wt') as fh:
+        fh.write(gtf.read_text())
+    for path in (mislabelled, really_gz):
+        gm, tm, ngm, ntm = parse_gtf(path)
+        assert (ngm, ntm) == (3, 4), (path.name, ngm, ntm)
+    # NCBI RefSeq shape: biotype on the gene row only, transcript rows carry
+    # transcript_biotype instead. Filtering transcript rows on gene_type would
+    # keep the genes and silently drop every transcript.
+    refseq = td / 'refseq_style.gtf'
+    refseq.write_text('\n'.join([
+        'NC_000001.11\tBestRefSeq\tgene\t1000\t5000\t.\t+\t.\tgene_id "OR4F5"; gene_biotype "protein_coding";',
+        'NC_000001.11\tBestRefSeq\ttranscript\t1000\t5000\t.\t+\t.\tgene_id "OR4F5"; transcript_id "NM_001005484.2"; transcript_biotype "mRNA";',
+        'NC_000001.11\tBestRefSeq\tgene\t9000\t9500\t.\t-\t.\tgene_id "DDX11L1"; gene_biotype "transcribed_pseudogene";',
+        'NC_000001.11\tBestRefSeq\ttranscript\t9000\t9500\t.\t-\t.\tgene_id "DDX11L1"; transcript_id "NR_046018.2"; transcript_biotype "transcript";',
+    ]) + '\n')
+    gr, tr_, ngr, ntr = parse_gtf(refseq, ['protein_coding'])
+    assert (ngr, ntr) == (1, 1), (ngr, ntr)
+    assert tr_ == [('NM_001005484.2', 'OR4F5')], tr_
+    # and a GTF whose transcripts name no kept gene fails loudly, not silently
+    orphan = td / 'orphan.gtf'
+    orphan.write_text(
+        'chr1\tX\tgene\t1\t9\t.\t+\t.\tgene_id "A"; gene_type "protein_coding";\n'
+        'chr1\tX\ttranscript\t1\t9\t.\t+\t.\tgene_id "B"; transcript_id "T1";\n')
+    try:
+        parse_gtf(orphan, ['protein_coding'])
+    except SystemExit as e:
+        assert 'no transcripts belong' in str(e), e
+    else:
+        raise AssertionError('empty tx2gene must raise, not return silently')
     # all types, versions kept
     g, t, ng, nt = parse_gtf(gtf)
     assert ng == 3 and nt == 4, (ng, nt)
@@ -197,7 +252,10 @@ def selftest():
     print('checks: + strand TSS = start; - strand TSS = end; gene_type filter; '
           'version stripping consistent across gene and transcript IDs; '
           'genes.tsv column order matches --genes; genes.bed is 0-based '
-          'half-open, header-free, and keyed by gene_id')
+          'half-open, header-free, and keyed by gene_id; compression is '
+          'detected from the bytes, not the file extension; --gene-type '
+          'filters genes and keeps their transcripts by membership, on '
+          'GENCODE and NCBI RefSeq alike; an empty tx2gene raises')
     print('SELF-TEST OK')
     return 0
 
