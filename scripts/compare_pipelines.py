@@ -408,10 +408,20 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
 #  Scoring
 # ---------------------------------------------------------------------------
 
-def score(obs, null, name, known=None):
+def score(obs, null, name, known=None, genes_keep=None):
     """obs/null: DataFrames with gene, stat. null pooled over permutations."""
     o = obs.dropna(subset=['stat']); n = null.dropna(subset=['stat'])
-    out = {'n_genes_scored': int(len(o)), 'n_null_stats': int(len(n))}
+    n_own = int(len(o))
+    # Score both methods on the SAME genes. RASQUAL drops genes on timeout and
+    # on non-convergence, and those are preferentially the variant-dense,
+    # fSNP-rich ones -- exactly where the signal is. Dividing each method by
+    # its own survivors compares a fraction of one gene set against a fraction
+    # of another and prints them side by side as if they were commensurable.
+    if genes_keep is not None:
+        o = o[o['gene'].isin(genes_keep)]
+    out = {'n_genes_scored': int(len(o)), 'n_null_stats': int(len(n)),
+           'n_genes_this_method_alone': n_own,
+           'n_genes_dropped_for_common_set': n_own - int(len(o))}
     if len(n) < 20 or len(o) < 5:
         out['note'] = 'too few statistics'; return out
     ns = n['stat'].values
@@ -473,8 +483,12 @@ def run(args):
     sufs = tuple(args.hap_suffix.split(','))
 
     print('hapmixQTL input: Salmon diploid Gibbs')
-    genes_all, samples, YL, YR = H.load_counts(args.salmon, args.tx2gene, sufs, out)
-    A, T, Va, Vt, _ = compute_summaries_from_gibbs(YL, YR)
+    genes_all, samples, YL, YR, YT = H.load_counts(args.salmon, args.tx2gene,
+                                                   sufs, out)
+    # yT is the gene total over ALL transcripts. Without it the total
+    # channel is a heterozygous-transcript subtotal whose zeros are in LD
+    # with the tested variants.
+    A, T, Va, Vt, _ = compute_summaries_from_gibbs(YL, YR, yT=YT)
 
     print('Genotypes (use rephased.vcf.gz from phaser_to_matrix.py)')
     vdf, dos, xL, xR, order = H.read_phased_vcf(args.vcf, set(samples))
@@ -606,6 +620,11 @@ def run(args):
     null_h = pd.concat(nulls_h) if nulls_h else obs_h.iloc[0:0]
     null_r = pd.concat(nulls_r) if nulls_r else obs_r.iloc[0:0]
 
+    common_genes = (set(obs_h.dropna(subset=['stat'])['gene'])
+                    & set(obs_r.dropna(subset=['stat'])['gene']))
+    print(f'\nScoring both methods on the {len(common_genes)} genes where BOTH '
+          f'converged (hapmixQTL {int(obs_h["stat"].notna().sum())}, '
+          f'RASQUAL {int(obs_r["stat"].notna().sum())} individually)')
     result = {
         'design': {'question': 'which pipeline would you deploy',
                    'rasqual_input': 'phASER per-fSNP counts (native)',
@@ -620,10 +639,13 @@ def run(args):
                    'null_kind': args.null,
                    'n_genes': len(usable), 'n_samples': len(order),
                    'n_tested_variants': int(tested.sum()), 'n_perm': args.n_perm,
+                   'n_genes_both_converged': len(common_genes),
                    'window': args.window, 'seed': args.seed},
         'compute_seconds_observed': {'hapmixQTL': th, 'RASQUAL': tr},
-        'hapmixQTL': score(obs_h, null_h, 'hapmixQTL', known),
-        'RASQUAL': score(obs_r, null_r, 'RASQUAL', known),
+        'hapmixQTL': score(obs_h, null_h, 'hapmixQTL', known,
+                           genes_keep=common_genes),
+        'RASQUAL': score(obs_r, null_r, 'RASQUAL', known,
+                         genes_keep=common_genes),
         'head_to_head': compare(obs_r, obs_h, out),
     }
     if ns is not None:

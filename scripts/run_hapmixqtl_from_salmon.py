@@ -773,8 +773,9 @@ def load_counts(manifest, tx2gene, suffixes, out):
     genes = sorted(gene_set)
     gi = {g: i for i, g in enumerate(genes)}
 
-    YL = YR = None
+    YL = YR = YT = None
     nd = None
+    n_unpaired_tx = 0
     for si, (s, sd) in enumerate(zip(samples, dirs)):
         names, boot = read_salmon_bootstraps(sd)
         pairs = pair_haplotypes(names, suffixes)
@@ -784,6 +785,7 @@ def load_counts(manifest, tx2gene, suffixes, out):
             nd = boot.shape[1]
             YL = np.zeros((len(genes), len(samples), nd))
             YR = np.zeros((len(genes), len(samples), nd))
+            YT = np.zeros((len(genes), len(samples), nd))
             print(f'  {len(pairs)} haplotype pairs -> {len(genes)} genes '
                   f'(union over {len(samples)} samples), {nd} draws')
         elif boot.shape[1] != nd:
@@ -797,8 +799,36 @@ def load_counts(manifest, tx2gene, suffixes, out):
                 continue
             YL[gi[g], si, :] += boot[ia]
             YR[gi[g], si, :] += boot[ib]
+        # The TOTAL must cover every transcript, not only the ones quantified
+        # per haplotype. A personalized diploid transcriptome emits the second
+        # copy only where the sample is heterozygous, so an unpaired transcript
+        # is one whose haplotypes are identical -- its single row already
+        # carries BOTH haplotypes' expression. Summing only the pairs made the
+        # total a heterozygous-transcript subtotal, and a gene-sample with no
+        # heterozygous transcript collapsed to an exact structural zero rather
+        # than to a missing value. That pattern tracks local heterozygosity,
+        # which is in LD with the cis variants under test.
+        for idx, nm in enumerate(names):
+            base = nm
+            for suf in suffixes:
+                if nm.endswith(suf):
+                    base = nm[:-len(suf)]
+                    break
+            else:
+                n_unpaired_tx += 1
+            g = t2g.get(base)
+            if g is None or g not in gi:
+                continue
+            YT[gi[g], si, :] += boot[idx]
         print(f'  [{si+1}/{len(samples)}] {s}', flush=True)
-    return np.array(genes), samples, YL, YR
+    empty_ase = int((YL.sum(axis=2) + YR.sum(axis=2) == 0).sum())
+    empty_tot = int((YT.sum(axis=2) == 0).sum())
+    cells = YT.shape[0] * YT.shape[1]
+    print(f'  totals cover all transcripts: {empty_tot}/{cells} '
+          f'({100*empty_tot/cells:.1f}%) gene-samples have no expression at '
+          f'all, against {empty_ase}/{cells} ({100*empty_ase/cells:.1f}%) with '
+          f'no HAPLOTYPE-RESOLVED expression')
+    return np.array(genes), samples, YL, YR, YT
 
 
 def main():
@@ -852,10 +882,11 @@ def main():
     sufs = tuple(args.hap_suffix.split(','))
 
     print('Reading Salmon Gibbs quantifications')
-    genes, samples, YL, YR = load_counts(args.manifest, args.tx2gene, sufs, out)
+    genes, samples, YL, YR, YT = load_counts(args.manifest, args.tx2gene,
+                                             sufs, out)
 
     print('Computing Gibbs summaries (production code path)')
-    A, T, Va, Vt, Cat = compute_summaries_from_gibbs(YL, YR)
+    A, T, Va, Vt, Cat = compute_summaries_from_gibbs(YL, YR, yT=YT)
 
     print('Reading phased VCF')
     vdf, dos, xL, xR, order = read_phased_vcf(args.vcf, set(samples))
@@ -1080,7 +1111,7 @@ def selftest():
     seen = []
     for tag, rows in (('A,B', [ra, rb]), ('B,A', [rb, ra])):
         (ud / f'man_{tag}.tsv').write_text('\n'.join(rows))
-        gset, _, yl, _ = load_counts(ud / f'man_{tag}.tsv', ud / 't2g.tsv',
+        gset, _, yl, _, _ = load_counts(ud / f'man_{tag}.tsv', ud / 't2g.tsv',
                                      ('_hapA', '_hapB'), ud)
         assert set(gset) == want, (tag, sorted(set(gset)), sorted(want))
         assert yl.shape[0] == len(want), (tag, yl.shape)

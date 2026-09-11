@@ -235,7 +235,7 @@ def reference_bias_diagnostic(yL, yR, sign, min_total=10, min_sites=20):
                 message=message)
 
 
-def compute_summaries_from_gibbs(yL, yR, kappa=0.5):
+def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None):
     """
     Compute hapmixQTL summary statistics from Gibbs draws.
 
@@ -243,6 +243,16 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5):
         yL: haplotype L expression [features, samples, draws]
         yR: haplotype R expression [features, samples, draws]
         kappa: pseudocount (default 0.5)
+        yT: optional gene TOTAL expression [features, samples, draws]. The
+            allelic contrast a can only be formed where both haplotypes were
+            quantified separately, but the total t must not be restricted that
+            way. Against a personalized diploid transcriptome the second
+            haplotype copy of a transcript only exists where the sample is
+            heterozygous, so yL + yR is a heterozygous-transcript subtotal and
+            using it as the total makes t a two-point mixture whose low cluster
+            is determined by local heterozygosity -- which is in LD with the
+            cis variants being tested. Pass the total summed over ALL
+            transcripts. Defaults to yL + yR for backwards compatibility.
 
     Returns:
         A:   allelic contrast mean [features, samples]
@@ -254,7 +264,8 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5):
              module docstring).
     """
     a_draws = np.log(yL + kappa) - np.log(yR + kappa)
-    t_draws = np.log((yL + yR) / 2 + kappa)
+    tot = (yL + yR) if yT is None else np.asarray(yT)
+    t_draws = np.log(tot / 2 + kappa)
 
     A = a_draws.mean(axis=2)
     T = t_draws.mean(axis=2)
