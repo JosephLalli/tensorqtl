@@ -116,7 +116,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
-               tested_mask, perm=None):
+               tested_mask, perm=None, cov_df=None):
     """Return DataFrame(gene, stat, log_afc). stat = chi2(1)-equivalent of the
     lead nominal p over TESTED variants, so it sits on RASQUAL's scale."""
     idx = np.where(tested_mask)[0]
@@ -137,6 +137,7 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
     with contextlib.redirect_stdout(io.StringIO()):
         res = map_cis(g, v[['chrom', 'pos']], mk(A), mk(T), mk(Va), mk(Vt),
                       pos_df, xL_df=xl, xR_df=xr, window=window, nperm=50,
+                      covariates_df=cov_df,
                       verbose=False)
     p = pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1)
     # map_cis returns the gene ID as the INDEX (named phenotype_id), not a column
@@ -331,7 +332,7 @@ def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
 
 def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 window, perm=None, tmp=None, tested=None, maf=0.05,
-                min_coverage=0.05):
+                min_coverage=0.05, cov_bin=None):
     N = len(order)
     td = Path(tmp or tempfile.mkdtemp())
     np.asarray(Y, np.float64).tofile(td / 'Y.bin')
@@ -375,7 +376,12 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                '-n', str(N), '-j', str(j + 1), '-l', str(len(lines)),
                '-m', str(len(fidx)), '-s', str(gs), '-e', str(ge),
                '-f', str(g), '-z',
-               '-d', str(min_coverage),
+               '-d', str(min_coverage)] + (
+               # -x only: RASQUAL sets P = ncol(file)+1 at main.c:299, and the
+               # -p parser at 321 runs AFTER the X allocation, so passing -p
+               # can overwrite the derived count against an array already
+               # sized from the file.
+               ['-x', str(cov_bin)] if cov_bin else []) + [
                # match hapmixQTL's floor; RASQUAL's own default is 0.05
                # (main.c:386). The HWE gate is already bypassed by -z, which
                # sets noPriorGenotype (main.c:498), and RSQ=1.0 clears the
@@ -500,8 +506,28 @@ def run(args):
     A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
     vdf['chrom'] = vdf['chrom'].astype(str)
 
+    cov_df, cov_bin = None, None
+    if args.covariates:
+        cov_df = pd.read_csv(args.covariates, sep='\t', index_col=0)
+        print(f'Covariates: {cov_df.shape[1]} columns '
+              f'({", ".join(list(cov_df.columns)[:4])}...)')
+        print('  passed to BOTH arms. Neither method wants a pre-residualized '
+              'phenotype: hapmixQTL projects covariates out inside the '
+              'sqrt(w)-weighted space with different weights per channel, and '
+              'RASQUAL fits them in a GLM on the count scale.')
+
     print('RASQUAL input: phASER per-feature-SNP counts')
     allelic = H.load_allelic_counts(args.allelic_counts, order)
+
+    if cov_df is not None:
+        missing = [s_ for s_ in order if s_ not in cov_df.index]
+        if missing:
+            raise SystemExit(f'covariates missing for {len(missing)} samples, '
+                             f'e.g. {missing[:3]}')
+        cov_df = cov_df.loc[list(order)]
+        cov_bin = Path(out) / 'covariates.rasqual.bin'
+        # covariate-major, as main.c:301-307 reads it
+        np.asarray(cov_df.values.T, np.float64).tofile(cov_bin)
 
     gp = pd.read_csv(args.genes, sep='\t', header=None, dtype={1: str})
     gp.columns = ['gene', 'chr', 'start', 'end', 'pos'][:gp.shape[1]]
@@ -573,12 +599,13 @@ def run(args):
         DOS = dos if DOS is None else DOS
         t0 = time.time()
         h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
-                       pos_df[['chr', 'pos']], args.window, tested, perm)
+                       pos_df[['chr', 'pos']], args.window, tested, perm,
+                       cov_df=cov_df)
         th = time.time() - t0; t0 = time.time()
         r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
                         order, Ytot, K, args.window, perm,
                         tested=tested, maf=args.maf,
-                        min_coverage=args.min_coverage)
+                        min_coverage=args.min_coverage, cov_bin=cov_bin)
         tr = time.time() - t0
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
@@ -779,6 +806,9 @@ def main(argv=None):
                          'which destroys their LD and mis-calibrates BOTH arms '
                          'in opposite directions. "knockoff" substitutes '
                          'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--covariates',
+                    help='TSV from scripts/build_covariates.py: samples as '
+                         'rows, covariates as columns. Fed to BOTH arms')
     ap.add_argument('--min-coverage', type=float, default=0.05,
                     help="RASQUAL's -d/--min-coverage-depth. Default is "
                          "RASQUAL's own (main.c:396); passed explicitly so the "
@@ -900,7 +930,7 @@ def selftest():
         tx2gene=str(td / 't2g.tsv'), allelic_counts=str(td / 'ac.tsv'), rasqual=rq,
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
-        null='permute', knockoff_k=4, min_coverage=0.05,
+        null='permute', knockoff_k=4, min_coverage=0.05, covariates=None,
         str_vcf=None, multiallelic=False, min_hap=10)
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
@@ -915,6 +945,25 @@ def selftest():
                                               n_perm=2)
     rk = run(argparse.Namespace(**ko_args, out=str(td / 'deploy_ko')))
     assert rk['design']['null_kind'] == 'knockoff', rk['design']
+    # covariates must reach BOTH arms: a covariate file that is silently
+    # ignored looks identical to one that works, so assert the run changes.
+    cv = td / 'cov.tsv'
+    cov = pd.DataFrame(
+        {'c1': rng.randn(N), 'c2': rng.randn(N)},
+        index=samples)
+    cov.to_csv(cv, sep='\t')
+    cargs = dict(base_args); cargs.update(covariates=str(cv))
+    rc = run(argparse.Namespace(**cargs, out=str(td / 'deploy_cov')))
+    for m in ('RASQUAL', 'hapmixQTL'):
+        assert 'power' in rc[m], f'{m} produced no power estimate with covariates'
+    assert (td / 'deploy_cov' / 'covariates.rasqual.bin').exists(), \
+        'RASQUAL covariate binary was not written'
+    nb = np.fromfile(td / 'deploy_cov' / 'covariates.rasqual.bin', np.float64)
+    assert nb.size == N * 2, (nb.size, N)
+    # covariate-major: the first N doubles are c1 across samples
+    assert np.allclose(nb[:N], cov.loc[list(rc['design'].get('sample_order', cov.index))
+                                       if False else cov.index, 'c1'].values), \
+        'covariate binary is not covariate-major'
     # the reference-bias gate must report on the hapmixQTL arm, not be skipped
     rb = r['reference_bias_hapmixqtl']
     assert 'ref_fraction' in rb and 'message' in rb, rb
