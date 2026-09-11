@@ -160,7 +160,7 @@
 
 <header class="mast">
   <div class="eyebrow">
-    <span>tensorQTL · hapmixQTL</span><span>2026-09-07</span>
+    <span>tensorQTL · hapmixQTL</span><span>2026-09-07 · revised 2026-09-11</span>
     <span>N = 200 · 1,500 reps/cell</span><span>30,000 null p-values/cell</span>
   </div>
   <h1>Does the ASE pipeline actually work?</h1>
@@ -190,10 +190,13 @@
 
 <section class="col">
   <div class="headline">
-    <p>The default <code>tau_mode='zero'</code> is anticonservative — severely so on
-    realistic data. The fix already exists in the codebase.</p>
-    <p><code>tau_mode='estimate'</code> restores calibration in every condition tested, at
-    no meaningful cost in power. It should become the default.</p>
+    <p>The original default, <code>tau_mode='zero'</code>, was anticonservative — severely
+    so on realistic data. <code>tau_mode='estimate'</code> restores calibration in every
+    condition tested, at no meaningful cost in power.</p>
+    <p>It is now the default in <code>map_nominal</code>, <code>map_cis</code> and
+    <code>map_susie</code>; <code>'zero'</code> is kept only for reproducing prior results
+    and warns. The sections below are the evidence behind that change, and what was found
+    on the way.</p>
   </div>
 
   <h2><span class="tier">§1</span> Why this was needed</h2>
@@ -211,8 +214,8 @@
 <div class="col">
   <div class="facts">
     <div class="fact"><span class="fkey">F1</span>
-      <p><code>tau_mode='zero'</code> is the <strong>default</strong>, so weights are
-      <code>w = 1/v_inf</code>. With the known-variance GLS SE (<code>Var(β) = 1/xx</code>,
+      <p><code>tau_mode='zero'</code> <strong>was the default</strong> when this audit
+      began, so weights were <code>w = 1/v_inf</code>. With the known-variance GLS SE (<code>Var(β) = 1/xx</code>,
       no estimated dispersion), the model asserts Gibbs inferential variance is the
       <em>only</em> source of error variance.
       <span class="floc">hapmixqtl.py:467, 722</span></p></div>
@@ -259,7 +262,7 @@
       <text x="16" y="62" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif"
             font-size="12" font-weight="600">tau_mode = 'zero'</text>
       <text x="16" y="76" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif"
-            font-size="11">(current default)</text>
+            font-size="11">(old default)</text>
       <text x="16" y="187" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif"
             font-size="12" font-weight="600">tau_mode = 'estimate'</text>
 
@@ -306,9 +309,9 @@
       <caption>Realized type-I error (ratio to nominal), ρ = 0, 30,000 p-values per cell</caption>
       <thead><tr><th>tau_mode</th><th>σ<sub>bio</sub></th><th>α=0.05</th><th>α=0.01</th><th>α=1e-3</th><th>λ<sub>GC</sub></th></tr></thead>
       <tbody>
-        <tr><td>zero <em>(default)</em></td><td>0.0</td><td class="good">0.0477 (0.95×)</td><td>0.0095 (0.95×)</td><td>0.00083 (0.83×)</td><td>0.98</td></tr>
-        <tr><td>zero <em>(default)</em></td><td>0.3</td><td class="bad">0.1433 (2.87×)</td><td class="bad">0.0544 (5.44×)</td><td class="bad">0.01347 (13.5×)</td><td class="bad">1.81</td></tr>
-        <tr><td>zero <em>(default)</em></td><td>0.6</td><td class="bad">0.3406 (6.81×)</td><td class="bad">0.2111 (21.1×)</td><td class="bad">0.10723 (107×)</td><td class="bad">4.26</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>0.0</td><td class="good">0.0477 (0.95×)</td><td>0.0095 (0.95×)</td><td>0.00083 (0.83×)</td><td>0.98</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>0.3</td><td class="bad">0.1433 (2.87×)</td><td class="bad">0.0544 (5.44×)</td><td class="bad">0.01347 (13.5×)</td><td class="bad">1.81</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>0.6</td><td class="bad">0.3406 (6.81×)</td><td class="bad">0.2111 (21.1×)</td><td class="bad">0.10723 (107×)</td><td class="bad">4.26</td></tr>
         <tr class="rowsplit"><td>estimate</td><td>0.0</td><td class="good">0.0423 (0.85×)</td><td>0.0079 (0.79×)</td><td>0.00053 (0.53×)</td><td>0.94</td></tr>
         <tr><td>estimate</td><td>0.3</td><td class="good">0.0487 (0.97×)</td><td>0.0089 (0.89×)</td><td>0.00063 (0.63×)</td><td>1.01</td></tr>
         <tr><td>estimate</td><td>0.6</td><td class="good">0.0489 (0.98×)</td><td>0.0102 (1.02×)</td><td>0.00097 (0.97×)</td><td>1.01</td></tr>
@@ -355,9 +358,10 @@
   <code>E[s | g=1] = 0</code>. The channels project the correlated noise onto orthogonal
   directions and the correlation never reaches the combined estimate.</p>
   <p>This retires F2: <code>Cat</code> is genuinely unnecessary for the current statistic — a
-  design property to document, not a latent bug. <strong>Caveat:</strong> the argument depends
-  on phase being random w.r.t. expression. Systematic, expression-correlated phasing error
-  would break the orthogonality, and that is untested.</p>
+  design property to document, not a latent bug. The argument depends on phase being random
+  w.r.t. expression, and systematic phasing error would break the orthogonality — §7f tested
+  exactly that: calibration and the orthogonality survive even 50% phase error. Phasing error
+  costs power, not validity.</p>
 
   <h2><span class="tier">§4</span> Does the uncertainty propagate correctly?</h2>
   <p class="lede">Coverage of a nominal 95% interval for a known log aFC (β = 0.5) — the
@@ -371,9 +375,9 @@
       <caption>95% CI coverage and point-estimate bias</caption>
       <thead><tr><th>tau_mode</th><th>σ<sub>bio</sub></th><th>Coverage (target 0.95)</th><th>Bias</th></tr></thead>
       <tbody>
-        <tr><td>zero <em>(default)</em></td><td>0.0</td><td class="good">0.947</td><td>−0.0003</td></tr>
-        <tr><td>zero <em>(default)</em></td><td>0.3</td><td class="bad">0.842</td><td>+0.0018</td></tr>
-        <tr><td>zero <em>(default)</em></td><td>0.6</td><td class="bad">0.645</td><td>−0.0019</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>0.0</td><td class="good">0.947</td><td>−0.0003</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>0.3</td><td class="bad">0.842</td><td>+0.0018</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>0.6</td><td class="bad">0.645</td><td>−0.0019</td></tr>
         <tr class="rowsplit"><td>estimate</td><td>0.0</td><td class="good">0.987</td><td>−0.0022</td></tr>
         <tr><td>estimate</td><td>0.3</td><td class="good">0.979</td><td>−0.0003</td></tr>
         <tr><td>estimate</td><td>0.6</td><td class="good">0.959</td><td>−0.0044</td></tr>
@@ -428,8 +432,8 @@
       <caption>Null calibration on summaries built by the production code path (300 reps/cell)</caption>
       <thead><tr><th>tau_mode</th><th>Depth</th><th>Type-I @ α=0.05</th><th>λ<sub>GC</sub></th><th>mean corr(a,t)</th></tr></thead>
       <tbody>
-        <tr><td>zero <em>(default)</em></td><td>20</td><td class="bad">0.9967 (19.9×)</td><td class="bad">∞</td><td>+0.000</td></tr>
-        <tr><td>zero <em>(default)</em></td><td>100</td><td class="bad">1.0000 (20.0×)</td><td class="bad">∞</td><td>−0.000</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>20</td><td class="bad">0.9967 (19.9×)</td><td class="bad">∞</td><td>+0.000</td></tr>
+        <tr><td>zero <em>(old default)</em></td><td>100</td><td class="bad">1.0000 (20.0×)</td><td class="bad">∞</td><td>−0.000</td></tr>
         <tr class="rowsplit"><td>estimate</td><td>20</td><td class="good">0.0500 (1.00×)</td><td>1.00</td><td>+0.000</td></tr>
         <tr><td>estimate</td><td>100</td><td class="good">0.0367 (0.73×)</td><td>0.77</td><td>−0.000</td></tr>
       </tbody>
@@ -513,12 +517,11 @@
   matched-α methodology matters — on nominal p-values, the broken configuration is the best
   method in the table.</p>
 
-  <p><em>Scope:</em> this reproduces the published model <em>structure</em> and implements
-  the published <em>tests</em>; it is not a replication of either paper's exact parameter
-  grid (PMC, Nature, bioRxiv and the asSeq docs were all unreachable from this environment).
-  RASQUAL's additions over TReCASE — genotype uncertainty, mapping bias, sequencing error —
-  are nuisance refinements on the same joint likelihood; the shared TReCASE core is what is
-  implemented here.</p>
+  <p><em>Scope:</em> this section was written before the papers were in hand, so it
+  reproduces the published model <em>structure</em> and <em>tests</em> rather than either
+  paper's parameter grid. §7b redoes the comparison on the published designs, and §7h–7i
+  add RASQUAL's own nuisance terms (mapping bias, sequencing error, the shared θ). The
+  shared TReCASE core is what is implemented here.</p>
 
   <h2><span class="tier">§7b</span> Where the bug came from</h2>
   <p class="lede">With the papers in hand, the design is no longer ours: mixQTL's
@@ -578,10 +581,10 @@
   35.7% ≈ TReCASE 35.5% &gt; Lm 25.7%. Our TReCASE numbers bracket their figures in the
   aFC 1.10–1.25 range where real eQTL effects sit, and the ordering reproduces. A
   point-to-point match is not meaningful because RASQUAL draws effect sizes from empirical
-  real-data distributions. <strong>Expectation this sets:</strong> since fixed hapmixQTL ≈
-  TReCASE, and RASQUAL beats TReCASE by ~19% relative via genotype uncertainty, mapping bias
-  and sequencing error, hapmixQTL should be expected to sit ~19% below RASQUAL on real data
-  until it models those nuisance terms.</p>
+  real-data distributions. The expectation this first set — that hapmixQTL would sit ~19%
+  below RASQUAL, by transitivity from RASQUAL's published margin over TReCASE — was an
+  inference, not a measurement, and <strong>§7h superseded it</strong>: measured directly,
+  the gap is ≈7.5% at aFC 1.25 and nil at 1.10.</p>
 
   <h2><span class="tier">§7c</span> The assumption nobody checks</h2>
   <p class="lede">Sun (2012) and its descendants let the two channels carry their own effect
@@ -665,11 +668,13 @@
   GTEx haplotype counts, <code>tau_mode='zero'</code> makes <em>every single null test
   significant</em>. This is no longer an inference from simulation. <strong>The fix works
   on real data</strong>: 1.07× nominal type-I error, λ = 0.98.</p>
-  <p><strong>Calibration is insensitive to reference mapping bias.</strong> The
-  WASP-corrected matrix gives essentially the same answer. hapmixQTL has no analogue of
-  RASQUAL's φ, so this is reassuring — its validity does not depend on upstream WASP
-  correction. (Calibration only; mapping bias could still distort effect <em>sizes</em>,
-  which needs genotypes to test.)</p>
+  <p><strong>Calibration is the same with and without WASP correction.</strong>
+  <strong>Read with §7h–7i:</strong> this held only because GTEx's phASER matrices are
+  already filtered for mapping bias upstream. On unfiltered data hapmixQTL, which has no
+  analogue of RASQUAL's φ, fails outright (type-I 0.64 at φ = 0.60). Its validity is
+  <em>contingent on</em> upstream filtering, and the shipped diagnostic exists to check
+  that precondition. (Calibration only; mapping bias could still distort effect
+  <em>sizes</em>, which needs genotypes to test.)</p>
 
   <h2><span class="tier">§7e</span> What it costs to run</h2>
   <p class="lede">RASQUAL reports cost as a headline result (539.9 CPU-days vs TReCASE 4.6
@@ -995,44 +1000,55 @@
     compares slopes, not p-values.</p>
   </div>
 
-  <h2><span class="tier">§8</span> Recommendations</h2>
+  <h2><span class="tier">§8</span> What was done, and what is still recommended</h2>
+  <h3>Done in this branch</h3>
   <ol class="recs">
-    <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,
-    <code>map_cis</code> and <code>map_susie</code>. One line per call site, and the single
-    highest-value fix identified. Left as a separate decision here because it changes
-    published behaviour.</li>
-    <li>Warn or refuse on <code>tau_mode='zero'</code>. If kept for backward compatibility it
-    should warn loudly: it is valid only when inferential variance is provably the entire
-    error variance, which real quantifier posteriors never satisfy.</li>
+    <li><code>tau_mode='estimate'</code> is the default in <code>map_nominal</code>,
+    <code>map_cis</code> and <code>map_susie</code>; <code>'zero'</code> is kept only for
+    reproducing prior results and emits a warning stating why it is invalid. §7b is why the
+    simple additive τ is the right fix: mixQTL's weight cap alone does nothing, and the
+    nested <code>σ²·v_inf + τ</code> buys nothing.</li>
+    <li>The reference-bias diagnostic (§7i) ships as
+    <code>hapmixqtl.reference_bias_diagnostic()</code>, and the Salmon runner refuses to
+    proceed when it flags.</li>
+    <li>The zero-coverage weight defect found in §7h (an exactly-zero inferential variance
+    became a 1e8 weight) is fixed in production.</li>
+    <li><code>map_cis</code> reports the exact GLS slope and SE for the lead variant (§7j).</li>
+    <li>STRs and multiallelic sites are supported as opt-in, non-standard extensions (§7j).</li>
+  </ol>
+  <h3>Still recommended</h3>
+  <ol class="recs">
+    <li><strong>Re-run any fine-mapping done under the old default.</strong> §7g: 95%
+    credible sets covered the causal variant 36.8% of the time. Redo, do not re-threshold.</li>
     <li>Document <code>Cat</code> as intentionally unused, with the orthogonality argument
     from §3, so a future reader neither mistakes it for an oversight nor silently "fixes" it.</li>
     <li>Add a calibration gate to CI — the control cell plus one inflated cell, as a fast
-    test, would have caught this immediately.</li>
-    <li><strong>Document the mapping-bias precondition and add a φ diagnostic (§7h).</strong>
-    hapmixQTL requires mapping-bias-filtered input — a hard precondition, not a suggestion.
-    <strong>Now shipped</strong> as <code>hapmixqtl.reference_bias_diagnostic()</code> —
-    perfect specificity, full power from φ ≥ 0.55 (§7i). Run it before trusting any result;
-    if it flags, filter rather than proceed. Fitting φ outright remains the highest-value
-    feature when filtered input cannot be guaranteed, at ~17% clean-data power.</li>
-    <li>Ship the cis/trans test (§7c) as a per-gene diagnostic column. It is ~10 lines given
-    what <code>calculate_hapmixqtl_nominal</code> already returns, it validates the
-    assumption the meta-analysis rests on, and it adds cis-vs-trans classification. Genes
-    failing it should be flagged, not silently reported with an attenuated effect.</li>
+    test, would have caught the τ defect immediately.</li>
+    <li>Ship the cis/trans test (§7c) as a per-gene <em>diagnostic</em> column, not a
+    correction: it validates the α = 1 assumption the meta-analysis rests on and flags genes
+    whose reported effect is attenuated. Whether α = 1 should be enforced is an open
+    modelling question.</li>
+    <li>When filtered input cannot be guaranteed, fitting φ outright is the highest-value
+    model addition, at ~17% clean-data power (§7i).</li>
   </ol>
 
-  <h2><span class="tier">§9</span> What remains untested</h2>
+  <h2><span class="tier">§9</span> What remains open</h2>
+  <p class="lede">Resolved since first writing: phasing error, covariates and robust SEs
+  (§7f), real haplotype-count data (§7d), the RASQUAL comparison (§7h–7i), fine-mapping
+  calibration (§7g). What is left needs genotypes paired with haplotype expression, which
+  public GTEx does not supply and BrainVar does. The deploy runbook and scripts are in
+  place; the run has not yet happened.</p>
   <ul class="open">
-    <li><strong>Phasing error.</strong> §3's orthogonality argument assumes phase is random
-    w.r.t. expression; systematic expression-correlated phasing error would break it.</li>
-    <li><strong>Real ASE data.</strong> Every tier here is simulation. The strongest real-data
-    check needs no external truth: because the total channel uses <code>g/2</code>, both
-    channels estimate the <em>same</em> quantity, so regressing <code>slope_a</code> on
-    <code>slope_tc</code> across real variants should give slope 1. Blocked on real
-    allele-count + Gibbs input.</li>
-    <li><strong>Covariates.</strong> All tiers run without covariates; the residualizer path
-    is unit-tested but not calibration-swept.</li>
-    <li><strong>Robust SEs.</strong> <code>se_mode='robust'</code> may be self-correcting for
-    F1; untested here.</li>
+    <li><strong>Effect-size concordance.</strong> hapmixQTL's log aFC against published
+    aFC — the check mixQTL used, and the natural external validation for a method whose
+    output <em>is</em> log aFC. The §7j slope fix matters here.</li>
+    <li><strong>eGene replication</strong> against a published list, and <strong>motif
+    enrichment</strong> of lead variants — RASQUAL's most persuasive axis.</li>
+    <li><strong>The <code>slope_a</code> vs <code>slope_t</code> concordance on real
+    data</strong> (§7c): both channels estimate the same quantity, so the regression should
+    have slope 1; deviation localizes bias to a channel.</li>
+    <li><strong>The deploy comparison itself</strong> — RASQUAL vs hapmixQTL on BrainVar,
+    each on its native input, at matched empirical FPR (<code>scripts/compare_pipelines.py</code>).</li>
   </ul>
 
   <h2><span class="tier">§10</span> Reproduce</h2>
@@ -1042,7 +1058,13 @@
 python3 tests/ase_validation.py --reps 60 --tiers 0
 
 # external benchmark vs TReC-only / ASE-only / TReCASE
-python3 tests/ase_external_benchmark.py --reps 500 --kappas 1.05,1.1,1.2</pre>
+python3 tests/ase_external_benchmark.py --reps 500 --kappas 1.05,1.1,1.2
+
+# §7j: STR + multiallelic encoding, lead scan, both second-pass models (~1 min)
+python3 scripts/str_integrate.py --selftest
+
+# the deploy comparison, end to end on fabricated native inputs (needs the RASQUAL binary)
+RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest</pre>
 
   <div class="annot">
     <p style="margin:0 0 10px"><strong>Commenting.</strong> This page loads
@@ -1061,8 +1083,9 @@ python3 tests/ase_external_benchmark.py --reps 500 --kappas 1.05,1.1,1.2</pre>
   <footer>
     Harness <code>tests/ase_validation.py</code> · markdown record
     <code>docs/ase_validation.md</code> · raw results
-    <code>docs/ase_validation_results.json</code>. All figures are simulation; no real ASE
-    data was used.
+    <code>docs/ase_validation_results.json</code>. All figures are simulation except §7d,
+    which uses real GTEx haplotype counts with genotypes drawn independently; no
+    individual-level data appears on this page.
   </footer>
 </section>
 </div>

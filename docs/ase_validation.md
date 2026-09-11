@@ -1,17 +1,19 @@
 # hapmixQTL (ASE) pipeline validation
 
-**Date:** 2026-09-07 · **Harness:** `tests/ase_validation.py` · **Raw results:** `docs/ase_validation_results.json`
+**Date:** 2026-09-07, revised 2026-09-11 · **Harness:** `tests/ase_validation.py` · **Raw results:** `docs/ase_validation_results.json`
 **Config:** N = 200 samples, 1,500 replicates/cell (30,000 null p-values per Tier-0 cell)
 
 ---
 
 ## Headline
 
-> **The default configuration `tau_mode='zero'` is anticonservative, severely so on
+> **The original default, `tau_mode='zero'`, was anticonservative, severely so on
 > realistic data — up to 107× the nominal type-I error at α = 1e-3 on Gaussian
 > simulations, and essentially 100% false-positive rate on count-level simulations.
-> The fix already exists in the codebase: `tau_mode='estimate'` restores calibration
-> across every condition tested. It should become the default.**
+> `tau_mode='estimate'` restores calibration across every condition tested, and it is
+> now the default in `map_nominal`, `map_cis` and `map_susie`; `'zero'` is kept only for
+> reproducing prior results and emits a warning. The sections below are the evidence
+> behind that change and what was found on the way.**
 
 Two secondary conclusions: the unused `Cat` covariance is **safely ignorable** (and we
 now know why), and the two-channel model **genuinely beats total-only** at matched
@@ -43,7 +45,7 @@ broken calibration.
 
 | | Fact | Location |
 |---|---|---|
-| **F1** | `tau_mode='zero'` is the **default**, so weights are `w_i = 1/v_inf_i`. Combined with the known-variance GLS SE (`Var(β) = 1/xx`, no estimated dispersion), the model asserts Gibbs inferential variance is the **only** source of error variance. | `hapmixqtl.py:467, 722` |
+| **F1** | `tau_mode='zero'` **was the default** when this audit began, so weights were `w_i = 1/v_inf_i`. Combined with the known-variance GLS SE (`Var(β) = 1/xx`, no estimated dispersion), the model asserts Gibbs inferential variance is the **only** source of error variance. | `hapmixqtl.py:467, 722` |
 | **F2** | `compute_summaries_from_gibbs` returns the a–t inferential covariance `Cat`, and `read_hapmixqtl_inputs` accepts a `cat_bed` — but `calculate_hapmixqtl_nominal` combines channels by **scalar** inverse-variance meta-analysis, which assumes independence. | `hapmixqtl.py:288-310` |
 | **F3** | p-values use `get_t_pval(tstat, N-2-n_cov)` — a *t* reference for what is by construction a known-variance *z*. Minor and conservative at large N. | `hapmixqtl.py:698-705` |
 
@@ -62,9 +64,9 @@ Realized type-I error (ratio to nominal in parentheses), `ρ = 0`, 30,000 p-valu
 
 | tau_mode | σ_bio | α=0.05 | α=0.01 | α=1e-3 | λ_GC |
 |---|---|---|---|---|---|
-| `zero` (default) | 0.0 | 0.0477 (**0.95×**) | 0.0095 (0.95×) | 0.00083 (0.83×) | 0.98 |
-| `zero` (default) | 0.3 | 0.1433 (**2.87×**) | 0.0544 (5.44×) | 0.01347 (**13.5×**) | 1.81 |
-| `zero` (default) | 0.6 | 0.3406 (**6.81×**) | 0.2111 (21.1×) | 0.10723 (**107×**) | 4.26 |
+| `zero` (old default) | 0.0 | 0.0477 (**0.95×**) | 0.0095 (0.95×) | 0.00083 (0.83×) | 0.98 |
+| `zero` (old default) | 0.3 | 0.1433 (**2.87×**) | 0.0544 (5.44×) | 0.01347 (**13.5×**) | 1.81 |
+| `zero` (old default) | 0.6 | 0.3406 (**6.81×**) | 0.2111 (21.1×) | 0.10723 (**107×**) | 4.26 |
 | `estimate` | 0.0 | 0.0423 (0.85×) | 0.0079 (0.79×) | 0.00053 (0.53×) | 0.94 |
 | `estimate` | 0.3 | 0.0487 (0.97×) | 0.0089 (0.89×) | 0.00063 (0.63×) | 1.01 |
 | `estimate` | 0.6 | 0.0489 (0.98×) | 0.0102 (1.02×) | 0.00097 (0.97×) | 1.01 |
@@ -107,7 +109,8 @@ the combined estimate.
 This retires F2. `Cat` is genuinely unnecessary for the current statistic — a design
 property worth documenting rather than a latent bug. **Caveat:** the argument depends on
 phase being random w.r.t. expression. Systematic phasing error correlated with expression
-would break the orthogonality; that is untested (see §9).
+would break the orthogonality. §7f tested exactly that: calibration and the orthogonality
+survive even 50% phase error, so phasing error costs power, not validity.
 
 ---
 
@@ -162,8 +165,8 @@ from assumption. 300 replicates/cell.
 
 | tau_mode | depth | α=0.05 | λ_GC | mean corr(a,t) |
 |---|---|---|---|---|
-| `zero` (default) | 20 | **0.9967 (19.9×)** | ∞ | +0.000 |
-| `zero` (default) | 100 | **1.0000 (20.0×)** | ∞ | −0.000 |
+| `zero` (old default) | 20 | **0.9967 (19.9×)** | ∞ | +0.000 |
+| `zero` (old default) | 100 | **1.0000 (20.0×)** | ∞ | −0.000 |
 | `estimate` | 20 | 0.0500 (1.00×) | 1.00 | +0.000 |
 | `estimate` | 100 | 0.0367 (0.73×) | 0.77 | −0.000 |
 
@@ -206,10 +209,11 @@ structure of [Sun 2012, *Biometrics*](https://www.ncbi.nlm.nih.gov/pmc/articles/
 **TReC-only** (NB GLM, LRT), **ASE-only** (beta-binomial, LRT), and **TReCASE** (joint
 likelihood sharing one κ, LRT).
 
-> **Scope, honestly.** This reproduces the published model *structure* and implements the
-> published *tests*. It is **not** a replication of either paper's exact parameter grid:
-> PMC, nature.com, bioRxiv and the asSeq docs were all unreachable through this
-> environment's egress proxy, so the depths, overdispersions and effect sizes are our own
+> **Scope.** *(Written before the papers were in hand; §7b redoes the comparison on the
+> published designs, and §7h–7i add RASQUAL's own nuisance terms.)* This reproduces the
+> published model *structure* and implements the published *tests*. It is **not** a
+> replication of either paper's exact parameter grid: at the time PMC, nature.com, bioRxiv
+> and the asSeq docs were unreachable, so the depths, overdispersions and effect sizes are our own
 > realistic RNA-seq choices, stated explicitly rather than inherited. External validity
 > comes from the model family and the comparator tests, not from matching a table.
 > RASQUAL's additions over TReCASE (genotype uncertainty, mapping bias φ, sequencing error
@@ -450,11 +454,13 @@ p-values are not uniform here is miscalibrated on real data, whatever simulation
    This is no longer an inference from simulation.
 2. **The fix works on real data.** `tau_mode='estimate'` gives 1.07× nominal type-I error
    and λ_GC = 0.98 — properly calibrated on genuine GTEx expression variance.
-3. **Calibration is insensitive to reference mapping bias.** The WASP-corrected matrix
-   gives essentially the same answer (1.17×, λ = 0.90). hapmixQTL does not model reference
-   bias at all — it has no analogue of RASQUAL's φ — so this is reassuring: its validity
-   does not depend on upstream WASP correction. (This addresses calibration only; mapping
-   bias could still bias effect *sizes*, which needs genotypes to test.)
+3. **Calibration is the same with and without WASP correction** (1.17×, λ = 0.90 on the
+   corrected matrix). **Read with §7h–7i:** this held only because GTEx's phASER matrices
+   are already filtered for mapping bias upstream. On unfiltered data hapmixQTL, which has
+   no analogue of RASQUAL's φ, fails outright (type-I 0.64 at φ = 0.60). Its validity is
+   *contingent on* upstream filtering, and the shipped diagnostic (§7i) exists to check
+   that precondition. (Calibration only; mapping bias could still bias effect *sizes*,
+   which needs genotypes to test.)
 
 ## 7e. Compute cost
 
@@ -846,31 +852,36 @@ the exact slope `(xy_a + xy_t)/(xx_a + xx_t)` and SE `1/sqrt(xx_a + xx_t)`; p-va
 unchanged (the r² mapping is monotone). This matters for the effect-size concordance axis
 (§9), which compares slopes, not p-values.
 
-## 8. Recommendations
+## 8. What was done, and what is still recommended
 
-1. **Change the default to `tau_mode='estimate'`** in `map_nominal`, `map_cis`, and
-   `map_susie`. This is a one-line change per call site and is the single highest-value
-   fix identified. Deliberately left as a separate decision rather than applied here,
-   since it changes published behaviour. §7b strengthens this: the free scale parameter is
-   not an optional refinement but the load-bearing part of mixQTL's model, which hapmixQTL
-   dropped. Adding mixQTL's `weight_cap` instead does **not** work (tested; identical to
-   the broken default), and the more elaborate nested `σ²·v_inf + τ` buys nothing over
-   plain additive τ.
-2. **Warn (or refuse) on `tau_mode='zero'`.** If it is kept for backward compatibility, it
-   should emit a loud warning: it is only valid when inferential variance is provably the
-   entire error variance, which real quantifier posteriors never satisfy.
-3. **Document `Cat` as intentionally unused**, with the orthogonality argument from Tier
+**Done in this branch.**
+
+1. `tau_mode='estimate'` is the default in `map_nominal`, `map_cis` and `map_susie`.
+   `'zero'` is kept only for reproducing prior results and emits a warning stating why it
+   is invalid. §7b is why the simple additive τ is the right fix: the free scale parameter
+   is the load-bearing part of mixQTL's model, mixQTL's `weight_cap` alone does **not**
+   work (identical to the broken default), and the nested `σ²·v_inf + τ` buys nothing.
+2. The reference-bias diagnostic (§7i) ships as `hapmixqtl.reference_bias_diagnostic()`,
+   and the Salmon runner refuses to proceed when it flags.
+3. The zero-coverage weight defect found in §7h (an exactly-zero inferential variance
+   became a 1e8 weight) is fixed in production.
+4. `map_cis` reports the exact GLS slope and SE for the lead variant (§7j).
+5. STRs and multiallelic sites are supported as opt-in, non-standard extensions (§7j).
+
+**Still recommended.**
+
+1. **Re-run any fine-mapping done under the old default.** §7g shows it produced 95%
+   credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants that
+   were truly causal 34% of the time. Redo, do not re-threshold.
+2. **Document `Cat` as intentionally unused**, with the orthogonality argument from Tier
    0b, so a future reader does not mistake it for an oversight — or silently "fix" it.
-4. **Add a calibration gate to CI.** A cheap version of Tier 0 (control cell + one inflated
-   cell) as a fast test would have caught this immediately.
-5. **Re-run any existing `map_susie` fine-mapping.** §7g shows the old default produced
-   95% credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants
-   that were truly causal 34% of the time. Fine-mapping done under `tau_mode='zero'` should
-   be treated as invalid and redone, not merely re-thresholded.
-6. **Ship the cis/trans test (§7c)** as a per-gene diagnostic column. It is ~10 lines given
-   what `calculate_hapmixqtl_nominal` already returns, it validates the assumption the
-   meta-analysis rests on, and it adds cis-vs-trans classification. Genes failing it should
-   be flagged rather than silently reported with an attenuated effect.
+3. **Add a calibration gate to CI.** A cheap version of Tier 0 (control cell + one inflated
+   cell) as a fast test would have caught the τ defect immediately.
+4. **Ship the cis/trans test (§7c) as a per-gene *diagnostic* column, not a correction.** It
+   validates the α = 1 assumption the meta-analysis rests on and flags genes whose reported
+   effect is attenuated. Whether α = 1 should be enforced is an open modelling question.
+5. **Fit φ outright when filtered input cannot be guaranteed.** It is the highest-value
+   model addition in that setting, at ~17% clean-data power (§7i).
 
 ## 9. Untested / open
 
@@ -884,7 +895,9 @@ unchanged (the r² mapping is monotone). This matters for the effect-size concor
   σ_bio = 0.6) — an independent second fix needing no τ estimation.
 - ~~Real ASE data~~ → **§7d.** Done on GTEx v8 phASER haplotype expression.
 
-**Still open — all blocked on dbGaP/AnVIL authorization for GTEx genotypes:**
+**Still open — each needs genotypes paired with haplotype expression, which public GTEx
+does not supply and BrainVar does. The deploy runbook (`docs/brainvar_deploy_runbook.md`)
+and scripts are in place; the run has not yet happened:**
 
 - **Effect-size concordance.** Compare hapmixQTL's log aFC against GTEx's published aFC —
   the check mixQTL used (their Supp. Fig. 10), and the natural external validation for a
