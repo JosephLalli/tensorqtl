@@ -9,6 +9,22 @@ produces:
                   -> --genes for compare_pipelines.py / make_rasqual_inputs.py
     tx2gene.tsv   transcript_id  gene_id
                   -> --tx2gene, to collapse Salmon quant.sf to genes
+    genes.bed     chr  start  stop  gene_id           (0-based, half-open)
+                  -> --features for phASER's phaser_gene_ae.py, whose output
+                     phaser_to_matrix.py then reads as <prefix>.gene_ae.txt
+
+genes.bed IS NOT genes.tsv WITH COLUMNS MOVED
+=============================================
+Two differences, both silent if you get them wrong. phaser_gene_ae.py takes
+0-BASED coordinates while a GTF is 1-based inclusive, so start becomes
+start-1 and the span length is preserved. And it parses the file positionally
+from line 1 with `int(columns[1])` -- there is no header handling, so a
+`contig start stop name` header line is a crash, not a comment.
+
+The 4th column is the gene_id, not the gene_name. phaser_gene_ae.py copies it
+through to its `name` column, phaser_to_matrix.py indexes genes by it, and
+compare_pipelines.py joins that against genes.tsv, which is keyed by gene_id.
+A symbol there joins to nothing, with no error.
 
 TWO THINGS THAT GO WRONG SILENTLY, HANDLED HERE
 ===============================================
@@ -95,6 +111,10 @@ def write(genes, tx2gene, out):
     with open(out / 'tx2gene.tsv', 'w') as fh:
         for tid, gid in tx2gene:
             fh.write(f'{tid}\t{gid}\n')
+    # phASER --features: 0-based half-open, no header, name = gene_id
+    with open(out / 'genes.bed', 'w') as fh:
+        for gid, (c, s, e, tss, strand) in genes.items():
+            fh.write(f'{c}\t{s - 1}\t{e}\t{gid}\n')
 
 
 def main(argv=None):
@@ -115,7 +135,8 @@ def main(argv=None):
     genes, t2g, ng, nt = parse_gtf(args.gtf, args.gene_type, args.strip_version)
     write(genes, t2g, args.out)
     chroms = sorted({v[0] for v in genes.values()})
-    print(f'{ng} genes, {nt} transcripts -> {args.out}/genes.tsv, tx2gene.tsv')
+    print(f'{ng} genes, {nt} transcripts -> {args.out}/genes.tsv, '
+          f'tx2gene.tsv, genes.bed')
     print(f'chromosome names as in GTF, e.g. {chroms[:3]} -- must match your VCF')
     print(f'IDs {"stripped of" if args.strip_version else "keep"} versions -- '
           f'apply the same convention to Salmon names and --known-egenes')
@@ -156,9 +177,27 @@ def selftest():
     write(g2, t2, td / 'out')
     lines = (td / 'out' / 'genes.tsv').read_text().strip().split('\n')
     assert len(lines) == 2 and lines[1].split('\t') == ['ENSG00000000002.7', 'chr2', '20000', '26000', '26000']
+    # genes.bed, parsed exactly the way phaser_gene_ae.py parses it: positional,
+    # from line 1, int() on columns 1 and 2. A header line would raise here.
+    bed = (td / 'out' / 'genes.bed').read_text().rstrip('\n').split('\n')
+    assert len(bed) == 2, bed
+    feats = {}
+    for line in bed:
+        columns = line.rstrip().split('\t')
+        assert len(columns) == 4, columns
+        feats[columns[3]] = (columns[0], int(columns[1]), int(columns[2]))
+    # 0-based half-open: start is GTF start - 1, stop is GTF end, span preserved
+    assert feats['ENSG00000000001.3'] == ('chr1', 999, 5000), feats
+    assert feats['ENSG00000000002.7'] == ('chr2', 19999, 26000), feats
+    for gid, (c, st, sp) in feats.items():
+        assert sp - st == g2[gid][2] - g2[gid][1] + 1, (gid, st, sp)
+    # name column is the gene_id, which genes.tsv is keyed by -- not the symbol
+    assert set(feats) == set(g2), (set(feats), set(g2))
+    assert 'PLUS' not in feats and 'MINUS' not in feats
     print('checks: + strand TSS = start; - strand TSS = end; gene_type filter; '
           'version stripping consistent across gene and transcript IDs; '
-          'genes.tsv column order matches --genes')
+          'genes.tsv column order matches --genes; genes.bed is 0-based '
+          'half-open, header-free, and keyed by gene_id')
     print('SELF-TEST OK')
     return 0
 
