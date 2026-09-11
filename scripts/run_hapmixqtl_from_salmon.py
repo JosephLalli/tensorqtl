@@ -266,8 +266,8 @@ def load_allelic_counts(manifest, samples):
     is phASER, which you already need for the reference-bias gate: it writes a
     per-sample `<prefix>.allelic_counts.txt` with columns
 
-        contig  start  stop  variantID  refAllele  altAllele
-        refCount  altCount  totalCount  ...
+        contig  position  variantID  refAllele  altAllele
+        refCount  altCount  totalCount
 
     Manifest format:  <sample_id> <TAB> <path to that sample's allelic_counts.txt>
 
@@ -285,12 +285,19 @@ def load_allelic_counts(manifest, samples):
         with op(path, 'rt') as fh:
             hdr = fh.readline().rstrip('\n').split('\t')
             try:
-                ci, pi = hdr.index('contig'), hdr.index('start')
+                # phASER writes 'position'. 'start' was assumed here and is
+                # not a column phaser.py ever emits -- the real header is
+                # contig/position/variantID/refAllele/altAllele/refCount/
+                # altCount/totalCount. Accept either, since the self-test
+                # fixture and some forks use 'start'.
+                ci = hdr.index('contig')
+                pi = hdr.index('position') if 'position' in hdr else hdr.index('start')
                 ri, ai = hdr.index('refCount'), hdr.index('altCount')
             except ValueError:
                 raise SystemExit(
                     f'{path} does not look like a phASER allelic_counts file '
-                    f'(need contig/start/refCount/altCount). Columns: {hdr[:8]}')
+                    f'(need contig, position (or start), refCount, altCount). '
+                    f'Columns: {hdr[:8]}')
             for line in fh:
                 f = line.rstrip('\n').split('\t')
                 if len(f) <= max(ci, pi, ri, ai):
@@ -870,12 +877,12 @@ def selftest():
     for s_ in samples:
         f = td / f'{s_}.allelic_counts.txt'
         with open(f, 'w') as fh:
-            fh.write('contig\tstart\tstop\tvariantID\trefAllele\taltAllele'
-                     '\trefCount\taltCount\ttotalCount\n')
+            # phASER's REAL header: no 'stop', position not start.
+            fh.write('contig\tposition\tvariantID\trefAllele\taltAllele\trefCount\taltCount\ttotalCount\n')
             for gi2 in range(G):
                 pos = 1000 * gi2 + 500
                 r, a = rng.poisson(20), rng.poisson(20)
-                fh.write(f'1\t{pos}\t{pos+1}\tv{gi2}\tA\tG\t{r}\t{a}\t{r+a}\n')
+                fh.write(f'1\t{pos}\tv{gi2}\tA\tG\t{r}\t{a}\t{r+a}\n')
         ac_man.append(f'{s_}\t{f}')
     (td / 'ac_manifest.tsv').write_text('\n'.join(ac_man))
     man = []

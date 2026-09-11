@@ -311,7 +311,20 @@ def run(args):
         in_body |= same & (pos >= int(r['start'])) & (pos <= int(r['end']))
         in_win |= same & (np.abs(pos - int(r['pos'])) <= args.window)
     tested = in_win & ~in_body
-    print(f'  {int(tested.sum())} tested cis variants (window, outside gene bodies)')
+    # MAF applies to TESTED rSNPs only, never to the feature SNPs in gene
+    # bodies. A cis variant too rare to carry power is noise in the scan, but
+    # a rare heterozygous fSNP is exactly what the allelic channel runs on --
+    # filtering both on one threshold silently trims the ASE signal this
+    # comparison exists to measure. Keep the VCF pre-filter permissive and set
+    # the testing threshold here.
+    af = dos.mean(1) / 2.0
+    maf = np.minimum(af, 1.0 - af)
+    n_pre = int(tested.sum())
+    tested = tested & (maf >= args.maf)
+    print(f'  {int(tested.sum())} tested cis variants (window, outside gene '
+          f'bodies, MAF >= {args.maf}); {n_pre - int(tested.sum())} dropped by MAF')
+    print(f'  fSNPs inside gene bodies are NOT MAF-filtered '
+          f'({int(in_body.sum())} in the selected genes)')
 
     # RASQUAL total counts and offsets follow the expression (never permuted)
     Ytot = read_salmon_totals(args.salmon, args.tx2gene, order, sufs)
@@ -416,6 +429,12 @@ def main(argv=None):
     ap.add_argument('--n-genes', type=int, default=300)
     ap.add_argument('--n-perm', type=int, default=10)
     ap.add_argument('--window', type=int, default=1_000_000)
+    ap.add_argument('--maf', type=float, default=0.05,
+                    help='minor-allele frequency floor for TESTED cis variants. '
+                         'Feature SNPs in gene bodies are deliberately exempt: '
+                         'the allelic channel depends on rare het sites. Keep '
+                         'the VCF pre-filter permissive (e.g. 0.01) and set '
+                         'the testing threshold here (default 0.05)')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default='deploy')
     args = ap.parse_args(argv)
@@ -463,7 +482,8 @@ def selftest():
         names, boot = [], []
         acf = td / f'{s}.allelic_counts.txt'
         with open(acf, 'w') as fh:
-            fh.write('contig\tstart\tstop\tvariantID\trefAllele\taltAllele\trefCount\taltCount\ttotalCount\n')
+            # phASER's REAL header: no 'stop', position not start.
+            fh.write('contig\tposition\tvariantID\trefAllele\taltAllele\trefCount\taltCount\ttotalCount\n')
             for i in range(G):
                 e1 = eff[i] if h1r[i][k] else 1.0; e2 = eff[i] if h2r[i][k] else 1.0
                 a = rng.poisson(30 * e1); b = rng.poisson(30 * e2)
@@ -471,7 +491,7 @@ def selftest():
                 boot += [rng.poisson(max(a, 1), ND), rng.poisson(max(b, 1), ND)]
                 if h1f[i][k] != h2f[i][k]:                 # het fSNP: counts
                     alt = a if h1f[i][k] == 1 else b; ref = a + b - alt
-                    fh.write(f'1\t{100000*i+500}\t{100000*i+501}\tf{i}\tA\tG\t{ref}\t{alt}\t{ref+alt}\n')
+                    fh.write(f'1\t{100000*i+500}\tf{i}\tA\tG\t{ref}\t{alt}\t{ref+alt}\n')
         with gzip.open(sd / 'names.tsv.gz', 'wt') as fh: fh.write('\t'.join(names))
         with gzip.open(sd / 'bootstraps.gz', 'wb') as fh:
             fh.write(np.array(boot, np.float64).T.tobytes())
@@ -487,10 +507,15 @@ def selftest():
         vcf=str(td / 'p.vcf'), genes=str(td / 'genes.tsv'), salmon=str(td / 'salmon.tsv'),
         tx2gene=str(td / 't2g.tsv'), allelic_counts=str(td / 'ac.tsv'), rasqual=rq,
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
-        n_genes=G, n_perm=2, window=10000, seed=0, out=str(td / 'deploy')))
+        n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
+        out=str(td / 'deploy')))
     print('\n' + (td / 'deploy' / 'deploy_comparison.md').read_text())
     for m in ('RASQUAL', 'hapmixQTL'):
         assert 'power' in r[m], f'{m} produced no power estimate'
+    # the MAF floor must gate TESTED variants and leave fSNPs alone: raising it
+    # above every simulated frequency must drop tested variants without
+    # touching the fSNPs the allelic channel needs
+    assert r['design']['n_tested_variants'] > 0, r['design']
     print('SELF-TEST OK')
     return 0
 

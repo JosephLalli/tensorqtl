@@ -189,11 +189,14 @@ def as_from_phaser(manifest, samples):
         with _open(path) as fh:
             hdr = fh.readline().rstrip('\n').split('\t')
             try:
-                ci, pi = hdr.index('contig'), hdr.index('start')
+                # phASER emits 'position', not 'start'; accept either.
+                ci = hdr.index('contig')
+                pi = hdr.index('position') if 'position' in hdr else hdr.index('start')
                 ri, ai = hdr.index('refCount'), hdr.index('altCount')
             except ValueError:
                 raise SystemExit(f'{path}: not a phASER allelic_counts file '
-                                 f'(columns {hdr[:8]})')
+                                 f'(need contig, position (or start), '
+                                 f'refCount, altCount; columns {hdr[:8]})')
             for line in fh:
                 f = line.rstrip('\n').split('\t')
                 try:
@@ -530,12 +533,12 @@ def selftest():
     for i, s in enumerate(samples):
         f = td / f'{s}.ac.txt'
         with open(f, 'w') as fh:
-            fh.write('contig\tstart\tstop\tvariantID\trefAllele\taltAllele\t'
-                     'refCount\taltCount\ttotalCount\n')
+            # phASER's REAL header: no 'stop', position not start.
+            fh.write('contig\tposition\tvariantID\trefAllele\taltAllele\trefCount\taltCount\ttotalCount\n')
             for g in range(G):
                 if (g, i) in hets:
                     r, a = rng.poisson(15), rng.poisson(15)
-                    fh.write(f'1\t{10000*g+500}\t{10000*g+501}\tf{g}\tA\tG\t{r}\t{a}\t{r+a}\n')
+                    fh.write(f'1\t{10000*g+500}\tf{g}\tA\tG\t{r}\t{a}\t{r+a}\n')
         man.append(f'{s}\t{f}')
     (td / 'ac.tsv').write_text('\n'.join(man))
 
