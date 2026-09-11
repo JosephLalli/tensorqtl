@@ -76,8 +76,10 @@ Run:
 """
 
 import argparse
+import concurrent.futures as cf
 import contextlib
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -332,14 +334,20 @@ def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
 
 def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 window, perm=None, tmp=None, tested=None, maf=0.05,
-                min_coverage=0.05, cov_bin=None):
+                min_coverage=0.05, cov_bin=None, jobs=1):
     N = len(order)
     td = Path(tmp or tempfile.mkdtemp())
     np.asarray(Y, np.float64).tofile(td / 'Y.bin')
     np.asarray(K, np.float64).tofile(td / 'K.bin')
     pos = vdf['pos'].values
-    recs = []
-    for j, g in enumerate(genes):
+    # Genes are independent RASQUAL processes and the binary is
+    # single-threaded (no -t), so the only parallelism available is across
+    # genes -- and it is the difference between hours and days: measured on
+    # real BrainVar input a single gene with ~3,400 tested variants takes
+    # 4+ minutes, which serially is ~9 days for 300 genes x 11 rounds.
+    # subprocess.run releases the GIL, so threads are enough.
+    def _one(jg):
+        j, g = jg
         row = pos_df.loc[g]
         chrom, tss = str(row['chr']), int(row['pos'])
         gs, ge = int(row['start']), int(row['end'])
@@ -357,9 +365,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
         if tested is not None:
             ridx = ridx[tested[ridx]]
         if not fidx or ridx.size == 0:
-            recs.append(dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
-                             status='no_fsnp_or_rsnp'))
-            continue
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
+                        status='no_fsnp_or_rsnp')
         lines = []
         for v in fidx:                                  # fSNPs: never permuted
             cnt = allelic[(chrom, int(pos[v]))]
@@ -391,9 +398,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             pr = subprocess.run(cmd, input='\n'.join(lines) + '\n',
                                 capture_output=True, text=True, timeout=900)
         except Exception as e:
-            recs.append(dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
-                             status=f'error:{type(e).__name__}'))
-            continue
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
+                        status=f'error:{type(e).__name__}')
         best = None
         for ln in pr.stdout.strip().split('\n'):
             f = ln.split('\t')
@@ -409,8 +415,14 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 pi = min(max(pi, 1e-6), 1 - 1e-6)
                 best = dict(gene=g, stat=chi2, log_afc=np.log(pi / (1 - pi)),
                             phi=float(f[13]), status='ok')
-        recs.append(best or dict(gene=g, stat=np.nan, log_afc=np.nan,
-                                 phi=np.nan, status='no_converged_row'))
+        return best or dict(gene=g, stat=np.nan, log_afc=np.nan,
+                            phi=np.nan, status='no_converged_row')
+
+    if jobs <= 1:
+        recs = [_one(jg) for jg in enumerate(genes)]
+    else:
+        with cf.ThreadPoolExecutor(max_workers=jobs) as ex:
+            recs = list(ex.map(_one, enumerate(genes)))   # ex.map keeps order
     return pd.DataFrame(recs)
 
 
@@ -528,8 +540,31 @@ def run(args):
     sufs = tuple(args.hap_suffix.split(','))
 
     print('hapmixQTL input: Salmon diploid Gibbs')
-    genes_all, samples, YL, YR, YT = H.load_counts(args.salmon, args.tx2gene,
-                                                   sufs, out)
+    # The Gibbs load is ~460 MB of gzip per sample across 92 samples and takes
+    # roughly three quarters of an hour. It depends only on the manifest, the
+    # tx2gene table and the haplotype suffixes, so cache it: iterating on gene
+    # selection, covariates or the null should not re-pay it every time.
+    cache = None
+    if args.cache_dir:
+        key = hashlib.sha256(
+            (Path(args.salmon).read_text() + Path(args.tx2gene).read_text()
+             + ','.join(sufs)).encode()).hexdigest()[:16]
+        cache = Path(args.cache_dir) / f'gibbs_{key}.npz'
+    if cache is not None and cache.exists():
+        print(f'Loading cached Gibbs arrays from {cache}')
+        z = np.load(cache, allow_pickle=True)
+        genes_all, samples = list(z['genes']), list(z['samples'])
+        YL, YR, YT = z['YL'], z['YR'], z['YT']
+        print(f'  {len(genes_all)} genes x {len(samples)} samples x '
+              f'{YL.shape[2]} draws')
+    else:
+        genes_all, samples, YL, YR, YT = H.load_counts(args.salmon, args.tx2gene,
+                                                       sufs, out)
+        if cache is not None:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            print(f'Caching Gibbs arrays to {cache}')
+            np.savez(cache, genes=np.array(genes_all, object),
+                     samples=np.array(samples, object), YL=YL, YR=YR, YT=YT)
     # yT is the gene total over ALL transcripts. Without it the total
     # channel is a heterozygous-transcript subtotal whose zeros are in LD
     # with the tested variants.
@@ -618,7 +653,8 @@ def run(args):
                          order, np.zeros((len(pool), len(order))),
                          np.ones((len(pool), len(order))), args.window,
                          None, tested=None, maf=args.maf,
-                         min_coverage=args.min_coverage, cov_bin=cov_bin)
+                         min_coverage=args.min_coverage, cov_bin=cov_bin,
+                        jobs=args.rasqual_jobs)
         ok_genes = list(pr[pr['status'] == 'ok']['gene'])
         by_status = pr['status'].value_counts().to_dict()
         print(f'  RASQUAL used {len(ok_genes)}/{len(pool)} '
@@ -896,6 +932,16 @@ def main(argv=None):
                          'which destroys their LD and mis-calibrates BOTH arms '
                          'in opposite directions. "knockoff" substitutes '
                          'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--rasqual-jobs', type=int, default=1,
+                    help='genes to run through RASQUAL concurrently. The '
+                         'binary is single-threaded, so this is the only '
+                         'parallelism available and it is the difference '
+                         'between hours and days on a real cohort')
+    ap.add_argument('--cache-dir',
+                    help='cache the loaded Gibbs arrays here. The load is ~45 '
+                         'min of gzip and depends only on --salmon, --tx2gene '
+                         'and --hap-suffix, so iterating on anything else '
+                         'should not re-pay it')
     ap.add_argument('--probe-genes', type=int, default=0,
                     help='run a cheap RASQUAL-only pass over this many '
                          'candidate genes first and keep only the ones it '
@@ -1033,7 +1079,7 @@ def selftest():
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
         null='permute', knockoff_k=4, min_coverage=0.05, covariates=None,
-        gene_list=None, probe_genes=0,
+        gene_list=None, probe_genes=0, cache_dir=None, rasqual_jobs=2,
         str_vcf=None, multiallelic=False, min_hap=10)
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
