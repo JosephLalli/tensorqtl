@@ -238,7 +238,16 @@ def read_phased_vcf(path, want_samples):
             if len(f) < 10 or len(f[3]) != 1 or len(f[4]) != 1 or ',' in f[4]:
                 continue                                    # biallelic SNPs only
             gt_i = f[8].split(':').index('GT') if 'GT' in f[8] else 0
-            xl = np.zeros(len(keep)); xr = np.zeros(len(keep)); ok = True
+            # int8, not float64. Genotypes are 0/1 per haplotype and 0-2 as a
+            # dosage, so float64 costs 8x for no precision. At 15.7M variants
+            # x 92 samples that is 11.6 GB per matrix against 1.44 GB, and
+            # there are three of them plus a transient Python list of the same
+            # rows -- the difference between fitting and being OOM-killed.
+            # map_cis and rasqual_arm both cast at their own boundary
+            # (torch.tensor(..., dtype=torch.float32), int(...)), so nothing
+            # downstream sees the narrower type.
+            xl = np.zeros(len(keep), np.int8); xr = np.zeros(len(keep), np.int8)
+            ok = True
             for k, i in enumerate(keep):
                 gt = f[9 + i].split(':')[gt_i]
                 if '|' not in gt:
@@ -246,8 +255,8 @@ def read_phased_vcf(path, want_samples):
                 a, b = gt.split('|')[:2]
                 if a in '.' or b in '.':
                     ok = False; break
-                xl[k] = 1.0 if a != '0' else 0.0
-                xr[k] = 1.0 if b != '0' else 0.0
+                xl[k] = 1 if a != '0' else 0
+                xr[k] = 1 if b != '0' else 0
             if not ok:
                 continue
             ids.append(f[2] if f[2] != '.' else f'{f[0]}_{f[1]}_{f[3]}_{f[4]}')
@@ -255,7 +264,7 @@ def read_phased_vcf(path, want_samples):
             XL.append(xl); XR.append(xr)
     if not ids:
         raise SystemExit('no phased biallelic SNPs read from the VCF')
-    XL = np.array(XL); XR = np.array(XR)
+    XL = np.array(XL, np.int8); XR = np.array(XR, np.int8)
     vdf = pd.DataFrame({'chrom': [str(c) for c in chroms], 'pos': poss}, index=ids)
     return vdf, XL + XR, XL, XR, order
 

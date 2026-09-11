@@ -251,7 +251,7 @@ def nonstandard_block(obs_x, sp_obs, sp_nulls, vtype):
 # ---------------------------------------------------------------------------
 
 def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
-                window, perm=None, tmp=None):
+                window, perm=None, tmp=None, tested=None, maf=0.05):
     N = len(order)
     td = Path(tmp or tempfile.mkdtemp())
     np.asarray(Y, np.float64).tofile(td / 'Y.bin')
@@ -267,6 +267,14 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 if (chrom, int(pos[v])) in allelic]
         ridx = np.where(same & (np.abs(pos - tss) <= window)
                         & ~((pos >= gs) & (pos <= ge)))[0]
+        # Test the SAME variants hapmixQTL tests. Without this the two arms
+        # differ twice over: the mask excludes variants inside ANY selected
+        # gene body while this excludes only THIS gene's, and --maf gated only
+        # hapmixQTL while RASQUAL fell back to its own default of 0.05. At
+        # --maf 0.05 they coincided by accident; at any other value the arms
+        # would silently score different variant sets under one reported count.
+        if tested is not None:
+            ridx = ridx[tested[ridx]]
         if not fidx or ridx.size == 0:
             recs.append(dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
                              status='no_fsnp_or_rsnp'))
@@ -286,7 +294,12 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
         cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
                '-n', str(N), '-j', str(j + 1), '-l', str(len(lines)),
                '-m', str(len(fidx)), '-s', str(gs), '-e', str(ge),
-               '-f', str(g), '-z']
+               '-f', str(g), '-z',
+               # match hapmixQTL's floor; RASQUAL's own default is 0.05
+               # (main.c:386). The HWE gate is already bypassed by -z, which
+               # sets noPriorGenotype (main.c:498), and RSQ=1.0 clears the
+               # imputation-quality gate, so MAF is the only one left to align.
+               '-a', str(maf)]
         try:
             pr = subprocess.run(cmd, input='\n'.join(lines) + '\n',
                                 capture_output=True, text=True, timeout=900)
@@ -462,7 +475,8 @@ def run(args):
                        pos_df[['chr', 'pos']], args.window, tested, perm)
         th = time.time() - t0; t0 = time.time()
         r = rasqual_arm(args.rasqual, usable, pos_df, vdf, xL, xR, allelic,
-                        order, Ytot, K, args.window, perm)
+                        order, Ytot, K, args.window, perm,
+                        tested=tested, maf=args.maf)
         tr = time.time() - t0
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
