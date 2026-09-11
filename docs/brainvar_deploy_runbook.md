@@ -72,6 +72,7 @@ seconds rather than after hours of quantification:
 ```bash
 python3 scripts/gtf_to_tables.py --selftest
 python3 scripts/diploid_tx2gene.py --selftest
+python3 scripts/brainvar_pairing.py --selftest
 python3 scripts/phaser_to_matrix.py --selftest
 python3 scripts/make_rasqual_inputs.py --selftest
 RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest
@@ -145,6 +146,76 @@ The two sample-ID schemes differ but correspond: the BAMs are `HSB<n>` and the
 quantifications are `<n>_R1`. Normalising both to `<n>` gives **92 subjects in
 common** (93 BAM subjects, one without a quantification). That is the usable N
 for the comparison, at 200 Gibbs draws.
+
+#### Pairing the samples: do not join by name
+
+Three identifier systems are in play and they do not agree.
+
+| thing | id | example |
+| --- | --- | --- |
+| diploid quantification | bulk RNA library | `587_R1` |
+| genotypes (VCF sample) | WGS library | `589_D1` |
+| RNA alignment for phASER | subject | `HSB589` |
+
+BrainVar carries a known sample relabelling, and the two RNA runs resolved it
+differently. The alignment run applied it -- the BAM named `HSB587` was built
+from `HSB583_1_val_1.fq.gz`, and the 2022 relabelling map says HSB583 is
+HSB587 -- while the quantification did not: `587_R1` was quantified from
+`HSB587.R1_val_1.fq.gz`. For five subjects this produces a shift chain, and
+**joining the quantification to the BAM by number pairs two different donors**,
+silently, because every identifier involved exists.
+
+The DNA library is the only common key, and it is what the VCF is keyed on, so
+it is what the manifests must use as `sample_id`. Build the pairing with:
+
+```bash
+python3 scripts/brainvar_pairing.py \
+    --metadata  <bv2>/draft_brainvar2_library_metadata_v1.4.tsv \
+    --vci-dir   <arm>/vcf2vci \
+    --salmon-dir <arm>/expression_results/salmon_pseudocounts \
+    --bam-dir   reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
+    --vcf-samples <(bcftools query -l <phased.bcf>) --out cohort/
+```
+
+It writes `salmon.tsv`, `bams.tsv`, `samples.txt` and `pairing.tsv`, all keyed
+on the DNA library. On the current data it pairs **92** subjects and reports
+the five rows a name-join would get wrong:
+
+```
+587_D1: rna=583_R2  bam=HSB587        589_D1: rna=587_R1  bam=HSB589
+590_D1: rna=589_R1  bam=HSB590        591_D1: rna=590_R1  bam=HSB591
+593_D1: rna=591_R1  bam=HSB593
+```
+
+**Use metadata v1.4, not earlier.** The authoritative table is
+`draft_brainvar2_library_metadata_v1.4.tsv` (SHA-256
+`c70e3599...ec663ba6`, 841 rows by 29 columns), and
+`METADATA_V1.4_FREEZE.md` in the brainvar2 repository records the freeze.
+Against v1.3.1 it changes `matchingDNALibrary` for two usable bulk-RNA
+records, `321_R2` (`321_D1` to `321_D2`) and `513_R2` (`175_D1` to `175_D2`).
+Both candidate DNA libraries exist in the VCF, so an older table attaches the
+wrong one with no error.
+
+Each edge of the join is evidenced rather than assumed.
+
+**RNA library to DNA library** comes from the run itself. Each per-sample
+g2gtools VCI header carries `##STRAIN=<dna_library>`, which IS the genotype the
+personalized transcriptome was built from. Across the 229 quantified libraries
+the VCI agrees with v1.4 for 227. The two exceptions are exactly the two
+records v1.4 changed: the quantification ran in April 2025 against the older
+assignment, so `321_R2` and `513_R2` have diploid references built from
+`321_D1` and `175_D1`. Their allelic quantifications encode a superseded
+pairing; drop them or re-quantify. Neither is in the 92-subject cohort.
+
+**BAM to DNA library** is the numeric rule `HSB<n>` to `<n>_D1`, checked
+against the reads rather than trusted. Genotype concordance between an RNA BAM
+and each candidate DNA sample, over ~2,200-4,600 informative chr1 sites at
+depth 10 or more, is 0.99 for the numeric match and 0.42-0.60 for every other
+donor -- a separation wide enough that the assignment is not in doubt. Verified
+on the three shift-chain subjects, where the rule is likeliest to fail:
+`HSB587`/`587_D1` 0.991, `HSB589`/`589_D1` 0.991, `HSB593`/`593_D1` 0.989.
+Re-run it on the rest before publishing; it is the only check that does not
+depend on a filename.
 
 #### Two things must be fixed before phASER will run
 
