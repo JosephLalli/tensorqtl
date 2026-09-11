@@ -73,6 +73,7 @@ seconds rather than after hours of quantification:
 python3 scripts/gtf_to_tables.py --selftest
 python3 scripts/diploid_tx2gene.py --selftest
 python3 scripts/brainvar_pairing.py --selftest
+python3 scripts/verify_pairing.py --selftest
 python3 scripts/phaser_to_matrix.py --selftest
 python3 scripts/make_rasqual_inputs.py --selftest
 RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest
@@ -216,6 +217,53 @@ on the three shift-chain subjects, where the rule is likeliest to fail:
 `HSB587`/`587_D1` 0.991, `HSB589`/`589_D1` 0.991, `HSB593`/`593_D1` 0.989.
 Re-run it on the rest before publishing; it is the only check that does not
 depend on a filename.
+
+#### Verify the pairing against the reads before trusting a result
+
+Every identifier here is a claim someone wrote down; the reads are not. An RNA
+alignment carries its donor's genotypes at expressed sites, so the donor can be
+identified directly:
+
+```bash
+python3 scripts/verify_pairing.py --pairing cohort/pairing.tsv \
+    --bam-dir reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
+    --vcf <phased.bcf> --chrom chr1 --contig-map rename_chrs.tsv --out verify/
+```
+
+It scores each BAM against **every** donor in the pairing, not just the claimed
+one, and flags any sample whose best match is not the claimed donor or whose
+margin over the runner-up is thin. That is the only check here that does not
+depend on a filename, and a swap does not announce itself otherwise: mispaired
+allelic counts still run, still converge, and still produce QTLs.
+
+What it looks like when the pairing is right: on this data the correct donor
+scores **0.986-0.991** and the best competing donor **0.60-0.75**, against a
+median across donors near 0.64. The separation is the signal -- two unrelated
+people agree at roughly 0.6 by chance given the allele-frequency spectrum, so a
+margin above about 0.2 is unambiguous and a margin near zero means the sample
+is not identified.
+
+Eight samples were checked while this runbook was written, with no
+discrepancies: the three shift-chain BAMs where the numeric rule is likeliest
+to fail (`HSB587`, `HSB589`, `HSB593`), four ordinary ones (`HSB629`,
+`HSB344`, `HSB429`, `HSB260`), and -- separately -- the one pairing that rests
+on the metadata rather than on shared provenance.
+
+That last one is worth understanding. For 90 of the 92 pairs the alignment and
+the quantification consumed the **same FASTQ**, which can be read off the BAM's
+`@PG readFilesIn` and Salmon's `cmd_info.json`; those pairs are the same donor
+by construction, whatever any table says. Two are not, and one of those is
+`589_D1`, where the quantification used FASTQ `HSB587` and the BAM used
+`HSB473`. No alignment arm ever used `HSB587` -- both dropped it as
+`duplicate_HSB589` -- so it was aligned from scratch with minimap2 against the
+chr-named T2T reference and genotyped: it matches `589_D1` at **0.990** against
+a runner-up of 0.747, confirming the metadata. The other, `587_D1`, is the same
+library under two filename conventions (`H583_RNA_020_173_S96_L004` and
+`HSB583`).
+
+The conclusion to carry forward is that the metadata is not wrong, it is
+counterintuitive: the numbers genuinely do not line up, because the
+relabelling is real and v1.4 encodes it correctly. The danger is ignoring it.
 
 #### Two things must be fixed before phASER will run
 
