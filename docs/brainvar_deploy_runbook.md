@@ -71,6 +71,7 @@ seconds rather than after hours of quantification:
 
 ```bash
 python3 scripts/gtf_to_tables.py --selftest
+python3 scripts/diploid_tx2gene.py --selftest
 python3 scripts/phaser_to_matrix.py --selftest
 python3 scripts/make_rasqual_inputs.py --selftest
 RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest
@@ -149,6 +150,36 @@ The reference for this arm is **T2T**, so the GTF and the VCF used downstream
 must be T2T as well. Its transcripts are RefSeq accessions
 (`NR_109817.1`, `XM_047444567.1`) and, in an NCBI GTF, genes are named by
 symbol -- so an eGene list keyed on `ENSG...` will not join to it.
+
+### tx2gene for this data comes from a different file than genes.tsv
+
+The per-sample diploid annotations are in `Personalized_T2T_calls_NCBI110/convert/`
+as `<sample>-diploid_specific.gtf`, 42 of them. They carry the haplotype suffix
+on **both** identifiers:
+
+```
+gene_id "SEPTIN14P6_L"; transcript_id "NR_109817.1_L"; gene "SEPTIN14P6";
+```
+
+`load_counts` pairs the two haplotype transcripts first and then looks the gene
+up by the **unsuffixed** base, `NR_109817.1`. A tx2gene keyed on
+`NR_109817.1_L` therefore matches nothing, and the run dies claiming Salmon was
+run against a standard reference transcriptome -- the same misleading message,
+from the opposite cause. Build it with:
+
+```bash
+python3 scripts/diploid_tx2gene.py     --gtf .../convert/HSB238-diploid_specific.gtf     --hap-suffix _L,_R --out annot/tx2gene.tsv
+```
+
+On `HSB238-diploid_specific.gtf` that turns 216,175 transcript rows into
+108,088 unique pairs over 41,498 genes, and it resolves **100%** of that
+sample's 107,505 haplotype-paired transcripts, collapsing them to 40,917 genes.
+
+Take `genes.tsv` and `genes.bed` from the **reference** T2T annotation with
+`gtf_to_tables.py`, not from these files. A personalized annotation has
+personalized coordinates -- positions in that sample's own haplotype, not in
+the reference the VCF is called against -- so its spans and TSS values do not
+belong in a cis-window definition shared across samples.
 
 Two non-personalized arms are quantified the same way and make natural
 baselines: `T2T_NCBI110/star_salmon` (94 payloads) and
