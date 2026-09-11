@@ -102,10 +102,12 @@ from str_integrate import parse_str_vcf, parse_multiallelic_vcf, extend_scan   #
 
 try:
     from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, map_cis,
+                                     reference_bias_diagnostic,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(HERE.parent / 'tensorqtl'))
     from hapmixqtl import (compute_summaries_from_gibbs, map_cis,
+                           reference_bias_diagnostic,
                            map_str_curvature, map_multiallelic)
 
 
@@ -328,7 +330,8 @@ def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
 # ---------------------------------------------------------------------------
 
 def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
-                window, perm=None, tmp=None, tested=None, maf=0.05):
+                window, perm=None, tmp=None, tested=None, maf=0.05,
+                min_coverage=0.05):
     N = len(order)
     td = Path(tmp or tempfile.mkdtemp())
     np.asarray(Y, np.float64).tofile(td / 'Y.bin')
@@ -372,6 +375,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                '-n', str(N), '-j', str(j + 1), '-l', str(len(lines)),
                '-m', str(len(fidx)), '-s', str(gs), '-e', str(ge),
                '-f', str(g), '-z',
+               '-d', str(min_coverage),
                # match hapmixQTL's floor; RASQUAL's own default is 0.05
                # (main.c:386). The HWE gate is already bypassed by -z, which
                # sets noPriorGenotype (main.c:498), and RSQ=1.0 clears the
@@ -573,7 +577,8 @@ def run(args):
         th = time.time() - t0; t0 = time.time()
         r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
                         order, Ytot, K, args.window, perm,
-                        tested=tested, maf=args.maf)
+                        tested=tested, maf=args.maf,
+                        min_coverage=args.min_coverage)
         tr = time.time() - t0
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
@@ -620,6 +625,38 @@ def run(args):
     null_h = pd.concat(nulls_h) if nulls_h else obs_h.iloc[0:0]
     null_r = pd.concat(nulls_r) if nulls_r else obs_r.iloc[0:0]
 
+    # Reference-bias gate on the hapmixQTL arm. hapmixQTL has no analogue of
+    # RASQUAL's phi and degrades catastrophically rather than gracefully when
+    # mapping bias is present, so its validity is CONDITIONAL on bias-filtered
+    # input. The comparison reported RASQUAL's phi and silently skipped this,
+    # which measured one arm's bias and assumed the other's. Sign comes from
+    # the highest-depth feature SNP in each gene body: bias accumulates toward
+    # the reference allele at the sites carrying the reads, so the deepest
+    # fSNP is the best single proxy for the gene's haplotype orientation.
+    YLm = YL[sel][:, keep].mean(2)
+    YRm = YR[sel][:, keep].mean(2)
+    g_sign = np.zeros_like(YLm)
+    sgn = np.sign(xL.astype(np.int16) - xR.astype(np.int16))
+    for i, g in enumerate(usable):
+        r = gp.loc[g]
+        same = vdf['chrom'].values == str(r['chr'])
+        body = np.where(same & (pos >= int(r['start'])) & (pos <= int(r['end'])))[0]
+        best, best_depth = None, -1
+        for v in body:
+            c = allelic.get((str(r['chr']), int(pos[v])))
+            if not c:
+                continue
+            d = sum(a + b for a, b in c.values())
+            if d > best_depth:
+                best, best_depth = v, d
+        if best is not None:
+            g_sign[i] = sgn[best]
+    refbias = reference_bias_diagnostic(YLm, YRm, g_sign)
+    print(f'\nReference-bias gate (hapmixQTL arm): {refbias["message"]}')
+    if refbias.get('flag'):
+        print('  WARNING: hapmixQTL is not valid under mapping bias; its '
+              'type-I error inflates sharply (docs/ase_validation.md sec 7h)')
+
     common_genes = (set(obs_h.dropna(subset=['stat'])['gene'])
                     & set(obs_r.dropna(subset=['stat'])['gene']))
     print(f'\nScoring both methods on the {len(common_genes)} genes where BOTH '
@@ -647,6 +684,9 @@ def run(args):
         'RASQUAL': score(obs_r, null_r, 'RASQUAL', known,
                          genes_keep=common_genes),
         'head_to_head': compare(obs_r, obs_h, out),
+        'reference_bias_hapmixqtl': {
+            k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
+            for k, v in refbias.items() if k != 'per_gene'},
     }
     if ns is not None:
         null_x = pd.concat(nulls_x) if nulls_x else obs_x.iloc[0:0]
@@ -739,6 +779,10 @@ def main(argv=None):
                          'which destroys their LD and mis-calibrates BOTH arms '
                          'in opposite directions. "knockoff" substitutes '
                          'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--min-coverage', type=float, default=0.05,
+                    help="RASQUAL's -d/--min-coverage-depth. Default is "
+                         "RASQUAL's own (main.c:396); passed explicitly so the "
+                         'value used is recorded rather than inherited')
     ap.add_argument('--knockoff-k', type=int, default=4,
                     help='haplotype clusters in the knockoff HMM (default 4)')
     ap.add_argument('--maf', type=float, default=0.05,
@@ -856,7 +900,7 @@ def selftest():
         tx2gene=str(td / 't2g.tsv'), allelic_counts=str(td / 'ac.tsv'), rasqual=rq,
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
-        null='permute', knockoff_k=4,
+        null='permute', knockoff_k=4, min_coverage=0.05,
         str_vcf=None, multiallelic=False, min_hap=10)
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
@@ -871,6 +915,10 @@ def selftest():
                                               n_perm=2)
     rk = run(argparse.Namespace(**ko_args, out=str(td / 'deploy_ko')))
     assert rk['design']['null_kind'] == 'knockoff', rk['design']
+    # the reference-bias gate must report on the hapmixQTL arm, not be skipped
+    rb = r['reference_bias_hapmixqtl']
+    assert 'ref_fraction' in rb and 'message' in rb, rb
+    assert rb['n_obs'] >= 0, rb
     for m in ('RASQUAL', 'hapmixQTL'):
         assert 'power' in rk[m], f'{m}: no power estimate under knockoffs'
         assert rk[m]['n_null_stats'] > 0, (m, rk[m])
