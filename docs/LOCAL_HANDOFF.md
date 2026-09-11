@@ -17,6 +17,14 @@ Everything. The working tree is clean and pushed to
 - `scripts/build_rasqual.sh` — builds the real RASQUAL from source
 - `scripts/prep_brainvar.py` — the BrainVar ingest pipeline
 - `scripts/extract_gtex_phaser.py` — regenerates the §7d real-data inputs
+- the four scripts of the head-to-head comparison chain, each with a
+  `--selftest` that runs on fabricated inputs in seconds:
+  `gtf_to_tables.py` (annotation tables from a GTF), `phaser_to_matrix.py`
+  (phASER output to matrices, plus the read-backed phase overlay),
+  `make_rasqual_inputs.py` (RASQUAL's native inputs), and
+  `compare_pipelines.py` (the comparison itself)
+- `docs/brainvar_deploy_runbook.md` — the operating procedure for running that
+  chain on BrainVar, end to end
 
 ## 2. What does NOT transfer
 
@@ -69,6 +77,13 @@ The `--sign` argument enables the reference-bias gate. It is the one
 precondition hapmixQTL cannot check for itself, and §7i shows the failure mode
 is catastrophic rather than gradual, so supply it.
 
+For the hapmixQTL-versus-RASQUAL head-to-head, follow
+`docs/brainvar_deploy_runbook.md` instead. It covers the annotation tables,
+the phASER run and the phase overlay, the comparison invocation, and the
+prerequisite that governs whether the comparison is possible at all: Salmon
+must have been run against a personalized **diploid** transcriptome with
+`--numGibbsSamples 200`, or hapmixQTL has no allelic information to read.
+
 ## 4. Before you do this: a data-governance check
 
 BrainVar is dbGaP controlled-access (phs001900). Running an AI coding assistant
@@ -103,6 +118,13 @@ Open:
   RASQUAL's shared θ ties beta-binomial precision to NB dispersion, so at a
   realistic NB dispersion the simulated allelic ratios are far noisier than real
   ASE, penalising every ASE method. Settle this before quoting numbers.
+
+  On real data this is no longer blocked on tooling: `compare_pipelines.py`
+  gives each method its native input on the same genes and the same phase, and
+  `docs/brainvar_deploy_runbook.md` is the procedure. It is blocked on the
+  diploid Salmon quantifications, which do not exist on the BrainVar server as
+  of 2026-09-10 — the runbook records what was surveyed and what has to be
+  re-run.
 - **Four axes blocked on genotypes** (§9): effect-size concordance against GTEx
   aFC, eGene replication, functional/motif enrichment, and the `slope_a` vs
   `slope_tc` concordance check. BrainVar unblocks all four.
