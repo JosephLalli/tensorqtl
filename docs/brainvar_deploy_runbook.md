@@ -236,8 +236,14 @@ margin over the runner-up is thin. That is the only check here that does not
 depend on a filename, and a swap does not announce itself otherwise: mispaired
 allelic counts still run, still converge, and still produce QTLs.
 
+Run it on the **whole** pairing, not a subset: the candidate pool is exactly
+the donors listed in `--pairing`, and a smaller pool inflates the margin because
+it is less likely to hold a close genotype match by chance. Six donors here gave
+margins of 0.38-0.50 where the same samples scored against all 92 gave
+0.30-0.34.
+
 What it looks like when the pairing is right: on this data the correct donor
-scores **0.986-0.991** and the best competing donor **0.60-0.75**, against a
+scores **0.986-0.994** and the best competing donor **0.60-0.75**, against a
 median across donors near 0.64. The separation is the signal -- two unrelated
 people agree at roughly 0.6 by chance given the allele-frequency spectrum, so a
 margin above about 0.2 is unambiguous and a margin near zero means the sample

@@ -14,6 +14,15 @@ Use it to confirm a pairing built by scripts/brainvar_pairing.py before
 trusting any downstream result. A swap does not announce itself: mispaired
 allelic counts still run, still converge, and still produce QTLs.
 
+RUN IT ON THE WHOLE COHORT
+==========================
+The candidate pool is exactly the donors listed in --pairing, so a subset file
+discriminates only against that subset. A smaller pool makes the margin look
+BIGGER, because it is less likely to contain a near relative or a close
+genotype match by chance -- six donors here gave margins of 0.38-0.50 where the
+same samples against all 92 gave 0.30-0.34. The full cohort is the more
+stringent test; a wide margin on a short file is weaker evidence than it looks.
+
 CONTIG NAMES
 ============
 The BAM and the VCF need not use the same contig names (T2T alignments here
@@ -171,7 +180,9 @@ def main(argv=None):
     ap.add_argument('--min-depth', type=int, default=10)
     ap.add_argument('--min-margin', type=float, default=0.15,
                     help='flag a sample whose best-minus-second is below this')
-    ap.add_argument('--limit', type=int, default=0, help='first N rows only')
+    ap.add_argument('--limit', type=int, default=0,
+                    help='first N rows only -- note this also SHRINKS the '
+                         'candidate pool, which inflates the margin')
     ap.add_argument('--out', default='verify')
     args = ap.parse_args(argv)
     if args.selftest:
@@ -187,6 +198,9 @@ def main(argv=None):
         rows = rows[:args.limit]
     names = [r[0] for r in rows]
     print(f'{len(rows)} pairs; loading {args.chrom} genotypes for {len(names)} donors')
+    if len(names) < 20:
+        print(f'  NOTE: only {len(names)} candidate donors, so the margin is '
+              'optimistic; run the full cohort for a real test')
     sites = load_sites(args.vcf, args.chrom, names, args.stride)
     if not sites:
         raise SystemExit('no discriminative biallelic SNP sites loaded -- check '
