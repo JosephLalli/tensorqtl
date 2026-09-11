@@ -765,6 +765,69 @@ individual genes rather than the dataset.
 3. **If you cannot guarantee filtered input, fitting φ is worth the ~17% clean-data power
    cost.** The likelihood machinery is in `tests/ase_rasqual_comparison.py`.
 
+## 7j. Beyond biallelic SNPs — STRs and multiallelic sites, and a `map_cis` slope fix
+
+Three variant classes, three treatments, one whitening. Encoder:
+`scripts/str_integrate.py`; models: `map_str_curvature` and `map_multiallelic` in
+`tensorqtl/hapmixqtl.py`. All numbers below are from `--selftest` (N = 200, planted
+effects, real `map_cis` and real second-pass code on the same data).
+
+**Lead scan, no model change.** hapmixQTL's core is linear in `s = xL − xR` and `g/2`
+with no 0/1 assumption anywhere except `get_allele_stats` (reporting) and the MAF filter
+(off by default). So:
+
+| class | lead-scan row | second pass |
+|---|---|---|
+| biallelic SNP | xL/xR = 0/1 | — |
+| STR | xL/xR = repeat length per haplotype (reference-relative repeat units; unphased → xL = xR = mean, s = 0) | linear + curvature |
+| multi-ALT SNV / indel | one split row per ALT allele (allele-k indicator per haplotype), i.e. what `bcftools norm -m-` would test — these rows were previously **dropped entirely** by the VCF reader | categorical |
+
+STR leads recover β per repeat unit (0.339 / −0.302 / 0.336 for planted 0.35 / −0.30 /
+0.35, the third unphased and carried by the total channel alone); the eSNP path is
+unchanged; split rows can win the lead.
+
+**Second pass, STRs: linear + curvature.** Per haplotype `f(L) = b1 L + b2 L²`, centred
+and winsorized at the 1st/99th percentile so a few long alleles do not own the squared
+column. The square goes on the *haplotype*: the total row is `(f(L_A) + f(L_B))/2`, so the
+squared column is `(L_A² + L_B²)/2`, **not** `((L_A+L_B)/2)²` — the two differ by
+`(L_A − L_B)²/4`, a heterozygosity term the ASE channel cannot share. `b2` is a 1-df
+curvature test (same sign as `b1` = accelerating, opposite = saturating); the linear-only
+fit is reported alongside and equals the lead-scan slope to 3 decimals. Planted `b2 = 0.12`
+recovered as 0.122 (phased, p = 2e-20) and 0.131 (unphased, total channel only, p = 5e-10);
+the three linear eSTRs show `b2` of −0.008 / 0.000 / −0.012 with p 0.55–0.98.
+
+**Second pass, multi-ALT non-repeat sites: categorical.** The K−1 split rows fitted
+*jointly* by a stacked known-variance GLS (for p = 1 this is exactly the IVW meta-analysis
+the lead scan uses). Each `beta_k` is the log aFC of allele k against a clean reference
+allele; a 1/2 heterozygote estimates `beta_1 − beta_2` through the ASE channel directly;
+the joint F test on K−1 df asks whether allele identity matters with no ordering assumed.
+Alleles below `min_hap` carrier haplotypes are pooled into `other`, or treated as missing if
+even the pool is too small.
+
+| site | planted (ALT1, ALT2) | joint fit | lead-scan marginal row |
+|---|---|---|---|
+| ALT2-only | (0, 0.5) | −0.077 ± 0.043, 0.476 ± 0.056; joint p = 6e-16 | 0.497 |
+| opposite | (0.4, −0.4) | 0.361 ± 0.051, −0.352 ± 0.052; joint p = 2e-22 | ALT1 row: **0.451** |
+| null (+2% ALT3) | (0, 0, 0) | 0.031, 0.036; joint p = 0.63; ALT3 → missing | — |
+
+The "opposite" row is the point: the marginal split-row slope for ALT1 is biased to 0.451
+because its "not ALT1" reference group is 20% ALT2 haplotypes carrying −0.4; the joint fit
+gives the clean 0.361 (truth 0.40, within 1 SE).
+
+**What was deliberately *not* done.** No shared lead selection across models (the scan stays
+1 df per row), no default categorical-vs-linear test for STRs (HipSTR alleles are
+sequences, so that comparison conflates interruption heterogeneity with curvature), and no
+multi-df p-values fed into the beta approximation.
+
+**Found on the way: `map_cis` reported an approximate slope.** `map_cis` reconstructed the
+lead slope tensorQTL-style as `r_nominal · sqrt(pheno_var / geno_var)`. That identity holds
+for OLS but not for the known-variance GLS statistic, so the reported lead slope disagreed
+with `map_nominal`'s exact IVW slope by several percent (STR0: 0.313 vs 0.339; the eSNP:
+0.631 vs 0.611, truth 0.60). Fixed by defining `std_ratio` so the reconstruction returns
+the exact slope `(xy_a + xy_t)/(xx_a + xx_t)` and SE `1/sqrt(xx_a + xx_t)`; p-values are
+unchanged (the r² mapping is monotone). This matters for the effect-size concordance axis
+(§9), which compares slopes, not p-values.
+
 ## 8. Recommendations
 
 1. **Change the default to `tau_mode='estimate'`** in `map_nominal`, `map_cis`, and
@@ -825,6 +888,8 @@ expression but not the genotypes.
 python3 tests/ase_validation.py --reps 1500 --N 200 --tiers 0,1,2,3 --out results.json
 # fast smoke (~1 min):
 python3 tests/ase_validation.py --reps 60 --tiers 0
+# §7j: STR + multiallelic encoding, lead scan, both second-pass models (~1 min):
+python3 scripts/str_integrate.py --selftest
 ```
 
 ## Hosting the annotatable report

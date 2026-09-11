@@ -918,6 +918,69 @@
     identify φ — CSeQTL states it directly. Including them: <strong>0.383 → 0.788</strong>.</p>
   </div>
 
+  <h2><span class="tier">§7j</span> Beyond biallelic SNPs: STRs and multiallelic sites</h2>
+  <p class="lede">Three variant classes, three treatments, one whitening. The lead scan
+  needs <strong>no model change</strong>: hapmixQTL's core is linear in
+  <code>s = xL − xR</code> and <code>g/2</code>, and nothing assumes 0/1 except the
+  allele-stat reporting and the (off by default) MAF filter. Encoder:
+  <code>scripts/str_integrate.py</code>; models: <code>map_str_curvature</code> and
+  <code>map_multiallelic</code>. Numbers are from <code>--selftest</code> (N = 200, planted
+  effects, the real <code>map_cis</code> and real second-pass code on the same data).</p>
+
+  <p><strong>STRs</strong> enter the scan as per-haplotype repeat length (reference-relative
+  repeat units), so β is log aFC <em>per repeat unit</em> and the ASE channel asks whether
+  the longer haplotype expresses more. Planted 0.35 / −0.30 / 0.35 recovered as 0.339 /
+  −0.302 / 0.336, the third unphased and carried by the total channel alone. The second
+  pass fits <code>f(L) = b1·L + b2·L²</code> <strong>per haplotype</strong>: the squared
+  column of the total row is <code>(L_A² + L_B²)/2</code>, not <code>((L_A+L_B)/2)²</code>
+  — the two differ by a heterozygosity term the ASE channel cannot share. <code>b2</code>
+  is a 1-df curvature test. Planted 0.12 → 0.122 (phased, p = 2e-20) and 0.131 (unphased,
+  total only, p = 5e-10); linear eSTRs give |b2| ≤ 0.012, p 0.55–0.98. The linear-only fit
+  equals the lead-scan slope to three decimals.</p>
+
+  <p><strong>Multi-ALT non-repeat sites</strong> (SNVs, indels) were previously
+  <strong>dropped entirely</strong> by the VCF reader. They now enter the scan as one split
+  row per ALT allele — what <code>bcftools norm -m-</code> would test — and the second pass
+  fits those K−1 rows <em>jointly</em>: each β<sub>k</sub> is log aFC of allele k against a
+  clean reference allele, a 1/2 heterozygote estimates β<sub>1</sub> − β<sub>2</sub> through
+  the ASE channel directly, and the joint F test on K−1 df asks whether allele identity
+  matters with no ordering assumed.</p>
+</section>
+
+<div class="col">
+  <div class="tablebox">
+    <table>
+      <caption>Categorical second pass vs the marginal split row, tri-allelic sites, N = 200</caption>
+      <thead><tr><th>site</th><th>planted (ALT1, ALT2)</th><th>joint fit β ± se</th><th>joint p</th><th>lead-scan marginal row</th></tr></thead>
+      <tbody>
+        <tr><td>ALT2-only effect</td><td>(0, 0.5)</td><td>−0.077 ± 0.043, <strong>0.476 ± 0.056</strong></td><td class="good">6e-16</td><td>0.497</td></tr>
+        <tr><td>opposite effects</td><td>(0.4, −0.4)</td><td class="good"><strong>0.361 ± 0.051, −0.352 ± 0.052</strong></td><td class="good">2e-22</td><td class="bad">ALT1 row: 0.451</td></tr>
+        <tr><td>null, + 2% ALT3</td><td>(0, 0, 0)</td><td>0.031, 0.036 (ALT3 → missing)</td><td>0.63</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<section class="col">
+  <p><strong>The "opposite" row is the point.</strong> The marginal split-row slope for ALT1
+  is biased to 0.451 because its "not ALT1" reference group is 20% ALT2 haplotypes carrying
+  −0.4; the joint fit returns the clean 0.361 (truth 0.40, within one SE). Deliberately
+  <em>not</em> done: shared lead selection across models, a default categorical-vs-linear
+  test for STRs (HipSTR alleles are sequences, so that would conflate interruption
+  heterogeneity with curvature), and multi-df p-values inside the beta approximation.</p>
+
+  <div class="headline" style="border-left-color:var(--warn)">
+    <p style="font-size:1.02rem">Found on the way: <code>map_cis</code> reported an approximate slope.</p>
+    <p>It reconstructed the lead slope tensorQTL-style as
+    <code>r_nominal · sqrt(pheno_var / geno_var)</code>. That identity holds for OLS but not
+    for the known-variance GLS statistic, so the lead slope disagreed with
+    <code>map_nominal</code>'s exact IVW slope by several percent (STR0: 0.313 vs 0.339; the
+    eSNP: 0.631 vs 0.611, truth 0.60). Fixed so the reconstruction returns the exact slope
+    <code>(xy_a + xy_t)/(xx_a + xx_t)</code> and SE <code>1/sqrt(xx_a + xx_t)</code>;
+    p-values are unchanged. This matters for the effect-size concordance axis in §9, which
+    compares slopes, not p-values.</p>
+  </div>
+
   <h2><span class="tier">§8</span> Recommendations</h2>
   <ol class="recs">
     <li>Change the default to <code>tau_mode='estimate'</code> in <code>map_nominal</code>,

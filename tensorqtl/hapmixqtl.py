@@ -394,6 +394,35 @@ def _warn_tau_zero(tau_mode):
             RuntimeWarning, stacklevel=3)
 
 
+def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device):
+    """
+    Per-phenotype whitening shared by every mapping function.
+
+    Estimates tau per channel (unless tau_mode='zero'), builds the sqrt
+    weights w_i = 1/(v_inf_i + tau) with zero-coverage ASE samples zeroed
+    out, and the weighted residualizers that project out the intercept and
+    covariates. Any second-pass regression that reuses this is whitened
+    exactly like the lead scan.
+
+    Returns:
+        sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
+    """
+    _warn_tau_zero(tau_mode)
+    if tau_mode == 'estimate':
+        tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
+        tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
+        sqrt_wa_t = _zero_degenerate_ase_weights(
+            torch.sqrt(1.0 / (va_t + tau_a)), va_t)
+        sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
+    else:
+        sqrt_wa_t = _zero_degenerate_ase_weights(
+            torch.sqrt(1.0 / va_t), va_t)
+        sqrt_wt_t = torch.sqrt(1.0 / vt_t)
+    residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
+    residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t)
+    return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
+
+
 def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
                                  sqrt_wa_t, sqrt_wt_t,
                                  residualizer_a, residualizer_t,
@@ -478,8 +507,9 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     variances are similar across samples.
 
     Returns:
-        r_nominal:  signed correlation for best variant (scalar)
-        std_ratio:  sqrt(pheno_var/geno_var) for best variant (scalar)
+        r_nominal:  signed correlation-scale statistic for best variant (scalar)
+        std_ratio:  factor with r_nominal * std_ratio == the known-variance
+                    GLS slope of the best variant (scalar; see below)
         best_ix:    index of best variant (scalar)
         r2_perm_t:  max r^2 per permutation [nperm]
         g_best:     genotype vector for best variant [N]
@@ -531,9 +561,16 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     r2_nominal = tstat2_best / (tstat2_best + dof)
     r_nominal = torch.sign(slope_nom) * torch.sqrt(r2_nominal.clamp(min=0))
 
-    pheno_var = yy_a_nom / a_star_res.shape[1] + yy_t_nom / t_star_res.shape[1]
-    geno_var = xx_a[best_ix] / s_star_res.shape[1] + xx_t[best_ix] / g_half_star_res.shape[1]
-    std_ratio = torch.sqrt(pheno_var / (geno_var + 1e-30))
+    # std_ratio is defined so that the caller's tensorQTL-style reconstruction
+    #     slope    = r_nominal * std_ratio
+    #     slope_se = |slope| / sqrt(dof * r2 / (1 - r2)) = |slope| / sqrt(tstat2)
+    # returns EXACTLY the known-variance GLS slope (xy_a + xy_t)/(xx_a + xx_t)
+    # and its SE 1/sqrt(xx_a + xx_t), i.e. the same estimator map_nominal
+    # reports. (The OLS identity slope = r * sd_y/sd_x does not hold for the
+    # known-variance GLS statistic, so sqrt(pheno_var/geno_var) would give an
+    # approximate slope that disagrees with map_nominal by several percent.)
+    std_ratio = torch.where(r_nominal.abs() > 0, slope_nom / r_nominal,
+                            torch.zeros_like(slope_nom))
 
     # --- Permutation statistics ---
     nperm = permutation_ix_t.shape[0]
@@ -772,20 +809,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
             vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
 
-            _warn_tau_zero(tau_mode)
-            if tau_mode == 'estimate':
-                tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
-                tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
-                sqrt_wa_t = _zero_degenerate_ase_weights(
-                    torch.sqrt(1.0 / (va_t + tau_a)), va_t)
-                sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
-            else:
-                sqrt_wa_t = _zero_degenerate_ase_weights(
-                    torch.sqrt(1.0 / va_t), va_t)
-                sqrt_wt_t = torch.sqrt(1.0 / vt_t)
-
-            residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
-            residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+            sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
+                a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
 
             genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -985,20 +1010,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
 
-        _warn_tau_zero(tau_mode)
-        if tau_mode == 'estimate':
-            tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
-            tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
-            sqrt_wa_t = _zero_degenerate_ase_weights(
-                    torch.sqrt(1.0 / (va_t + tau_a)), va_t)
-            sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
-        else:
-            sqrt_wa_t = _zero_degenerate_ase_weights(
-                    torch.sqrt(1.0 / va_t), va_t)
-            sqrt_wt_t = torch.sqrt(1.0 / vt_t)
-
-        residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
-        residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+        sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
+            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1242,20 +1255,8 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
 
-        _warn_tau_zero(tau_mode)
-        if tau_mode == 'estimate':
-            tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
-            tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
-            sqrt_wa_t = _zero_degenerate_ase_weights(
-                    torch.sqrt(1.0 / (va_t + tau_a)), va_t)
-            sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
-        else:
-            sqrt_wa_t = _zero_degenerate_ase_weights(
-                    torch.sqrt(1.0 / va_t), va_t)
-            sqrt_wt_t = torch.sqrt(1.0 / vt_t)
-
-        residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
-        residualizer_tc = WeightedResidualizer(covariates_t, sqrt_wt_t)
+        sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
+            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1370,3 +1371,456 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         for key in drop_ids:
             del susie_res[key]
         return susie_summary, susie_res
+
+
+# ---------------------------------------------------------------------------
+#  Second-pass regressions: multi-column joint GLS for one locus
+# ---------------------------------------------------------------------------
+#
+# The lead scan tests one column per variant. Two kinds of loci carry more
+# than one column's worth of information and get a SECOND regression after
+# the scan, whitened identically (same tau, weights, residualizers):
+#
+#   * multiallelic non-repeat sites (multi-ALT SNVs, indels): a CATEGORICAL
+#     model with one indicator per non-reference allele, i.e. the K-1
+#     split-biallelic rows fitted JOINTLY. Each beta_k is the log aFC of
+#     allele k against a clean reference allele (the marginal split-row fit
+#     lumps the other ALT alleles into "not k"); a 1/2 heterozygote
+#     estimates beta_1 - beta_2 directly through the ASE channel; and the
+#     joint K-1 df test asks whether allele identity matters at all, with no
+#     ordering assumed. See map_multiallelic.
+#
+#   * STRs: a LINEAR + CURVATURE model in repeat length, per haplotype
+#     f(L) = b1 L + b2 L^2. Because hapmixQTL shares one per-haplotype effect
+#     across both channels the square goes on the HAPLOTYPE: the total row is
+#     (f(L_A) + f(L_B))/2, so the squared column is (L_A^2 + L_B^2)/2 and NOT
+#     ((L_A+L_B)/2)^2 (the two differ by (L_A-L_B)^2/4, a heterozygosity term
+#     the ASE channel cannot share); the ASE row is f(L_A) - f(L_B). b2 is a
+#     1-df curvature test. See map_str_curvature.
+#
+# Neither touches lead selection: the scan stays 1 df per variant (the
+# linear-in-length row for an STR, the split rows for a multiallelic site).
+#
+# For one shared coefficient vector beta [p] the stacked whitened design is
+#     y = [a*; t*]    X = [Xa*; Xt*]    (2N pseudo-samples, block-diag cov)
+# and known-variance GLS gives beta = (X'X)^-1 X'y, Var = (X'X)^-1, which for
+# p = 1 is exactly the inverse-variance meta-analysis of the two channel fits
+# that the lead scan uses.
+
+
+def _gls_solve(X, y, xx_pre, robust=False, dof_robust=None):
+    """
+    Known-variance GLS on whitened, residualized data.
+
+    Args:
+        X:      [p, M] predictors (float64 numpy)
+        y:      [M] response
+        xx_pre: [p] predictor norms BEFORE residualization (estimability gate,
+                same criterion as _wls_regression)
+        robust: HC1 sandwich covariance instead of (X'X)^-1
+
+    Returns:
+        beta [p] (NaN where not estimable), cov [p, p] (NaN likewise),
+        estimable [p] bool, rank_ok bool (False -> everything NaN: the
+        estimable columns are collinear, e.g. two alleles carried by the
+        same handful of samples)
+    """
+    p = X.shape[0]
+    beta = np.full(p, np.nan)
+    cov = np.full((p, p), np.nan)
+    xx = (X * X).sum(1)
+    est = xx > 1e-12 * np.maximum(xx_pre, 1e-30)
+    if not est.any():
+        return beta, cov, est, True
+    Xe = X[est]
+    XtX = Xe @ Xe.T
+    ev = np.linalg.eigvalsh(XtX)
+    if ev[0] <= 1e-10 * ev[-1]:
+        return beta, cov, est, False
+    XtX_inv = np.linalg.inv(XtX)
+    b = XtX_inv @ (Xe @ y)
+    if robust:
+        e = y - b @ Xe
+        meat = (Xe * e) @ (Xe * e).T
+        M = Xe.shape[1]
+        corr = M / max(dof_robust if dof_robust else M - Xe.shape[0], 1)
+        c = XtX_inv @ meat @ XtX_inv * corr
+    else:
+        c = XtX_inv
+    ix = np.where(est)[0]
+    beta[ix] = b
+    cov[np.ix_(ix, ix)] = c
+    return beta, cov, est, True
+
+
+def _joint_gls(Xa_t, Xt_t, a_t, t_t, sqrt_wa_t, sqrt_wt_t,
+               residualizer_a, residualizer_t, robust=False, n_cov=0):
+    """
+    Joint known-variance GLS of a shared coefficient vector across channels,
+    plus the same design fitted within each channel alone.
+
+    Args:
+        Xa_t: [p, N] ASE-channel predictors (per-haplotype contrasts)
+        Xt_t: [p, N] total-channel predictors (per-haplotype means)
+        a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizers: as in
+            calculate_hapmixqtl_nominal
+
+    Returns dict with beta, cov, chi2 (Wald on the estimable columns),
+    estimable, rank_ok, and per-channel beta_a, cov_a, beta_t, cov_t.
+    """
+    a_star = (a_t * sqrt_wa_t).unsqueeze(0)
+    t_star = (t_t * sqrt_wt_t).unsqueeze(0)
+    Xa_star = Xa_t * sqrt_wa_t.unsqueeze(0)
+    Xt_star = Xt_t * sqrt_wt_t.unsqueeze(0)
+    pre_a = (Xa_star * Xa_star).sum(1)
+    pre_t = (Xt_star * Xt_star).sum(1)
+    Xa = residualizer_a.transform(Xa_star).double().cpu().numpy()
+    Xt = residualizer_t.transform(Xt_star).double().cpu().numpy()
+    ya = residualizer_a.transform(a_star).double().cpu().numpy()[0]
+    yt = residualizer_t.transform(t_star).double().cpu().numpy()[0]
+    pre_a = pre_a.double().cpu().numpy(); pre_t = pre_t.double().cpu().numpy()
+    N = Xa.shape[1]; p = Xa.shape[0]
+    X = np.concatenate([Xa, Xt], axis=1)
+    y = np.concatenate([ya, yt])
+    dof_rob = 2 * N - 2 * (1 + n_cov) - p
+    beta, cov, est, ok = _gls_solve(X, y, pre_a + pre_t, robust, dof_rob)
+    chi2 = np.nan
+    if ok and est.any():
+        ix = np.where(est)[0]
+        b = beta[ix]
+        chi2 = float(b @ np.linalg.solve(cov[np.ix_(ix, ix)], b))
+    beta_a, cov_a, _, _ = _gls_solve(Xa, ya, pre_a, robust, N - (1 + n_cov) - p)
+    beta_t, cov_t, _, _ = _gls_solve(Xt, yt, pre_t, robust, N - (1 + n_cov) - p)
+    return dict(beta=beta, cov=cov, chi2=chi2, estimable=est, rank_ok=ok,
+                beta_a=beta_a, cov_a=cov_a, beta_t=beta_t, cov_t=cov_t)
+
+
+def _categorical_design(hapA, hapB, phased, min_hap):
+    """
+    Per-haplotype allele indicators for one multiallelic site.
+
+    Args:
+        hapA, hapB: [N] int allele index per haplotype, -1 = missing
+        phased:     [N] bool; unphased heterozygotes contribute no ASE contrast
+        min_hap:    alleles carried by fewer haplotypes are pooled into an
+                    'other' column; if even the pool is below min_hap those
+                    haplotypes are treated as missing
+
+    Returns None if nothing is testable, else dict with Xa [p,N], Xt [p,N],
+    labels (allele index as str, or 'other'), ref, n_hap [p] (called carrier
+    haplotypes per column), n_alleles (observed), n_missing_hap, pooled.
+    Missing haplotypes get the mean-imputed indicator (allele frequency) in
+    the total channel and a zero ASE contrast, mirroring mean-imputed dosage.
+    """
+    hapA = hapA.astype(int).copy(); hapB = hapB.astype(int).copy()
+    haps = np.concatenate([hapA[hapA >= 0], hapB[hapB >= 0]])
+    if haps.size == 0:
+        return None
+    alleles, counts = np.unique(haps, return_counts=True)
+    ref = int(alleles[np.argmax(counts)])
+    others = [(int(al), int(c)) for al, c in zip(alleles, counts) if al != ref]
+    cols = [(str(al), [al]) for al, c in others if c >= min_hap]
+    rare = [al for al, c in others if c < min_hap]
+    pooled = False
+    if rare:
+        if sum(c for al, c in others if c < min_hap) >= min_hap:
+            cols.append(('other', rare)); pooled = True
+        else:
+            hapA[np.isin(hapA, rare)] = -1
+            hapB[np.isin(hapB, rare)] = -1
+    if not cols:
+        return None
+    N = hapA.shape[0]; p = len(cols)
+    mA = hapA < 0; mB = hapB < 0
+    eA = np.zeros((p, N)); eB = np.zeros((p, N))
+    for j, (_, members) in enumerate(cols):
+        eA[j] = np.isin(hapA, members); eB[j] = np.isin(hapB, members)
+    n_hap = eA[:, ~mA].sum(1) + eB[:, ~mB].sum(1)
+    n_called = (~mA).sum() + (~mB).sum()
+    freq = n_hap / max(n_called, 1)
+    eA[:, mA] = freq[:, None]; eB[:, mB] = freq[:, None]
+    Xt = (eA + eB) / 2.0
+    Xa = (eA - eB) * (phased & ~mA & ~mB)[None, :]
+    return dict(Xa=Xa, Xt=Xt, labels=[c[0] for c in cols], ref=ref,
+                n_hap=n_hap.astype(int), n_alleles=int(len(alleles)),
+                n_missing_hap=int(mA.sum() + mB.sum()), pooled=pooled)
+
+
+def _str_design(LA, LB, phased, winsor=(0.01, 0.99)):
+    """
+    Per-haplotype [L, L^2] basis for one STR, centered on the cohort mean
+    haplotype length (winsorized first so a few long alleles do not own the
+    squared column).
+
+    Args:
+        LA, LB: [N] float repeat lengths in repeat units, NaN = missing
+        phased: [N] bool
+
+    Returns None if there is no length variation, else dict with Xa [2,N],
+    Xt [2,N], center, lo, hi, n_called, n_phased. Missing samples get the
+    mean-imputed basis in the total channel and a zero ASE contrast.
+    """
+    called = ~(np.isnan(LA) | np.isnan(LB))
+    if called.sum() < 3:
+        return None
+    haps = np.concatenate([LA[called], LB[called]])
+    if winsor:
+        lo, hi = np.quantile(haps, winsor)
+    else:
+        lo, hi = haps.min(), haps.max()
+    la = np.clip(LA, lo, hi); lb = np.clip(LB, lo, hi)
+    c = float(np.clip(haps, lo, hi).mean())
+    la = la - c; lb = lb - c
+    fA = np.stack([la, la ** 2]); fB = np.stack([lb, lb ** 2])
+    basis_mean = np.concatenate([fA[:, called], fB[:, called]], axis=1).mean(1)
+    fA[:, ~called] = basis_mean[:, None]; fB[:, ~called] = basis_mean[:, None]
+    if np.std(fA[0, called] + fB[0, called]) < 1e-9:
+        return None
+    Xt = (fA + fB) / 2.0
+    Xa = (fA - fB) * (phased & called)[None, :]
+    return dict(Xa=Xa, Xt=Xt, center=c, lo=float(lo), hi=float(hi),
+                n_called=int(called.sum()), n_phased=int((phased & called).sum()))
+
+
+def _cis_sites(site_chrom, site_pos, phenotype_pos_df, window):
+    """Per phenotype, indices of sites within the cis window (and the
+    phenotype start used for distances)."""
+    import bisect
+    site_chrom = np.asarray(site_chrom).astype(str)
+    site_pos = np.asarray(site_pos).astype(int)
+    by_chrom = {}
+    for c in np.unique(site_chrom):
+        ix = np.where(site_chrom == c)[0]
+        o = np.argsort(site_pos[ix], kind='stable')
+        by_chrom[c] = (site_pos[ix][o], ix[o])
+    if 'pos' in phenotype_pos_df:
+        starts = phenotype_pos_df['pos'].astype(int); ends = starts
+    else:
+        starts = phenotype_pos_df['start'].astype(int)
+        ends = phenotype_pos_df['end'].astype(int)
+    chrs = phenotype_pos_df['chr'].astype(str)
+    out = {}
+    for pid in phenotype_pos_df.index:
+        c = chrs[pid]
+        if c not in by_chrom:
+            continue
+        pos_sorted, ix_sorted = by_chrom[c]
+        lb = bisect.bisect_left(pos_sorted, starts[pid] - window)
+        ub = bisect.bisect_right(pos_sorted, ends[pid] + window)
+        if ub > lb:
+            out[pid] = (ix_sorted[lb:ub], int(starts[pid]))
+    return out
+
+
+def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
+                 A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
+                 covariates_df=None, window=1000000, tau_mode='estimate',
+                 se_mode='model', logger=None, verbose=True):
+    """Shared per-phenotype driver: whiten once per gene, call fit_site for
+    every site in the cis window, collect its row dicts."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if logger is None:
+        logger = SimpleLogger()
+    samples = A_df.columns
+    N = len(samples)
+    for df, name in ((T_df, 'T'), (Va_df, 'Va'), (Vt_df, 'Vt')):
+        assert A_df.columns.equals(df.columns), f"Sample mismatch between A and {name}"
+        assert A_df.index.equals(df.index), f"Phenotype mismatch between A and {name}"
+    missing = [s for s in samples if s not in set(site_samples)]
+    assert not missing, f"{len(missing)} phenotype samples absent from the site data, e.g. {missing[:3]}"
+    site_ix = np.array([list(site_samples).index(s) for s in samples])
+    if covariates_df is not None:
+        assert np.all(samples == covariates_df.index), \
+            "Covariate samples must match phenotype samples"
+        covariates_t = torch.tensor(covariates_df.values, dtype=torch.float32).to(device)
+        n_cov = covariates_df.shape[1]
+    else:
+        covariates_t = None; n_cov = 0
+    robust = se_mode == 'robust'
+    pos_df = phenotype_pos_df.loc[phenotype_pos_df.index.isin(A_df.index)]
+    cis = _cis_sites(site_chrom, site_pos, pos_df, window)
+    logger.write(f'hapmixQTL second pass ({kind})')
+    logger.write(f'  * {N} samples, {len(A_df)} phenotypes, {n_sites} sites, '
+                 f'{len(cis)} phenotypes with a site in the cis-window (±{window:,})')
+    logger.write(f'  * tau mode: {tau_mode}; SE mode: {se_mode}')
+    pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
+    rows = []
+    t0 = time.time()
+    for n, (pid, (sites, start)) in enumerate(cis.items(), 1):
+        pidx = pheno_ix[pid]
+        a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
+        t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        sqrt_wa_t, sqrt_wt_t, res_a, res_t = _prepare_channels(
+            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
+        ctx = dict(a_t=a_t, t_t=t_t, sqrt_wa_t=sqrt_wa_t, sqrt_wt_t=sqrt_wt_t,
+                   res_a=res_a, res_t=res_t, robust=robust, n_cov=n_cov, N=N,
+                   device=device, site_ix=site_ix, pid=pid, start=start)
+        for j in sites:
+            rows.extend(fit_site(int(j), ctx))
+        if verbose and n % 500 == 0:
+            logger.write(f'    {n}/{len(cis)} phenotypes, {(time.time() - t0) / 60:.1f} min')
+    logger.write(f'  * done: {len(rows)} rows in {(time.time() - t0) / 60:.2f} min')
+    return rows
+
+
+def _fit_design(design, ctx):
+    """Run _joint_gls on a numpy design dict built for the site's samples."""
+    Xa = torch.tensor(design['Xa'], dtype=torch.float32).to(ctx['device'])
+    Xt = torch.tensor(design['Xt'], dtype=torch.float32).to(ctx['device'])
+    return _joint_gls(Xa, Xt, ctx['a_t'], ctx['t_t'], ctx['sqrt_wa_t'], ctx['sqrt_wt_t'],
+                      ctx['res_a'], ctx['res_t'], robust=ctx['robust'], n_cov=ctx['n_cov'])
+
+
+def _pvals(fit, N, n_cov):
+    """Joint F p-value on the estimable columns and per-coefficient t p-values,
+    with dof = N - 1 - n_cov - p (p = 1 reproduces the lead scan's dof)."""
+    p = int(fit['estimable'].sum())
+    dof = max(N - 1 - n_cov - p, 1)
+    se = np.sqrt(np.diag(fit['cov']))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        t = fit['beta'] / se
+    p_coef = np.where(np.isfinite(t), 2 * stats.t.sf(np.abs(t), dof), np.nan)
+    p_joint = stats.f.sf(fit['chi2'] / p, p, dof) if (fit['rank_ok'] and p > 0
+                                                       and np.isfinite(fit['chi2'])) else np.nan
+    return p_joint, p, dof, se, p_coef
+
+
+def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_df,
+                     phenotype_pos_df, hap_phased=None, covariates_df=None,
+                     window=1000000, min_hap=10, tau_mode='estimate',
+                     se_mode='model', logger=None, verbose=True):
+    """
+    Categorical (per-allele) cis-QTL test for multiallelic non-repeat sites:
+    the K-1 split-biallelic rows of a site fitted jointly.
+
+    Args:
+        hap_alleles: [n_sites, n_samples, 2] int allele index per haplotype
+                     (0 = REF, k = k-th ALT), -1 = missing
+        site_df:     DataFrame indexed by site id with columns chrom, pos
+        site_samples: sample order of hap_alleles' second axis
+        hap_phased:  [n_sites, n_samples] bool (default all phased); an
+                     unphased heterozygote keeps its total-channel row and
+                     contributes no ASE contrast
+        min_hap:     alleles carried by fewer haplotypes are pooled into an
+                     'other' column (or, if the pool is still too small,
+                     treated as missing)
+        window, covariates_df, tau_mode, se_mode: as in map_nominal
+
+    Returns:
+        site_res_df: one row per (phenotype, site): n_alleles, n_tested,
+            ref_allele, pooled_other, pval_joint (F on n_tested df), chi2, dof,
+            rank_deficient
+        allele_res_df: one row per (phenotype, site, allele): n_hap, slope
+            (log aFC of the allele vs the reference allele), slope_se, pval,
+            and the same fit within each channel alone (slope_a/slope_t)
+    """
+    hap_alleles = np.asarray(hap_alleles)
+    if hap_phased is None:
+        hap_phased = np.ones(hap_alleles.shape[:2], bool)
+    hap_phased = np.asarray(hap_phased, bool)
+    site_ids = np.asarray(site_df.index)
+    site_res, allele_res = [], []
+
+    def fit_site(j, ctx):
+        ix = ctx['site_ix']
+        d = _categorical_design(hap_alleles[j, ix, 0], hap_alleles[j, ix, 1],
+                                hap_phased[j, ix], min_hap)
+        if d is None:
+            return []
+        fit = _fit_design(d, ctx)
+        p_joint, p, dof, se, p_coef = _pvals(fit, ctx['N'], ctx['n_cov'])
+        se_a = np.sqrt(np.diag(fit['cov_a'])); se_t = np.sqrt(np.diag(fit['cov_t']))
+        site_res.append(dict(
+            phenotype_id=ctx['pid'], site_id=site_ids[j],
+            start_distance=int(site_df['pos'].iloc[j]) - ctx['start'],
+            n_alleles=d['n_alleles'], n_tested=p, ref_allele=d['ref'],
+            pooled_other=d['pooled'], n_missing_hap=d['n_missing_hap'],
+            pval_joint=p_joint, chi2=fit['chi2'], dof=dof,
+            rank_deficient=not fit['rank_ok']))
+        for k, lab in enumerate(d['labels']):
+            allele_res.append(dict(
+                phenotype_id=ctx['pid'], site_id=site_ids[j], allele=lab,
+                n_hap=int(d['n_hap'][k]), slope=fit['beta'][k], slope_se=se[k],
+                pval=p_coef[k], slope_a=fit['beta_a'][k], slope_a_se=se_a[k],
+                slope_t=fit['beta_t'][k], slope_t_se=se_t[k]))
+        return [1]
+
+    _second_pass('categorical, multiallelic sites', len(site_df),
+                 site_df['chrom'].values, site_df['pos'].values, site_samples,
+                 A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
+                 covariates_df, window, tau_mode, se_mode, logger, verbose)
+    site_cols = ['phenotype_id', 'site_id', 'start_distance', 'n_alleles', 'n_tested',
+                 'ref_allele', 'pooled_other', 'n_missing_hap', 'pval_joint', 'chi2',
+                 'dof', 'rank_deficient']
+    allele_cols = ['phenotype_id', 'site_id', 'allele', 'n_hap', 'slope', 'slope_se',
+                   'pval', 'slope_a', 'slope_a_se', 'slope_t', 'slope_t_se']
+    return (pd.DataFrame(site_res, columns=site_cols),
+            pd.DataFrame(allele_res, columns=allele_cols))
+
+
+def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_df, Vt_df,
+                      phenotype_pos_df, covariates_df=None, window=1000000,
+                      winsor=(0.01, 0.99), tau_mode='estimate', se_mode='model',
+                      logger=None, verbose=True):
+    """
+    Linear + curvature cis-QTL model for STRs: per haplotype
+    f(L) = b1 (L - c) + b2 (L - c)^2 in repeat units, c = cohort mean length.
+
+    The linear-only fit (slope_lin) is the same model the lead scan applies
+    to the STR's linear-in-length row and should reproduce its slope (up to
+    winsorization). b2 (slope_sq) tests curvature on 1 df: same sign as b1
+    means the per-unit effect accelerates with length, opposite sign means it
+    saturates. pval_joint2 is the 2-df test of the whole quadratic model.
+
+    Args:
+        str_len:    [n_str, n_samples, 2] float repeat lengths in repeat units
+                    per haplotype, NaN = missing
+        str_phased: [n_str, n_samples] bool
+        str_df:     DataFrame indexed by STR id with columns chrom, pos
+        site_samples: sample order of str_len's second axis
+        winsor:     quantiles at which haplotype lengths are clipped before
+                    building the basis (None = no clipping)
+        window, covariates_df, tau_mode, se_mode: as in map_nominal
+
+    Returns one row per (phenotype, STR).
+    """
+    str_len = np.asarray(str_len, float)
+    str_phased = np.asarray(str_phased, bool)
+    str_ids = np.asarray(str_df.index)
+    out = []
+
+    def fit_site(j, ctx):
+        ix = ctx['site_ix']
+        d = _str_design(str_len[j, ix, 0], str_len[j, ix, 1], str_phased[j, ix], winsor)
+        if d is None:
+            return []
+        lin = _fit_design(dict(Xa=d['Xa'][:1], Xt=d['Xt'][:1]), ctx)
+        p_lin, _, _, se_lin, _ = _pvals(lin, ctx['N'], ctx['n_cov'])
+        quad = _fit_design(d, ctx)
+        p_joint, p, dof, se, p_coef = _pvals(quad, ctx['N'], ctx['n_cov'])
+        se_a = np.sqrt(np.diag(quad['cov_a'])); se_t = np.sqrt(np.diag(quad['cov_t']))
+        out.append(dict(
+            phenotype_id=ctx['pid'], str_id=str_ids[j],
+            start_distance=int(str_df['pos'].iloc[j]) - ctx['start'],
+            n_called=d['n_called'], n_phased=d['n_phased'],
+            len_center=d['center'], len_lo=d['lo'], len_hi=d['hi'],
+            slope_lin=lin['beta'][0], slope_lin_se=se_lin[0], pval_lin=p_lin,
+            slope_l=quad['beta'][0], slope_l_se=se[0],
+            slope_sq=quad['beta'][1], slope_sq_se=se[1], pval_curv=p_coef[1],
+            slope_sq_a=quad['beta_a'][1], slope_sq_a_se=se_a[1],
+            slope_sq_t=quad['beta_t'][1], slope_sq_t_se=se_t[1],
+            pval_joint2=p_joint, rank_deficient=not quad['rank_ok']))
+        return [1]
+
+    _second_pass('linear + curvature, STRs', len(str_df),
+                 str_df['chrom'].values, str_df['pos'].values, site_samples,
+                 A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
+                 covariates_df, window, tau_mode, se_mode, logger, verbose)
+    cols = ['phenotype_id', 'str_id', 'start_distance', 'n_called', 'n_phased',
+            'len_center', 'len_lo', 'len_hi', 'slope_lin', 'slope_lin_se', 'pval_lin',
+            'slope_l', 'slope_l_se', 'slope_sq', 'slope_sq_se', 'pval_curv',
+            'slope_sq_a', 'slope_sq_a_se', 'slope_sq_t', 'slope_sq_t_se',
+            'pval_joint2', 'rank_deficient']
+    return pd.DataFrame(out, columns=cols)
