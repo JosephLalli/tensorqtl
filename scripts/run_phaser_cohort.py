@@ -14,6 +14,16 @@ the DNA library (`589_D1`), not the subject and not the RNA library -- see
 scripts/brainvar_pairing.py for why those three disagree and why joining them
 by name pairs the wrong donors.
 
+Two more defaults are wrong for this data and each aborts the run.
+`--id_separator` defaults to `_`, and phASER refuses any contig name
+containing it -- RefSeq accessions like `NC_060925.1` do, so it must be set to
+a character absent from the contig names (`:` is also rejected outright; `-`
+works). And `--pass_only` defaults to 1, which keeps only FILTER=PASS records:
+a callset whose FILTER column is `.` throughout carries no filter annotation
+rather than having failed one, and every site is discarded -- reported as
+"0 heterozygous sites ... (N filtered)", which reads like a data problem rather
+than a flag problem.
+
 `--mapq 255` is STAR's uniquely-mapped encoding. It is the right value for a
 STAR-aligned BAM and the wrong value for most other aligners, so it is a flag
 here rather than a constant.
@@ -92,6 +102,7 @@ def phaser_cmd(a, dna, bam, prefix):
             '--mapq', str(a.mapq), '--baseq', str(a.baseq),
             '--paired_end', str(a.paired_end), '--write_vcf', '1',
             '--python_string', a.python_string,
+            '--id_separator', a.id_separator, '--pass_only', str(a.pass_only),
             '--threads', str(a.threads), '--temp_dir', str(a.temp_dir),
             '--o', str(prefix)]
 
@@ -100,7 +111,8 @@ def gene_ae_cmd(a, prefix):
     return [sys.executable,
             str(Path(a.phaser_dir) / 'phaser_gene_ae' / 'phaser_gene_ae.py'),
             '--haplotypic_counts', f'{prefix}.haplotypic_counts.txt',
-            '--features', str(a.features), '--o', f'{prefix}.gene_ae.txt']
+            '--features', str(a.features), '--id_separator', a.id_separator,
+            '--o', f'{prefix}.gene_ae.txt']
 
 
 def done(prefix):
@@ -144,6 +156,12 @@ def main(argv=None):
     ap.add_argument('--baseq', default='10')
     ap.add_argument('--paired-end', default='1')
     ap.add_argument('--python-string', default=sys.executable)
+    ap.add_argument('--id-separator', default='-',
+                    help='must not occur in any contig name; phASER also '
+                         'rejects ":" outright (default "-")')
+    ap.add_argument('--pass-only', default='0',
+                    help='1 keeps only FILTER=PASS; use 0 when the callset '
+                         'has no FILTER annotation (default 0)')
     ap.add_argument('--temp-dir', default=os.environ.get('TMPDIR', '/tmp'))
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--dry-run', action='store_true')
@@ -160,6 +178,12 @@ def main(argv=None):
     Path(a.temp_dir).mkdir(parents=True, exist_ok=True)
 
     vc, bc = set(vcf_contigs(a.vcf)), set(bed_contigs(a.features))
+    bad = [c for c in vc | bc if a.id_separator in c]
+    if bad:
+        raise SystemExit(
+            f'--id-separator {a.id_separator!r} occurs in contig names '
+            f'({bad[:3]}); phASER refuses that. Pick a character absent from '
+            'every contig name.')
     if vc and bc and not (vc & bc):
         raise SystemExit(
             f'VCF contigs {sorted(vc)[:3]} and feature contigs {sorted(bc)[:3]} '
@@ -216,6 +240,7 @@ def selftest():
         phaser_dir = str(td / 'phaser'); vcf = vcf_p; features = bed_p
         mapq = '255'; baseq = '10'; paired_end = '1'
         python_string = 'python3'; threads = 4; temp_dir = str(td / 'tmp')
+        id_separator = '-'; pass_only = '0'
         out = str(td / 'out'); bam_suffix = '.bam'; bam_dir = str(td)
     cmd = phaser_cmd(A, '589_D1', td / 'x.bam', Path(A.out) / '589_D1')
     # --sample is the DNA library, which is how the VCF spells it
@@ -225,7 +250,12 @@ def selftest():
     # the phased VCF the phase overlay needs is always requested
     assert cmd[cmd.index('--write_vcf') + 1] == '1'
     assert cmd[cmd.index('--mapq') + 1] == '255'
+    # the two defaults that abort on this data are always overridden
+    assert cmd[cmd.index('--id_separator') + 1] == '-', cmd
+    assert cmd[cmd.index('--pass_only') + 1] == '0', cmd
+    # and the separator must be carried into gene_ae, or the ids stop matching
     g = gene_ae_cmd(A, Path(A.out) / '589_D1')
+    assert g[g.index('--id_separator') + 1] == '-', g
     assert g[g.index('--features') + 1] == bed_p
     assert g[g.index('--haplotypic_counts') + 1].endswith('.haplotypic_counts.txt')
     # resume: a non-empty gene_ae marks a sample done, an empty one does not
@@ -238,8 +268,10 @@ def selftest():
     print('SELF-TEST: command construction and resume logic\n')
     print('checks: --sample is the DNA library as the VCF spells it; the '
           'python2 --python_string default is always overridden; --write_vcf 1 '
-          'is always requested; contig sets are compared so a silent no-op is '
-          'refused; an empty gene_ae does not count as done')
+          'is always requested; --id_separator and --pass_only are set on both '
+          'commands rather than left at defaults that abort; contig sets are '
+          'compared so a silent no-op is refused; an empty gene_ae does not '
+          'count as done')
     print('SELF-TEST OK')
     return 0
 
