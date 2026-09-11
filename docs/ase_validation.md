@@ -772,6 +772,14 @@ Three variant classes, three treatments, one whitening. Encoder:
 `tensorqtl/hapmixqtl.py`. All numbers below are from `--selftest` (N = 200, planted
 effects, real `map_cis` and real second-pass code on the same data).
 
+**Non-standard and opt-in.** Standard cis-QTL mapping tests biallelic SNPs, and that is
+what every script does unless told otherwise. `--str-vcf` and `--multiallelic` on
+`run_hapmixqtl_from_salmon.py` and `compare_pipelines.py` (and `--multiallelic` on the
+encoder) switch these in; without them the output is byte-identical to the standard
+analysis, which the self-tests assert. In the deploy comparison they add a third,
+separately reported arm; RASQUAL cannot test these variants, so that arm measures what
+the extra classes add to hapmixQTL rather than comparing methods like for like.
+
 **Lead scan, no model change.** hapmixQTL's core is linear in `s = xL − xR` and `g/2`
 with no 0/1 assumption anywhere except `get_allele_stats` (reporting) and the MAF filter
 (off by default). So:

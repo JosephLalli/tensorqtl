@@ -927,6 +927,14 @@
   <code>map_multiallelic</code>. Numbers are from <code>--selftest</code> (N = 200, planted
   effects, the real <code>map_cis</code> and real second-pass code on the same data).</p>
 
+  <p><strong>Non-standard and opt-in.</strong> Standard cis-QTL mapping tests biallelic
+  SNPs, and that is what every script does unless told otherwise. <code>--str-vcf</code>
+  and <code>--multiallelic</code> on the Salmon runner and the deploy comparison switch
+  these in; without them the output is byte-identical to the standard analysis, which the
+  self-tests assert. In the deploy comparison they add a third, separately reported arm —
+  RASQUAL cannot test these variants, so it measures what the extra classes add to
+  hapmixQTL rather than comparing methods like for like.</p>
+
   <p><strong>STRs</strong> enter the scan as per-haplotype repeat length (reference-relative
   repeat units), so β is log aFC <em>per repeat unit</em> and the ASE channel asks whether
   the longer haplotype expresses more. Planted 0.35 / −0.30 / 0.35 recovered as 0.339 /

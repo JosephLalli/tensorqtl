@@ -54,6 +54,17 @@ WHAT IS REPORTED  (all aggregate; shareable under a DUA)
                   fraction that are published eGenes -- the external truth
   compute         wall time per method
 
+NON-STANDARD, OPT-IN (off by default)
+=====================================
+--str-vcf and/or --multiallelic add a THIRD arm, reported separately as
+`hapmixQTL_nonstandard`: hapmixQTL with STRs (per-haplotype repeat length)
+and/or multi-ALT split rows among the tested variants, plus the curvature and
+categorical second passes, under the same permutation null. RASQUAL cannot
+test those variants, so this is not a like-for-like comparison with RASQUAL;
+it measures what the extra variant classes add. The standard RASQUAL and
+hapmixQTL arms are computed exactly as without the flags (the self-test
+asserts they are byte-identical).
+
 Run:
   RASQUAL_BIN=.../rasqual python3 scripts/compare_pipelines.py --selftest
   python3 scripts/compare_pipelines.py \\
@@ -87,12 +98,15 @@ sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE))
 from scipy import stats
 import run_hapmixqtl_from_salmon as H          # readers, native RASQUAL VCF
 from make_rasqual_inputs import size_factors, read_salmon_totals
+from str_integrate import parse_str_vcf, parse_multiallelic_vcf, extend_scan   # opt-in arm only
 
 try:
-    from tensorqtl.hapmixqtl import compute_summaries_from_gibbs, map_cis
+    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, map_cis,
+                                     map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(HERE.parent / 'tensorqtl'))
-    from hapmixqtl import compute_summaries_from_gibbs, map_cis
+    from hapmixqtl import (compute_summaries_from_gibbs, map_cis,
+                           map_str_curvature, map_multiallelic)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +140,110 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
     # map_cis returns the gene ID as the INDEX (named phenotype_id), not a column
     return pd.DataFrame({'gene': res.index.values,
                          'stat': stats.chi2.isf(p.values, 1),
-                         'log_afc': pd.to_numeric(res['slope'], errors='coerce').values})
+                         'log_afc': pd.to_numeric(res['slope'], errors='coerce').values,
+                         'lead': res['variant_id'].values})
+
+
+# ---------------------------------------------------------------------------
+#  NON-STANDARD, OPT-IN arm: hapmixQTL with STRs / multi-ALT split rows
+#  (off unless --str-vcf / --multiallelic; the standard arms are untouched)
+# ---------------------------------------------------------------------------
+
+NONSTANDARD_NOTE = (
+    'NON-STANDARD, opt-in. This arm adds STRs (as per-haplotype repeat length) '
+    'and/or one split row per ALT of multi-ALT sites to hapmixQTL\'s lead scan, '
+    'under the same permutation null and the same outside-gene-body rule. '
+    'RASQUAL cannot test these variants, so this is not a like-for-like '
+    'comparison with RASQUAL; read it as "what the extra variant classes add". '
+    'See scripts/str_integrate.py and docs/ase_validation.md sec 7j.')
+
+
+def nonstandard_setup(args, vdf, dos, xL, xR, order, gp, usable, window, maf=0.0):
+    """Extend the SNP scan with the opt-in rows; apply the tested-variant rule
+    (in a window, outside every selected gene body) to the new rows and to
+    the second-pass sidecars alike. The MAF floor applies to SNP and split
+    rows (0/1/2 dosage); STR rows are exempt, since their dosage is a repeat
+    length and they carry their own call-rate and variation filters."""
+    print('\nNON-STANDARD, opt-in arm: hapmixQTL with STRs / multi-ALT split rows')
+    strs = parse_str_vcf(args.str_vcf, list(order)) if args.str_vcf else []
+    ma = parse_multiallelic_vcf(args.vcf, list(order)) if args.multiallelic else []
+    vdf_x, dos_x, xL_x, xR_x, vtype, aux = extend_scan(vdf, dos, xL, xR, order, strs, ma)
+    pos = vdf_x['pos'].values; chrom = vdf_x['chrom'].astype(str).values
+    in_body = np.zeros(len(vdf_x), bool); in_win = np.zeros(len(vdf_x), bool)
+    for g in usable:
+        r = gp.loc[g]; same = chrom == str(r['chr'])
+        in_body |= same & (pos >= int(r['start'])) & (pos <= int(r['end']))
+        in_win |= same & (np.abs(pos - int(r['pos'])) <= window)
+    tested = in_win & ~in_body
+    if maf > 0:
+        af = dos_x.mean(1) / 2.0
+        is_str = (vtype.values == 'str')
+        tested &= is_str | (np.minimum(af, 1.0 - af) >= maf)
+
+    def _outside(sites):
+        m = np.ones(len(sites), bool)
+        c = sites['chrom'].astype(str).values; p = sites['pos'].values
+        for g in usable:
+            r = gp.loc[g]
+            m &= ~((c == str(r['chr'])) & (p >= int(r['start'])) & (p <= int(r['end'])))
+        return m
+    for key, arrs in (('str_sites', ('str_len', 'str_phased')),
+                      ('ma_sites', ('ma_alleles', 'ma_phased'))):
+        if aux.get(key) is not None:
+            m = _outside(aux[key])
+            aux[key] = aux[key][m].reset_index(drop=True)
+            for a in arrs:
+                aux[a] = aux[a][m]
+    print(f'  scan rows by type: {vtype.value_counts().to_dict()}; '
+          f'{int(tested.sum())} tested (window, outside gene bodies)')
+    return dict(vdf=vdf_x, dos=dos_x, xL=xL_x, xR=xR_x, vtype=vtype, aux=aux, tested=tested)
+
+
+def second_pass_arm(aux, order, A, T, Va, Vt, genes, pos_df, window, perm, min_hap):
+    """Curvature (STR) and categorical (multi-ALT) second passes under the same
+    permutation as the lead scan: sample k's expression is paired with sample
+    inv[k]'s genotype, exactly as hapmix_arm pairs them."""
+    if not aux:
+        return {}
+    ix = np.arange(len(order)) if perm is None else np.argsort(np.asarray(perm))
+    mk = lambda M: pd.DataFrame(M, index=genes, columns=order)
+    out = {}
+    with contextlib.redirect_stdout(io.StringIO()):
+        if aux.get('str_len') is not None and len(aux['str_sites']):
+            out['str'] = map_str_curvature(
+                aux['str_len'][:, ix], aux['str_phased'][:, ix],
+                aux['str_sites'].set_index('id'), list(order),
+                mk(A), mk(T), mk(Va), mk(Vt), pos_df, window=window, verbose=False)
+        if aux.get('ma_alleles') is not None and len(aux['ma_sites']):
+            out['ma'], _ = map_multiallelic(
+                aux['ma_alleles'][:, ix], aux['ma_sites'].set_index('site_id'), list(order),
+                mk(A), mk(T), mk(Va), mk(Vt), pos_df, hap_phased=aux['ma_phased'][:, ix],
+                window=window, min_hap=min_hap, verbose=False)
+    return out
+
+
+def nonstandard_block(obs_x, sp_obs, sp_nulls, vtype):
+    """Aggregate summary of the opt-in arm: what the leads are, and whether the
+    second-pass tests are calibrated on the permuted null."""
+    lt = obs_x['lead'].map(vtype).fillna('snp')
+    b = {'note': NONSTANDARD_NOTE,
+         'scan_rows_by_type': {k: int(v) for k, v in vtype.value_counts().items()},
+         'lead_variant_type_observed': {k: int(v) for k, v in lt.value_counts().items()},
+         'frac_leads_nonstandard': float((lt != 'snp').mean())}
+
+    def _frac(dfs, col):
+        p = pd.concat([pd.to_numeric(d[col], errors='coerce') for d in dfs]).dropna() \
+            if dfs else pd.Series(dtype=float)
+        return (float((p < 0.05).mean()) if len(p) else None), int(len(p))
+    for key, col, name in (('str', 'pval_curv', 'str_curvature_test'),
+                           ('ma', 'pval_joint', 'multiallelic_joint_test')):
+        if key in sp_obs:
+            fo, no = _frac([sp_obs[key]], col)
+            fn, nn = _frac([s[key] for s in sp_nulls if key in s], col)
+            b[name] = {'observed_frac_p_lt_0.05': fo, 'n_observed': no,
+                       'null_frac_p_lt_0.05': fn, 'n_null': nn,
+                       'note': 'null fraction should be ~0.05 if the test is calibrated on this data'}
+    return b
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +442,10 @@ def run(args):
           f'bodies, MAF >= {args.maf}); {n_pre - int(tested.sum())} dropped by MAF')
     print(f'  fSNPs inside gene bodies are NOT MAF-filtered '
           f'({int(in_body.sum())} in the selected genes)')
+    ns = None
+    if getattr(args, 'str_vcf', None) or getattr(args, 'multiallelic', False):
+        ns = nonstandard_setup(args, vdf, dos, xL, xR, order, gp, usable, args.window,
+                               maf=args.maf)
 
     # RASQUAL total counts and offsets follow the expression (never permuted)
     Ytot = read_salmon_totals(args.salmon, args.tx2gene, order, sufs)
@@ -343,17 +464,28 @@ def run(args):
         r = rasqual_arm(args.rasqual, usable, pos_df, vdf, xL, xR, allelic,
                         order, Ytot, K, args.window, perm)
         tr = time.time() - t0
+        x, sp, tx = None, {}, 0.0
+        if ns is not None:                       # opt-in arm; standard arms above untouched
+            t0 = time.time()
+            x = hapmix_arm(A, T, Va, Vt, usable, order, ns['vdf'], ns['dos'], ns['xL'],
+                           ns['xR'], pos_df[['chr', 'pos']], args.window, ns['tested'], perm)
+            sp = second_pass_arm(ns['aux'], order, A, T, Va, Vt, usable,
+                                 pos_df[['chr', 'pos']], args.window, perm, args.min_hap)
+            tx = time.time() - t0
         print(f'  {tag}: hapmixQTL {th:.0f}s, RASQUAL {tr:.0f}s '
-              f'({int((r["status"]=="ok").sum())}/{len(r)} converged)', flush=True)
-        return h, r, th, tr
+              f'({int((r["status"]=="ok").sum())}/{len(r)} converged)'
+              + (f', non-standard arm {tx:.0f}s' if ns is not None else ''), flush=True)
+        return h, r, th, tr, x, sp, tx
 
     print('\nObserved')
-    obs_h, obs_r, th, tr = both(None, 'observed')
-    nulls_h, nulls_r = [], []
+    obs_h, obs_r, th, tr, obs_x, sp_obs, tx_obs = both(None, 'observed')
+    nulls_h, nulls_r, nulls_x, sp_nulls = [], [], [], []
     for p in range(args.n_perm):
         perm = rng.permutation(len(order))
-        h, r, _, _ = both(perm, f'perm {p+1}/{args.n_perm}')
+        h, r, _, _, x, sp, _ = both(perm, f'perm {p+1}/{args.n_perm}')
         nulls_h.append(h); nulls_r.append(r)
+        if x is not None:
+            nulls_x.append(x); sp_nulls.append(sp)
     null_h = pd.concat(nulls_h) if nulls_h else obs_h.iloc[0:0]
     null_r = pd.concat(nulls_r) if nulls_r else obs_r.iloc[0:0]
 
@@ -373,6 +505,14 @@ def run(args):
         'RASQUAL': score(obs_r, null_r, 'RASQUAL', known),
         'head_to_head': compare(obs_r, obs_h, out),
     }
+    if ns is not None:
+        null_x = pd.concat(nulls_x) if nulls_x else obs_x.iloc[0:0]
+        result['hapmixQTL_nonstandard'] = score(obs_x, null_x, 'hapmixQTL_nonstandard', known)
+        result['hapmixQTL_nonstandard']['note'] = NONSTANDARD_NOTE
+        result['head_to_head_nonstandard_vs_rasqual'] = compare(obs_r, obs_x, out)
+        result['nonstandard'] = nonstandard_block(obs_x, sp_obs, sp_nulls, ns['vtype'])
+        result['compute_seconds_observed']['hapmixQTL_nonstandard'] = float(tx_obs)
+        obs_x.to_csv(out / 'observed_hapmixqtl_nonstandard.tsv', sep='\t', index=False)
     ok = obs_r[obs_r['status'] == 'ok']
     if len(ok):
         result['RASQUAL']['phi_hat'] = {
@@ -405,6 +545,28 @@ def write_table(r, path):
         if rep:
             L.append(f"| known-eGene fraction of discoveries ({m}) | "
                      f"{rep['frac_known_egene']:.3f} (baseline {rep['baseline_frac_known_in_tested']:.3f}) | |")
+    if 'hapmixQTL_nonstandard' in r:
+        x = r['hapmixQTL_nonstandard']; nb = r.get('nonstandard', {})
+        L += ['', '## NON-STANDARD, opt-in arm: hapmixQTL + STRs / multi-ALT split rows', '',
+              'Not a like-for-like comparison with RASQUAL (it cannot test these variants); '
+              'read as what the extra variant classes add to hapmixQTL.', '',
+              '| | hapmixQTL (standard) | hapmixQTL + non-standard rows |', '|---|---|---|',
+              f"| power @ empirical FPR 10% | {pw('hapmixQTL',0.1):.3f} | {pw('hapmixQTL_nonstandard',0.1):.3f} |",
+              f"| power @ empirical FPR 5% | {pw('hapmixQTL',0.05):.3f} | {pw('hapmixQTL_nonstandard',0.05):.3f} |",
+              f"| λ_GC on permuted null | {r['hapmixQTL'].get('calibration',{}).get('lambda_gc_null',float('nan')):.2f} | "
+              f"{x.get('calibration',{}).get('lambda_gc_null',float('nan')):.2f} |",
+              f"| leads that are STR / split rows | 0 | {nb.get('frac_leads_nonstandard', float('nan')):.3f} |"]
+        rep = x.get('replication')
+        if rep:
+            L.append(f"| known-eGene fraction of discoveries | | "
+                     f"{rep['frac_known_egene']:.3f} (baseline {rep['baseline_frac_known_in_tested']:.3f}) |")
+        for key, lab in (('str_curvature_test', 'STR curvature test'),
+                         ('multiallelic_joint_test', 'multi-ALT joint test')):
+            if key in nb:
+                t = nb[key]
+                L.append(f"- {lab}: p<0.05 in {t['observed_frac_p_lt_0.05']} of {t['n_observed']} "
+                         f"observed pairs vs {t['null_frac_p_lt_0.05']} of {t['n_null']} on the "
+                         f"permuted null (calibrated if ~0.05)")
     h = r['head_to_head']
     L += ['', '## Agreement', '',
           f"- Spearman of gene statistics: {h.get('spearman_stat', float('nan')):.3f}",
@@ -437,6 +599,17 @@ def main(argv=None):
                          'the testing threshold here (default 0.05)')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default='deploy')
+    ns = ap.add_argument_group(
+        'NON-STANDARD, opt-in (off by default; adds a separately reported hapmixQTL arm, '
+        'the standard RASQUAL and hapmixQTL arms are unchanged)')
+    ns.add_argument('--str-vcf', default=None,
+                    help='HipSTR-style STR VCF: STRs join the tested variants as per-haplotype '
+                         'repeat length, plus the curvature second pass')
+    ns.add_argument('--multiallelic', action='store_true',
+                    help='multi-ALT rows of --vcf join the tested variants as one split row '
+                         'per ALT, plus the categorical second pass')
+    ns.add_argument('--min-hap', type=int, default=10,
+                    help='categorical model: alleles carried by fewer haplotypes are pooled')
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
@@ -460,14 +633,33 @@ def selftest():
     # genes: body [base+400, base+600], TSS base+500; fSNP in body, rSNPs outside
     (td / 'genes.tsv').write_text('\n'.join(
         f'G{i:05d}\t1\t{100000*i+400}\t{100000*i+600}\t{100000*i+500}' for i in range(G)))
-    # planted effect in half the genes: rSNP haplotype drives expression
-    eff = {i: (1.6 if i % 2 == 0 else 1.0) for i in range(G)}
+    # planted effects, by gene index mod 4:
+    #   0  rSNP haplotype drives expression (x1.6)     -> both standard arms can find it
+    #   1  an STR OUTSIDE the body drives it, 0.3 log-units per repeat unit  (opt-in arm only)
+    #   2  null
+    #   3  ALT2 of a tri-allelic site outside the body drives it (x1.7)     (opt-in arm only)
+    eff = {i: (1.6 if i % 4 == 0 else 1.0) for i in range(G)}
     h1r = {i: (rng.rand(N) < .4).astype(int) for i in range(G)}
     h2r = {i: (rng.rand(N) < .4).astype(int) for i in range(G)}
+    units = [-2, -1, 0, 1, 2]
+    L1 = {i: rng.choice(units, N) for i in range(G)}; L2 = {i: rng.choice(units, N) for i in range(G)}
+    m1 = {i: rng.choice(3, N, p=[.55, .25, .2]) for i in range(G)}
+    m2 = {i: rng.choice(3, N, p=[.55, .25, .2]) for i in range(G)}
+
+    def mult(i, k, hap):
+        if i % 4 == 0:
+            return eff[i] if (h1r if hap == 1 else h2r)[i][k] else 1.0
+        if i % 4 == 1:
+            return float(np.exp(0.3 * (L1 if hap == 1 else L2)[i][k]))
+        if i % 4 == 3:
+            return 1.7 if (m1 if hap == 1 else m2)[i][k] == 2 else 1.0
+        return 1.0
     # fSNP in LD with rSNP on the same haplotype
     def ld(h): return np.where(rng.rand(N) < .7, h, (rng.rand(N) < .4).astype(int))
     h1f = {i: ld(h1r[i]) for i in range(G)}; h2f = {i: ld(h2r[i]) for i in range(G)}
-    lines = ['##fileformat=VCFv4.2', '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t' + '\t'.join(samples)]
+    hdr = '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t' + '\t'.join(samples)
+    lines = ['##fileformat=VCFv4.2', hdr]; slines = ['##fileformat=VCFv4.2', hdr]
+    alt_ix = {u: j for j, u in enumerate([u for u in units if u != 0], 1)}
     for i in range(G):
         base = 100000 * i
         lines.append(f'1\t{base+500}\tf{i}\tA\tG\t.\tPASS\t.\tGT\t' + '\t'.join(
@@ -475,7 +667,15 @@ def selftest():
         for off, tag in ((2000, 'r'), (5000, 'q')):
             lines.append(f'1\t{base+off}\t{tag}{i}\tA\tG\t.\tPASS\t.\tGT\t' + '\t'.join(
                 f'{h1r[i][k]}|{h2r[i][k]}' for k in range(N)))
+        # tri-allelic row: the standard reader skips it; only --multiallelic uses it
+        lines.append(f'1\t{base+7000}\tm{i}\tA\tT,C\t.\tPASS\t.\tGT\t' + '\t'.join(
+            f'{m1[i][k]}|{m2[i][k]}' for k in range(N)))
+        slines.append(f'1\t{base+8000}\tSTR{i}\t{"CAG"*8}\t'
+                      + ','.join('CAG' * (8 + u) for u in units if u != 0)
+                      + '\t.\tPASS\tPERIOD=3\tGT\t' + '\t'.join(
+                          f'{alt_ix.get(L1[i][k], 0)}|{alt_ix.get(L2[i][k], 0)}' for k in range(N)))
     (td / 'p.vcf').write_text('\n'.join(lines) + '\n')
+    (td / 'str.vcf').write_text('\n'.join(slines) + '\n')
     man, acman = [], []
     for k, s in enumerate(samples):
         sd = td / s / 'aux_info' / 'bootstrap'; sd.mkdir(parents=True)
@@ -485,8 +685,7 @@ def selftest():
             # phASER's REAL header: no 'stop', position not start.
             fh.write('contig\tposition\tvariantID\trefAllele\taltAllele\trefCount\taltCount\ttotalCount\n')
             for i in range(G):
-                e1 = eff[i] if h1r[i][k] else 1.0; e2 = eff[i] if h2r[i][k] else 1.0
-                a = rng.poisson(30 * e1); b = rng.poisson(30 * e2)
+                a = rng.poisson(30 * mult(i, k, 1)); b = rng.poisson(30 * mult(i, k, 2))
                 names += [txs[i] + '_hapA', txs[i] + '_hapB']
                 boot += [rng.poisson(max(a, 1), ND), rng.poisson(max(b, 1), ND)]
                 if h1f[i][k] != h2f[i][k]:                 # het fSNP: counts
@@ -501,14 +700,15 @@ def selftest():
             td / s / 'quant.sf', sep='\t', index=False)
         man.append(f'{s}\t{td/s}'); acman.append(f'{s}\t{acf}')
     (td / 'salmon.tsv').write_text('\n'.join(man)); (td / 'ac.tsv').write_text('\n'.join(acman))
-    (td / 'known.txt').write_text('\n'.join(f'G{i:05d}' for i in range(G) if eff[i] > 1))
-    print('SELF-TEST: deploy comparison on fabricated native inputs\n')
-    r = run(argparse.Namespace(
+    (td / 'known.txt').write_text('\n'.join(f'G{i:05d}' for i in range(G) if i % 4 != 2))
+    base_args = dict(
         vcf=str(td / 'p.vcf'), genes=str(td / 'genes.tsv'), salmon=str(td / 'salmon.tsv'),
         tx2gene=str(td / 't2g.tsv'), allelic_counts=str(td / 'ac.tsv'), rasqual=rq,
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
-        out=str(td / 'deploy')))
+        str_vcf=None, multiallelic=False, min_hap=10)
+    print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
+    r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
     print('\n' + (td / 'deploy' / 'deploy_comparison.md').read_text())
     for m in ('RASQUAL', 'hapmixQTL'):
         assert 'power' in r[m], f'{m} produced no power estimate'
@@ -516,6 +716,37 @@ def selftest():
     # above every simulated frequency must drop tested variants without
     # touching the fSNPs the allelic channel needs
     assert r['design']['n_tested_variants'] > 0, r['design']
+    assert 'hapmixQTL_nonstandard' not in r and 'nonstandard' not in r
+
+    print('\nnow opting in: --str-vcf + --multiallelic (NON-STANDARD arm added)\n')
+    r2 = run(argparse.Namespace(**{**base_args, 'str_vcf': str(td / 'str.vcf'),
+                                   'multiallelic': True}, out=str(td / 'deploy_ns')))
+    print('\n' + (td / 'deploy_ns' / 'deploy_comparison.md').read_text())
+    # the standard arms are byte-identical with and without the opt-in
+    for f in ('observed_hapmixqtl.tsv', 'observed_rasqual.tsv'):
+        a = (td / 'deploy' / f).read_text(); b = (td / 'deploy_ns' / f).read_text()
+        assert a == b, f'{f} changed when the opt-in arm was enabled'
+    assert r2['hapmixQTL'] == r['hapmixQTL'] and r2['RASQUAL'] == r['RASQUAL']
+    x = r2['hapmixQTL_nonstandard']
+    assert 'power' in x
+    # lead over a superset of tested variants, same whitening -> stat can only go up
+    # (map_cis runs in float32 and the row order differs, so allow rounding noise)
+    oh = pd.read_csv(td / 'deploy_ns' / 'observed_hapmixqtl.tsv', sep='\t').set_index('gene')
+    ox = pd.read_csv(td / 'deploy_ns' / 'observed_hapmixqtl_nonstandard.tsv', sep='\t').set_index('gene')
+    d = (ox['stat'] - oh.loc[ox.index, 'stat'])
+    assert (d > -1e-3).all(), f'non-standard arm stat below the standard arm: {d.min()}'
+    # the planted STR / multi-ALT genes are led by those rows in the opt-in arm
+    lead = ox['lead']
+    str_genes = [f'G{i:05d}' for i in range(G) if i % 4 == 1]
+    ma_genes = [f'G{i:05d}' for i in range(G) if i % 4 == 3]
+    n_str_led = sum(lead[g] == f'STR{int(g[1:])}' for g in str_genes)
+    n_ma_led = sum(str(lead[g]).startswith(f'1_{100000*int(g[1:])+7000}_') for g in ma_genes)
+    print(f'planted STR genes led by their STR: {n_str_led}/{len(str_genes)}; '
+          f'planted multi-ALT genes led by a split row: {n_ma_led}/{len(ma_genes)}')
+    assert n_str_led == len(str_genes) and n_ma_led == len(ma_genes)
+    nb = r2['nonstandard']
+    assert 'str_curvature_test' in nb and 'multiallelic_joint_test' in nb
+    assert nb['str_curvature_test']['n_null'] > 0 and nb['multiallelic_joint_test']['n_null'] > 0
     print('SELF-TEST OK')
     return 0
 

@@ -2,6 +2,15 @@
 """
 Integrated STR + multiallelic + biallelic cis-QTL calling for hapmixQTL.
 
+NON-STANDARD AND OPTIONAL
+=========================
+Standard cis-QTL mapping tests biallelic SNPs. Everything in this module --
+STRs in the lead scan, split rows for multi-ALT sites, and the two second-pass
+models -- is a deliberate departure from that, and it is OFF unless asked for:
+here via --str-vcf / --multiallelic, and in run_hapmixqtl_from_salmon.py and
+compare_pipelines.py via the same two flags. Without them those scripts test
+biallelic SNPs only and their output is unchanged.
+
 Encodes every variant class into the per-haplotype dosage matrices (xL, xR)
 the lead scan already uses, and writes the sidecars the two second-pass
 regressions need. Three variant classes, three treatments:
@@ -317,6 +326,36 @@ def build_hapdose(samples, str_rows, snp_vcf=None, ma_sites=None):
     return vdf, XL, XR, aux
 
 
+def extend_scan(vdf, dos, xL, xR, order, str_rows=None, ma_sites=None):
+    """Append STR rows and/or multi-ALT split rows to a biallelic-SNP scan.
+
+    Shared by run_hapmixqtl_from_salmon.py and compare_pipelines.py, which read
+    SNPs with read_phased_vcf (variant_df indexed by id with chrom/pos, plus
+    dosage / xL / xR [V, N] in sample order `order`). Returns the same four
+    objects extended and re-sorted by (chrom, pos) so InputGeneratorCis sees
+    contiguous, position-ordered chromosomes, plus a Series id -> type
+    (snp | str | ma_allele) and the aux dict for the second pass. With no
+    extra rows the inputs come back unchanged and aux is empty, so callers
+    can pass through unconditionally.
+    """
+    if not str_rows and not ma_sites:
+        vtype = pd.Series('snp', index=vdf.index)
+        return vdf, dos, xL, xR, vtype, {}
+    vdf2, XL2, XR2, aux = build_hapdose(list(order), str_rows or [], None, ma_sites or [])
+    ids = np.concatenate([vdf.index.values, vdf2['id'].values])
+    if len(set(ids)) != len(ids):
+        dup = pd.Series(ids)[pd.Series(ids).duplicated()].iloc[:3].tolist()
+        raise SystemExit(f'variant ids collide between the SNP VCF and the extra rows: {dup}')
+    chrom = np.concatenate([vdf['chrom'].astype(str).values, vdf2['chrom'].astype(str).values])
+    pos = np.concatenate([vdf['pos'].astype(int).values, vdf2['pos'].astype(int).values])
+    vtype = np.concatenate([np.array(['snp'] * len(vdf)), vdf2['type'].values])
+    XL = np.concatenate([np.asarray(xL, float), XL2]); XR = np.concatenate([np.asarray(xR, float), XR2])
+    o = np.lexsort((pos, chrom))
+    vdf_x = pd.DataFrame({'chrom': chrom[o], 'pos': pos[o]}, index=ids[o])
+    XL, XR = XL[o], XR[o]
+    return vdf_x, XL + XR, XL, XR, pd.Series(vtype[o], index=ids[o]), aux
+
+
 def write_hapdose(out, vdf, XL, XR, samples, aux=None):
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
     vdf.to_csv(out / 'variants.tsv', sep='\t', index=False)
@@ -367,8 +406,10 @@ def main(argv=None):
     ap.add_argument('--min-call-rate', type=float, default=0.8)
     ap.add_argument('--period', type=int, default=None,
                     help='override INFO/PERIOD for every locus')
-    ap.add_argument('--no-multiallelic', action='store_true',
-                    help='ignore multi-ALT rows of --snp-vcf (default: split rows + sidecar)')
+    ap.add_argument('--multiallelic', action='store_true',
+                    help='NON-STANDARD, opt-in: also encode multi-ALT rows of --snp-vcf as '
+                         'one split row per ALT plus the categorical sidecar '
+                         '(default: multi-ALT rows are ignored, as in a standard scan)')
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
@@ -380,7 +421,7 @@ def main(argv=None):
     strs = (parse_str_vcf(args.str_vcf, samples, args.min_q, args.min_call_rate, args.period)
             if args.str_vcf else [])
     ma = (parse_multiallelic_vcf(args.snp_vcf, samples)
-          if (args.snp_vcf and not args.no_multiallelic) else [])
+          if (args.snp_vcf and args.multiallelic) else [])
     vdf, XL, XR, aux = build_hapdose(samples, strs, args.snp_vcf, ma)
     write_hapdose(args.out, vdf, XL, XR, samples, aux)
     counts = vdf['type'].value_counts().to_dict()
@@ -461,8 +502,16 @@ def selftest():
     (td / 'snp.vcf').write_text('\n'.join(lines) + '\n')
 
     print('SELF-TEST: encoding STRs + multi-ALT sites + SNPs into one hapdose\n')
+    # default: multi-ALT rows are IGNORED (standard behaviour); opt in with --multiallelic
     main(['--str-vcf', str(td / 'str.vcf'), '--snp-vcf', str(td / 'snp.vcf'),
-          '--samples', str(td / 'samples.txt'), '--out', str(td / 'hd')])
+          '--samples', str(td / 'samples.txt'), '--out', str(td / 'hd_default')])
+    _, _, _, _, vinfo0 = load_hapdose(td / 'hd_default')
+    assert vinfo0['type'].value_counts().to_dict() == {'snp': 60, 'str': 8}, \
+        'without --multiallelic, multi-ALT rows must be ignored'
+    assert 'ma_sites' not in load_aux(td / 'hd_default')
+    print('default run: multi-ALT rows ignored; now opting in with --multiallelic\n')
+    main(['--str-vcf', str(td / 'str.vcf'), '--snp-vcf', str(td / 'snp.vcf'),
+          '--samples', str(td / 'samples.txt'), '--out', str(td / 'hd'), '--multiallelic'])
     g_df, v_df, xl_df, xr_df, vinfo = load_hapdose(td / 'hd')
     aux = load_aux(td / 'hd')
     counts = vinfo['type'].value_counts().to_dict()

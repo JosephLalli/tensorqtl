@@ -44,6 +44,19 @@ WHAT IT DOES
      for a side-by-side comparison.
   8. Writes an EVAL BUNDLE of aggregate statistics only.
 
+NON-STANDARD, OPT-IN (off by default; output is byte-for-byte the standard
+=========================================================================
+biallelic-SNP analysis unless you pass them)
+  --str-vcf hipstr.vcf.gz   STRs enter the lead scan as per-haplotype repeat
+                            length (log aFC per repeat unit), and a second
+                            pass fits linear + curvature per STR.
+  --multiallelic            multi-ALT rows of --vcf (normally skipped) enter
+                            the scan as one split row per ALT allele, and a
+                            second pass fits the categorical per-allele model.
+  Both change which variant can be a lead. The RASQUAL comparison always uses
+  the biallelic SNPs only. See scripts/str_integrate.py and
+  docs/ase_validation.md sec 7j.
+
 THE EVAL BUNDLE
 ===============
 `eval_bundle.json` is designed to be shared back for analysis under a
@@ -94,11 +107,13 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs,
-                                     reference_bias_diagnostic, map_cis)
+                                     reference_bias_diagnostic, map_cis,
+                                     map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (compute_summaries_from_gibbs,
-                           reference_bias_diagnostic, map_cis)
+                           reference_bias_diagnostic, map_cis,
+                           map_str_curvature, map_multiallelic)
 
 # mixQTL's shipped filters (R/mixqtl.R)
 ASC_CUTOFF, TRC_CUTOFF, MIN_SAMPLES = 5, 20, 30
@@ -626,6 +641,90 @@ def build_eval_bundle(res_df, diag, meta):
 
 
 # ---------------------------------------------------------------------------
+#  NON-STANDARD, OPT-IN: STRs and multi-ALT sites (off unless asked for)
+# ---------------------------------------------------------------------------
+
+NONSTANDARD_NOTE = (
+    'NON-STANDARD, opt-in. Standard cis-QTL mapping tests biallelic SNPs; these '
+    'rows and models are enabled only by --str-vcf / --multiallelic and change '
+    'which variant can be a lead. See scripts/str_integrate.py and '
+    'docs/ase_validation.md sec 7j.')
+
+
+def nonstandard_extension(vdf, dos, xL, xR, order, str_vcf=None, multiallelic_vcf=None):
+    """Parse the opt-in inputs and append their rows to the SNP scan.
+    Returns (vdf, dos, xL, xR, vtype, aux)."""
+    from str_integrate import parse_str_vcf, parse_multiallelic_vcf, extend_scan
+    print('\n' + NONSTANDARD_NOTE)
+    strs = parse_str_vcf(str_vcf, list(order)) if str_vcf else []
+    ma = parse_multiallelic_vcf(multiallelic_vcf, list(order)) if multiallelic_vcf else []
+    vdf, dos, xL, xR, vtype, aux = extend_scan(vdf, dos, xL, xR, order, strs, ma)
+    print(f'  scan rows by type: {vtype.value_counts().to_dict()}')
+    return vdf, dos, xL, xR, vtype, aux
+
+
+def run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos, window, min_hap, out):
+    """The two second-pass models on whatever sidecars the extension produced.
+    Writes per-locus tables locally; returns (curvature_df, site_df, allele_df)."""
+    cur = site_res = allele_res = None
+    if aux.get('str_len') is not None:
+        print(f'  second pass: linear + curvature on {len(aux["str_sites"])} STRs')
+        cur = map_str_curvature(aux['str_len'], aux['str_phased'],
+                                aux['str_sites'].set_index('id'), list(order),
+                                sdf, tdf, vadf, vtdf, map_pos, window=window, verbose=False)
+        cur.to_csv(out / 'hapmixqtl_str_curvature.tsv.gz', sep='\t', index=False)
+    if aux.get('ma_alleles') is not None:
+        print(f'  second pass: categorical on {len(aux["ma_sites"])} multi-ALT sites')
+        site_res, allele_res = map_multiallelic(
+            aux['ma_alleles'], aux['ma_sites'].set_index('site_id'), list(order),
+            sdf, tdf, vadf, vtdf, map_pos, hap_phased=aux['ma_phased'],
+            window=window, min_hap=min_hap, verbose=False)
+        site_res.to_csv(out / 'hapmixqtl_multiallelic_sites.tsv.gz', sep='\t', index=False)
+        allele_res.to_csv(out / 'hapmixqtl_multiallelic_alleles.tsv.gz', sep='\t', index=False)
+    return cur, site_res, allele_res
+
+
+def _bh_count(p, q=0.10):
+    p = pd.to_numeric(pd.Series(p), errors='coerce').dropna().values
+    if p.size == 0:
+        return 0
+    o = np.sort(p); k = np.arange(1, o.size + 1)
+    ok = np.where(o <= q * k / o.size)[0]
+    return int(ok.max() + 1) if ok.size else 0
+
+
+def nonstandard_summary(res, vtype, cur, site_res, enabled):
+    """Aggregate-only summary of the opt-in passes for the eval bundle."""
+    b = {'enabled': enabled, 'note': NONSTANDARD_NOTE,
+         'scan_rows_by_type': {k: int(v) for k, v in vtype.value_counts().items()}}
+    if res is not None and 'variant_type' in res:
+        b['lead_variant_type'] = {k: int(v) for k, v in res['variant_type'].value_counts().items()}
+        b['frac_leads_nonstandard'] = float((res['variant_type'] != 'snp').mean())
+    if cur is not None and len(cur):
+        pc = pd.to_numeric(cur['pval_curv'], errors='coerce')
+        b2 = pd.to_numeric(cur['slope_sq'], errors='coerce')
+        b1 = pd.to_numeric(cur['slope_l'], errors='coerce')
+        sig = (pc < 0.05).fillna(False)
+        b['str_curvature'] = {
+            'n_gene_str_pairs': int(len(cur)), 'n_str': int(cur['str_id'].nunique()),
+            'frac_pval_curv_lt_0.05': float(sig.mean()),
+            'n_bh_q_lt_0.10': _bh_count(pc),
+            'frac_accelerating_among_sig': (float((np.sign(b2[sig]) == np.sign(b1[sig])).mean())
+                                            if sig.any() else None),
+            'note': 'accelerating = b2 has the sign of b1; saturating = opposite'}
+    if site_res is not None and len(site_res):
+        pj = pd.to_numeric(site_res['pval_joint'], errors='coerce')
+        b['multiallelic_categorical'] = {
+            'n_gene_site_pairs': int(len(site_res)), 'n_sites': int(site_res['site_id'].nunique()),
+            'n_tested_alleles_distribution': {str(k): int(v) for k, v in
+                                              site_res['n_tested'].value_counts().sort_index().items()},
+            'frac_pval_joint_lt_0.05': float((pj < 0.05).mean()),
+            'n_bh_q_lt_0.10': _bh_count(pj),
+            'frac_rank_deficient': float(site_res['rank_deficient'].mean())}
+    return b
+
+
+# ---------------------------------------------------------------------------
 
 def load_counts(manifest, tx2gene, suffixes, out):
     rows = [l.split('\t') for l in Path(manifest).read_text().strip().split('\n')
@@ -720,6 +819,19 @@ def main():
                     help='cap the comparison at N genes; RASQUAL is ~1e3x '
                          'slower than hapmixQTL (docs sec 7e), so a '
                          'genome-wide run is days of CPU')
+    ns = ap.add_argument_group(
+        'NON-STANDARD, opt-in (off by default; the standard analysis tests '
+        'biallelic SNPs only and is unchanged unless these are given)')
+    ns.add_argument('--str-vcf', default=None,
+                    help='HipSTR-style STR VCF: STRs enter the lead scan as per-haplotype '
+                         'repeat length (log aFC per repeat unit) and get a linear + '
+                         'curvature second pass (hapmixqtl_str_curvature.tsv.gz)')
+    ns.add_argument('--multiallelic', action='store_true',
+                    help='multi-ALT rows of --vcf (normally skipped) enter the scan as one '
+                         'split row per ALT and get the categorical per-allele second pass '
+                         '(hapmixqtl_multiallelic_{sites,alleles}.tsv.gz)')
+    ns.add_argument('--min-hap', type=int, default=10,
+                    help='categorical model: alleles carried by fewer haplotypes are pooled')
     args = ap.parse_args()
 
     if args.selftest:
@@ -764,6 +876,13 @@ def main():
     tdf = pd.DataFrame(T, index=genes, columns=order)
     vadf = pd.DataFrame(Va, index=genes, columns=order)
     vtdf = pd.DataFrame(Vt, index=genes, columns=order)
+    # The RASQUAL comparison always sees the biallelic SNPs only.
+    snp_arrays = (vdf, dos, xL, xR)
+    vtype, aux = None, {}
+    if args.str_vcf or args.multiallelic:
+        vdf, dos, xL, xR, vtype, aux = nonstandard_extension(
+            vdf, dos, xL, xR, order, str_vcf=args.str_vcf,
+            multiallelic_vcf=(args.vcf if args.multiallelic else None))
     gdf = pd.DataFrame(dos, index=vdf.index, columns=order)
     xLdf = pd.DataFrame(xL, index=vdf.index, columns=order)
     xRdf = pd.DataFrame(xR, index=vdf.index, columns=order)
@@ -802,6 +921,11 @@ def main():
           f"(tau_mode='estimate', the validated default)")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window, verbose=True)
+    # map_cis returns the gene id as the index; keep it as a column so the
+    # written table and the RASQUAL concordance merge both have it.
+    res = res.reset_index()
+    if vtype is not None:
+        res['variant_type'] = res['variant_id'].map(vtype).fillna('snp').values
     res.to_csv(out / 'hapmixqtl_cis.tsv.gz', sep='\t', index=False)
 
     bundle = build_eval_bundle(res, diag, {
@@ -809,6 +933,13 @@ def main():
         'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
         'tau_mode': 'estimate'})
+    if vtype is not None:
+        print('\nNon-standard second pass')
+        cur, site_res, _ = run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos,
+                                           args.window, args.min_hap, out)
+        bundle['nonstandard'] = nonstandard_summary(
+            res, vtype, cur, site_res,
+            {'str_vcf': bool(args.str_vcf), 'multiallelic': bool(args.multiallelic)})
 
     if args.rasqual:
         if not Path(args.rasqual).exists():
@@ -830,7 +961,7 @@ def main():
                 'total (it would fabricate independent observations and inflate '
                 "RASQUAL's statistic). Supply phASER allelic_counts files.")
         rq = run_rasqual_comparison(
-            args.rasqual, list(sdf.index), pos_df, vdf, dos, xL, xR,
+            args.rasqual, list(sdf.index), pos_df, *snp_arrays,
             YLm[[list(genes).index(g) for g in sdf.index]],
             YRm[[list(genes).index(g) for g in sdf.index]],
             Tcounts, libsz, out, args.window, args.rasqual_genes,
@@ -857,16 +988,28 @@ def selftest():
     rng = np.random.RandomState(0)
     samples = [f'S{i:03d}' for i in range(N)]
     txs = [f'ENST{i:08d}' for i in range(G)]
-    # phased VCF: one SNP per gene
-    with open(td / 'p.vcf', 'w') as fh:
-        fh.write('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\t'
-                 'FILTER\tINFO\tFORMAT\t' + '\t'.join(samples) + '\n')
+    # phased VCF: one SNP per gene, plus a tri-allelic row every 5th gene
+    # (skipped by the standard reader; used only with --multiallelic)
+    hdr = ('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\t'
+           'FILTER\tINFO\tFORMAT\t' + '\t'.join(samples) + '\n')
+    with open(td / 'p.vcf', 'w') as fh, open(td / 'str.vcf', 'w') as sh:
+        fh.write(hdr); sh.write(hdr)
         for gi in range(G):
             gts = []
             for i in range(N):
                 gts.append(f'{int(rng.rand()<0.4)}|{int(rng.rand()<0.4)}')
             fh.write(f'1\t{1000*gi+500}\tv{gi}\tA\tG\t.\tPASS\t.\tGT\t'
                      + '\t'.join(gts) + '\n')
+            if gi % 5 == 0:
+                ma = [f'{rng.choice(3, p=[.6,.25,.15])}|{rng.choice(3, p=[.6,.25,.15])}'
+                      for _ in range(N)]
+                fh.write(f'1\t{1000*gi+700}\tm{gi}\tA\tT,C\t.\tPASS\t.\tGT\t'
+                         + '\t'.join(ma) + '\n')
+            if gi % 3 == 0:                      # STR VCF: GT-only, PERIOD in INFO
+                st = [f'{rng.choice(5)}|{rng.choice(5)}' for _ in range(N)]
+                sh.write(f'1\t{1000*gi+800}\tSTR{gi}\t{"CAG"*8}\t'
+                         + ','.join('CAG' * (8 + u) for u in (-2, -1, 1, 2))
+                         + f'\t.\tPASS\tPERIOD=3\tGT\t' + '\t'.join(st) + '\n')
     (td / 't2g.tsv').write_text('\n'.join(f'{t}\tG{i:05d}' for i, t in enumerate(txs)))
     # gene-pos gains start/end so native mode can locate feature SNPs
     (td / 'genepos.tsv').write_text(
@@ -947,13 +1090,42 @@ def selftest():
                  '--allelic-counts', str(td / 'ac_manifest.tsv'),
                  '--rasqual-input', 'both']
     sys.argv = argv
-    print('running the real pipeline on the fabricated inputs...\n')
+    print('running the real pipeline on the fabricated inputs (standard: biallelic SNPs)...\n')
     main()
     b = json.loads((td / 'out' / 'eval_bundle.json').read_text())
-    print('\nSELF-TEST OK. eval_bundle keys:', list(b))
+    std = pd.read_csv(td / 'out' / 'hapmixqtl_cis.tsv.gz', sep='\t')
+    assert 'nonstandard' not in b and 'variant_type' not in std.columns, \
+        'default run must not carry the opt-in passes'
+    assert 'phenotype_id' in std.columns and std['variant_id'].str.startswith('v').all(), \
+        'default run must test biallelic SNPs only (and keep the gene id column)'
+    print('\nSELF-TEST (standard) OK. eval_bundle keys:', list(b))
     if 'rasqual' in b:
         print('  rasqual:', json.dumps(b['rasqual'])[:220])
     print('  meta:', b.get('meta'))
+
+    # ---- opt-in: the same data with --str-vcf and --multiallelic -----------------
+    print('\nre-running with --str-vcf + --multiallelic (NON-STANDARD, opt-in)...\n')
+    sys.argv = list(argv)
+    sys.argv[sys.argv.index('--out') + 1] = str(td / 'out_ns')
+    sys.argv += ['--str-vcf', str(td / 'str.vcf'), '--multiallelic']
+    main()
+    b2 = json.loads((td / 'out_ns' / 'eval_bundle.json').read_text())
+    ns = b2['nonstandard']
+    res2 = pd.read_csv(td / 'out_ns' / 'hapmixqtl_cis.tsv.gz', sep='\t')
+    assert set(ns['scan_rows_by_type']) == {'snp', 'str', 'ma_allele'}, ns['scan_rows_by_type']
+    assert ns['scan_rows_by_type']['snp'] == G and ns['scan_rows_by_type']['str'] == 9 \
+        and ns['scan_rows_by_type']['ma_allele'] == 10, ns['scan_rows_by_type']
+    assert 'variant_type' in res2.columns and set(res2['variant_type']) <= {'snp', 'str', 'ma_allele'}
+    assert 'str_curvature' in ns and ns['str_curvature']['n_str'] == 9
+    assert 'multiallelic_categorical' in ns and ns['multiallelic_categorical']['n_sites'] == 5
+    for f in ('hapmixqtl_str_curvature.tsv.gz', 'hapmixqtl_multiallelic_sites.tsv.gz',
+              'hapmixqtl_multiallelic_alleles.tsv.gz'):
+        assert (td / 'out_ns' / f).exists(), f
+    if 'rasqual' in b2 and 'n_genes_attempted' in b2['rasqual']:
+        # the RASQUAL comparison must be untouched by the opt-in rows
+        assert b2['rasqual']['n_genes_attempted'] == b['rasqual']['n_genes_attempted']
+    print('SELF-TEST (opt-in) OK. nonstandard summary:', json.dumps(ns)[:300])
+    print('\nSELF-TEST OK')
     return 0
 
 

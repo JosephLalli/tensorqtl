@@ -427,6 +427,27 @@ default is `_hapA,_hapB` and would pair nothing.
 `salmon.tsv` is `sample_id <TAB> Salmon output directory` -- the directory
 holding `aux_info/bootstraps/`, not the `quant.sf` file.
 
+### Optional, non-standard: STRs and multiallelic sites
+
+Off by default. Standard cis-QTL mapping tests biallelic SNPs, and both
+`compare_pipelines.py` and `run_hapmixqtl_from_salmon.py` do exactly that
+unless you add these flags:
+
+```bash
+    --str-vcf hipstr.vcf.gz    # STRs join the tested variants as per-haplotype repeat
+                               # length (log aFC per repeat unit) + a curvature second pass
+    --multiallelic             # multi-ALT rows of the VCF (normally skipped) join as one
+                               # split row per ALT + a categorical per-allele second pass
+```
+
+In the comparison they add a third, separately reported arm
+(`hapmixQTL_nonstandard`); the RASQUAL and standard hapmixQTL arms are
+computed exactly as without the flags. RASQUAL cannot test these variants, so
+that arm is not a like-for-like comparison with RASQUAL. It answers "what do
+the extra variant classes add to hapmixQTL". The STR VCF must be a HipSTR-style
+call set on the same samples (phased against the same scaffold if you want the
+ASE channel to see the STRs). See `docs/ase_validation.md` §7j.
+
 `compare_pipelines.py` stages RASQUAL's inputs through `tempfile`, so it
 inherits `TMPDIR`. On a host where `/tmp` is a spinning disk this becomes the
 bottleneck for a run that is otherwise compute-bound; point `TMPDIR` at fast
