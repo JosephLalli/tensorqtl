@@ -25,6 +25,20 @@ Phase determines the signed heterozygote indicator s_i = xL_i - xR_i:
   s =  0 if homozygous (or phase unknown)
 When phase is unavailable (s=0 for all samples), the ASE channel contributes
 nothing and results match total-channel-only regression.
+
+Cat, the a-t inferential covariance, is INTENTIONALLY UNUSED.
+compute_summaries_from_gibbs returns it and read_hapmixqtl_inputs / --hap_Cat
+accept it, for completeness and so it can be inspected, but no mapping function
+consumes it. The scalar inverse-variance meta-analysis assumes the two channel
+estimators are independent, and they are, even when the a and t noise is
+strongly correlated: the ASE predictor s = xL - xR is orthogonal to the total
+predictor g/2 under random phase (E[s | g=1] = 0), so the two regressions
+project any shared noise onto orthogonal directions. Measured:
+corr(beta_a, beta_t) = +0.01 / -0.03 / -0.02 at a-t noise correlation
+rho = 0 / 0.5 / 0.9 (95% CIs all cover zero), unchanged under 50% phasing error
+(docs/ase_validation.md sec 3 and 7f; tests/test_hapmixqtl_calibration.py
+asserts it on every push). Adding a 2*w_a*w_t*Cat term to the combined SE would
+change a statistic that is correct as written -- do not "fix" this.
 """
 
 import torch
@@ -58,7 +72,9 @@ def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
         T_df:   log total t_i [phenotypes x samples]
         Va_df:  inferential variance of a [phenotypes x samples]
         Vt_df:  inferential variance of t [phenotypes x samples]
-        Cat_df: inferential covariance a,t [phenotypes x samples] (or None)
+        Cat_df: inferential covariance a,t [phenotypes x samples] (or None).
+                Loaded for inspection only: it is INTENTIONALLY UNUSED by every
+                mapping function (see the module docstring for why).
         pos_df: phenotype positions [phenotypes x (chr, pos|start,end)]
     """
     A_df, pos_df = read_phenotype_bed(a_bed)
@@ -233,7 +249,9 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5):
         T:   log total mean [features, samples]
         Va:  inferential variance of a [features, samples]
         Vt:  inferential variance of t [features, samples]
-        Cat: inferential covariance of a,t [features, samples]
+        Cat: inferential covariance of a,t [features, samples]. Returned for
+             inspection; INTENTIONALLY UNUSED by the mapping functions (see the
+             module docstring).
     """
     a_draws = np.log(yL + kappa) - np.log(yR + kappa)
     t_draws = np.log((yL + yR) / 2 + kappa)
@@ -434,6 +452,15 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
     combines via inverse-variance meta-analysis. Using g/2 as the total
     channel predictor makes its slope estimate the same quantity as the
     ASE channel slope: the full log allelic fold change (log aFC).
+
+    The scalar meta-analysis treats the two channel estimators as
+    independent and deliberately ignores Cat (the a-t inferential
+    covariance). That is correct, not an omission: s = xL - xR is orthogonal
+    to g/2 under random phase (E[s | g=1] = 0), so the two regressions
+    project any shared noise onto orthogonal directions and corr(beta_a,
+    beta_t) stays at zero even when a and t are correlated at rho = 0.9
+    (measured, docs/ase_validation.md sec 3; asserted by
+    tests/test_hapmixqtl_calibration.py).
 
     Args:
         genotypes_t: [V, N] dosage (0/1/2)
@@ -1186,7 +1213,10 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     Returns:
         summary_df (if summary_only) or (summary_df, susie_res dict), analogous
-        to ``susie.map``.
+        to ``susie.map``. The summary carries a ``tau_mode`` column and every
+        ``susie_res`` entry a ``tau_mode`` key, so fine-mapping produced under
+        the invalid ``'zero'`` setting (docs/ase_validation.md sec 7g) can be
+        identified later; see ``fine_mapping_provenance``.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1351,6 +1381,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
         if not summary_only:
             susie_res[phenotype_id] = {key: res[key] for key in copy_keys}
+            susie_res[phenotype_id]['tau_mode'] = tau_mode
 
     logger.write(f'  Time elapsed: {(time.time() - start_time) / 60:.2f} min')
     logger.write('done.')
@@ -1359,9 +1390,10 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         susie_summary = pd.concat(susie_summary, axis=0).rename(
             columns={'snp': 'variant_id'}
         ).reset_index(drop=True)
+        susie_summary['tau_mode'] = tau_mode
     else:
         susie_summary = pd.DataFrame(
-            columns=['phenotype_id', 'variant_id', 'pip', 'af', 'cs_id']
+            columns=['phenotype_id', 'variant_id', 'pip', 'af', 'cs_id', 'tau_mode']
         )
 
     if summary_only:
@@ -1371,6 +1403,41 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         for key in drop_ids:
             del susie_res[key]
         return susie_summary, susie_res
+
+
+def fine_mapping_provenance(summary):
+    """
+    Classify a ``map_susie`` summary (a DataFrame, or the path of the parquet
+    or tab-delimited file the CLI writes) by the tau_mode it was produced
+    under.
+
+    Fine-mapping run under ``tau_mode='zero'`` is invalid, not merely
+    miscalibrated: nominal 95% credible sets covered the causal variant 36.8%
+    of the time and PIP-0.98 variants were causal 34% of the time
+    (docs/ase_validation.md sec 7g). Such results should be redone, not
+    re-thresholded. Summaries written before outputs recorded ``tau_mode``
+    carry no provenance and, unless ``tau_mode='estimate'`` was passed
+    explicitly, were produced under the old default ``'zero'``.
+
+    Returns:
+        dict(status, tau_modes, message) with status 'ok', 'stale' or 'unknown'
+    """
+    if not isinstance(summary, pd.DataFrame):
+        path = str(summary)
+        summary = (pd.read_parquet(path) if path.endswith('.parquet')
+                   else pd.read_csv(path, sep='\t'))
+    if 'tau_mode' not in summary.columns:
+        return dict(status='unknown', tau_modes=[], message=(
+            'no tau_mode column: produced before map_susie recorded provenance. '
+            "Unless tau_mode='estimate' was passed explicitly this was run under the "
+            "old default 'zero' and should be redone (docs/ase_validation.md sec 7g)."))
+    modes = sorted(set(summary['tau_mode'].dropna().astype(str)))
+    if 'zero' in modes:
+        return dict(status='stale', tau_modes=modes, message=(
+            "produced under tau_mode='zero': credible sets and PIPs are invalid "
+            '(docs/ase_validation.md sec 7g); redo with the default tau_mode.'))
+    return dict(status='ok', tau_modes=modes,
+                message='produced under tau_mode=' + '/'.join(modes))
 
 
 # ---------------------------------------------------------------------------

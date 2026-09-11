@@ -207,7 +207,7 @@ se   = sqrt(1 / (1/se_a² + 1/se_t²))
 | `--hap_T` | Log total expression `t_i` (BED) |
 | `--hap_Va` | Inferential variance of `a_i` (BED) |
 | `--hap_Vt` | Inferential variance of `t_i` (BED) |
-| `--hap_Cat` | Inferential covariance of `a_i,t_i` (optional; unused by the default method) |
+| `--hap_Cat` | Inferential covariance of `a_i,t_i` (optional; loaded for inspection only and **intentionally unused**: the two channel estimators are orthogonal under random phase, so the scalar meta-analysis is exact without it — see the `hapmixqtl` module docstring and `docs/ase_validation.md` §3) |
 | `--phase_xL` | ALT allele on haplotype L (0/1), variants × samples, tab-delimited (optional) |
 | `--phase_xR` | ALT allele on haplotype R (0/1), variants × samples, tab-delimited (optional) |
 | `--tau_mode` | `zero` (default) or `estimate` (per-phenotype moment estimator of overdispersion) |
@@ -246,7 +246,7 @@ res_df = hapmixqtl.map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                            covariates_df=covariates_df)
 ```
 
-**SuSiE fine-mapping** identifies credible sets of candidate causal variants from the combined ASE + total evidence. Because both channels estimate the same shared effect (log aFC), the two sqrt-weighted, covariate-residualized channels are stacked into a single whitened design and passed to tensorQTL's existing [SuSiE](https://rss.onlinelibrary.wiley.com/doi/full/10.1111/rssb.12388) implementation (`tensorqtl.susie.susie`) unchanged, so any improvements to the core SuSiE code are inherited automatically. The sqrt-weight transform whitens each channel to unit-variance noise using the known Gibbs inferential variances, so `estimate_residual_variance` defaults to `False` (consistent with the known-variance standard errors used elsewhere in hapmixQTL); set it to `True` to instead let SuSiE re-estimate a scalar dispersion. Outputs mirror `cis_susie`: a credible-set summary parquet (`${prefix}.hapmixqtl_SuSiE_summary.parquet`) and a pickle of the full per-phenotype SuSiE results.
+**SuSiE fine-mapping** identifies credible sets of candidate causal variants from the combined ASE + total evidence. Because both channels estimate the same shared effect (log aFC), the two sqrt-weighted, covariate-residualized channels are stacked into a single whitened design and passed to tensorQTL's existing [SuSiE](https://rss.onlinelibrary.wiley.com/doi/full/10.1111/rssb.12388) implementation (`tensorqtl.susie.susie`) unchanged, so any improvements to the core SuSiE code are inherited automatically. The sqrt-weight transform whitens each channel to unit-variance noise using the known Gibbs inferential variances, so `estimate_residual_variance` defaults to `False` (consistent with the known-variance standard errors used elsewhere in hapmixQTL); set it to `True` to instead let SuSiE re-estimate a scalar dispersion. Outputs mirror `cis_susie`: a credible-set summary parquet (`${prefix}.hapmixqtl_SuSiE_summary.parquet`) and a pickle of the full per-phenotype SuSiE results. The summary carries a `tau_mode` column and each pickle entry a `tau_mode` key. Fine-mapping produced under `tau_mode='zero'`, the default before the calibration fix, is invalid (`docs/ase_validation.md` §7g) and should be redone; `hapmixqtl.fine_mapping_provenance(summary_or_path)` classifies a results file as `ok`, `stale`, or `unknown` (no provenance column, i.e. produced before it was recorded).
 ```
 python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode hapmixqtl_susie \

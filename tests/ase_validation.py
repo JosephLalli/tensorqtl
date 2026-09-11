@@ -8,7 +8,8 @@ invalid error rate. This harness supplies the missing evidence.
 
 Three structural facts about the implementation motivate the design:
 
-  F1 (tau).  `tau_mode='zero'` is the DEFAULT in map_nominal/map_cis, so the
+  F1 (tau).  `tau_mode='zero'` WAS the default in map_nominal/map_cis when this
+      harness was written (it is 'estimate' now, because of Tier 0), so the
       weights are w_i = 1/v_inf_i. Combined with the known-variance GLS SE
       (Var(beta) = 1/xx, no estimated dispersion), the model asserts that Gibbs
       inferential variance is the ONLY source of error variance. Any additional
@@ -19,6 +20,9 @@ Three structural facts about the implementation motivate the design:
       combines the two channels by SCALAR inverse-variance meta-analysis, which
       assumes independence. a and t are both functions of the same Gibbs draws,
       so Cov != 0 in general and the combined SE is missing a 2*w_a*w_t*Cov term.
+      Tier 0b MEASURED this and retired it: the slope estimators are uncorrelated
+      even at rho = 0.9, because s is orthogonal to g/2 under random phase, so
+      ignoring Cat is correct (hapmixqtl.py module docstring).
 
   F3 (dof). p-values are computed with get_t_pval(tstat, N-2-n_cov), i.e. a
       t-reference for what is by construction a known-variance z-statistic. Minor

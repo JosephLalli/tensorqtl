@@ -1,0 +1,114 @@
+"""
+CI calibration gate for hapmixQTL (docs/ase_validation.md sec 8).
+
+The unit tests in test_hapmixqtl.py check that the code computes the formula
+it was written to compute. None of them can see an invalid error rate: the
+tau_mode='zero' defect (docs sec 2, 6, 7d) passed every one of them while
+making every null test on real GTEx data significant. This module is the cheap
+version of Tiers 0 / 0b / 1 of tests/ase_validation.py that would have caught
+it, run on every push:
+
+  * control cell (no unmodelled variance): nominal for BOTH tau modes; if
+    this fails the harness itself is broken, not the method;
+  * inflated cell (biological SD 0.6): 'estimate' stays calibrated AND 'zero'
+    is detectably inflated -- the second half keeps the gate honest, so a
+    simulator change that hides the defect fails too;
+  * 95% CI coverage of a planted log aFC: 'estimate' covers, 'zero' does not;
+  * the two channel estimators stay uncorrelated when the a and t noise is
+    correlated at 0.9 -- the measured basis for ignoring Cat (docs sec 3).
+
+Deterministic seeds; about 10 s on CPU.
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+from scipy import stats
+
+sys.path.insert(0, str(Path(__file__).parent))
+from ase_validation import simulate_channels, run_association, pvals_from_t  # noqa: E402
+
+N, V = 200, 20
+
+
+def _null_pvals(reps, sigma_bio, rho, tau_mode, seed):
+    rng = np.random.RandomState(seed)
+    out = []
+    for _ in range(reps):
+        g, s, a, t, va, vt = simulate_channels(N, V, rng, beta=0.0,
+                                               sigma_bio=sigma_bio, rho_at=rho)
+        tstat = run_association(g, s, a, t, va, vt, tau_mode=tau_mode)[0]
+        out.append(pvals_from_t(tstat, N))
+    return np.concatenate(out)
+
+
+def _type1(p, alpha):
+    return float(np.mean(p < alpha))
+
+
+def _lambda_gc(p):
+    return float(np.median(stats.chi2.isf(p, 1)) / stats.chi2.ppf(0.5, 1))
+
+
+def test_control_cell_is_nominal_for_both_tau_modes():
+    """With no unmodelled variance the known-variance model is exactly true,
+    so both settings must be nominal. Failure here means the harness, not
+    the method, is broken."""
+    for tau_mode in ('zero', 'estimate'):
+        p = _null_pvals(150, 0.0, 0.0, tau_mode, seed=11)
+        t1 = _type1(p, 0.05)
+        assert 0.03 <= t1 <= 0.07, \
+            f'{tau_mode}: type-I at 0.05 = {t1:.4f} on {p.size} null tests'
+        lam = _lambda_gc(p)
+        assert 0.8 <= lam <= 1.2, f'{tau_mode}: lambda_GC = {lam:.3f}'
+
+
+def test_estimate_stays_calibrated_with_unmodelled_variance():
+    """The cell that exposed the defect: biological SD 0.6 on both channels."""
+    p = _null_pvals(150, 0.6, 0.0, 'estimate', seed=22)
+    assert _type1(p, 0.05) <= 0.07, f'type-I at 0.05 = {_type1(p, 0.05):.4f}'
+    assert _type1(p, 0.01) <= 0.02, f'type-I at 0.01 = {_type1(p, 0.01):.4f}'
+    assert _lambda_gc(p) <= 1.2, f'lambda_GC = {_lambda_gc(p):.3f}'
+
+
+def test_gate_detects_the_tau_zero_defect():
+    """Sensitivity check: the same cell under tau_mode='zero' must be visibly
+    inflated (6.8x at alpha 0.05 in the full harness). If this ever passes
+    calibration, the simulator has stopped exercising the defect and the
+    test above is no longer evidence of anything."""
+    p = _null_pvals(150, 0.6, 0.0, 'zero', seed=22)
+    assert _type1(p, 0.05) >= 0.15, \
+        f'type-I at 0.05 = {_type1(p, 0.05):.4f}; the gate has lost its sensitivity'
+    assert _lambda_gc(p) >= 2.0, f'lambda_GC = {_lambda_gc(p):.3f}'
+
+
+def test_ci_coverage_with_unmodelled_variance():
+    """Nominal 95% CI for a planted log aFC = 0.5 (Tier 1): 'estimate' must
+    cover, 'zero' must not (0.959 vs 0.645 in the full harness)."""
+    cov = {}
+    for tau_mode in ('estimate', 'zero'):
+        rng = np.random.RandomState(33)
+        hit = []
+        for _ in range(200):
+            g, s, a, t, va, vt = simulate_channels(N, V, rng, beta=0.5, sigma_bio=0.6)
+            _, slope, se, *_ = run_association(g, s, a, t, va, vt, tau_mode=tau_mode)
+            hit.append(abs(slope[0] - 0.5) <= 1.96 * se[0])
+        cov[tau_mode] = float(np.mean(hit))
+    assert cov['estimate'] >= 0.90, f"coverage under 'estimate' = {cov['estimate']:.3f}"
+    assert cov['zero'] <= 0.80, \
+        f"coverage under 'zero' = {cov['zero']:.3f}; the gate has lost its sensitivity"
+
+
+def test_channel_estimators_uncorrelated_under_correlated_noise():
+    """The basis for ignoring Cat: with the a and t inferential noise
+    correlated at 0.9, the ASE and total slope estimators are still
+    uncorrelated, because s = xL - xR is orthogonal to g/2 under random
+    phase (docs sec 3)."""
+    rng = np.random.RandomState(44)
+    ba, bt = [], []
+    for _ in range(400):
+        g, s, a, t, va, vt = simulate_channels(N, V, rng, beta=0.0, sigma_bio=0.3, rho_at=0.9)
+        _, _, _, slope_t, _, slope_a, _ = run_association(g, s, a, t, va, vt, tau_mode='estimate')
+        ba.append(slope_a[0]); bt.append(slope_t[0])
+    r = float(np.corrcoef(ba, bt)[0, 1])
+    assert abs(r) <= 0.15, f'corr(beta_a, beta_t) = {r:.3f} at rho = 0.9'

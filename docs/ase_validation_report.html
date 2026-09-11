@@ -1018,15 +1018,32 @@
     became a 1e8 weight) is fixed in production.</li>
     <li><code>map_cis</code> reports the exact GLS slope and SE for the lead variant (§7j).</li>
     <li>STRs and multiallelic sites are supported as opt-in, non-standard extensions (§7j).</li>
+    <li><strong>A calibration gate runs in CI</strong>
+    (<code>tests/test_hapmixqtl_calibration.py</code>, ~2 s, picked up by the existing
+    <code>pytest tests/</code> workflow). The control cell must be nominal for both τ modes,
+    else the harness is broken; the inflated cell (σ<sub>bio</sub> = 0.6) must stay
+    calibrated under <code>'estimate'</code> <em>and</em> be detectably inflated under
+    <code>'zero'</code>, so the gate cannot silently lose its sensitivity; 95% CI coverage
+    must hold under <code>'estimate'</code> and fail under <code>'zero'</code>; and the two
+    channel estimators must stay uncorrelated at ρ = 0.9.</li>
+    <li><strong><code>Cat</code> is documented as intentionally unused</strong> — in the
+    module docstring, <code>calculate_hapmixqtl_nominal</code>, the functions that produce
+    and load it, the CLI help for <code>--hap_Cat</code> and the README — with the
+    orthogonality argument, the measured correlations, and an explicit instruction not to
+    "fix" it.</li>
+    <li><strong>Fine-mapping output records its provenance.</strong> The
+    <code>map_susie</code> summary carries a <code>tau_mode</code> column and each pickle
+    entry a <code>tau_mode</code> key; <code>hapmixqtl.fine_mapping_provenance()</code>
+    classifies a results file as <code>ok</code>, <code>stale</code> (produced under
+    <code>'zero'</code>) or <code>unknown</code> (no provenance column, i.e. produced before
+    it was recorded). No fine-mapping results are stored in this repository.</li>
   </ol>
   <h3>Still recommended</h3>
   <ol class="recs">
-    <li><strong>Re-run any fine-mapping done under the old default.</strong> §7g: 95%
-    credible sets covered the causal variant 36.8% of the time. Redo, do not re-threshold.</li>
-    <li>Document <code>Cat</code> as intentionally unused, with the orthogonality argument
-    from §3, so a future reader neither mistakes it for an oversight nor silently "fixes" it.</li>
-    <li>Add a calibration gate to CI — the control cell plus one inflated cell, as a fast
-    test, would have caught the τ defect immediately.</li>
+    <li><strong>Re-run any fine-mapping you produced under the old default.</strong> §7g:
+    95% credible sets covered the causal variant 36.8% of the time. Redo, do not
+    re-threshold. Any summary without a <code>tau_mode</code> column predates the fix;
+    <code>fine_mapping_provenance()</code> will say so.</li>
     <li>Ship the cis/trans test (§7c) as a per-gene <em>diagnostic</em> column, not a
     correction: it validates the α = 1 assumption the meta-analysis rests on and flags genes
     whose reported effect is attenuated. Whether α = 1 should be enforced is an open
@@ -1059,6 +1076,9 @@
 
 # fast smoke (~1 min)
 python3 tests/ase_validation.py --reps 60 --tiers 0
+
+# the CI calibration gate (~2 s; runs on every push)
+pytest tests/test_hapmixqtl_calibration.py
 
 # external benchmark vs TReC-only / ASE-only / TReCASE
 python3 tests/ase_external_benchmark.py --reps 500 --kappas 1.05,1.1,1.2

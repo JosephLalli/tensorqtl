@@ -62,7 +62,7 @@ def main():
     parser.add_argument('--hap_T', default=None, type=str, help='Log total expression BED file (hapmixqtl modes)')
     parser.add_argument('--hap_Va', default=None, type=str, help='Inferential variance for allelic contrast BED file (hapmixqtl modes)')
     parser.add_argument('--hap_Vt', default=None, type=str, help='Inferential variance for total expression BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional)')
+    parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional; loaded for inspection only -- intentionally unused by the method, see the hapmixqtl module docstring)')
     parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--tau_mode', default='zero', type=str, choices=['zero', 'estimate'], help='Overdispersion handling: zero (default) or estimate per phenotype')

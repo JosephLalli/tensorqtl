@@ -867,20 +867,33 @@ unchanged (the r² mapping is monotone). This matters for the effect-size concor
    became a 1e8 weight) is fixed in production.
 4. `map_cis` reports the exact GLS slope and SE for the lead variant (§7j).
 5. STRs and multiallelic sites are supported as opt-in, non-standard extensions (§7j).
+6. **A calibration gate runs in CI** (`tests/test_hapmixqtl_calibration.py`, ~2 s, picked up
+   by the existing `pytest tests/` workflow). The control cell must be nominal for both τ
+   modes (else the harness is broken); the inflated cell (σ_bio = 0.6) must stay calibrated
+   under `'estimate'` **and** be detectably inflated under `'zero'`, so the gate cannot
+   silently lose its sensitivity; 95% CI coverage must hold under `'estimate'` and fail under
+   `'zero'`; and the two channel estimators must stay uncorrelated at ρ = 0.9. The τ defect,
+   a broken residualizer or a regression in the meta-analysis all fail it.
+7. **`Cat` is documented as intentionally unused** — in the `hapmixqtl` module docstring,
+   `calculate_hapmixqtl_nominal`, the two functions that produce and load it, the CLI help
+   for `--hap_Cat` and the README — with the orthogonality argument, the measured
+   correlations, and an explicit instruction not to "fix" it.
+8. **Fine-mapping output records its provenance.** The `map_susie` summary carries a
+   `tau_mode` column and each pickle entry a `tau_mode` key;
+   `hapmixqtl.fine_mapping_provenance()` classifies a results file as `ok`, `stale` (produced
+   under `'zero'`) or `unknown` (no provenance column, i.e. produced before it was recorded).
+   No fine-mapping results are stored in this repository.
 
 **Still recommended.**
 
-1. **Re-run any fine-mapping done under the old default.** §7g shows it produced 95%
-   credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants that
-   were truly causal 34% of the time. Redo, do not re-threshold.
-2. **Document `Cat` as intentionally unused**, with the orthogonality argument from Tier
-   0b, so a future reader does not mistake it for an oversight — or silently "fix" it.
-3. **Add a calibration gate to CI.** A cheap version of Tier 0 (control cell + one inflated
-   cell) as a fast test would have caught the τ defect immediately.
-4. **Ship the cis/trans test (§7c) as a per-gene *diagnostic* column, not a correction.** It
+1. **Re-run any fine-mapping you produced under the old default.** §7g shows it produced
+   95% credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants
+   that were truly causal 34% of the time. Redo, do not re-threshold. Any summary without a
+   `tau_mode` column predates the fix; `fine_mapping_provenance()` will say so.
+2. **Ship the cis/trans test (§7c) as a per-gene *diagnostic* column, not a correction.** It
    validates the α = 1 assumption the meta-analysis rests on and flags genes whose reported
    effect is attenuated. Whether α = 1 should be enforced is an open modelling question.
-5. **Fit φ outright when filtered input cannot be guaranteed.** It is the highest-value
+3. **Fit φ outright when filtered input cannot be guaranteed.** It is the highest-value
    model addition in that setting, at ~17% clean-data power (§7i).
 
 ## 9. Untested / open
@@ -919,6 +932,8 @@ expression but not the genotypes.
 python3 tests/ase_validation.py --reps 1500 --N 200 --tiers 0,1,2,3 --out results.json
 # fast smoke (~1 min):
 python3 tests/ase_validation.py --reps 60 --tiers 0
+# the CI calibration gate (~2 s; runs on every push):
+pytest tests/test_hapmixqtl_calibration.py
 # §7j: STR + multiallelic encoding, lead scan, both second-pass models (~1 min):
 python3 scripts/str_integrate.py --selftest
 ```

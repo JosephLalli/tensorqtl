@@ -37,6 +37,7 @@ from tensorqtl.hapmixqtl import (
     map_nominal,
     map_cis,
     map_susie,
+    fine_mapping_provenance,
 )
 
 
@@ -861,6 +862,27 @@ class TestMapSusie:
         sub = summary_df[summary_df['phenotype_id'] == d['causal_pheno']]
         # The causal variant is in a reported (pure) credible set.
         assert d['causal_variant'] in set(sub['variant_id'])
+
+
+    def test_map_susie_records_tau_mode_provenance(self):
+        """Fine-mapping output records the tau_mode it was produced under, and
+        fine_mapping_provenance flags results from the old default (sec 7g)."""
+        d = _make_dataset(seed=123, n_samples=100, n_variants=15)
+        summary_df, res = map_susie(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            L=5, window=1000000, max_iter=200,
+            summary_only=False, verbose=False,
+        )
+        assert 'tau_mode' in summary_df.columns
+        assert (summary_df['tau_mode'] == 'estimate').all()
+        assert all(v['tau_mode'] == 'estimate' for v in res.values())
+        assert fine_mapping_provenance(summary_df)['status'] == 'ok'
+        assert fine_mapping_provenance(summary_df.drop(columns='tau_mode'))['status'] == 'unknown'
+        stale = summary_df.copy()
+        stale['tau_mode'] = 'zero'
+        assert fine_mapping_provenance(stale)['status'] == 'stale'
 
 
 # ---------------------------------------------------------------------------
