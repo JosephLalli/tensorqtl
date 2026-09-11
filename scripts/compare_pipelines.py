@@ -418,6 +418,41 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
 #  Scoring
 # ---------------------------------------------------------------------------
 
+def chrom_index(vdf):
+    """{chrom: (positions[sorted], original_row_indices)} for O(log V) lookups.
+
+    The gene loop used to do `vdf['chrom'].values == chrom` per gene: a full
+    STRING comparison over every variant, for every gene. At 34k genes against
+    15.3M variants that is ~5e11 element comparisons and tens of minutes, and
+    it grows with the VCF, which is the wrong direction when the pre-filter was
+    just relaxed from MAF 0.05 to 0.01. Bucketing once and binary-searching
+    makes each gene O(log V).
+    """
+    chrom = vdf['chrom'].values
+    pos = vdf['pos'].values
+    order = np.lexsort((pos, chrom))
+    c_sorted, p_sorted = chrom[order], pos[order]
+    out, i, n = {}, 0, len(order)
+    while i < n:
+        j = i
+        while j < n and c_sorted[j] == c_sorted[i]:
+            j += 1
+        out[str(c_sorted[i])] = (p_sorted[i:j], order[i:j])
+        i = j
+    return out
+
+
+def variants_in(cidx, chrom, lo, hi):
+    """Original row indices on `chrom` with lo <= pos <= hi."""
+    e = cidx.get(str(chrom))
+    if e is None:
+        return np.empty(0, np.int64)
+    p, idx = e
+    a = np.searchsorted(p, lo, 'left')
+    b = np.searchsorted(p, hi, 'right')
+    return idx[a:b]
+
+
 def score(obs, null, name, known=None, genes_keep=None):
     """obs/null: DataFrames with gene, stat. null pooled over permutations."""
     o = obs.dropna(subset=['stat']); n = null.dropna(subset=['stat'])
@@ -538,14 +573,65 @@ def run(args):
     gi_all = {g: i for i, g in enumerate(genes_all)}
     # usable: in both inputs, with >= 1 fSNP carrying counts
     pos = vdf['pos'].values
+    # An explicit gene list short-circuits the candidate filter below. The
+    # filter can only approximate RASQUAL's real gate, which is four
+    # conditions on each feature SNP -- coverage, allele-specific genotype AF
+    # bounds and a strict-interior allele fraction (main.c:535) -- against the
+    # one condition ("some fSNP in the body has counts") checkable from here.
+    # It therefore OVER-admits, and the excess shows up later as genes RASQUAL
+    # silently drops. Probing with a cheap RASQUAL-only pass and feeding the
+    # genes it actually used back in via --gene-list removes the approximation
+    # rather than correcting for it afterwards.
+    want_genes = None
+    if args.gene_list:
+        want_genes = [l.strip() for l in open(args.gene_list) if l.strip()]
+        print(f'Gene list supplied: {len(want_genes)} genes '
+              '(candidate filter skipped)')
     usable = []
-    for g in gp.index:
-        if g not in gi_all:
+    cidx = chrom_index(vdf)
+    gp_rec = gp.to_dict('index')          # pandas .loc per gene is ~100us
+    for g in (want_genes if want_genes is not None else gp.index):
+        if g not in gi_all or g not in gp_rec:
             continue
-        r = gp.loc[g]; same = vdf['chrom'].values == str(r['chr'])
-        body = np.where(same & (pos >= int(r['start'])) & (pos <= int(r['end'])))[0]
+        if want_genes is not None:
+            usable.append(g)
+            continue
+        r = gp_rec[g]; same = None
+        body = variants_in(cidx, r['chr'], int(r['start']), int(r['end']))
         if any((str(r['chr']), int(pos[v])) in allelic for v in body):
             usable.append(g)
+    # PROBE. The candidate filter above can only approximate RASQUAL's gate,
+    # so ask RASQUAL directly: run it once, observed only, over a larger
+    # candidate pool and keep the genes it actually produced a statistic for.
+    # The shared set is then RASQUAL's own answer rather than our guess, and
+    # the genes it would have silently dropped never enter the null either.
+    # Done inside this run so the expensive inputs are loaded once.
+    if args.probe_genes and args.rasqual:
+        pool = list(usable)
+        if len(pool) > args.probe_genes:
+            pool = list(rng.choice(pool, args.probe_genes, replace=False))
+        print(f'\nProbe: asking RASQUAL which of {len(pool)} candidate genes '
+              'it can actually use')
+        ppos = gp.loc[pool]
+        t0 = time.time()
+        pr = rasqual_arm(args.rasqual, pool, ppos, vdf, xL, xR, allelic,
+                         order, np.zeros((len(pool), len(order))),
+                         np.ones((len(pool), len(order))), args.window,
+                         None, tested=None, maf=args.maf,
+                         min_coverage=args.min_coverage, cov_bin=cov_bin)
+        ok_genes = list(pr[pr['status'] == 'ok']['gene'])
+        by_status = pr['status'].value_counts().to_dict()
+        print(f'  RASQUAL used {len(ok_genes)}/{len(pool)} '
+              f'({100*len(ok_genes)/max(len(pool),1):.0f}%) in '
+              f'{(time.time()-t0)/60:.1f} min; statuses {by_status}')
+        if len(ok_genes) < 5:
+            raise SystemExit('the probe found too few genes RASQUAL can use')
+        usable = ok_genes
+        probe_stats = {'n_probed': len(pool), 'n_rasqual_usable': len(ok_genes),
+                       'status_counts': {k: int(v) for k, v in by_status.items()}}
+    else:
+        probe_stats = None
+
     if len(usable) > args.n_genes:
         usable = list(rng.choice(usable, args.n_genes, replace=False))
     print(f'  {len(usable)} genes usable by both (of {len(gp)}); '
@@ -558,9 +644,10 @@ def run(args):
     # tested variants: in some gene's window AND outside every selected gene body
     in_body = np.zeros(len(vdf), bool); in_win = np.zeros(len(vdf), bool)
     for g in usable:
-        r = gp.loc[g]; same = vdf['chrom'].values == str(r['chr'])
-        in_body |= same & (pos >= int(r['start'])) & (pos <= int(r['end']))
-        in_win |= same & (np.abs(pos - int(r['pos'])) <= args.window)
+        r = gp_rec[g]
+        in_body[variants_in(cidx, r['chr'], int(r['start']), int(r['end']))] = True
+        in_win[variants_in(cidx, r['chr'], int(r['pos']) - args.window,
+                           int(r['pos']) + args.window)] = True
     tested = in_win & ~in_body
     # MAF applies to TESTED rSNPs only, never to the feature SNPs in gene
     # bodies. A cis variant too rare to carry power is noise in the scan, but
@@ -704,6 +791,9 @@ def run(args):
                    'n_genes': len(usable), 'n_samples': len(order),
                    'n_tested_variants': int(tested.sum()), 'n_perm': args.n_perm,
                    'n_genes_both_converged': len(common_genes),
+                   'n_genes_hapmixqtl_input': len(genes_all),
+                   'n_genes_candidate_shared': len(usable),
+                   'probe': probe_stats,
                    'window': args.window, 'seed': args.seed},
         'compute_seconds_observed': {'hapmixQTL': th, 'RASQUAL': tr},
         'hapmixQTL': score(obs_h, null_h, 'hapmixQTL', known,
@@ -806,6 +896,18 @@ def main(argv=None):
                          'which destroys their LD and mis-calibrates BOTH arms '
                          'in opposite directions. "knockoff" substitutes '
                          'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--probe-genes', type=int, default=0,
+                    help='run a cheap RASQUAL-only pass over this many '
+                         'candidate genes first and keep only the ones it '
+                         'actually used, then sample --n-genes from those. '
+                         "Makes the shared set RASQUAL's real gate rather than "
+                         'an approximation, and keeps genes it would drop out '
+                         'of the null as well as the observed statistic')
+    ap.add_argument('--gene-list',
+                    help='explicit gene ids, one per line. Skips the candidate '
+                         'filter -- use the genes a cheap RASQUAL-only probe '
+                         'actually used, so the shared set is RASQUAL\'s real '
+                         'gate rather than an approximation of it')
     ap.add_argument('--covariates',
                     help='TSV from scripts/build_covariates.py: samples as '
                          'rows, covariates as columns. Fed to BOTH arms')
@@ -931,6 +1033,7 @@ def selftest():
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
         null='permute', knockoff_k=4, min_coverage=0.05, covariates=None,
+        gene_list=None, probe_genes=0,
         str_vcf=None, multiallelic=False, min_hap=10)
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
