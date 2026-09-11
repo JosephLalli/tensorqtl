@@ -25,7 +25,7 @@ option -- use scripts/prep_brainvar.py.
 
 WHAT IT DOES
 ============
-  1. Reads each sample's Salmon output including aux_info/bootstraps
+  1. Reads each sample's Salmon output including aux_info/bootstrap
      (--numGibbsSamples 200), giving a [transcript x draw] matrix per sample.
   2. Pairs haplotype transcripts, aggregates to gene level per haplotype per
      draw -> yL / yR [genes x samples x draws].
@@ -108,18 +108,43 @@ ASC_CUTOFF, TRC_CUTOFF, MIN_SAMPLES = 5, 20, 30
 #  Salmon readers
 # ---------------------------------------------------------------------------
 
+def _bootstrap_dir(sdir):
+    """aux_info/bootstrap (as salmon writes it), or the plural spelling."""
+    aux = Path(sdir) / 'aux_info'
+    for sub in ('bootstrap', 'bootstraps'):
+        if (aux / sub / 'bootstraps.gz').exists():
+            return aux / sub
+    return aux / 'bootstrap'
+
+
+def read_salmon_names(sdir):
+    """Transcript names only. names.tsv.gz is ~700KB where bootstraps.gz is
+    ~11MB, so the gene-union pass reads this instead of the payloads."""
+    nfile = _bootstrap_dir(sdir) / 'names.tsv.gz'
+    if not nfile.exists():
+        raise SystemExit(f'{nfile} not found -- was salmon run with '
+                         '--numGibbsSamples or --numBootstraps?')
+    with gzip.open(nfile, 'rt') as fh:
+        return fh.read().strip().split('\t')
+
+
 def read_salmon_bootstraps(sdir):
     """Return (transcript_names, boot[n_txp, n_draws]).
 
-    Salmon writes aux_info/bootstraps/{bootstraps.gz,names.tsv.gz} and records
+    Salmon writes aux_info/bootstrap/{bootstraps.gz,names.tsv.gz} and records
     the count in aux_info/meta_info.json. The payload is a flat binary array of
     n_draws x n_txp; the element type is inferred from its size so both the
     double and integer variants are handled.
+
+    The directory is SINGULAR while the file inside it is plural. Verified
+    against salmon 1.10.1 output: aux_info/bootstrap/bootstraps.gz. The plural
+    directory is accepted too, in case some version or repackaging writes it.
     """
     sdir = Path(sdir)
     aux = sdir / 'aux_info'
-    bfile = aux / 'bootstraps' / 'bootstraps.gz'
-    nfile = aux / 'bootstraps' / 'names.tsv.gz'
+    bdir = _bootstrap_dir(sdir)
+    bfile = bdir / 'bootstraps.gz'
+    nfile = bdir / 'names.tsv.gz'
     mfile = aux / 'meta_info.json'
     for f in (bfile, nfile):
         if not f.exists():
@@ -127,7 +152,9 @@ def read_salmon_bootstraps(sdir):
                 f'{f} not found.\n'
                 'Salmon must be run with --numGibbsSamples (or --numBootstraps). '
                 'Without the bootstrap directory there is no inferential '
-                'variance, and hapmixQTL has nothing to propagate.')
+                'variance, and hapmixQTL has nothing to propagate.\n'
+                f'(looked for aux_info/bootstrap and aux_info/bootstraps under '
+                f'{sdir})')
     with gzip.open(nfile, 'rt') as fh:
         names = fh.read().strip().split('\t')
     n_txp = len(names)
@@ -601,27 +628,54 @@ def load_counts(manifest, tx2gene, suffixes, out):
     t2g = dict(l.split('\t')[:2] for l in
                Path(tx2gene).read_text().strip().split('\n') if '\t' in l)
 
+    def _no_pairs(sd):
+        return SystemExit(
+            f'no haplotype-paired transcripts in {sd} using suffixes '
+            f'{suffixes}.\nSalmon appears to have been run against a '
+            'standard reference transcriptome, which carries NO allelic '
+            'information. Quantify against a personalized DIPLOID '
+            'transcriptome built from your phased VCF, or use the phASER '
+            'route (scripts/prep_brainvar.py).')
+
+    # Pass 1: the gene set is the UNION over every sample, not whatever the
+    # first one happened to carry. A personalized diploid transcriptome is
+    # built per sample from that sample's own variants, so the transcript sets
+    # genuinely differ. Taking sample 1's set made the result depend on
+    # manifest ORDER: genes only in later samples were dropped silently, and
+    # indexing gi[g] for a gene the first sample lacked raised KeyError.
+    # Reading names.tsv.gz here keeps this pass off the payloads.
+    gene_set = set()
+    for s, sd in zip(samples, dirs):
+        pairs = pair_haplotypes(read_salmon_names(sd), suffixes)
+        if not pairs:
+            raise _no_pairs(sd)
+        gene_set |= {t2g[b] for b in pairs if b in t2g}
+    if not gene_set:
+        raise SystemExit(
+            'no haplotype-paired transcript matched --tx2gene. The transcript '
+            'IDs in the Salmon output and in tx2gene.tsv do not agree -- check '
+            'the version-suffix convention on both.')
+    genes = sorted(gene_set)
+    gi = {g: i for i, g in enumerate(genes)}
+
     YL = YR = None
-    genes = None
+    nd = None
     for si, (s, sd) in enumerate(zip(samples, dirs)):
         names, boot = read_salmon_bootstraps(sd)
         pairs = pair_haplotypes(names, suffixes)
         if not pairs:
-            raise SystemExit(
-                f'no haplotype-paired transcripts in {sd} using suffixes '
-                f'{suffixes}.\nSalmon appears to have been run against a '
-                'standard reference transcriptome, which carries NO allelic '
-                'information. Quantify against a personalized DIPLOID '
-                'transcriptome built from your phased VCF, or use the phASER '
-                'route (scripts/prep_brainvar.py).')
-        if genes is None:
-            genes = sorted({t2g[b] for b in pairs if b in t2g})
-            gi = {g: i for i, g in enumerate(genes)}
+            raise _no_pairs(sd)
+        if YL is None:
             nd = boot.shape[1]
             YL = np.zeros((len(genes), len(samples), nd))
             YR = np.zeros((len(genes), len(samples), nd))
-            print(f'  {len(pairs)} haplotype pairs -> {len(genes)} genes, '
-                  f'{nd} Gibbs draws')
+            print(f'  {len(pairs)} haplotype pairs -> {len(genes)} genes '
+                  f'(union over {len(samples)} samples), {nd} draws')
+        elif boot.shape[1] != nd:
+            raise SystemExit(
+                f'{s} has {boot.shape[1]} draws but the first sample had {nd}. '
+                'Every sample must be quantified with the same number of '
+                'bootstrap/Gibbs samples.')
         for base, (ia, ib) in pairs.items():
             g = t2g.get(base)
             if g is None:
@@ -826,7 +880,7 @@ def selftest():
     (td / 'ac_manifest.tsv').write_text('\n'.join(ac_man))
     man = []
     for si, s in enumerate(samples):
-        sd = td / s / 'aux_info' / 'bootstraps'
+        sd = td / s / 'aux_info' / 'bootstrap'   # as salmon writes it
         sd.mkdir(parents=True, exist_ok=True)
         names = [t + suf for t in txs for suf in ('_hapA', '_hapB')]
         boot = rng.poisson(40, size=(ND, len(names))).astype(np.float64)
@@ -838,6 +892,43 @@ def selftest():
             json.dumps({'num_bootstraps': ND, 'samp_type': 'gibbs'}))
         man.append(f'{s}\t{td/s}')
     (td / 'manifest.tsv').write_text('\n'.join(man))
+
+    # A personalized diploid transcriptome is built per sample from that
+    # sample's own variants, so transcript sets differ BETWEEN samples. Build
+    # two that do, and require the gene set to be their union in either order.
+    # Taking the first sample's set instead made the answer depend on manifest
+    # order: genes only in the later sample vanished silently, and a gene the
+    # first sample lacked raised KeyError. Reproduced on real personalized
+    # salmon output before this was changed.
+    ud = td / 'union'; ud.mkdir()
+    only_a, only_b, shared = 'TA', 'TB', ['TS0', 'TS1']
+    def _mini(name, txlist):
+        sd = ud / name / 'aux_info' / 'bootstrap'; sd.mkdir(parents=True)
+        nm = [t + suf for t in txlist for suf in ('_hapA', '_hapB')]
+        bt = rng.poisson(10, size=(4, len(nm))).astype(np.float64)
+        with gzip.open(sd / 'names.tsv.gz', 'wt') as fh:
+            fh.write('\t'.join(nm))
+        with gzip.open(sd / 'bootstraps.gz', 'wb') as fh:
+            fh.write(bt.tobytes())
+        (ud / name / 'aux_info' / 'meta_info.json').write_text(
+            json.dumps({'num_bootstraps': 4}))
+        return f'{name}\t{ud/name}'
+    ra = _mini('A', shared + [only_a])
+    rb = _mini('B', shared + [only_b])
+    (ud / 't2g.tsv').write_text('\n'.join(
+        f'{t}\tGENE_{t}' for t in shared + [only_a, only_b]))
+    want = {f'GENE_{t}' for t in shared + [only_a, only_b]}
+    seen = []
+    for tag, rows in (('A,B', [ra, rb]), ('B,A', [rb, ra])):
+        (ud / f'man_{tag}.tsv').write_text('\n'.join(rows))
+        gset, _, yl, _ = load_counts(ud / f'man_{tag}.tsv', ud / 't2g.tsv',
+                                     ('_hapA', '_hapB'), ud)
+        assert set(gset) == want, (tag, sorted(set(gset)), sorted(want))
+        assert yl.shape[0] == len(want), (tag, yl.shape)
+        seen.append(tuple(gset))
+    assert seen[0] == seen[1], 'gene set must not depend on manifest order'
+    print(f'union check: {len(want)} genes in both orders, '
+          'sample-specific transcripts preserved')
 
     argv = ['x', '--vcf', str(td / 'p.vcf'), '--manifest', str(td / 'manifest.tsv'),
             '--tx2gene', str(td / 't2g.tsv'), '--gene-pos', str(td / 'genepos.tsv'),

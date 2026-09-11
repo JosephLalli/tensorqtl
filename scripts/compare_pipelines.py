@@ -459,7 +459,7 @@ def selftest():
     (td / 'p.vcf').write_text('\n'.join(lines) + '\n')
     man, acman = [], []
     for k, s in enumerate(samples):
-        sd = td / s / 'aux_info' / 'bootstraps'; sd.mkdir(parents=True)
+        sd = td / s / 'aux_info' / 'bootstrap'; sd.mkdir(parents=True)
         names, boot = [], []
         acf = td / f'{s}.allelic_counts.txt'
         with open(acf, 'w') as fh:

@@ -100,39 +100,61 @@ itself.
 
 ### State of this prerequisite on the current machine
 
-Surveyed 2026-09-10 on the server at `/mnt/ssd/lalli`, by filename and
-pipeline configuration only. The recipe exists and has been run before; **its
-outputs do not currently exist on disk**.
-
-| Input | State |
-| --- | --- |
-| BrainVar RNA-seq FASTQ | present -- `/mnt/data/lalli/bulkRNA_fastqs/brainvar1/` (1.1T), `/mnt/ssd/lalli/bulkRNA_fastqs/brainvar2/` (0.33T) |
-| Phased genotypes | present -- `/mnt/ssd/lalli/nf_stage/brainvar2/phasing_brainvar2/` holds six phased panels, one per reference arm, including `gatk_grch38_haplotypecaller.joint_called` |
-| Personalized-quantification pipeline | present -- `/mnt/ssd/lalli/nf_stage/personalized_rnaseq/` |
-| Diploid Salmon quantifications | **absent** |
-
-The prior run was `RNA_reference_comparison_results/reference_comparison_results/bv2/personalized_T2T_NCBI110_star_alignment`.
-Its `pipeline_info/params_*.json` records exactly the settings this step needs:
+Surveyed 2026-09-10 on the server at `/mnt/ssd/lalli`. **The personalized
+diploid quantifications exist.** They are under
 
 ```
-num_gibbs_samples  = 200
-generic_salmon_args = --gcBias --seqBias --rangeFactorizationBins 4 --dumpEq --numGibbsSamples 200
-aligner            = star_salmon
-vcf_index          = .../gatk_t2t_haplotypecaller.joint_called.phased.all_variants.multiallelic.all.nostar.bcf.csi
+/mnt/data/lalli/nf_stage/reference_comparison_results_RNA/
+    Personalized_T2T_calls_NCBI110/star_salmon/<sample>/
 ```
 
-Its `salmon/` and `personalized_references/` output directories are empty,
-with no dangling symlinks inside them -- so either nothing was ever published
-there or it has been removed since; the survey cannot distinguish the two. The
-only surviving `quant.sf` files under `nf_stage/work/` carry plain RefSeq
-transcript names (`NR_046018.2`) with no haplotype suffix, which is the
-standard-reference case the diploid prerequisite rejects.
+with **37 samples** carrying a bootstrap payload (of 45 sample directories).
+Read back through `read_salmon_bootstraps`, each holds roughly 215,000
+transcripts of which about 107,500 are haplotype-paired.
 
-Two consequences. The quantification must be re-run before the comparison can
-produce anything, and it should be re-run against the reference whose coordinates
-match the GTF and VCF used to build the annotation tables and to phase -- the previous run was T2T, and
-a GENCODE GRCh38 annotation with the GRCh38 phased panel is the more direct
-path to published eGene lists.
+Four things about this data differ from the defaults and have to be passed or
+accounted for.
+
+**The haplotype suffix is `_L`/`_R`,** not `_hapA`/`_hapB`. Transcripts are
+named `NR_109817.1_L` and `NR_109817.1_R`. Pass `--hap-suffix _L,_R` to
+`compare_pipelines.py`; with the default, `load_counts` pairs nothing and
+raises the standard-reference error at data that is in fact diploid.
+
+**Use `star_salmon/`, not the `salmon/` sibling.** Both directories exist under
+that arm. `salmon/` has been stripped -- 1 of 42 sample directories still has
+a bootstrap payload and only 1 still has a `quant.sf`. `star_salmon/` is the
+live output, which matches the run's own parameters (`aligner = star_salmon`,
+`skip_pseudo_alignment = true`).
+
+**The draws are 30 bootstrap samples, not 200 Gibbs samples.**
+`meta_info.json` records `samp_type = bootstrap`, `num_bootstraps = 30`. The
+code path is the same -- Salmon writes both to the same place and hapmixQTL
+propagates either as inferential replicates -- but 30 draws estimate the
+per-gene inferential variance less precisely than 200, and that variance is
+exactly what hapmixQTL's expression-uncertainty weighting consumes. Whether 30
+is enough for the weighting to behave is not established here and should be
+checked before quoting a result; re-quantifying with `--numGibbsSamples 200`
+is the alternative, and the recipe for it is recorded in
+`.../bv2/personalized_T2T_NCBI110_star_alignment/pipeline_info/params_2025-05-22_14-28-55.json`
+(`num_gibbs_samples = 200`).
+
+**Transcript sets differ between samples,** because a personalized
+transcriptome is built per sample from that sample's own variants. Two real
+samples shared 215,047 transcripts with a handful unique to each. This is
+handled -- the gene set is the union over all samples -- but it is the reason
+the manifest order used to matter, and it means the per-sample matrices are
+sparse at sample-specific genes rather than complete.
+
+The reference for this arm is **T2T**, so the GTF and the VCF used downstream
+must be T2T as well. Its transcripts are RefSeq accessions
+(`NR_109817.1`, `XM_047444567.1`) and, in an NCBI GTF, genes are named by
+symbol -- so an eGene list keyed on `ENSG...` will not join to it.
+
+Two non-personalized arms are quantified the same way and make natural
+baselines: `T2T_NCBI110/star_salmon` (94 payloads) and
+`GRCh38_p14_NCBI110/star_salmon` (103 payloads). Neither carries allelic
+information, so neither can feed hapmixQTL -- they are the standard-reference
+comparison, not an input.
 
 ## Building the annotation tables
 
@@ -223,8 +245,12 @@ nohup python3 scripts/compare_pipelines.py \
     --allelic-counts prepped/allelic_counts_manifest.tsv \
     --rasqual rasqual_src/src/rasqual \
     --known-egenes brain_egenes.txt \
+    --hap-suffix _L,_R \
     --n-genes 300 --n-perm 10 --out deploy/ > deploy.log 2>&1 &
 ```
+
+`--hap-suffix _L,_R` is required for the quantifications described above; the
+default is `_hapA,_hapB` and would pair nothing.
 
 `salmon.tsv` is `sample_id <TAB> Salmon output directory` -- the directory
 holding `aux_info/bootstraps/`, not the `quant.sf` file.
