@@ -794,9 +794,19 @@ STR leads recover β per repeat unit (0.339 / −0.302 / 0.336 for planted 0.35 
 0.35, the third unphased and carried by the total channel alone); the eSNP path is
 unchanged; split rows can win the lead.
 
+**Lengths are reference-relative.** The encoder never stores absolute copy numbers: every
+source normalizes to `count − reference count` in repeat units, so the reference allele is
+0 and a two-unit expansion is +2. HipSTR's `GB`, GangSTR's and ExpansionHunter's `REPCN`
+(absolute copies) and ExpansionHunter's symbolic `<STRn>` alleles all land on the same
+units, which the self-test checks by encoding one set of genotypes all four ways. The
+reference copy number is kept per locus as `ref_units` in case the absolute count is ever
+wanted back.
+
 **Second pass, STRs: linear + curvature.** Per haplotype `f(L) = b1 L + b2 L²`, centred
 and winsorized at the 1st/99th percentile so a few long alleles do not own the squared
-column. The square goes on the *haplotype*: the total row is `(f(L_A) + f(L_B))/2`, so the
+column. The centring is for conditioning only: `slope_at_ref` re-expresses the fitted curve's
+slope at the reference length (`b1 − 2·c·b2`, delta-method SE), so the planted `b1 = 0.10`
+at the reference comes back as 0.10 even though the cohort-centred `b1` reads 0.21. The square goes on the *haplotype*: the total row is `(f(L_A) + f(L_B))/2`, so the
 squared column is `(L_A² + L_B²)/2`, **not** `((L_A+L_B)/2)²` — the two differ by
 `(L_A − L_B)²/4`, a heterozygosity term the ASE channel cannot share. `b2` is a 1-df
 curvature test (same sign as `b1` = accelerating, opposite = saturating); the linear-only

@@ -97,6 +97,7 @@ Run:
 
 import argparse
 import gzip
+import re
 import sys
 from pathlib import Path
 
@@ -135,24 +136,77 @@ def _vcf_rows(path, samples):
 #  STR VCF -> per-haplotype repeat-length dosage (+ raw lengths sidecar)
 # ---------------------------------------------------------------------------
 
+_SYMBOLIC_STR = re.compile(r'^<STR(\d+)>$')          # ExpansionHunter: <STR12> = 12 copies
+
+
+def _str_record_units(f, period_override=None):
+    """Repeat period and REFERENCE copy number for one STR record.
+
+    period:  INFO/PERIOD (HipSTR, GangSTR), else len(INFO/RU) (ExpansionHunter),
+             else --period.
+    ref_n:   INFO/REF when it is a number (GangSTR, ExpansionHunter write the
+             reference copy number there), else len(REF sequence) / period.
+    Returns (period, ref_n) or (0, None) when no period can be determined.
+    """
+    info = dict(kv.split('=', 1) for kv in f[7].split(';') if '=' in kv)
+    period = period_override or int(float(info.get('PERIOD', 0)) or 0)
+    if period <= 0 and info.get('RU'):
+        period = len(info['RU'])
+    if period <= 0:
+        return 0, None
+    ref_n = None
+    if 'REF' in info:
+        try:
+            ref_n = float(info['REF'])
+        except ValueError:
+            ref_n = None
+    if ref_n is None:
+        ref_n = len(f[3]) / period
+    return period, ref_n
+
+
 def parse_str_vcf(path, samples, min_q=0.9, min_call_rate=0.8, period_override=None):
-    """Return list of dict(id, chrom, pos, period, xL[N], xR[N], LA[N], LB[N],
-    phased[N], phased_frac, n_het). LA/LB are raw lengths with NaN = missing."""
+    """Return list of dict(id, chrom, pos, period, ref_units, xL[N], xR[N], LA[N],
+    LB[N], phased[N], phased_frac, n_het). LA/LB are lengths with NaN = missing.
+
+    Lengths are ALWAYS stored relative to the reference allele, in repeat
+    units: 0 = the reference, +2 = two units longer, -1 = one unit shorter.
+    Absolute copy numbers are never kept (a 200-copy allele at a 190-copy
+    reference is stored as +10). Per record, in order of precedence:
+
+      1. FORMAT/GB     HipSTR: bp difference from REF per allele -> / period
+      2. FORMAT/REPCN  GangSTR ("12,14") / ExpansionHunter ("12/14"): absolute
+                       copy number per allele -> minus the reference copy
+                       number (INFO/REF, else len(REF)/period)
+      3. GT + alleles  symbolic <STRn> (ExpansionHunter) -> n minus reference
+                       copies; sequence alleles -> (len - len(REF)) / period
+
+    The reference copy number is recorded per locus as `ref_units`, so the
+    absolute count is recoverable as value + ref_units if ever needed.
+    """
     out = []
-    n_seen = n_dropped_rate = n_dropped_const = 0
+    n_seen = n_dropped_rate = n_dropped_const = n_no_period = 0
     N = len(samples)
     for f, col in _vcf_rows(path, samples):
         n_seen += 1
-        info = dict(kv.split('=', 1) for kv in f[7].split(';') if '=' in kv)
-        period = period_override or int(float(info.get('PERIOD', 0)) or 0)
+        period, ref_n = _str_record_units(f, period_override)
         if period <= 0:
-            continue                                   # cannot convert to units
+            n_no_period += 1; continue                 # cannot convert to units
         ref_len = len(f[3])
-        alts = f[4].split(',')
-        allele_len = [ref_len] + [len(a) for a in alts]  # index -> bp length
+        alleles = [f[3]] + f[4].split(',')
+        allele_units = []                              # index -> units relative to REF
+        for al in alleles:
+            m = _SYMBOLIC_STR.match(al)
+            if m:
+                allele_units.append(int(m.group(1)) - ref_n)
+            elif al.startswith('<') or al in ('*', '.'):
+                allele_units.append(None)              # other symbolic / missing
+            else:
+                allele_units.append((len(al) - ref_len) / period)
         fmt = f[8].split(':')
         gi = fmt.index('GT') if 'GT' in fmt else 0
         gb = fmt.index('GB') if 'GB' in fmt else None
+        rc = fmt.index('REPCN') if 'REPCN' in fmt else None
         qi = fmt.index('Q') if 'Q' in fmt else None
         LA = np.full(N, np.nan); LB = np.full(N, np.nan); phased = np.zeros(N, bool)
         for k, c in enumerate(col):
@@ -168,16 +222,21 @@ def parse_str_vcf(path, samples, min_q=0.9, min_call_rate=0.8, period_override=N
                     pass
             sep = '|' if '|' in gt else '/'
             a, b = gt.split(sep)[:2]
-            if gb is not None and gb < len(parts) and parts[gb] not in ('.', ''):
-                # HipSTR GB: bp difference from reference per allele
-                da, db = parts[gb].replace('|', '/').split('/')[:2]
-                la, lb = float(da) / period, float(db) / period
-            else:
-                try:
-                    la = (allele_len[int(a)] - ref_len) / period
-                    lb = (allele_len[int(b)] - ref_len) / period
-                except (ValueError, IndexError):
-                    continue
+            try:
+                if gb is not None and gb < len(parts) and parts[gb] not in ('.', ''):
+                    # HipSTR GB: bp difference from reference per allele
+                    da, db = parts[gb].replace('|', '/').split('/')[:2]
+                    la, lb = float(da) / period, float(db) / period
+                elif rc is not None and rc < len(parts) and parts[rc] not in ('.', ''):
+                    # GangSTR / ExpansionHunter REPCN: ABSOLUTE copies -> relative
+                    na, nb = re.split(r'[,/|]', parts[rc])[:2]
+                    la, lb = float(na) - ref_n, float(nb) - ref_n
+                else:
+                    la, lb = allele_units[int(a)], allele_units[int(b)]
+                    if la is None or lb is None:
+                        continue
+            except (ValueError, IndexError):
+                continue
             LA[k], LB[k] = la, lb; phased[k] = (sep == '|')
         called = ~np.isnan(LA)
         if called.mean() < min_call_rate:
@@ -193,12 +252,15 @@ def parse_str_vcf(path, samples, min_q=0.9, min_call_rate=0.8, period_override=N
             n_dropped_const += 1; continue              # no length variation
         vid = f[2] if f[2] not in ('.', '') else f'{f[0]}_{f[1]}_STR'
         out.append(dict(id=vid, chrom=str(f[0]), pos=int(f[1]), type='str',
-                        period=period, xL=xL, xR=xR, LA=LA_raw, LB=LB_raw, phased=phased,
+                        period=period, ref_units=float(ref_n),
+                        xL=xL, xR=xR, LA=LA_raw, LB=LB_raw, phased=phased,
                         n_het=int(np.sum(np.abs(LA - LB) > 1e-9)),
                         phased_frac=float(phased[called].mean()) if called.any() else 0.0))
     print(f'  STR: {n_seen} loci read, {len(out)} kept '
           f'({n_dropped_rate} below call rate {min_call_rate}, '
-          f'{n_dropped_const} with no length variation)')
+          f'{n_dropped_const} with no length variation'
+          + (f', {n_no_period} with no PERIOD/RU -- pass --period' if n_no_period else '')
+          + '); lengths are reference-relative repeat units (reference = 0)')
     return out
 
 
@@ -310,7 +372,9 @@ def build_hapdose(samples, str_rows, snp_vcf=None, ma_sites=None):
         by_id = {r['id']: r for r in str_rows}
         ids = [i for i in vdf['id'] if i in by_id]
         aux['str_sites'] = pd.DataFrame([dict(id=i, chrom=by_id[i]['chrom'], pos=by_id[i]['pos'],
-                                              period=by_id[i]['period']) for i in ids])
+                                              period=by_id[i]['period'],
+                                              ref_units=by_id[i].get('ref_units', np.nan))
+                                         for i in ids])
         aux['str_len'] = np.stack([np.stack([by_id[i]['LA'], by_id[i]['LB']], axis=1)
                                    for i in ids]).astype(np.float32)
         aux['str_phased'] = np.stack([by_id[i]['phased'] for i in ids])
@@ -549,6 +613,44 @@ def selftest():
           '15% low-Q imputed / 40% dropped; raw lengths + phase kept in sidecar;\n'
           '          multi-ALT -> one split row per ALT + allele index sidecar')
 
+    # ---- the same genotypes from three callers must encode identically, and
+    #      always RELATIVE to the reference (never as absolute copy numbers) -----
+    LA0, LB0 = str_L[0]; ref_copies = 8; U = (-2, -1, 1, 2, 3)
+    hdr = '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t' + '\t'.join(samples)
+    idx = {u: j for j, u in enumerate(U, 1)}
+    g_cells, e_cells, s_cells = [], [], []
+    for k in range(N):
+        ua, ub = int(LA0[k]), int(LB0[k]); ia, ib = idx.get(ua, 0), idx.get(ub, 0)
+        # GangSTR-style: sequence ALTs, PERIOD/RU/REF copies in INFO, REPCN ABSOLUTE "a,b"
+        g_cells.append(f'{ia}|{ib}:0.99:{ref_copies+ua},{ref_copies+ub}')
+        # ExpansionHunter-style: symbolic <STRn> ALTs, REF copies + RU in INFO (no PERIOD),
+        # REPCN ABSOLUTE "a/b", unphased GT
+        e_cells.append(f'{ia}/{ib}:{ref_copies+ua}/{ref_copies+ub}')
+        s_cells.append(f'{ia}/{ib}')                  # symbolic alleles, GT only
+    seq_alts = ','.join('CAG' * (ref_copies + u) for u in U)
+    sym_alts = ','.join(f'<STR{ref_copies+u}>' for u in U)
+    gang = [hdr, f'1\t5000\tSTR0\t{"CAG"*ref_copies}\t{seq_alts}\t.\tPASS\t'
+                 f'END=5023;PERIOD=3;RU=CAG;REF={ref_copies}\tGT:Q:REPCN\t' + '\t'.join(g_cells)]
+    eh = [hdr, f'1\t5000\tSTR0\t{"CAG"*ref_copies}\t{sym_alts}\t.\tPASS\t'
+               f'SVTYPE=STR;END=5023;REF={ref_copies};RL=24;RU=CAG;REPID=STR0\tGT:REPCN\t' + '\t'.join(e_cells)]
+    sym = [hdr, f'1\t5000\tSTR0\t{"CAG"*ref_copies}\t{sym_alts}\t.\tPASS\t'
+                f'SVTYPE=STR;END=5023;REF={ref_copies};RL=24;RU=CAG;REPID=STR0\tGT\t' + '\t'.join(s_cells)]
+    for name, rows in (('gangstr', gang), ('eh', eh), ('eh_gt', sym)):
+        (td / f'{name}.vcf').write_text('##fileformat=VCFv4.2\n' + '\n'.join(rows) + '\n')
+    hip = parse_str_vcf(td / 'str.vcf', samples)[0]                # STR0 via HipSTR GB
+    gs, ex, sy = (parse_str_vcf(td / f'{n}.vcf', samples)[0] for n in ('gangstr', 'eh', 'eh_gt'))
+    assert np.allclose(gs['xL'], hip['xL']) and np.allclose(gs['xR'], hip['xR']), \
+        'GangSTR REPCN (absolute copies) must give the HipSTR GB encoding'
+    for r, lab in ((ex, 'ExpansionHunter REPCN'), (sy, 'ExpansionHunter <STRn> alleles')):
+        assert np.allclose(r['xL'] + r['xR'], hip['xL'] + hip['xR']) and np.allclose(r['xL'], r['xR']), \
+            f'{lab} must give the same total; unphased -> s = 0'
+    assert hip['ref_units'] == gs['ref_units'] == ex['ref_units'] == sy['ref_units'] == ref_copies
+    for r in (hip, gs, ex, sy):
+        assert np.nanmax(np.abs(np.concatenate([r['LA'], r['LB']]))) <= 3, \
+            'absolute copy numbers leaked into the encoding'
+    print('encoding: HipSTR GB, GangSTR REPCN, ExpansionHunter REPCN and <STRn> alleles all '
+          'give the same reference-relative units (reference = 0; ref_units recorded)')
+
     # ---- expression with PLANTED effects; run the REAL map_cis -----------------
     genes = [f'G{j}' for j in range(12)]
     beta = {0: 0.35, 1: -0.30, 2: 0.35, 6: 0.60}        # linear STRs, eSNP
@@ -643,14 +745,15 @@ def selftest():
             aux['str_len'], aux['str_phased'], aux['str_sites'].set_index('id'), aux['samples'],
             mk(A), mk(T), mk(Va), mk(Vt), pos_df, window=20000, verbose=False)
     cur = cur.set_index(['phenotype_id', 'str_id'])
-    print('\nmap_str_curvature (per-haplotype f(L) = b1 L + b2 L^2):')
+    print('\nmap_str_curvature (per-haplotype f(L) = b1 L + b2 L^2, L relative to the reference):')
     print(f"  {'gene':5s} {'str':6s} {'slope_lin':>9s} {'b2':>7s} {'se':>6s} {'planted b2':>10s} "
-          f"{'p_curv':>9s} {'p_joint2':>9s} {'phased':>6s}")
+          f"{'p_curv':>9s} {'p_joint2':>9s} {'b1@ref':>7s} {'planted':>7s} {'phased':>6s}")
     for (g, s), row in cur.iterrows():
         j = int(s[3:])
+        pb1 = quad.get(j, (beta.get(j, 0.0), 0))[0]
         print(f"  {g:5s} {s:6s} {row['slope_lin']:9.3f} {row['slope_sq']:7.3f} {row['slope_sq_se']:6.3f} "
               f"{quad.get(j, (0, 0))[1]:10.2f} {row['pval_curv']:9.2e} {row['pval_joint2']:9.2e} "
-              f"{int(row['n_phased']):6d}")
+              f"{row['slope_at_ref']:7.3f} {pb1:7.2f} {int(row['n_phased']):6d}")
     # the linear-only fit of the second pass must reproduce the lead scan's slope
     for j in (0, 1, 2):
         assert abs(cur.loc[(f'G{j}', f'STR{j}'), 'slope_lin'] - res.loc[f'G{j}', 'slope']) < 2e-3, \
@@ -663,8 +766,17 @@ def selftest():
     for j in (0, 1, 2):
         assert abs(cur.loc[(f'G{j}', f'STR{j}'), 'slope_sq']) < 0.06 and \
             cur.loc[(f'G{j}', f'STR{j}'), 'pval_curv'] > 0.01, f'spurious curvature at STR{j}'
+    # the quadratic basis is centred on the cohort mean for conditioning, but
+    # slope_at_ref reports the curve's slope on the encoder's REFERENCE origin:
+    # the planted b1 = 0.10 is defined at L = 0, so that is what must come back
+    for j in (10, 11):
+        assert abs(cur.loc[(f'G{j}', f'STR{j}'), 'slope_at_ref'] - 0.10) < 0.08, \
+            f'slope at the reference length off for STR{j}'
+        assert np.isfinite(cur.loc[(f'G{j}', f'STR{j}'), 'slope_at_ref_se'])
+    assert abs(cur.loc[('G0', 'STR0'), 'slope_at_ref'] - cur.loc[('G0', 'STR0'), 'slope_lin']) < 0.05, \
+        'with no curvature the slope at the reference equals the linear slope'
     print('checks: linear slope identical to the lead scan; b2 recovered (phased and unphased); '
-          'linear eSTRs show no curvature')
+          'linear eSTRs show no curvature; slope_at_ref recovers the planted b1 at the reference')
     print('\nSELF-TEST OK')
     return 0
 

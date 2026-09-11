@@ -944,7 +944,13 @@
   — the two differ by a heterozygosity term the ASE channel cannot share. <code>b2</code>
   is a 1-df curvature test. Planted 0.12 → 0.122 (phased, p = 2e-20) and 0.131 (unphased,
   total only, p = 5e-10); linear eSTRs give |b2| ≤ 0.012, p 0.55–0.98. The linear-only fit
-  equals the lead-scan slope to three decimals.</p>
+  equals the lead-scan slope to three decimals. Lengths are always
+  <strong>reference-relative</strong> repeat units (reference = 0, never absolute copy
+  numbers): HipSTR <code>GB</code>, GangSTR / ExpansionHunter <code>REPCN</code> and
+  symbolic <code>&lt;STRn&gt;</code> alleles all normalize to the same units, checked by
+  encoding one set of genotypes four ways. The curvature fit reports
+  <code>slope_at_ref</code>, the fitted curve's slope at the reference length, so the
+  planted b1 = 0.10 comes back as 0.10 even though the cohort-centred b1 reads 0.21.</p>
 
   <p><strong>Multi-ALT non-repeat sites</strong> (SNVs, indels) were previously
   <strong>dropped entirely</strong> by the VCF reader. They now enter the scan as one split

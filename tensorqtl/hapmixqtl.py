@@ -1774,6 +1774,13 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
     means the per-unit effect accelerates with length, opposite sign means it
     saturates. pval_joint2 is the 2-df test of the whole quadratic model.
 
+    Lengths are reference-relative repeat units (0 = the reference allele, as
+    the encoder stores them). The quadratic basis is centred on the cohort
+    mean c only for numerical conditioning, so slope_l is the slope at L = c;
+    slope_at_ref = b1 - 2*c*b2 re-expresses the same fitted curve at the
+    reference length (L = 0), with a delta-method SE, so effects are read on
+    the reference origin. b2 does not depend on the centring.
+
     Args:
         str_len:    [n_str, n_samples, 2] float repeat lengths in repeat units
                     per haplotype, NaN = missing
@@ -1801,6 +1808,13 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
         quad = _fit_design(d, ctx)
         p_joint, p, dof, se, p_coef = _pvals(quad, ctx['N'], ctx['n_cov'])
         se_a = np.sqrt(np.diag(quad['cov_a'])); se_t = np.sqrt(np.diag(quad['cov_t']))
+        # The basis is centred on the cohort mean c (conditioning), so slope_l
+        # is df/dL at L = c. Re-express the same curve at the encoder's origin,
+        # the REFERENCE length (L = 0): f'(0) = b1 - 2 c b2, delta-method SE.
+        c = d['center']; b1, b2 = quad['beta'][0], quad['beta'][1]; cv = quad['cov']
+        s_ref = b1 - 2.0 * c * b2
+        v_ref = cv[0, 0] + 4.0 * c * c * cv[1, 1] - 4.0 * c * cv[0, 1]
+        se_ref = float(np.sqrt(v_ref)) if np.isfinite(v_ref) and v_ref >= 0 else np.nan
         out.append(dict(
             phenotype_id=ctx['pid'], str_id=str_ids[j],
             start_distance=int(str_df['pos'].iloc[j]) - ctx['start'],
@@ -1809,6 +1823,7 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
             slope_lin=lin['beta'][0], slope_lin_se=se_lin[0], pval_lin=p_lin,
             slope_l=quad['beta'][0], slope_l_se=se[0],
             slope_sq=quad['beta'][1], slope_sq_se=se[1], pval_curv=p_coef[1],
+            slope_at_ref=s_ref, slope_at_ref_se=se_ref,
             slope_sq_a=quad['beta_a'][1], slope_sq_a_se=se_a[1],
             slope_sq_t=quad['beta_t'][1], slope_sq_t_se=se_t[1],
             pval_joint2=p_joint, rank_deficient=not quad['rank_ok']))
@@ -1821,6 +1836,7 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
     cols = ['phenotype_id', 'str_id', 'start_distance', 'n_called', 'n_phased',
             'len_center', 'len_lo', 'len_hi', 'slope_lin', 'slope_lin_se', 'pval_lin',
             'slope_l', 'slope_l_se', 'slope_sq', 'slope_sq_se', 'pval_curv',
+            'slope_at_ref', 'slope_at_ref_se',
             'slope_sq_a', 'slope_sq_a_se', 'slope_sq_t', 'slope_sq_t_se',
             'pval_joint2', 'rank_deficient']
     return pd.DataFrame(out, columns=cols)

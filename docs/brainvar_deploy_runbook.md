@@ -444,9 +444,13 @@ In the comparison they add a third, separately reported arm
 (`hapmixQTL_nonstandard`); the RASQUAL and standard hapmixQTL arms are
 computed exactly as without the flags. RASQUAL cannot test these variants, so
 that arm is not a like-for-like comparison with RASQUAL. It answers "what do
-the extra variant classes add to hapmixQTL". The STR VCF must be a HipSTR-style
-call set on the same samples (phased against the same scaffold if you want the
-ASE channel to see the STRs). See `docs/ase_validation.md` §7j.
+the extra variant classes add to hapmixQTL". The STR VCF can come from HipSTR
+(`GB`), GangSTR or ExpansionHunter (`REPCN`, symbolic `<STRn>` alleles) on the
+same samples; every source is normalized to reference-relative repeat units
+(reference = 0, never absolute copy numbers), and the reference copy number is
+kept per locus as `ref_units`. Phase the calls against the same scaffold if you
+want the ASE channel to see the STRs; unphased calls still feed the total
+channel. See `docs/ase_validation.md` §7j.
 
 `compare_pipelines.py` stages RASQUAL's inputs through `tempfile`, so it
 inherits `TMPDIR`. On a host where `/tmp` is a spinning disk this becomes the
