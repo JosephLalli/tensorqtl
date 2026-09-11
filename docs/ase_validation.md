@@ -423,6 +423,14 @@ gross violations, not a guarantee of consistency.
 This also gives hapmixQTL something it currently cannot do: **distinguish cis from trans
 eQTLs**, which is one of the headline capabilities of the TReCASE family.
 
+**Shipped.** `hapmixqtl.cis_trans_diagnostic()` implements the Wald test; `map_cis` reports
+the lead variant's `slope_a`/`slope_t` (with SEs), `alpha_cis = slope_a/slope_t` and
+`pval_cis_trans` per gene, `map_nominal` reports `pval_cis_trans` per pair, and the Salmon
+runner's eval bundle summarizes how many leads fail it. No phase means no ASE channel and a
+NaN diagnostic. It is a diagnostic column, not a filter: whether α = 1 should be enforced is
+an open modelling question, and the test is a screen for gross violations (12% detection at
+α = 0.75).
+
 ## 7d. REAL DATA — GTEx v8 phASER haplotype expression
 
 **Harness:** `tests/ase_gtex_real_data.py` · **Raw:** `docs/ase_gtex_real_data.json`
@@ -883,6 +891,9 @@ unchanged (the r² mapping is monotone). This matters for the effect-size concor
    `hapmixqtl.fine_mapping_provenance()` classifies a results file as `ok`, `stale` (produced
    under `'zero'`) or `unknown` (no provenance column, i.e. produced before it was recorded).
    No fine-mapping results are stored in this repository.
+9. **The cis/trans test ships as a diagnostic column** (§7c): `pval_cis_trans` and
+   `alpha_cis` at the lead in `map_cis`, `pval_cis_trans` per pair in `map_nominal`, and an
+   aggregate in the eval bundle. Not a filter.
 
 **Still recommended.**
 
@@ -890,11 +901,14 @@ unchanged (the r² mapping is monotone). This matters for the effect-size concor
    95% credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants
    that were truly causal 34% of the time. Redo, do not re-threshold. Any summary without a
    `tau_mode` column predates the fix; `fine_mapping_provenance()` will say so.
-2. **Ship the cis/trans test (§7c) as a per-gene *diagnostic* column, not a correction.** It
-   validates the α = 1 assumption the meta-analysis rests on and flags genes whose reported
-   effect is attenuated. Whether α = 1 should be enforced is an open modelling question.
-3. **Fit φ outright when filtered input cannot be guaranteed.** It is the highest-value
-   model addition in that setting, at ~17% clean-data power (§7i).
+2. **Fit φ outright when filtered input cannot be guaranteed.** "Filtered" means allele
+   counts from which reference mapping bias has already been removed upstream: WASP
+   re-mapping, phASER's mapping-bias site blacklist (what GTEx ships), or quantification
+   against a personalized diploid reference, where both alleles compete on equal footing. It
+   cannot be guaranteed when the counts come from a pipeline you do not control, from a
+   linear-reference alignment without WASP, or from regions the filters handle poorly
+   (indels, paralogs, CNV). In that setting fitting φ is the highest-value model addition,
+   at ~17% clean-data power (§7i); the shipped diagnostic tells you whether you are in it.
 
 ## 9. Untested / open
 

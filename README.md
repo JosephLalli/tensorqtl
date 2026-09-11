@@ -215,7 +215,7 @@ se   = sqrt(1 / (1/se_a² + 1/se_t²))
 
 The summary matrices can be precomputed from Gibbs draws with `hapmixqtl.compute_summaries_from_gibbs(yL, yR, kappa=0.5)`, where `yL`/`yR` are `[features, samples, draws]` arrays. The positional `${expression_bed}` argument is still required by the CLI but ignored in hapmixQTL modes (all phenotype inputs come from the `--hap_*` flags).
 
-**Nominal mapping** (all *cis* variant–phenotype pairs) writes one parquet per chromosome, `${output_dir}/${prefix}.hapmixqtl_pairs.${chr}.parquet`, with the combined `slope`/`slope_se`/`pval_nominal` plus the per-channel `slope_a`/`slope_a_se`/`pval_a` and `slope_t`/`slope_t_se`/`pval_t`:
+**Nominal mapping** (all *cis* variant–phenotype pairs) writes one parquet per chromosome, `${output_dir}/${prefix}.hapmixqtl_pairs.${chr}.parquet`, with the combined `slope`/`slope_se`/`pval_nominal` plus the per-channel `slope_a`/`slope_a_se`/`pval_a` and `slope_t`/`slope_t_se`/`pval_t`, and `pval_cis_trans`, a Wald test that the two channels estimate the same effect (a diagnostic for effects that are not purely cis — see `hapmixqtl.cis_trans_diagnostic`):
 ```
 python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode hapmixqtl_nominal \
@@ -231,7 +231,7 @@ hapmixqtl.map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                       prefix=prefix, covariates_df=covariates_df, output_dir='.')
 ```
 
-**Permutation mapping** (top association per phenotype with empirical/beta-approximated p-values), analogous to `cis`, writes `${output_dir}/${prefix}.hapmixqtl.txt.gz`:
+**Permutation mapping** (top association per phenotype with empirical/beta-approximated p-values), analogous to `cis`, writes `${output_dir}/${prefix}.hapmixqtl.txt.gz`. Each gene's row also carries the lead variant's per-channel slopes, `alpha_cis = slope_a/slope_t` and `pval_cis_trans`: a small `pval_cis_trans` means the ASE and total channels disagree, so the combined slope should not be read as a cis log aFC (a trans component, reference mapping bias or phasing error attenuate it — `docs/ase_validation.md` §7c). It is a diagnostic column, not a filter:
 ```
 python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode hapmixqtl \

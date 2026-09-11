@@ -38,6 +38,7 @@ from tensorqtl.hapmixqtl import (
     map_cis,
     map_susie,
     fine_mapping_provenance,
+    cis_trans_diagnostic,
 )
 
 
@@ -883,6 +884,74 @@ class TestMapSusie:
         stale = summary_df.copy()
         stale['tau_mode'] = 'zero'
         assert fine_mapping_provenance(stale)['status'] == 'stale'
+
+
+# ---------------------------------------------------------------------------
+#  cis/trans diagnostic (sec 7c)
+# ---------------------------------------------------------------------------
+
+class TestCisTransDiagnostic:
+
+    def test_wald_formula_and_nan_rules(self):
+        a, p = cis_trans_diagnostic([1.0, 1.0, 1.0], [0.1, np.inf, 0.1],
+                                    [1.0, 1.0, 0.0], [0.1, 0.1, 0.1], dof=100)
+        assert np.isclose(a[0], 1.0) and np.isclose(p[0], 1.0)      # identical channels
+        assert np.isnan(a[1]) and np.isnan(p[1])                      # no ASE channel
+        assert np.isnan(a[2]) and p[2] < 1e-8                         # slope_t = 0: alpha undefined, test fires
+
+    def test_pure_cis_passes_and_trans_only_is_flagged(self):
+        """A planted cis effect gives alpha ~ 1 and no flag; a planted effect on
+        total expression only (a trans-like effect) gives alpha ~ 0 and a flag,
+        with the combined slope attenuated exactly as sec 7c predicts."""
+        n = 150
+        d = _make_dataset(seed=140, n_samples=n, n_variants=20)
+        rng = np.random.RandomState(7)
+        trans_pheno, trans_var = d['A_df'].index[1], d['genotype_df'].index[5]
+        g5 = d['genotype_df'].loc[trans_var].values
+        d['T_df'].loc[trans_pheno] = (2.0 + 1.0 * (g5 / 2) + rng.normal(0, 0.1, n)).astype(np.float32)
+        d['A_df'].loc[trans_pheno] = rng.normal(0, 0.1, n).astype(np.float32)
+        res = map_cis(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            window=1000000, nperm=100, verbose=False,
+        )
+        for col in ('slope_a', 'slope_a_se', 'slope_t', 'slope_t_se', 'alpha_cis', 'pval_cis_trans'):
+            assert col in res.columns
+        cis = res.loc[d['causal_pheno']]
+        assert cis['variant_id'] == d['causal_variant']
+        assert abs(cis['alpha_cis'] - 1.0) < 0.25, cis['alpha_cis']
+        assert cis['pval_cis_trans'] > 0.01, cis['pval_cis_trans']
+        tr = res.loc[trans_pheno]
+        assert tr['variant_id'] == trans_var
+        assert abs(tr['alpha_cis']) < 0.25, tr['alpha_cis']
+        assert tr['pval_cis_trans'] < 1e-4, tr['pval_cis_trans']
+        # the combined slope is attenuated relative to the true total effect of 1.0
+        assert tr['slope'] < 0.5 * tr['slope_t']
+
+    def test_no_phase_gives_nan_diagnostic(self):
+        d = _make_dataset(seed=141, n_samples=100, n_variants=15)
+        res = map_cis(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=None, xR_df=None,
+            window=1000000, nperm=50, verbose=False,
+        )
+        assert res['pval_cis_trans'].isna().all() and res['alpha_cis'].isna().all()
+
+    def test_map_nominal_carries_pval_cis_trans(self, temp_dir):
+        d = _make_dataset(seed=142, n_samples=100, n_variants=15)
+        map_nominal(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            prefix='ct', output_dir=temp_dir, verbose=False,
+        )
+        df = pd.read_parquet(Path(temp_dir) / 'ct.hapmixqtl_pairs.chr1.parquet')
+        assert 'pval_cis_trans' in df.columns
+        row = df[(df['phenotype_id'] == d['causal_pheno']) & (df['variant_id'] == d['causal_variant'])].iloc[0]
+        assert row['pval_cis_trans'] > 0.01
+        assert df['pval_cis_trans'].between(0, 1).all()
 
 
 # ---------------------------------------------------------------------------

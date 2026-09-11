@@ -639,6 +639,26 @@ def build_eval_bundle(res_df, diag, meta):
                 'intercept': float(ic), 'r': float(r),
                 'interpretation': ('slope should be 1.0; deviation localizes bias '
                                    'to a channel (docs/ase_validation.md sec 7c)')}
+    # sec 7c diagnostic: how many lead variants fail the cis assumption
+    if 'pval_cis_trans' in res_df.columns:
+        pct = pd.to_numeric(res_df['pval_cis_trans'], errors='coerce').dropna()
+        if len(pct):
+            b['cis_trans'] = {
+                'n_genes': int(len(pct)),
+                'frac_pval_cis_trans_lt_0.05': float((pct < 0.05).mean()),
+                'n_bh_q_lt_0.10': _bh_count(pct),
+                'interpretation': ('Wald test that the ASE and total channels agree at the lead '
+                                   'variant; a gene that fails carries an effect that is not '
+                                   'purely cis (trans component, mapping bias, phasing error) and '
+                                   'its combined slope is attenuated -- a diagnostic, not a '
+                                   'filter (docs/ase_validation.md sec 7c)')}
+            if 'alpha_cis' in res_df.columns and 'pval_beta' in res_df.columns:
+                sig = pd.to_numeric(res_df['pval_beta'], errors='coerce') < 0.05
+                al = pd.to_numeric(res_df.loc[sig, 'alpha_cis'], errors='coerce').dropna()
+                al = al[np.isfinite(al)]
+                if len(al) >= 10:
+                    b['cis_trans']['alpha_cis_quantiles_among_significant'] = np.quantile(
+                        al, [.05, .25, .5, .75, .95]).round(4).tolist()
     for c in ('slope', 'slope_se'):
         if c in res_df.columns:
             v = pd.to_numeric(res_df[c], errors='coerce').dropna().values

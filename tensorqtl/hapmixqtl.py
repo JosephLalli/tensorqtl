@@ -684,6 +684,47 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
     return tstat2
 
 
+def cis_trans_diagnostic(slope_a, se_a, slope_t, se_t, dof):
+    """
+    Per-variant test of the assumption the meta-analysis rests on: that the
+    ASE and total channels estimate the SAME effect, i.e. a pure cis effect.
+
+    In CSeQTL's notation eta_A = alpha * eta_T, and the effect is cis exactly
+    when alpha = 1. hapmixQTL assumes alpha = 1 without checking. When it is
+    violated -- a trans component acting on total expression only, reference
+    mapping bias attenuating the ASE channel, systematic phasing error,
+    feature-level misquantification -- the combined slope averages two
+    different quantities and is silently attenuated: at alpha = 0 it reports
+    0.08 for a true 0.40, and at alpha = -0.5 it flips sign
+    (docs/ase_validation.md sec 7c).
+
+    Because the two channel estimators are uncorrelated (sec 3), the
+    difference has variance se_a^2 + se_t^2 with no covariance term and a
+    Wald test is exact:  z = (slope_a - slope_t) / sqrt(se_a^2 + se_t^2).
+
+    This is a DIAGNOSTIC, not a correction or a filter: it flags genes whose
+    reported effect should not be read as a cis log aFC. It is a screen for
+    gross violations (detection 92% at alpha = 0, 12% at alpha = 0.75).
+
+    Returns:
+        alpha_cis:      slope_a / slope_t (NaN when slope_t ~ 0 or a channel
+                        has no finite SE)
+        pval_cis_trans: two-sided p on the same t reference (dof) as the other
+                        p-values; NaN when a channel is unavailable, e.g. no
+                        phase -> no ASE channel -> nothing to compare
+    """
+    slope_a = np.atleast_1d(np.asarray(slope_a, float)); se_a = np.atleast_1d(np.asarray(se_a, float))
+    slope_t = np.atleast_1d(np.asarray(slope_t, float)); se_t = np.atleast_1d(np.asarray(se_t, float))
+    ok = np.isfinite(se_a) & (se_a > 0) & np.isfinite(se_t) & (se_t > 0)
+    z = np.full(slope_a.shape, np.nan)
+    z[ok] = (slope_a[ok] - slope_t[ok]) / np.sqrt(se_a[ok] ** 2 + se_t[ok] ** 2)
+    pval = np.full(slope_a.shape, np.nan)
+    pval[ok] = 2 * stats.t.sf(np.abs(z[ok]), dof)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        alpha = np.where(ok & (np.abs(slope_t) > 1e-12), slope_a / slope_t, np.nan)
+    return alpha, pval
+
+
 # ---------------------------------------------------------------------------
 #  Nominal mapping
 # ---------------------------------------------------------------------------
@@ -744,6 +785,11 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         output_dir:       output directory
         logger:           SimpleLogger instance
         verbose:          print progress
+    
+    Every pair also carries ``pval_cis_trans``, a Wald test that the ASE and
+    total channels estimate the same effect (``cis_trans_diagnostic``). A
+    small value flags a pair whose combined slope should not be read as a
+    cis log aFC; it is a diagnostic column, not a filter (docs sec 7c).
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -833,6 +879,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         chr_res['pval_t'] = np.empty(n, dtype=np.float64)
         chr_res['slope_t'] = np.empty(n, dtype=np.float32)
         chr_res['slope_t_se'] = np.empty(n, dtype=np.float32)
+        chr_res['pval_cis_trans'] = np.empty(n, dtype=np.float64)
 
         start = 0
         for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
@@ -925,6 +972,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             chr_res['pval_t'][start:start + nv] = tstat_tc
             chr_res['slope_t'][start:start + nv] = slope_tc
             chr_res['slope_t_se'][start:start + nv] = se_tc
+            chr_res['pval_cis_trans'][start:start + nv] = cis_trans_diagnostic(
+                slope_a, se_a, slope_tc, se_tc, dof)[1]
             start += nv
 
         logger.write(f'    time elapsed: {(time.time() - start_time) / 60:.2f} min')
@@ -974,6 +1023,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     Returns:
         DataFrame with one row per phenotype, analogous to cis.map_cis output.
+    
+    The lead variant's per-channel slopes (``slope_a``/``slope_t`` with SEs),
+    ``alpha_cis = slope_a / slope_t`` and ``pval_cis_trans`` (Wald test of
+    ``slope_a = slope_t``, see ``cis_trans_diagnostic``) are reported per gene.
+    A small ``pval_cis_trans`` means the two channels disagree, so the
+    combined slope should not be read as a cis log aFC (a trans component,
+    mapping bias or phasing error attenuate it; docs sec 7c). It is a
+    diagnostic column, not a filter.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1095,7 +1152,17 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             permutation_ix_t,
         )
         r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
+        best_local = int(var_ix)
         var_ix = genotype_range[var_ix]
+
+        # per-channel slopes at the lead variant, for the cis/trans diagnostic
+        _, _, _, lead_a, lead_a_se, lead_t, lead_t_se = [
+            float(x.cpu().numpy()[0]) for x in calculate_hapmixqtl_nominal(
+                genotypes_t[best_local:best_local + 1], sign_t[best_local:best_local + 1],
+                a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc,
+                robust=(se_mode == 'robust'))]
+        alpha_cis, pval_cis_trans = cis_trans_diagnostic(
+            lead_a, lead_a_se, lead_t, lead_t_se, dof)
 
         variant_id = variant_df.index[var_ix]
         start_distance = variant_df['pos'].values[var_ix] - igc.phenotype_start[phenotype_id]
@@ -1132,6 +1199,12 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('pval_nominal', pval_from_corr(r2_nominal, dof)),
             ('slope', slope),
             ('slope_se', slope_se),
+            ('slope_a', lead_a),
+            ('slope_a_se', lead_a_se),
+            ('slope_t', lead_t),
+            ('slope_t_se', lead_t_se),
+            ('alpha_cis', float(alpha_cis[0])),
+            ('pval_cis_trans', float(pval_cis_trans[0])),
             ('pval_perm', pval_perm),
             ('pval_beta', np.nan),
         ]), name=phenotype_id)
