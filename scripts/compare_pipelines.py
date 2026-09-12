@@ -952,28 +952,13 @@ def run(args):
     # RASQUAL's phi and degrades catastrophically rather than gracefully when
     # mapping bias is present, so its validity is CONDITIONAL on bias-filtered
     # input. The comparison reported RASQUAL's phi and silently skipped this,
-    # which measured one arm's bias and assumed the other's. Sign comes from
-    # the highest-depth feature SNP in each gene body: bias accumulates toward
-    # the reference allele at the sites carrying the reads, so the deepest
-    # fSNP is the best single proxy for the gene's haplotype orientation.
+    # which measured one arm's bias and assumed the other's. Each gene-sample
+    # is oriented by the depth-weighted sign of its exonic het sites (bias
+    # accumulates toward the reference allele at the sites carrying the
+    # reads): H.gene_orientation, shared with the standalone runner.
     YLm = YL[sel][:, keep].mean(2)
     YRm = YR[sel][:, keep].mean(2)
-    g_sign = np.zeros_like(YLm)
-    sgn = np.sign(xL.astype(np.int16) - xR.astype(np.int16))
-    for i, g in enumerate(usable):
-        r = gp.loc[g]
-        same = vdf['chrom'].values == str(r['chr'])
-        body = np.where(same & (pos >= int(r['start'])) & (pos <= int(r['end'])))[0]
-        best, best_depth = None, -1
-        for v in body:
-            c = allelic.get((str(r['chr']), int(pos[v])))
-            if not c:
-                continue
-            d = sum(a + b for a, b in c.values())
-            if d > best_depth:
-                best, best_depth = v, d
-        if best is not None:
-            g_sign[i] = sgn[best]
+    g_sign = H.gene_orientation(usable, gp, vdf, xL, xR, order, allelic=allelic, exons=exons)
     refbias = reference_bias_diagnostic(YLm, YRm, g_sign)
     print(f'\nReference-bias gate (hapmixQTL arm): {refbias["message"]}')
     if refbias.get('flag'):

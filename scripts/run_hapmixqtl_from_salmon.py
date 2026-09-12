@@ -107,12 +107,12 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs,
-                                     reference_bias_diagnostic, map_cis,
+                                     reference_bias_diagnostic, orient_haplotypes, map_cis,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (compute_summaries_from_gibbs,
-                           reference_bias_diagnostic, map_cis,
+                           reference_bias_diagnostic, orient_haplotypes, map_cis,
                            map_str_curvature, map_multiallelic)
 
 # mixQTL's shipped filters (R/mixqtl.R)
@@ -428,6 +428,62 @@ def _rasqual_gene_vcf_native(gene_row, vdf, xL, xR, ac, order, window,
 # ---------------------------------------------------------------------------
 #  Optional comparison run: the REAL RASQUAL binary
 # ---------------------------------------------------------------------------
+
+def gene_orientation(genes, gene_table, vdf, xL, xR, samples, allelic=None, exons=None,
+                     window=1000000):
+    """[len(genes), N] per-sample haplotype orientation for reference_bias_diagnostic:
+    orient_haplotypes over each gene's feature sites.
+
+    Feature sites are the VCF records inside the gene's exon union (`exons`:
+    {gene: (starts_csv, ends_csv)} as gtf_to_tables.py writes it), else inside
+    the gene body (gene_table start/end), else the het site nearest the TSS.
+    `allelic` ({(chrom, pos): {sample: (ref, alt)}}, load_allelic_counts)
+    supplies the per-site depths; without it every site counts alike. Shared
+    by this runner and compare_pipelines.py so both arms gate the same way.
+    """
+    chrom = vdf['chrom'].astype(str).values
+    pos = np.asarray(vdf['pos'].values, dtype=np.int64)
+    sgn = np.sign(np.asarray(xL, dtype=np.int16) - np.asarray(xR, dtype=np.int16))
+    N = len(samples)
+    sidx = {s: i for i, s in enumerate(samples)}
+    out = np.zeros((len(genes), N))
+    for i, g in enumerate(genes):
+        if g not in gene_table.index:
+            continue
+        row = gene_table.loc[g]
+        same = chrom == str(row['chr'])
+        ivs = None
+        if exons and g in exons:
+            a, b = exons[g]
+            ivs = [(int(x), int(y)) for x, y in zip(str(a).split(','), str(b).split(','))]
+        elif 'start' in row.index and 'end' in row.index and pd.notna(row['start']) and pd.notna(row['end']):
+            ivs = [(int(row['start']), int(row['end']))]
+        if ivs is not None:
+            m = np.zeros(len(pos), bool)
+            for a, b in ivs:
+                m |= (pos >= a) & (pos <= b)
+            sites = np.where(same & m)[0]
+        else:
+            tss = int(row['pos'])
+            cand = np.where(same & (np.abs(pos - tss) <= window))[0]
+            cand = cand[(sgn[cand] != 0).any(1)] if cand.size else cand
+            sites = cand[[int(np.argmin(np.abs(pos[cand] - tss)))]] if cand.size else cand
+        if sites.size == 0:
+            continue
+        depth = None
+        if allelic is not None:
+            depth = np.zeros((sites.size, N))
+            for k, v in enumerate(sites):
+                c = allelic.get((chrom[v], int(pos[v])))
+                if not c:
+                    continue
+                for s_, (ra, aa) in c.items():
+                    j = sidx.get(s_)
+                    if j is not None:
+                        depth[k, j] = ra + aa
+        out[i] = orient_haplotypes(sgn[sites], depth)
+    return out
+
 
 def _rasqual_gene_vcf(gene_pos, vdf, dos, xL, xR, yLm, yRm, gi, window):
     """VCF lines for one gene: a pseudo-fSNP carrying the gene's haplotype
@@ -967,24 +1023,6 @@ def main():
     A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
     YLm, YRm = YL[:, keep, :].mean(2), YR[:, keep, :].mean(2)
 
-    # reference-bias gate, using the mean phase across cis variants per gene is
-    # not meaningful -- use the per-variant sign at the gene's nearest variant
-    sign = np.sign(xL - xR)
-    g_sign = np.zeros_like(YLm)
-    for i in range(len(genes)):
-        g_sign[i] = sign[min(i, sign.shape[0] - 1)]
-    diag = reference_bias_diagnostic(YLm, YRm, g_sign)
-    print('\nReference-bias gate:\n  ' + diag['message'])
-    if diag['flag'] and not args.force:
-        (out / 'eval_bundle.json').write_text(json.dumps(
-            build_eval_bundle(None, diag,
-                              {'n_samples': len(order), 'n_genes': len(genes)}),
-            indent=2))
-        raise SystemExit(
-            '\nREFUSING TO PROCEED (docs/ase_validation.md sec 7i). Re-quantify '
-            'from WASP-corrected or variant-aware alignments. A bundle with the '
-            'diagnostic was still written so you can bring it back for triage.')
-
     sdf = pd.DataFrame(A, index=genes, columns=order)
     tdf = pd.DataFrame(T, index=genes, columns=order)
     vadf = pd.DataFrame(Va, index=genes, columns=order)
@@ -1029,6 +1067,32 @@ def main():
     sdf, tdf, vadf, vtdf = (df.loc[common] for df in (sdf, tdf, vadf, vtdf))
     pos_df = pos_df.loc[common]
     map_pos = pos_df[['chr', 'pos']]
+    gsel = [list(genes).index(g) for g in common]
+
+    allelic = None
+    if args.allelic_counts:
+        print('Reading per-feature-SNP allelic counts (RASQUAL native input; '
+              "also the reference-bias gate's per-site depths)")
+        allelic = load_allelic_counts(args.allelic_counts, order)
+        print(f'  {len(allelic)} variants with allele counts')
+
+    # Reference-bias gate (docs/ase_validation.md sec 7i). Each gene-sample is
+    # oriented by the depth-weighted sign of its het feature sites
+    # (gene_orientation); an earlier version took row i of the sign matrix,
+    # i.e. an unrelated variant for every gene past the first.
+    g_sign = gene_orientation(common, pos_df, *[snp_arrays[k] for k in (0, 2, 3)],
+                              order, allelic=allelic)
+    diag = reference_bias_diagnostic(YLm[gsel], YRm[gsel], g_sign)
+    print('\nReference-bias gate:\n  ' + diag['message'])
+    if diag['flag'] and not args.force:
+        (out / 'eval_bundle.json').write_text(json.dumps(
+            build_eval_bundle(None, diag,
+                              {'n_samples': len(order), 'n_genes': len(common)}),
+            indent=2))
+        raise SystemExit(
+            '\nREFUSING TO PROCEED (docs/ase_validation.md sec 7i). Re-quantify '
+            'from WASP-corrected or variant-aware alignments. A bundle with the '
+            'diagnostic was still written so you can bring it back for triage.')
 
     print(f'\nRunning map_cis on {len(common)} genes '
           f"(tau_mode='estimate', the validated default)")
@@ -1058,14 +1122,15 @@ def main():
         if not Path(args.rasqual).exists():
             raise SystemExit(f'--rasqual binary not found: {args.rasqual}\n'
                              'Build it with scripts/build_rasqual.sh')
-        Tcounts = np.expm1(tdf.values) if np.nanmax(tdf.values) < 30 else tdf.values
-        libsz = np.ones(len(order))
-        allelic = None
-        if args.allelic_counts:
-            print('Reading per-feature-SNP allelic counts (RASQUAL native input)')
-            allelic = load_allelic_counts(args.allelic_counts, order)
-            print(f'  {len(allelic)} variants with allele counts')
-        elif args.rasqual_input in ('native', 'both'):
+        # RASQUAL models counts. The tested genes' Gibbs-mean totals go in as
+        # Y (the log-scale T is hapmixQTL's phenotype; expm1 of log(tot/2 + k)
+        # is half the count), and the offset K is the gene mean times the
+        # sample's relative library size, summed over EVERY quantified gene.
+        YTm = YT[:, keep, :].mean(2)
+        Tcounts = YTm[gsel]
+        libsz = YTm.sum(0)
+        libsz = libsz / libsz.mean()
+        if allelic is None and args.rasqual_input in ('native', 'both'):
             raise SystemExit(
                 f'--rasqual-input {args.rasqual_input} requires --allelic-counts.\n'
                 'RASQUAL models each FEATURE SNP separately; Salmon diploid '
@@ -1075,8 +1140,7 @@ def main():
                 "RASQUAL's statistic). Supply phASER allelic_counts files.")
         rq = run_rasqual_comparison(
             args.rasqual, list(sdf.index), pos_df, *snp_arrays,
-            YLm[[list(genes).index(g) for g in sdf.index]],
-            YRm[[list(genes).index(g) for g in sdf.index]],
+            YLm[gsel], YRm[gsel],
             Tcounts, libsz, out, args.window, args.rasqual_genes,
             allelic=allelic, order=order, mode=args.rasqual_input)
         if rq is not None:
@@ -1203,6 +1267,17 @@ def selftest():
                  '--allelic-counts', str(td / 'ac_manifest.tsv'),
                  '--rasqual-input', 'both']
     sys.argv = argv
+    # gate orientation: the depth-weighted sign over a gene's feature sites,
+    # per sample, never row i of the sign matrix
+    gt_ = pd.DataFrame({'chr': ['1'], 'start': [100], 'end': [300], 'pos': [100]}, index=['GX'])
+    vdf_ = pd.DataFrame({'chrom': ['1', '1', '1'], 'pos': [150, 250, 900]}, index=['a', 'b', 'c'])
+    xL_ = np.array([[1, 0], [0, 0], [1, 1]]); xR_ = np.array([[0, 0], [1, 1], [0, 0]])
+    al_ = {('1', 150): {'s0': (30, 10)}, ('1', 250): {'s0': (2, 3), 's1': (5, 5)}}
+    o = gene_orientation(['GX'], gt_, vdf_, xL_, xR_, ['s0', 's1'], allelic=al_)
+    assert o.tolist() == [[1.0, -1.0]], o      # s0: site a (+1, 40 reads) outweighs b (-1, 5); c is outside the body
+    assert gene_orientation(['GX'], gt_, vdf_, xL_, xR_, ['s0', 's1']).tolist() == [[0.0, -1.0]]
+    assert gene_orientation(['GX'], gt_[['chr', 'pos']], vdf_, xL_, xR_, ['s0', 's1']).tolist() == [[1.0, 0.0]]
+
     print('running the real pipeline on the fabricated inputs (standard: biallelic SNPs)...\n')
     main()
     b = json.loads((td / 'out' / 'eval_bundle.json').read_text())

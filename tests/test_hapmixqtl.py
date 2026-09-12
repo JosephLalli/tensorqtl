@@ -43,6 +43,8 @@ from tensorqtl.hapmixqtl import (
     _estimate_tau_informative,
     _permute_within_informative,
     SAME_COVARIATES,
+    orient_haplotypes,
+    reference_bias_diagnostic,
 )
 
 
@@ -1201,3 +1203,45 @@ class TestWhitenedResidualPermutation:
             map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
                     d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
                     xR_df=d['xR_df'], nperm=10, se_mode='robust', verbose=False)
+
+
+class TestOrientHaplotypes:
+
+    def test_depth_weighted_sign_and_uniform_fallback(self):
+        # sites x samples. Sample 0 is het at two sites with opposite phase;
+        # site 0 carries 30 of its reads, site 1 five.
+        sign = np.array([[+1, -1, 0], [-1, -1, 0]])
+        depth = np.array([[30, 10, 0], [5, 10, 0]])
+        assert orient_haplotypes(sign, depth).tolist() == [1, -1, 0]
+        assert orient_haplotypes(sign).tolist() == [0, -1, 0]       # uniform: sample 0 cancels
+        assert orient_haplotypes(np.zeros((0, 3))).tolist() == [0, 0, 0]
+        assert orient_haplotypes(np.array([1, 0, -1])).tolist() == [1, 0, -1]
+
+    def test_diagnostic_sees_planted_bias_only_through_the_right_orientation(self):
+        """Reference bias planted at every site with reads: the depth-weighted
+        orientation exposes it (pooled reference fraction above 0.5, flagged);
+        orienting every gene by one unrelated site, as a row-index bug would,
+        shows nothing."""
+        rng = np.random.RandomState(0)
+        G, N, S = 40, 60, 3
+        yL = np.zeros((G, N)); yR = np.zeros((G, N))
+        sign = np.zeros((G, S, N)); depth = np.zeros((G, S, N))
+        for g in range(G):
+            reads = np.array([60, 15, 4])          # per-site depth, site 0 deepest
+            for v in range(S):
+                het = rng.rand(N) < 0.6
+                s = np.where(het, rng.choice([-1, 1], N), 0)
+                n = rng.poisson(reads[v], N) * het
+                ref = rng.binomial(n, 0.62)          # 62% of reads to REF: mapping bias
+                alt = n - ref
+                # ALT on L when s > 0
+                yL[g] += np.where(s > 0, alt, ref) * het
+                yR[g] += np.where(s > 0, ref, alt) * het
+                sign[g, v] = s; depth[g, v] = n
+        right = np.stack([orient_haplotypes(sign[g], depth[g]) for g in range(G)])
+        d = reference_bias_diagnostic(yL, yR, right)
+        assert d['flag'] and d['ref_fraction'] > 0.55, d['message']
+        # one fixed, unrelated site per gene (the shallowest) -- the bias mass sits elsewhere
+        wrong = sign[:, 2, :]
+        d2 = reference_bias_diagnostic(yL, yR, wrong)
+        assert d2['ref_fraction'] < d['ref_fraction'] - 0.05, (d2['ref_fraction'], d['ref_fraction'])

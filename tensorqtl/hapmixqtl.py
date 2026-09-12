@@ -235,6 +235,37 @@ def reference_bias_diagnostic(yL, yR, sign, min_total=10, min_sites=20):
                 message=message)
 
 
+def orient_haplotypes(sign_sites, depth_sites=None):
+    """Per-sample haplotype orientation of a gene for reference_bias_diagnostic.
+
+    The diagnostic needs, for every gene-sample, which haplotype carries the
+    REFERENCE allele where that sample's reads land. A gene has many
+    heterozygous sites and the reference allele sits on L at some and on R at
+    others, so no single site's phase describes the gene. What mapping bias
+    adds to the haplotype totals is sum_v reads_v * s_v: bias favours REF at
+    every site carrying reads, and s_v = xL - xR says which haplotype is ALT
+    there. The orientation that exposes it is therefore the sign of that
+    depth-weighted sum; without per-site depths every het site counts alike.
+
+    Args:
+        sign_sites:  [n_sites, N] s = xL - xR at the gene's feature sites
+                     (exonic hets, or gene-body hets without an exon table);
+                     0 where the sample is homozygous
+        depth_sites: [n_sites, N] allele-specific reads per site and sample,
+                     or None for uniform weights
+
+    Returns [N] in {-1, 0, +1}; 0 when the sample has no usable site or its
+    weighted phases cancel.
+    """
+    s = np.asarray(sign_sites, dtype=float)
+    if s.ndim == 1:
+        s = s[None, :]
+    if s.shape[0] == 0:
+        return np.zeros(s.shape[1])
+    w = np.ones_like(s) if depth_sites is None else np.asarray(depth_sites, dtype=float)
+    return np.sign((w * s).sum(0))
+
+
 def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=False):
     """
     Compute hapmixQTL summary statistics from Gibbs draws.
