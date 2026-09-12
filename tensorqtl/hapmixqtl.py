@@ -691,6 +691,23 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
     return tstat_combined, slope_combined, se_combined, slope_a, se_a, slope_tc, se_tc
 
 
+def _leverage_standardized(res_t, residualizer):
+    """Whitened null residuals divided by sqrt(1 - h_ii), h_ii the leverage of
+    the null design (the diagonal of Q Q').
+
+    (I - Q Q') e has per-sample variance 1 - h_ii, not 1, so a permutation of
+    the raw residuals is under-dispersed by about (N - p)/N. That would cancel
+    for a pivotal statistic refitted per permutation, but the known-variance
+    statistic here is built from xy and xx alone, so the residual scale enters
+    the null directly: with 18 design columns on 92 samples the permuted null
+    would be short by 20% in chi2 and the empirical p anticonservative.
+    Standardizing restores unit variance. A switched-off channel (Q of width
+    0) and a zero-weight sample (a zero design row, residual 0) are unchanged.
+    """
+    h = (residualizer.Q_t * residualizer.Q_t).sum(1)
+    return res_t / torch.sqrt((1.0 - h).clamp(min=1e-3))
+
+
 def _permute_within_informative(r_t, informative_t, permutation_ix_t):
     """Permute the entries of r_t [N] among the samples flagged informative,
     once per row of permutation_ix_t [nperm, N] (each row a permutation of
@@ -740,7 +757,11 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     a null gene's empirical p averaged 0.94, type-I 0.000 at alpha 0.05).
     Each channel permutes among its informative samples only (weight > 0),
     and the two channels share the draw (see _permute_within_informative).
-    Because the residualized predictors are orthogonal to the null design,
+    The permuted residuals are leverage-standardized first
+    (_leverage_standardized): the null residuals have variance 1 - h_ii, and
+    since the statistic is not pivotal that deficit would carry into the null
+    (mean empirical p 0.44 on the calibration design before this). Because
+    the residualized predictors are orthogonal to the null design,
     re-residualizing the permuted residuals would leave xy unchanged, and
     _combined_tstat2 does not use yy, so that step is skipped.
 
@@ -813,8 +834,10 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
 
     # --- Permutation statistics: whitened residuals permuted within each
     # channel's informative samples (see the docstring) ---
-    a_res_perms = _permute_within_informative(a_star_res[0], sqrt_wa_t > 0, permutation_ix_t)
-    t_res_perms = _permute_within_informative(t_star_res[0], sqrt_wt_t > 0, permutation_ix_t)
+    a_res_perms = _permute_within_informative(
+        _leverage_standardized(a_star_res[0], residualizer_a), sqrt_wa_t > 0, permutation_ix_t)
+    t_res_perms = _permute_within_informative(
+        _leverage_standardized(t_star_res[0], residualizer_t), sqrt_wt_t > 0, permutation_ix_t)
 
     xy_a_perm = torch.mm(s_star_res, a_res_perms.t())
     yy_a_perm = (a_res_perms * a_res_perms).sum(1)

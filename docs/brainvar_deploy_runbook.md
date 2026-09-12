@@ -565,8 +565,16 @@ being moved between samples at fixed weights. The old scheme handed a sample
 another sample's value at its own precision; with inferential variances
 spanning 0.01-2 and 10% samples without allele-specific coverage a null
 gene's `pval_perm` averaged 0.94 with no rejection at 0.05 in 100 genes.
-With the whitened permutation the same design gives mean 0.44, 6% at 0.05
-(`test_pval_perm_is_calibrated_under_heteroskedasticity`). `map_cis` refuses
+The permuted residuals are leverage-standardized (divided by `sqrt(1 - h)`,
+`h` the diagonal of the null design's projection): `(I - QQ')e` has
+variance `1 - h_ii`, and because the statistic is built from `xy` and `xx`
+rather than refitted per permutation that deficit would carry into the null
+(with 18 design columns on 92 samples the permuted null would be 20% short
+in chi2; the raw whitened residuals gave a mean empirical p of 0.44 on the
+calibration design). With the standardized permutation 400 null genes on
+that design give mean 0.503, 5.2% below 0.05 and 49.7% below 0.5
+(`test_pval_perm_is_calibrated_under_heteroskedasticity`;
+`test_permuted_null_matches_the_known_variance`). `map_cis` refuses
 `se_mode='robust'`: the permutation statistic is the known-variance GLS
 statistic and a sandwich SE has no counterpart in it; `map_nominal` still
 offers it.
@@ -582,14 +590,20 @@ maxima 13.6-23.1 with the intercept-only channel (10.7-17.4 and 14.8-24.0
 with the shared set), so the covariate split leaves the null where it was
 while the observed values on the genes with signal rise (CYP51A1 14.7 ->
 21.8 against RASQUAL's 31.8, TTC3 13.8 -> 16.9, APC 17.0 -> 20.8, CCNI 13.9
--> 16.2; ANKRD36B 39.9 -> 37.5). APC at 20.8 sits below its own null-maximum
-mean of 17.6 only by that comparison, which is why the driver now carries
-each gene's own empirical p (`pval_perm`, 1000 whitened-residual
-permutations, `--hapmix-nperm`): in the final run (`pilotM`) 9 of 30 genes
-are below 0.05 against their own null (SLC6A15, MON2, AGPAT5, CYCS, PDZD8,
-EXOC2, CYP51A1, ANKRD36B, TCF4; 1.5 expected under a global null). RASQUAL's
-arm has no per-gene empirical p (its statistic is a likelihood ratio), so
-its 11 genes above 15 are not the same kind of count. RASQUAL's and
+-> 16.2; ANKRD36B 39.9 -> 37.5). APC at 20.8 exceeds its null-maximum mean
+of 17.6 but not the largest of its ten null maxima (23.1), and no fixed
+threshold resolves that, which is why the driver now carries each gene's
+own empirical p (`pval_perm`, 1000 whitened-residual
+permutations, `--hapmix-nperm`): in the final run (`pilotM`) 5 of 30 genes
+are below 0.05 against their own null (PDZD8 p = 0.001, ANKRD36B 0.001,
+CYP51A1 0.010, SLC6A15 0.011, CYCS 0.042; 1.5 expected under a global
+null). Before the permuted residuals were leverage-standardized the same run
+called 9 (MON2, AGPAT5, EXOC2 and TCF4 as well, at 0.011-0.034; they now sit
+at 0.058-0.211), and the median empirical p rose 1.8-fold: the under-dispersed
+null bit hardest in the tail of a maximum over ~4,600 variants, well beyond
+the 20% deficit in chi2 the leverage arithmetic suggests. RASQUAL's arm has
+no per-gene empirical p (its statistic is a likelihood ratio), so its 11
+genes above 15 are not the same kind of count. RASQUAL's and
 hapmixQTL's lead variants coincide on 1 of the 30 genes, which is why the
 effect comparison has to be made at matched variants (below) rather than
 gene-wise. The sparse-channel rule admits an allelic channel with as few as
@@ -668,8 +682,14 @@ likelihood ratio, boundary flags in column 23: SLC6A15, AGPAT5, CAMSAP2,
 CRMP1), so the comparison at hapmixQTL's leads is conditioned on variants
 where RASQUAL's fit succeeded. Genes both arms put above their respective
 levels are PDZD8 (RASQUAL 47.8 at its lead, 42.1 at hapmixQTL's; hapmixQTL
-27.5, p = 0.001), CYP51A1 (31.8 / 27.9; 21.8, p = 0.003) and EXOC2 (24.6 /
-4.7; 14.5, p = 0.034). FABP7 is the clearest disagreement: RASQUAL 23.6 with
+27.5, p = 0.001) and CYP51A1 (31.8 / 27.9; 21.8, p = 0.010); EXOC2 is
+RASQUAL's (24.6 at its lead, 4.7 at hapmixQTL's; hapmixQTL 14.5, p = 0.12)
+and ANKRD36B, SLC6A15 and CYCS are hapmixQTL's (RASQUAL 4.5, non-converged
+and 10.3 at those leads). Read at the other arm's lead, each arm keeps a
+similar fraction of its own lead signal: RASQUAL a median 0.38 of its chi2
+(n = 26) and hapmixQTL 0.43 (n = 30), and 0.57 and 0.58 of the effect
+magnitude, which is the symmetric loss the winner's-curse reading predicts.
+FABP7 is the clearest disagreement: RASQUAL 23.6 with
 log aFC -0.32 at its lead, where hapmixQTL re-run gives 0.004 with +0.002,
 while at hapmixQTL's lead 32 kb away both see the effect (RASQUAL 11.6 /
 -0.31, hapmixQTL 15.2 / -0.25).

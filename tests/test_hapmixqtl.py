@@ -42,6 +42,7 @@ from tensorqtl.hapmixqtl import (
     _prepare_channels,
     _estimate_tau_informative,
     _permute_within_informative,
+    _leverage_standardized,
     SAME_COVARIATES,
     orient_haplotypes,
     reference_bias_diagnostic,
@@ -1245,3 +1246,39 @@ class TestOrientHaplotypes:
         wrong = sign[:, 2, :]
         d2 = reference_bias_diagnostic(yL, yR, wrong)
         assert d2['ref_fraction'] < d['ref_fraction'] - 0.05, (d2['ref_fraction'], d['ref_fraction'])
+
+
+class TestPermutedNullScale:
+
+    def test_permuted_null_matches_the_known_variance(self, device):
+        """The observed xy = s_res . e has variance xx (s_res is orthogonal to
+        the null design and e is whitened). Permuting the raw null residuals,
+        whose variance is 1 - h_ii, gives a null short by about (N - p)/N;
+        leverage-standardized residuals restore Var(xy_perm) = xx. With 18
+        columns on 60 samples the deficit is 0.70, far outside permutation
+        noise at 20,000 draws."""
+        N, p, nperm = 60, 17, 20000
+        rng = np.random.RandomState(4)
+        C = torch.tensor(rng.normal(size=(N, p)), dtype=torch.float64, device=device)
+        w = torch.tensor(rng.uniform(0.5, 2.0, N), dtype=torch.float64, device=device)
+        res = WeightedResidualizer(C, w)
+        # a null whitened response and one predictor
+        e = res.transform(torch.tensor(rng.normal(size=(1, N)), dtype=torch.float64, device=device))[0]
+        s = torch.tensor(rng.choice([-1.0, 0.0, 1.0], N), dtype=torch.float64, device=device) * w
+        s_res = res.transform(s.unsqueeze(0))[0]
+        xx = float((s_res * s_res).sum())
+        perm = torch.tensor(np.array([rng.permutation(N) for _ in range(nperm)]),
+                            dtype=torch.long, device=device)
+        inf = torch.ones(N, dtype=torch.bool, device=device)
+        # average over several null draws of e so the ratio is not one residual's luck
+        raw, std = [], []
+        for _ in range(8):
+            e = res.transform(torch.tensor(rng.normal(size=(1, N)), dtype=torch.float64, device=device))[0]
+            xy_raw = _permute_within_informative(e, inf, perm) @ s_res
+            xy_std = _permute_within_informative(_leverage_standardized(e, res), inf, perm) @ s_res
+            raw.append(float(xy_raw.var()) / xx)
+            std.append(float(xy_std.var()) / xx)
+        raw, std = float(np.mean(raw)), float(np.mean(std))
+        expected_deficit = (N - (p + 1)) / N                    # 0.70
+        assert abs(raw - expected_deficit) < 0.08, (raw, expected_deficit)
+        assert abs(std - 1.0) < 0.08, std
