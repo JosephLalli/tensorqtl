@@ -496,6 +496,143 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
 
 
 # ---------------------------------------------------------------------------
+#  Matched-variant effects: each arm read at the other arm's lead
+# ---------------------------------------------------------------------------
+
+def hapmix_at(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
+              targets, cov_df=None, ase_cov='none'):
+    """hapmixQTL's nominal statistic and log aFC at ONE named variant per gene
+    (targets: {gene: variant_id}, e.g. RASQUAL's leads), through the same
+    map_cis path as the lead scan restricted to that variant. Returns
+    DataFrame(gene, variant, stat, log_afc); a gene whose variant is not in
+    vdf, or is monomorphic, is absent."""
+    rows = []
+    gi = {g: i for i, g in enumerate(genes)}
+    vi = {v: i for i, v in enumerate(vdf.index)}
+    ase = None if ase_cov == 'none' else SAME_COVARIATES
+    for g, var in targets.items():
+        if g not in gi or var not in vi:
+            continue
+        i, j = gi[g], vi[var]
+        v = vdf.iloc[[j]]
+        mk = lambda M: pd.DataFrame(M[[i]], index=[g], columns=order)
+        one = lambda M: pd.DataFrame(M[[j]], index=v.index, columns=order)
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                res = map_cis(one(dos), v[['chrom', 'pos']], mk(A), mk(T), mk(Va), mk(Vt),
+                              pos_df.loc[[g]], xL_df=one(xL), xR_df=one(xR),
+                              window=window, nperm=10, covariates_df=cov_df,
+                              ase_covariates_df=ase, verbose=False,
+                              warn_monomorphic=False, beta_approx=False)
+            except ValueError:          # no valid variant in the gene's window
+                continue
+        pv = float(pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1).iloc[0])
+        rows.append(dict(gene=g, variant=var, stat=float(stats.chi2.isf(pv, 1)),
+                         log_afc=float(res['slope'].iloc[0])))
+    return pd.DataFrame(rows, columns=['gene', 'variant', 'stat', 'log_afc'])
+
+
+def _lead_site(lead):
+    """(chrom, pos) of a RASQUAL lead id chrom_pos_ref_alt (chrom may itself
+    contain underscores)."""
+    c, p_, _, _ = str(lead).rsplit('_', 3)
+    return c, int(p_)
+
+
+def rasqual_at(rows_dir, gene, chrom, pos):
+    """RASQUAL's chi2 and log aFC at a site, read from the per-variant rows
+    kept by --rasqual-rows. Sites are matched on (chrom, pos): the standard
+    arms test biallelic records only, so a position names one record, and
+    the VCF's own ID column (which hapmixQTL's tables carry) need not follow
+    RASQUAL's chrom_pos_ref_alt form. (nan, nan) when the site is absent or
+    its row did not converge."""
+    f = Path(rows_dir) / f'{gene}.tsv'
+    if not f.exists():
+        return np.nan, np.nan
+    for ln in open(f):
+        c = ln.rstrip('\n').split('\t')
+        if len(c) < 25 or c[1] == 'SKIPPED' or c[2] != str(chrom) or int(c[3]) != int(pos):
+            continue
+        try:
+            if int(float(c[22])) != 0:
+                return np.nan, np.nan
+            pi = min(max(float(c[11]), 1e-6), 1 - 1e-6)
+            return float(c[10]), float(np.log(pi / (1 - pi)))
+        except ValueError:
+            return np.nan, np.nan
+    return np.nan, np.nan
+
+
+def matched_effects(obs_r, obs_h, rows_dir, at_h, vdf):
+    """Effect sizes compared at the SAME variant with the SAME effect allele.
+
+    The arms' gene-wise leads differ on most genes (1 of 30 on BrainVar), so
+    their lead log aFCs estimate different quantities. Each arm is read at
+    the other's lead instead: RASQUAL from the rows it wrote for every
+    variant (rasqual_at), hapmixQTL by re-running its statistic at the named
+    variant (hapmix_at). Both effects are log(ALT/REF): RASQUAL's pi is the
+    fraction of expression from the ALT haplotype (nbem.c: expected
+    expression 2(1 - pi) for hom-REF, 2 pi for hom-ALT), hapmixQTL's slope is
+    per ALT dosage, and both read the same VCF record, so no allele flip is
+    needed.
+
+    at_h: hapmix_at at RASQUAL's leads. vdf: the variant table (its index is
+    the id hapmixQTL's tables carry). Returns (summary dict, per-gene table).
+    """
+    r = obs_r.set_index('gene')
+    h = obs_h.set_index('gene')
+    ah = at_h.set_index('gene') if len(at_h) else None
+    id2site = dict(zip(vdf.index, zip(vdf['chrom'].astype(str), vdf['pos'].astype(int))))
+    recs = []
+    for g in h.index.intersection(r.index):
+        if r.loc[g, 'status'] != 'ok' or not isinstance(h.loc[g, 'lead'], str):
+            continue
+        site_h = id2site.get(h.loc[g, 'lead'])
+        if site_h is None:
+            continue
+        sr, ar = rasqual_at(rows_dir, g, *site_h)
+        rec = dict(gene=g, lead_h=h.loc[g, 'lead'], stat_h=float(h.loc[g, 'stat']),
+                   afc_h=float(h.loc[g, 'log_afc']), stat_r_at_h=sr, afc_r_at_h=ar,
+                   lead_r=r.loc[g, 'lead'], stat_r=float(r.loc[g, 'stat']),
+                   afc_r=float(r.loc[g, 'log_afc']), stat_h_at_r=np.nan, afc_h_at_r=np.nan)
+        if ah is not None and g in ah.index:
+            rec['stat_h_at_r'] = float(ah.loc[g, 'stat'])
+            rec['afc_h_at_r'] = float(ah.loc[g, 'log_afc'])
+        recs.append(rec)
+    tab = pd.DataFrame(recs, columns=['gene', 'lead_h', 'stat_h', 'afc_h', 'stat_r_at_h',
+                                      'afc_r_at_h', 'lead_r', 'stat_r', 'afc_r',
+                                      'stat_h_at_r', 'afc_h_at_r'])
+
+    def agree(x, y):
+        x = np.asarray(x, float); y = np.asarray(y, float)
+        m = np.isfinite(x) & np.isfinite(y)
+        out = {'n': int(m.sum())}
+        if m.sum() >= 3:
+            out['sign_agreement'] = float(np.mean(np.sign(x[m]) == np.sign(y[m])))
+            out['pearson_r'] = float(np.corrcoef(x[m], y[m])[0, 1])
+        if m.sum() >= 10:
+            sl, ic, _, _, se = stats.linregress(x[m], y[m])
+            out.update(slope_hapmix_on_rasqual=float(sl), slope_se=float(se), intercept=float(ic))
+        return out
+
+    summary = {'n_genes': int(len(tab)), 'effect_allele': 'ALT, both arms',
+               'note': 'log aFC of each arm at the SAME variant: RASQUAL read at '
+                       "hapmixQTL's lead from its retained rows, hapmixQTL re-run at "
+                       "RASQUAL's lead"}
+    if len(tab):
+        same = np.array([id2site.get(a) == _lead_site(b)
+                         for a, b in zip(tab['lead_h'], tab['lead_r'])])
+        summary['n_same_lead'] = int(same.sum())
+        summary['at_hapmixqtl_lead'] = agree(tab['afc_r_at_h'], tab['afc_h'])
+        summary['at_rasqual_lead'] = agree(tab['afc_r'], tab['afc_h_at_r'])
+        diff = ~same                                   # a shared lead enters once
+        x = np.concatenate([tab['afc_r_at_h'].values, tab.loc[diff, 'afc_r'].values])
+        y = np.concatenate([tab['afc_h'].values, tab.loc[diff, 'afc_h_at_r'].values])
+        summary['union_of_leads'] = agree(x, y)
+    return summary, tab
+
+
+# ---------------------------------------------------------------------------
 #  Scoring
 # ---------------------------------------------------------------------------
 
@@ -918,6 +1055,28 @@ def run(args):
 
     print('\nObserved')
     obs_h, obs_r, th, tr, obs_x, sp_obs, tx_obs = both(None, 'observed')
+
+    # effects at matched variants, when RASQUAL's per-variant rows exist:
+    # written by this run (--rasqual-rows) or kept by the reused one
+    rows_dir = None
+    if args.rasqual_rows and Path(args.rasqual_rows).is_dir():
+        rows_dir = Path(args.rasqual_rows)
+    elif args.reuse_rasqual and (Path(args.reuse_rasqual) / 'rasqual_rows').is_dir():
+        rows_dir = Path(args.reuse_rasqual) / 'rasqual_rows'
+    matched = None
+    if rows_dir is not None:
+        site2id = dict(zip(zip(vdf['chrom'].astype(str), vdf['pos'].astype(int)), vdf.index))
+        targets = {g: site2id[_lead_site(v)] for g, v in zip(obs_r['gene'], obs_r['lead'])
+                   if isinstance(v, str) and _lead_site(v) in site2id}
+        at_h = hapmix_at(A, T, Va, Vt, usable, order, vdf, dos, xL, xR,
+                         pos_df[['chr', 'pos']], args.window, targets,
+                         cov_df=cov_df, ase_cov=args.ase_covariates)
+        matched, matched_tab = matched_effects(obs_r, obs_h, rows_dir, at_h, vdf)
+        matched_tab.to_csv(out / 'matched_effects.tsv', sep='\t', index=False)
+        u = matched.get('union_of_leads', {})
+        print(f"  matched-variant effects (rows from {rows_dir}): {matched['n_genes']} genes, "
+              f"{u.get('n', 0)} pairs, sign agreement {u.get('sign_agreement', float('nan')):.2f}, "
+              f"r = {u.get('pearson_r', float('nan')):.2f}")
     nulls_h, nulls_r, nulls_x, sp_nulls = [], [], [], []
     kL = kR = win_row = None
     if args.null == 'knockoff':
@@ -999,6 +1158,7 @@ def run(args):
         'RASQUAL': score(obs_r, null_r, 'RASQUAL', known,
                          genes_keep=common_genes),
         'head_to_head': compare(obs_r, obs_h, out),
+        'matched_effects': matched,
         'reference_bias_hapmixqtl': {
             k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
             for k, v in refbias.items() if k != 'per_gene'},
@@ -1073,6 +1233,18 @@ def write_table(r, path):
         e = h['effect_size']
         L.append(f"- log-aFC slope (hapmixQTL on RASQUAL): {e['slope_hapmix_on_rasqual']:.3f} "
                  f"± {e['slope_se']:.3f}, r = {e['r']:.3f}, n = {e['n']}  (1.0 = same quantity)")
+    me = r.get('matched_effects')
+    if me:
+        L += ['', '### Effects at matched variants (same variant, ALT allele in both arms)', '',
+              f"{me['n_genes']} genes; leads coincide on {me.get('n_same_lead', 0)}", '',
+              '| read at | n | sign agreement | r | slope (hapmixQTL on RASQUAL) |', '|---|---|---|---|---|']
+        for key, lab in (('at_hapmixqtl_lead', "hapmixQTL's lead"), ('at_rasqual_lead', "RASQUAL's lead"),
+                         ('union_of_leads', 'union of leads')):
+            a = me.get(key, {})
+            sl = (f"{a['slope_hapmix_on_rasqual']:.3f} ± {a['slope_se']:.3f}"
+                  if 'slope_hapmix_on_rasqual' in a else '')
+            L.append(f"| {lab} | {a.get('n', 0)} | {a.get('sign_agreement', float('nan')):.2f} | "
+                     f"{a.get('pearson_r', float('nan')):.2f} | {sl} |")
     if 'phi_hat' in r['RASQUAL']:
         L.append(f"- RASQUAL φ̂ median on this data: {r['RASQUAL']['phi_hat']['median']:.3f} (0.5 = no reference bias)")
     Path(path).write_text('\n'.join(L) + '\n')
@@ -1291,7 +1463,7 @@ def selftest():
         asvcf=None, dump_rasqual=None, exons=None,
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
         count_noise=True, min_count=6, min_count_frac=0.2, reuse_rasqual=None,
-        rasqual_rows=None, ase_covariates='none',
+        rasqual_rows=str(td / 'rows'), ase_covariates='none',
         str_vcf=None, multiallelic=False, min_hap=10)
     # count_noise contract, which fabricated Poisson(30) draws cannot probe:
     # a sample with the same count in every draw has v_inf = 0. The term must
@@ -1353,6 +1525,11 @@ def selftest():
     # above every simulated frequency must drop tested variants without
     # touching the fSNPs the allelic channel needs
     assert r['design']['n_tested_variants'] > 0, r['design']
+    me = r.get('matched_effects') or {}
+    print('matched-variant effects:', json.dumps({k: me[k] for k in me if k != 'note'}))
+    assert me.get('union_of_leads', {}).get('n', 0) >= 10, me
+    assert me['union_of_leads']['pearson_r'] > 0.8, me
+    assert me['union_of_leads']['sign_agreement'] >= 0.8, me
     assert 'hapmixQTL_nonstandard' not in r and 'nonstandard' not in r
 
     print('\nnow opting in: --str-vcf + --multiallelic (NON-STANDARD arm added)\n')
