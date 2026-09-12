@@ -508,6 +508,22 @@ of 0 Salmon reads (73/92 zero samples), so hapmixQTL's statistic was exactly
 floor) now applies to the Salmon totals before the probe, and the design
 record reports how many candidates it dropped.
 
+### Choosing pilot genes
+
+`scripts/select_pilot_genes.py` draws a gene list both methods can use,
+stratified by expression, from three facts per gene: median Salmon reads per
+sample (from the cache, written once to `annot/gene_expression_summary.tsv`),
+exon sites with allele-specific reads in enough samples (phASER counts; the
+allelic channel needs them in both methods), and VCF records inside the exon
+union (each is a feature SNP to RASQUAL, whose cost is (fSNPs+1) x tested
+SNPs, so `--max-exon-records` bounds the run time). `pilot30_hc.txt` is 10
+genes from each of the 1k-3k, 3k-10k and >=10k reads/sample strata with
+>= 3 informative exon sites and <= 40 exon records; its summary table sits
+beside it.
+
+Both observed tables carry a `lead` column (`chrom_pos_ref_alt`), so lead
+agreement between arms can be read off directly.
+
 For iteration, `--gene-list` restricts every input read (VCF, allelic counts,
 Gibbs draws) to the windows around those genes, and `--cache-dir` keeps the
 Gibbs load as memory-mapped arrays keyed by the input paths. An 8-gene rerun

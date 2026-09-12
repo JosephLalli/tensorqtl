@@ -357,7 +357,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
         # knockoff override of xL/xR never reaches it. Say so per gene rather
         # than re-running the observed data and calling it a null.
         return pd.DataFrame([dict(gene=g, stat=np.nan, log_afc=np.nan,
-                                  phi=np.nan, status='knockoff_null_not_implemented')
+                                  phi=np.nan, status='knockoff_null_not_implemented',
+                                  lead=None)
                              for g in genes])
     td = Path(tmp or tempfile.mkdtemp())
     np.asarray(Y, np.float64).tofile(td / 'Y.bin')
@@ -398,7 +399,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 stdout=fh, stderr=subprocess.DEVNULL)
         if r.returncode != 0:
             slice_vcf.unlink(missing_ok=True)
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, lead=None,
                         status='bcftools_failed')
         # -l is every record in the slice; -m the ones inside the gene body,
         # which is what isExon classifies as feature SNPs.
@@ -411,7 +412,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                     n_m += 1
         if n_l == 0 or n_m == 0:
             slice_vcf.unlink(missing_ok=True)
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, lead=None,
                         status='no_fsnp_or_rsnp')
         cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
                '-n', str(len(order)), '-j', str(j + 1), '-l', str(n_l),
@@ -438,7 +439,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                                     text=True, errors='replace',
                                     timeout=timeout)
         except Exception as e:
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, lead=None,
                         status=f'error:{type(e).__name__}')
         finally:
             slice_vcf.unlink(missing_ok=True)
@@ -457,8 +458,11 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 continue
             if best is None or chi2 > best['stat']:
                 pi = min(max(pi, 1e-6), 1 - 1e-6)
+                # lead as chrom_pos_ref_alt, the id hapmixQTL's arm reports,
+                # so lead agreement between arms can be read off the tables
                 best = dict(gene=g, stat=chi2, log_afc=np.log(pi / (1 - pi)),
-                            phi=float(f[13]), status='ok')
+                            phi=float(f[13]), status='ok',
+                            lead=f'{f[2]}_{f[3]}_{f[4]}_{f[5]}')
         if best is None and dump is not None:
             # Keep RASQUAL's own output when nothing converged. Column 23
             # (0-based 22) is pbound, its convergence status: non-zero means a
@@ -468,7 +472,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             if pr.stderr:
                 (Path(dump) / f'{g}.err').write_text(pr.stderr[:20000])
         return best or dict(gene=g, stat=np.nan, log_afc=np.nan,
-                            phi=np.nan, status='no_converged_row')
+                            phi=np.nan, status='no_converged_row', lead=None)
 
     if jobs <= 1:
         recs = [_one(jg) for jg in enumerate(genes)]
