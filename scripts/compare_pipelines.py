@@ -119,9 +119,12 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
-               tested_mask, perm=None, cov_df=None, ase_cov='none'):
-    """Return DataFrame(gene, stat, log_afc). stat = chi2(1)-equivalent of the
-    lead nominal p over TESTED variants, so it sits on RASQUAL's scale.
+               tested_mask, perm=None, cov_df=None, ase_cov='none', nperm=1000, seed=0):
+    """Return DataFrame(gene, stat, log_afc, lead, pval_perm). stat = chi2(1)-
+    equivalent of the lead nominal p over TESTED variants, so it sits on
+    RASQUAL's scale; pval_perm is map_cis's empirical p of the lead against
+    the gene's own whitened-residual permutation null (nperm draws, seeded so
+    the table is reproducible), which RASQUAL's arm has no counterpart for.
 
     cov_df is projected out of the TOTAL channel. ase_cov says what the
     ALLELIC channel gets: 'none' (intercept only; the log haplotype ratio is
@@ -145,8 +148,8 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
     mk = lambda M: pd.DataFrame(M, index=genes, columns=order)
     with contextlib.redirect_stdout(io.StringIO()):
         res = map_cis(g, v[['chrom', 'pos']], mk(A), mk(T), mk(Va), mk(Vt),
-                      pos_df, xL_df=xl, xR_df=xr, window=window, nperm=50,
-                      covariates_df=cov_df,
+                      pos_df, xL_df=xl, xR_df=xr, window=window, nperm=nperm,
+                      seed=seed, covariates_df=cov_df,
                       ase_covariates_df=(None if ase_cov == 'none' else SAME_COVARIATES),
                       verbose=False)
     p = pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1)
@@ -154,7 +157,8 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
     return pd.DataFrame({'gene': res.index.values,
                          'stat': stats.chi2.isf(p.values, 1),
                          'log_afc': pd.to_numeric(res['slope'], errors='coerce').values,
-                         'lead': res['variant_id'].values})
+                         'lead': res['variant_id'].values,
+                         'pval_perm': pd.to_numeric(res['pval_perm'], errors='coerce').values})
 
 
 # ---------------------------------------------------------------------------
@@ -533,25 +537,47 @@ def hapmix_at(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
 
 
 def _lead_site(lead):
-    """(chrom, pos) of a RASQUAL lead id chrom_pos_ref_alt (chrom may itself
-    contain underscores)."""
-    c, p_, _, _ = str(lead).rsplit('_', 3)
-    return c, int(p_)
+    """(chrom, pos, ref, alt) of a RASQUAL lead id chrom_pos_ref_alt (chrom
+    may itself contain underscores)."""
+    c, p_, ref, alt = str(lead).rsplit('_', 3)
+    return c, int(p_), ref, alt
 
 
-def rasqual_at(rows_dir, gene, chrom, pos):
+def _variant_sites(vdf):
+    """{id: (chrom, pos, ref, alt)} for the variant table. Alleles come from
+    the table's ref/alt columns (read_phased_vcf), else from an id of the
+    form chrom_pos_ref_alt, else None (matching then falls back to position).
+    A multi-allelic site split into biallelic records occupies one position
+    twice (886 such positions in the 30 BrainVar windows), so a position
+    alone does not name a record."""
+    out = {}
+    have = 'ref' in vdf.columns and 'alt' in vdf.columns
+    for k, (vid, chrom, pos) in enumerate(zip(vdf.index, vdf['chrom'].astype(str), vdf['pos'])):
+        if have:
+            out[vid] = (chrom, int(pos), str(vdf['ref'].iloc[k]), str(vdf['alt'].iloc[k]))
+        else:
+            try:
+                c, p_, ref, alt = str(vid).rsplit('_', 3)
+                out[vid] = (chrom, int(pos), ref, alt) if (c == chrom and int(p_) == int(pos)) \
+                    else (chrom, int(pos), None, None)
+            except ValueError:
+                out[vid] = (chrom, int(pos), None, None)
+    return out
+
+
+def rasqual_at(rows_dir, gene, chrom, pos, ref=None, alt=None):
     """RASQUAL's chi2 and log aFC at a site, read from the per-variant rows
-    kept by --rasqual-rows. Sites are matched on (chrom, pos): the standard
-    arms test biallelic records only, so a position names one record, and
-    the VCF's own ID column (which hapmixQTL's tables carry) need not follow
-    RASQUAL's chrom_pos_ref_alt form. (nan, nan) when the site is absent or
-    its row did not converge."""
+    kept by --rasqual-rows. Matched on (chrom, pos, ref, alt); on position
+    alone when the caller has no alleles. (nan, nan) when the site is absent
+    or its row did not converge."""
     f = Path(rows_dir) / f'{gene}.tsv'
     if not f.exists():
         return np.nan, np.nan
     for ln in open(f):
         c = ln.rstrip('\n').split('\t')
         if len(c) < 25 or c[1] == 'SKIPPED' or c[2] != str(chrom) or int(c[3]) != int(pos):
+            continue
+        if ref is not None and (c[4] != ref or c[5] != alt):
             continue
         try:
             if int(float(c[22])) != 0:
@@ -582,7 +608,7 @@ def matched_effects(obs_r, obs_h, rows_dir, at_h, vdf):
     r = obs_r.set_index('gene')
     h = obs_h.set_index('gene')
     ah = at_h.set_index('gene') if len(at_h) else None
-    id2site = dict(zip(vdf.index, zip(vdf['chrom'].astype(str), vdf['pos'].astype(int))))
+    id2site = _variant_sites(vdf)
     recs = []
     for g in h.index.intersection(r.index):
         if r.loc[g, 'status'] != 'ok' or not isinstance(h.loc[g, 'lead'], str):
@@ -620,8 +646,10 @@ def matched_effects(obs_r, obs_h, rows_dir, at_h, vdf):
                        "hapmixQTL's lead from its retained rows, hapmixQTL re-run at "
                        "RASQUAL's lead"}
     if len(tab):
-        same = np.array([id2site.get(a) == _lead_site(b)
-                         for a, b in zip(tab['lead_h'], tab['lead_r'])])
+        def _same(a, b):
+            sa, sb = id2site.get(a), _lead_site(b)
+            return sa is not None and sa[:2] == sb[:2] and (sa[2] is None or sa[2:] == sb[2:])
+        same = np.array([_same(a, b) for a, b in zip(tab['lead_h'], tab['lead_r'])])
         summary['n_same_lead'] = int(same.sum())
         summary['at_hapmixqtl_lead'] = agree(tab['afc_r_at_h'], tab['afc_h'])
         summary['at_rasqual_lead'] = agree(tab['afc_r'], tab['afc_h_at_r'])
@@ -839,10 +867,12 @@ def run(args):
         cov_df = pd.read_csv(args.covariates, sep='\t', index_col=0)
         print(f'Covariates: {cov_df.shape[1]} columns '
               f'({", ".join(list(cov_df.columns)[:4])}...)')
-        print('  passed to BOTH arms. Neither method wants a pre-residualized '
-              'phenotype: hapmixQTL projects covariates out inside the '
-              'sqrt(w)-weighted space with different weights per channel, and '
-              'RASQUAL fits them in a GLM on the count scale.')
+        print("  RASQUAL fits them in its total-count GLM; hapmixQTL projects them "
+              "out of its total channel inside the sqrt(w)-weighted space and, "
+              f"with --ase-covariates {args.ase_covariates}, "
+              + ('out of the allelic channel as well.' if args.ase_covariates == 'shared'
+                 else 'fits the allelic channel with an intercept only (the log '
+                      'haplotype ratio cancels sample-level covariates).'))
 
     print('RASQUAL input: phASER per-feature-SNP counts')
     allelic = H.load_allelic_counts(args.allelic_counts, order, regions=regions)
@@ -1014,7 +1044,8 @@ def run(args):
         t0 = time.time()
         h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
                        pos_df[['chr', 'pos']], args.window, tested, perm,
-                       cov_df=cov_df, ase_cov=args.ase_covariates)
+                       cov_df=cov_df, ase_cov=args.ase_covariates,
+                       nperm=args.hapmix_nperm)
         th = time.time() - t0; t0 = time.time()
         if args.reuse_rasqual and perm is None and XL is xL and XR is xR:
             # observed RASQUAL rows from an earlier run of the same genes, so
@@ -1065,9 +1096,14 @@ def run(args):
         rows_dir = Path(args.reuse_rasqual) / 'rasqual_rows'
     matched = None
     if rows_dir is not None:
-        site2id = dict(zip(zip(vdf['chrom'].astype(str), vdf['pos'].astype(int)), vdf.index))
-        targets = {g: site2id[_lead_site(v)] for g, v in zip(obs_r['gene'], obs_r['lead'])
-                   if isinstance(v, str) and _lead_site(v) in site2id}
+        sites = _variant_sites(vdf)
+        site2id = {s: vid for vid, s in sites.items()}
+        site2id.update({s[:2]: vid for vid, s in sites.items() if s[2] is None})
+        def _target(v):
+            s = _lead_site(v)
+            return site2id.get(s, site2id.get(s[:2]))
+        targets = {g: _target(v) for g, v in zip(obs_r['gene'], obs_r['lead'])
+                   if isinstance(v, str) and _target(v) is not None}
         at_h = hapmix_at(A, T, Va, Vt, usable, order, vdf, dos, xL, xR,
                          pos_df[['chr', 'pos']], args.window, targets,
                          cov_df=cov_df, ase_cov=args.ase_covariates)
@@ -1142,6 +1178,8 @@ def run(args):
                             'fSNP genotypes + allele counts fixed with expression'),
                    'null_kind': args.null,
                    'count_noise': bool(args.count_noise),
+                   'ase_covariates': args.ase_covariates,
+                   'hapmix_nperm': args.hapmix_nperm,
                    'expression_floor': {'min_count': args.min_count,
                                         'min_count_frac': args.min_count_frac,
                                         'n_dropped': len(dropped)},
@@ -1171,6 +1209,13 @@ def run(args):
         result['nonstandard'] = nonstandard_block(obs_x, sp_obs, sp_nulls, ns['vtype'])
         result['compute_seconds_observed']['hapmixQTL_nonstandard'] = float(tx_obs)
         obs_x.to_csv(out / 'observed_hapmixqtl_nonstandard.tsv', sep='\t', index=False)
+    if 'pval_perm' in obs_h:
+        pp = pd.to_numeric(obs_h['pval_perm'], errors='coerce')
+        result['hapmixQTL']['own_null'] = {
+            'nperm': int(args.hapmix_nperm), 'n': int(pp.notna().sum()),
+            'n_lt_0.05': int((pp < 0.05).sum()),
+            'note': "empirical p of each gene's lead against its own whitened-residual "
+                    'permutation null (map_cis pval_perm)'}
     ok = obs_r[obs_r['status'] == 'ok']
     if len(ok):
         result['RASQUAL']['phi_hat'] = {
@@ -1225,6 +1270,11 @@ def write_table(r, path):
                 L.append(f"- {lab}: p<0.05 in {t['observed_frac_p_lt_0.05']} of {t['n_observed']} "
                          f"observed pairs vs {t['null_frac_p_lt_0.05']} of {t['n_null']} on the "
                          f"permuted null (calibrated if ~0.05)")
+    hp = r['hapmixQTL'].get('own_null')
+    if hp:
+        L += ['', f"- hapmixQTL genes with pval_perm < 0.05 against their own {hp['nperm']}-draw "
+                  f"whitened-residual null: {hp['n_lt_0.05']} of {hp['n']} (RASQUAL's arm "
+                  'reports no per-gene empirical p; its statistic is a likelihood ratio)']
     h = r['head_to_head']
     L += ['', '## Agreement', '',
           f"- Spearman of gene statistics: {h.get('spearman_stat', float('nan')):.3f}",
@@ -1328,6 +1378,10 @@ def main(argv=None):
                          'rows, covariates as columns. Fed to BOTH arms: '
                          "RASQUAL's total-count model and hapmixQTL's total "
                          'channel (see --ase-covariates for the allelic one)')
+    ap.add_argument('--hapmix-nperm', type=int, default=1000,
+                    help="permutations per gene for hapmixQTL's own empirical p "
+                         '(pval_perm; whitened-residual permutation). Seconds '
+                         'per thousand on 30 genes')
     ap.add_argument('--ase-covariates', choices=('none', 'shared'), default='none',
                     help="what hapmixQTL projects out of its ALLELIC channel: "
                          "'none' (intercept only; the log haplotype ratio is a "
@@ -1463,7 +1517,7 @@ def selftest():
         asvcf=None, dump_rasqual=None, exons=None,
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
         count_noise=True, min_count=6, min_count_frac=0.2, reuse_rasqual=None,
-        rasqual_rows=str(td / 'rows'), ase_covariates='none',
+        rasqual_rows=str(td / 'rows'), ase_covariates='none', hapmix_nperm=200,
         str_vcf=None, multiallelic=False, min_hap=10)
     # count_noise contract, which fabricated Poisson(30) draws cannot probe:
     # a sample with the same count in every draw has v_inf = 0. The term must

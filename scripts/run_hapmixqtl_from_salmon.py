@@ -236,7 +236,7 @@ def read_phased_vcf(path, want_samples, regions=None, bcftools='bcftools'):
 
 
 def _parse_phased_vcf(fh, want_samples):
-    ids, chroms, poss = [], [], []
+    ids, chroms, poss, refs, alts = [], [], [], [], []
     XL, XR = [], []
     order = None
     if True:
@@ -277,13 +277,19 @@ def _parse_phased_vcf(fh, want_samples):
                 xr[k] = 1 if b != '0' else 0
             if not ok:
                 continue
-            ids.append(f[2] if f[2] != '.' else f'{f[0]}_{f[1]}_{f[3]}_{f[4]}')
-            chroms.append(f[0]); poss.append(int(f[1]))
+            # A multi-allelic site split into biallelic records carries the
+            # SAME joined ID on both records (bcftools norm: "a;b"), so a
+            # joined or missing ID is replaced by chrom_pos_ref_alt, which
+            # names one record.
+            ids.append(f[2] if (f[2] != '.' and ';' not in f[2])
+                       else f'{f[0]}_{f[1]}_{f[3]}_{f[4]}')
+            chroms.append(f[0]); poss.append(int(f[1])); refs.append(f[3]); alts.append(f[4])
             XL.append(xl); XR.append(xr)
     if not ids:
         raise SystemExit('no phased biallelic SNPs read from the VCF')
     XL = np.array(XL, np.int8); XR = np.array(XR, np.int8)
-    vdf = pd.DataFrame({'chrom': [str(c) for c in chroms], 'pos': poss}, index=ids)
+    vdf = pd.DataFrame({'chrom': [str(c) for c in chroms], 'pos': poss,
+                        'ref': refs, 'alt': alts}, index=ids)
     return vdf, XL + XR, XL, XR, order
 
 
