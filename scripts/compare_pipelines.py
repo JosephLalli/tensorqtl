@@ -865,7 +865,18 @@ def run(args):
                        pos_df[['chr', 'pos']], args.window, tested, perm,
                        cov_df=cov_df)
         th = time.time() - t0; t0 = time.time()
-        r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
+        if args.reuse_rasqual and perm is None and XL is xL and XR is xR:
+            # observed RASQUAL rows from an earlier run of the same genes, so
+            # the hapmixQTL arm can be iterated without repaying RASQUAL's
+            # hours; RASQUAL's inputs do not depend on anything changed here
+            prev = pd.read_csv(Path(args.reuse_rasqual) / 'observed_rasqual.tsv',
+                               sep='\t')
+            r = prev.set_index('gene').reindex(usable).reset_index()
+            r['status'] = r['status'].fillna('missing_in_reused_run')
+            print(f'  RASQUAL observed rows reused from {args.reuse_rasqual} '
+                  f'({int((r["status"] == "ok").sum())}/{len(r)} present)')
+        else:
+            r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
                         order, Ytot, K, args.window, perm,
                         tested=tested, maf=args.maf,
                         min_coverage=args.min_coverage, cov_bin=cov_bin,
@@ -1093,6 +1104,9 @@ def main(argv=None):
                          'input (default 6, GTEx)')
     ap.add_argument('--min-count-frac', type=float, default=0.2,
                     help='...in at least this fraction of samples (default 0.2)')
+    ap.add_argument('--reuse-rasqual',
+                    help='an earlier --out directory whose observed_rasqual.tsv '
+                         'is taken as this run\'s observed RASQUAL arm')
     ap.add_argument('--rasqual-threads', type=int, default=4,
                     help='--n-threads per RASQUAL process (pthread)')
     ap.add_argument('--fsnp-maf', type=float, default=0.0,
@@ -1261,7 +1275,7 @@ def selftest():
         gene_list=None, probe_genes=0, cache_dir=None, rasqual_jobs=2,
         asvcf=None, dump_rasqual=None, exons=None,
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
-        count_noise=True, min_count=6, min_count_frac=0.2,
+        count_noise=True, min_count=6, min_count_frac=0.2, reuse_rasqual=None,
         str_vcf=None, multiallelic=False, min_hap=10)
     # count_noise contract, which fabricated Poisson(30) draws cannot probe:
     # a sample with the same count in every draw has v_inf = 0. The term must

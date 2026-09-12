@@ -63,6 +63,41 @@ def test_control_cell_is_nominal_for_both_tau_modes():
         assert 0.8 <= lam <= 1.2, f'{tau_mode}: lambda_GC = {lam:.3f}'
 
 
+def test_uninformative_samples_do_not_collapse_tau():
+    """A sample with no allele-specific reads has v_inf = 0 exactly and a = 0.
+
+    On BrainVar the mapping functions clamped v to 1e-8 before estimating
+    tau, so such samples entered the moment estimator at weight 1e8, drove
+    tau_a to ~1e-6 for the gene, and left the informative samples weighted by
+    v_inf alone: the known-variance SE was too small by the unmodelled
+    variance (2-25x) and the allelic channel's permutation null reached chi2
+    40-120 where ~12-16 is calibrated. With 10% such samples and unmodelled
+    variance, 'estimate' must stay calibrated; and feeding the clamped
+    variances that hid them must be detectably miscalibrated, so the gate
+    stays honest. Which way it breaks depends on the design: with BrainVar's
+    17 covariates the hidden samples are fit exactly and the rest inflate;
+    with an intercept alone their 1e8 weights dominate xx and every
+    statistic collapses toward zero.
+    """
+    def pvals(clamped):
+        rng = np.random.RandomState(7)
+        out = []
+        for _ in range(30):
+            g, s, a, t, va, vt = simulate_channels(N, V, rng, beta=0.0, sigma_bio=0.6)
+            k = rng.choice(N, N // 10, replace=False)
+            a[k] = 0.0
+            va[k] = 1e-8 if clamped else 0.0
+            tstat = run_association(g, s, a, t, va, vt, tau_mode='estimate')[0]
+            out.append(pvals_from_t(tstat, N))
+        return np.concatenate(out)
+
+    p = pvals(clamped=False)
+    assert _type1(p, 0.05) < 0.08, _type1(p, 0.05)
+    assert _lambda_gc(p) < 1.2, _lambda_gc(p)
+    lam_hidden = _lambda_gc(pvals(clamped=True))
+    assert lam_hidden < 0.8 or lam_hidden > 1.25, lam_hidden
+
+
 def test_estimate_stays_calibrated_with_unmodelled_variance():
     """The cell that exposed the defect: biological SD 0.6 on both channels."""
     p = _null_pvals(150, 0.6, 0.0, 'estimate', seed=22)

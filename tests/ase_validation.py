@@ -60,12 +60,12 @@ from scipy import stats
 
 try:
     from tensorqtl.hapmixqtl import (
-        WeightedResidualizer, _estimate_tau,
+        WeightedResidualizer, _estimate_tau, _prepare_channels,
         calculate_hapmixqtl_nominal, compute_summaries_from_gibbs)
 except ImportError:  # standalone: tensorqtl dir directly on path
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (
-        WeightedResidualizer, _estimate_tau,
+        WeightedResidualizer, _estimate_tau, _prepare_channels,
         calculate_hapmixqtl_nominal, compute_summaries_from_gibbs)
 
 DTYPE = torch.float64
@@ -127,21 +127,15 @@ def run_association(g, sign, a, t, va, vt, tau_mode='zero', covariates=None):
     s_t = torch.tensor(sign, dtype=DTYPE, device=dev)
     a_t = torch.tensor(a, dtype=DTYPE, device=dev)
     t_t = torch.tensor(t, dtype=DTYPE, device=dev)
-    va_t = torch.tensor(va, dtype=DTYPE, device=dev).clamp(min=1e-8)
-    vt_t = torch.tensor(vt, dtype=DTYPE, device=dev).clamp(min=1e-8)
+    va_t = torch.tensor(va, dtype=DTYPE, device=dev)
+    vt_t = torch.tensor(vt, dtype=DTYPE, device=dev)
     cov_t = None if covariates is None else torch.tensor(covariates, dtype=DTYPE, device=dev)
 
-    if tau_mode == 'estimate':
-        tau_a = _estimate_tau(a_t, va_t, cov_t, dev)
-        tau_t = _estimate_tau(t_t, vt_t, cov_t, dev)
-        sqrt_wa = torch.sqrt(1.0 / (va_t + tau_a))
-        sqrt_wt = torch.sqrt(1.0 / (vt_t + tau_t))
-    else:
-        sqrt_wa = torch.sqrt(1.0 / va_t)
-        sqrt_wt = torch.sqrt(1.0 / vt_t)
-
-    res_a = WeightedResidualizer(cov_t, sqrt_wa)
-    res_t = WeightedResidualizer(cov_t, sqrt_wt)
+    # the production weights and residualizers, raw variances in: a copy of
+    # the weight formula here once clamped v to 1e-8 and estimated tau on
+    # every sample, so no test could see what zero-coverage samples do
+    sqrt_wa, sqrt_wt, res_a, res_t = _prepare_channels(
+        a_t, t_t, va_t, vt_t, cov_t, tau_mode, dev)
     tstat, slope, se, slope_a, se_a, slope_tc, se_tc = calculate_hapmixqtl_nominal(
         g_t, s_t, a_t, t_t, sqrt_wa, sqrt_wt, res_a, res_t)
     return (tstat.numpy(), slope.numpy(), se.numpy(),

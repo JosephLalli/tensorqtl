@@ -435,6 +435,19 @@ def _estimate_tau(y_t, v_inf_t, covariates_t, device):
 #  Association tests
 # ---------------------------------------------------------------------------
 
+def _estimate_tau_informative(y_t, v_inf_t, covariates_t, device, eps=1e-12):
+    """_estimate_tau over the samples with v_inf > eps (see _prepare_channels).
+
+    Falls back to every sample when fewer remain than the design has columns.
+    """
+    keep = v_inf_t > eps
+    n_cov = 0 if covariates_t is None else covariates_t.shape[1]
+    if int(keep.sum()) <= n_cov + 2:
+        return _estimate_tau(y_t, v_inf_t, covariates_t, device)
+    c = None if covariates_t is None else covariates_t[keep]
+    return _estimate_tau(y_t[keep], v_inf_t[keep], c, device)
+
+
 def _warn_tau_zero(tau_mode):
     """tau_mode='zero' is anticonservative on real data (see docs/ase_validation.md)."""
     if tau_mode == 'zero':
@@ -460,20 +473,37 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device):
     covariates. Any second-pass regression that reuses this is whitened
     exactly like the lead scan.
 
+    Takes the RAW inferential variances. The mapping functions used to
+    clamp them to 1e-8 first, which hid every zero-coverage sample from
+    both the tau estimator and the degenerate-ASE guard (whose threshold is
+    1e-12); the floor is applied here, inside the weight, where it is
+    harmless.
+
     Returns:
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
     """
     _warn_tau_zero(tau_mode)
     if tau_mode == 'estimate':
-        tau_a = _estimate_tau(a_t, va_t, covariates_t, device)
-        tau_t_val = _estimate_tau(t_t, vt_t, covariates_t, device)
+        # tau is estimated on the samples that carry information. A sample
+        # with v_inf = 0 (no allele-specific reads; a zero total) enters the
+        # moment estimator with weight 1/1e-8 and dominates mean(1/v), so a
+        # handful of them drive tau to ~1e-6 for the whole gene. The guard
+        # below then zeroes their weights, but the remaining samples are left
+        # weighted by v_inf alone, which understates the between-sample
+        # variance of a by 2-25x on well-covered BrainVar genes: the
+        # known-variance SE is too small by that factor and the allelic
+        # channel's permutation null reaches chi2 40-120 (CRMP1 97.7 against
+        # a calibrated ~12-16). Estimated on informative samples, the same
+        # genes give tau_a 0.007-0.13 and near-uniform weights.
+        tau_a = _estimate_tau_informative(a_t, va_t, covariates_t, device)
+        tau_t_val = _estimate_tau_informative(t_t, vt_t, covariates_t, device)
         sqrt_wa_t = _zero_degenerate_ase_weights(
-            torch.sqrt(1.0 / (va_t + tau_a)), va_t)
-        sqrt_wt_t = torch.sqrt(1.0 / (vt_t + tau_t_val))
+            torch.sqrt(1.0 / (va_t.clamp(min=1e-8) + tau_a)), va_t)
+        sqrt_wt_t = torch.sqrt(1.0 / (vt_t.clamp(min=1e-8) + tau_t_val))
     else:
         sqrt_wa_t = _zero_degenerate_ase_weights(
-            torch.sqrt(1.0 / va_t), va_t)
-        sqrt_wt_t = torch.sqrt(1.0 / vt_t)
+            torch.sqrt(1.0 / va_t.clamp(min=1e-8)), va_t)
+        sqrt_wt_t = torch.sqrt(1.0 / vt_t.clamp(min=1e-8))
     residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
     residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t)
     return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
@@ -918,8 +948,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             pidx = pheno_ix[phenotype_id]
             a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
             t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
-            va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
-            vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+            va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
+            vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
             sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
                 a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
@@ -1129,8 +1159,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         pidx = pheno_ix[phenotype_id]
         a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
         t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
-        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
-        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
@@ -1393,8 +1423,8 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         pidx = pheno_ix[phenotype_id]
         a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
         t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
-        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
-        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
@@ -1828,8 +1858,8 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
         pidx = pheno_ix[pid]
         a_t = torch.tensor(A_df.values[pidx], dtype=torch.float32).to(device)
         t_t = torch.tensor(T_df.values[pidx], dtype=torch.float32).to(device)
-        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
-        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device).clamp(min=1e-8)
+        va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
+        vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
         sqrt_wa_t, sqrt_wt_t, res_a, res_t = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
         ctx = dict(a_t=a_t, t_t=t_t, sqrt_wa_t=sqrt_wa_t, sqrt_wt_t=sqrt_wt_t,

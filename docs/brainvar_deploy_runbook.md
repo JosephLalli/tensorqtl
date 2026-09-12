@@ -501,6 +501,36 @@ validation scripts under `tests/` are unchanged). With it LOC124902138 is
 6.8, VLDLR-AS1 (56 reads/sample) moves from 12.8 to 11.5, SRPK1 (2,300
 reads/sample) from 45.2 to 43.3 with the same lead.
 
+The 30 well-expressed genes (`pilot30_hc.txt`) then exposed the same
+estimator failing at the other end. Every mapping function clamped the
+inferential variances to 1e-8 before `_prepare_channels`, so a sample with no
+allele-specific reads (`Va = 0` exactly, `a = 0`) was never seen by the
+degenerate-ASE guard (threshold 1e-12) and entered the tau moment estimator
+at weight 1e8. A handful of them drove `tau_a` to ~1e-6 for the gene; the
+informative samples were then weighted by Gibbs variance alone, which
+understates the between-sample variance of `a` 2-25x on these genes, and the
+known-variance SE was too small by that factor. Measured with a permutation
+null (sample labels of genotype against expression): CRMP1 observed chi2
+106.7, null maximum mean 97.7; TCF4 94.1 / 61.0; MATR3 71.1 / 41.1 (max
+102.5); a calibrated maximum over ~4,600 tested variants is 12-16, which is
+where RASQUAL's numbers sat. `_prepare_channels` now takes the raw variances,
+estimates tau on the samples with `v_inf > 1e-12` and applies the floor
+inside the weight; the null maxima on the same 12 genes are 10.7-17.4 (mean),
+and the observed values follow them down (CRMP1 15.1, TCF4 11.5, FABP7 12.0,
+TTC3 13.8; ANKRD36B stays at 39.9, and it is the gene where the phASER counts
+independently show the same imbalance). `tests/test_hapmixqtl_calibration.py`
+carries the gate, and the validation harness now drives `_prepare_channels`
+rather than its own copy of the weight formula, which had the same clamp.
+
+Two properties of the corrected arm to keep in mind when reading its numbers
+against RASQUAL's. tau is estimated under the null model, so a gene's own cis
+signal inflates it and the test is conservative where the signal is strong
+(CCNI: the 22 heterozygotes at the lead show corr(a, s) = -0.90, a hets-only
+regression gives chi2 86, the arm 17). And covariates are projected out of
+BOTH channels, whereas RASQUAL applies them to the total-count model only;
+with 10 expression PCs against 46-62 informative samples the allelic channel
+loses about half its statistic (CCNI 17 -> 9, CYP51A1 17 -> 8).
+
 Separately, a gene RASQUAL can use is not necessarily one Salmon quantifies:
 CYP3A7 had allele counts at its feature SNPs from the aligner and a median
 of 0 Salmon reads (73/92 zero samples), so hapmixQTL's statistic was exactly
