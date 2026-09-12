@@ -215,13 +215,31 @@ def pair_haplotypes(names, suffixes):
 #  VCF (phased GT only; no pysam dependency)
 # ---------------------------------------------------------------------------
 
-def read_phased_vcf(path, want_samples):
-    """Return variant_df, dosage[V,N], xL[V,N], xR[V,N] for biallelic SNPs."""
+def read_phased_vcf(path, want_samples, regions=None, bcftools='bcftools'):
+    """Return variant_df, dosage[V,N], xL[V,N], xR[V,N] for biallelic SNPs.
+
+    `regions` is a BED of the intervals actually needed. A cis analysis of N
+    genes touches N x 2 x window bases -- 30 genes at +/-1 Mb is 62 Mb, 2% of
+    the genome -- so parsing every variant to use 1.5% of them is the bulk of
+    the runtime for anything less than a whole-transcriptome run. The VCF is
+    already tabix-indexed, so this is a fetch, not a scan: measured 236,392
+    variants in 9 s against 15,340,329 in roughly a quarter of an hour.
+    """
+    if regions is not None:
+        import subprocess as _sp
+        proc = _sp.Popen([bcftools, 'view', '-R', str(regions), str(path)],
+                         stdout=_sp.PIPE, stderr=_sp.DEVNULL, text=True)
+        return _parse_phased_vcf(proc.stdout, want_samples)
     op = gzip.open if str(path).endswith('.gz') else open
+    with op(path, 'rt') as fh:
+        return _parse_phased_vcf(fh, want_samples)
+
+
+def _parse_phased_vcf(fh, want_samples):
     ids, chroms, poss = [], [], []
     XL, XR = [], []
     order = None
-    with op(path, 'rt') as fh:
+    if True:
         for line in fh:
             if line.startswith('##'):
                 continue
@@ -274,7 +292,34 @@ def read_phased_vcf(path, want_samples):
 #  Per-feature-SNP allele-specific counts: RASQUAL's NATIVE input
 # ---------------------------------------------------------------------------
 
-def load_allelic_counts(manifest, samples):
+def _in_regions(regions):
+    """{chrom: [(start, end)]} -> a membership test, or None."""
+    if regions is None:
+        return None
+    import bisect
+    by = {}
+    for line in open(regions):
+        f = line.split()
+        if len(f) >= 3:
+            by.setdefault(f[0], []).append((int(f[1]), int(f[2])))
+    for c in by:
+        by[c].sort()
+    starts = {c: [a for a, _ in v] for c, v in by.items()}
+
+    def inside(chrom, pos):
+        v = by.get(chrom)
+        if not v:
+            return False
+        i = bisect.bisect_right(starts[chrom], pos) - 1
+        return i >= 0 and pos <= v[i][1]
+    return inside
+
+
+def load_allelic_counts(manifest, samples, regions=None):
+    # Only sites inside the analysed windows are ever looked up, and the store
+    # is the memory hog: a dict keyed (chrom,pos) holding a per-sample tuple is
+    # tens of millions of small Python objects, ~32 GB across 92 samples. A
+    # region filter cuts it to what the run touches.
     """Read per-sample, per-variant allele counts.
 
     SOLVES THE INPUT MISMATCH. RASQUAL's likelihood is per FEATURE SNP:
@@ -298,6 +343,7 @@ def load_allelic_counts(manifest, samples):
     Returns {(chrom, pos): {sample: (ref, alt)}}.
     """
     idx = {s: i for i, s in enumerate(samples)}
+    inside = _in_regions(regions)
     store = {}
     rows = [l.split('\t') for l in Path(manifest).read_text().strip().split('\n')
             if l.strip() and not l.startswith('#')]
@@ -328,6 +374,8 @@ def load_allelic_counts(manifest, samples):
                     continue
                 try:
                     key = (str(f[ci]), int(f[pi]))
+                    if inside is not None and not inside(key[0], key[1]):
+                        continue
                     store.setdefault(key, {})[samp] = (int(f[ri]), int(f[ai]))
                 except ValueError:
                     continue

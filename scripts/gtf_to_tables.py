@@ -79,18 +79,21 @@ def _strip(i, strip):
 
 
 def parse_gtf(path, gene_types=None, strip=False):
-    genes, tx2gene = {}, []
+    genes, tx2gene, exons = {}, [], {}
     n_gene = n_tx = 0
     with _open(path) as fh:
         for line in fh:
             if line.startswith('#'):
                 continue
             f = line.rstrip('\n').split('\t')
-            if len(f) < 9 or f[2] not in ('gene', 'transcript'):
+            if len(f) < 9 or f[2] not in ('gene', 'transcript', 'exon'):
                 continue
             a = _attrs(f[8])
             gid = _strip(a.get('gene_id', ''), strip)
             if not gid:
+                continue
+            if f[2] == 'exon':
+                exons.setdefault(gid, []).append((int(f[3]), int(f[4])))
                 continue
             if f[2] == 'gene':
                 gt = a.get('gene_type') or a.get('gene_biotype')
@@ -121,10 +124,20 @@ def parse_gtf(path, gene_types=None, strip=False):
             'tx2gene.tsv would be empty, and collapsing Salmon to genes would '
             'then yield nothing. Check that the GTF has "transcript" feature '
             'rows whose gene_id matches the gene rows.')
-    return genes, tx2gene, n_gene, n_tx
+    return genes, tx2gene, n_gene, n_tx, exons
 
 
-def write(genes, tx2gene, out):
+def merge_intervals(iv):
+    out = []
+    for a, b in sorted(iv):
+        if out and a <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def write(genes, tx2gene, out, exons=None):
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
     with open(out / 'genes.tsv', 'w') as fh:
         for gid, (c, s, e, tss, strand) in genes.items():
@@ -132,6 +145,22 @@ def write(genes, tx2gene, out):
     with open(out / 'tx2gene.tsv', 'w') as fh:
         for tid, gid in tx2gene:
             fh.write(f'{tid}\t{gid}\n')
+    if exons:
+        # RASQUAL's -s/-e are the UNION OF EXONS, not the gene span: its
+        # classifier is isExon(pos, starts, ends, nexon) and feature SNPs are
+        # sites where RNA-seq reads actually land. Passing the gene span makes
+        # every intronic SNP a feature SNP -- they carry no reads, so their
+        # allele-specific counts are 0,0, and they still consume RASQUAL's
+        # (fSNPs+1) x tested <= 30,000 budget. Measured on real genes the span
+        # is 5x to 99x the exon union, which is why a gene showed 421 feature
+        # SNPs where the authors' own example has 62.
+        with open(out / 'exons.tsv', 'w') as fh:
+            for gid in genes:
+                iv = merge_intervals(exons.get(gid, []))
+                if not iv:
+                    continue
+                fh.write(f'{gid}\t' + ','.join(str(a) for a, _ in iv) + '\t'
+                         + ','.join(str(b) for _, b in iv) + '\n')
     # phASER --features: 0-based half-open, no header, name = gene_id
     with open(out / 'genes.bed', 'w') as fh:
         for gid, (c, s, e, tss, strand) in genes.items():
@@ -153,8 +182,9 @@ def main(argv=None):
         return selftest()
     if not args.gtf:
         raise SystemExit('--gtf is required (or --selftest)')
-    genes, t2g, ng, nt = parse_gtf(args.gtf, args.gene_type, args.strip_version)
-    write(genes, t2g, args.out)
+    genes, t2g, ng, nt, ex = parse_gtf(args.gtf, args.gene_type,
+                                       args.strip_version)
+    write(genes, t2g, args.out, exons=ex)
     chroms = sorted({v[0] for v in genes.values()})
     print(f'{ng} genes, {nt} transcripts -> {args.out}/genes.tsv, '
           f'tx2gene.tsv, genes.bed')
@@ -190,7 +220,7 @@ def selftest():
     with gzip.open(really_gz, 'wt') as fh:
         fh.write(gtf.read_text())
     for path in (mislabelled, really_gz):
-        gm, tm, ngm, ntm = parse_gtf(path)
+        gm, tm, ngm, ntm, _ex = parse_gtf(path)
         assert (ngm, ntm) == (3, 4), (path.name, ngm, ntm)
     # NCBI RefSeq shape: biotype on the gene row only, transcript rows carry
     # transcript_biotype instead. Filtering transcript rows on gene_type would
@@ -202,7 +232,7 @@ def selftest():
         'NC_000001.11\tBestRefSeq\tgene\t9000\t9500\t.\t-\t.\tgene_id "DDX11L1"; gene_biotype "transcribed_pseudogene";',
         'NC_000001.11\tBestRefSeq\ttranscript\t9000\t9500\t.\t-\t.\tgene_id "DDX11L1"; transcript_id "NR_046018.2"; transcript_biotype "transcript";',
     ]) + '\n')
-    gr, tr_, ngr, ntr = parse_gtf(refseq, ['protein_coding'])
+    gr, tr_, ngr, ntr, _ex = parse_gtf(refseq, ['protein_coding'])
     assert (ngr, ntr) == (1, 1), (ngr, ntr)
     assert tr_ == [('NM_001005484.2', 'OR4F5')], tr_
     # and a GTF whose transcripts name no kept gene fails loudly, not silently
@@ -217,19 +247,19 @@ def selftest():
     else:
         raise AssertionError('empty tx2gene must raise, not return silently')
     # all types, versions kept
-    g, t, ng, nt = parse_gtf(gtf)
+    g, t, ng, nt, _ex = parse_gtf(gtf)
     assert ng == 3 and nt == 4, (ng, nt)
     assert g['ENSG00000000001.3'] == ('chr1', 1000, 5000, 1000, '+'), g['ENSG00000000001.3']
     assert g['ENSG00000000002.7'] == ('chr2', 20000, 26000, 26000, '-'), \
         f"minus-strand TSS must be END: {g['ENSG00000000002.7']}"
     assert ('ENST00000000012.1', 'ENSG00000000001.3') in t
     # protein_coding filter drops the lncRNA and its transcript
-    g2, t2, ng2, nt2 = parse_gtf(gtf, ['protein_coding'])
+    g2, t2, ng2, nt2, ex2 = parse_gtf(gtf, ['protein_coding'])
     assert ng2 == 2 and nt2 == 3 and 'ENSG00000000003.1' not in g2
     # version stripping applies to both IDs consistently
-    g3, t3, _, _ = parse_gtf(gtf, None, strip=True)
+    g3, t3, _, _, _ex = parse_gtf(gtf, None, strip=True)
     assert 'ENSG00000000002' in g3 and ('ENST00000000021', 'ENSG00000000002') in t3
-    write(g2, t2, td / 'out')
+    write(g2, t2, td / 'out', exons=ex2)
     lines = (td / 'out' / 'genes.tsv').read_text().strip().split('\n')
     assert len(lines) == 2 and lines[1].split('\t') == ['ENSG00000000002.7', 'chr2', '20000', '26000', '26000']
     # genes.bed, parsed exactly the way phaser_gene_ae.py parses it: positional,
@@ -249,6 +279,13 @@ def selftest():
     # name column is the gene_id, which genes.tsv is keyed by -- not the symbol
     assert set(feats) == set(g2), (set(feats), set(g2))
     assert 'PLUS' not in feats and 'MINUS' not in feats
+    # exons.tsv must carry the UNION of exons, merged, not the gene span
+    exl = {l.split('\t')[0]: l.rstrip('\n').split('\t')[1:]
+           for l in (td / 'out' / 'exons.tsv').read_text().strip().split('\n')}
+    assert 'ENSG00000000001.3' in exl, exl
+    st, en = exl['ENSG00000000001.3']
+    assert st == '1000' and en == '1500', (st, en)   # the exon, not 1000-5000
+    assert merge_intervals([(1, 5), (4, 9), (20, 30)]) == [(1, 9), (20, 30)]
     print('checks: + strand TSS = start; - strand TSS = end; gene_type filter; '
           'version stripping consistent across gene and transcript IDs; '
           'genes.tsv column order matches --genes; genes.bed is 0-based '

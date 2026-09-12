@@ -99,7 +99,8 @@ sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE))
 
 from scipy import stats
 import run_hapmixqtl_from_salmon as H          # readers, native RASQUAL VCF
-from make_rasqual_inputs import size_factors, read_salmon_totals
+import build_asvcf as ASV                      # AS-annotated VCF for the pipe
+from make_rasqual_inputs import read_salmon_totals
 from str_integrate import parse_str_vcf, parse_multiallelic_vcf, extend_scan   # opt-in arm only
 
 try:
@@ -334,77 +335,120 @@ def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
 
 def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 window, perm=None, tmp=None, tested=None, maf=0.05,
-                min_coverage=0.05, cov_bin=None, jobs=1):
-    N = len(order)
+                min_coverage=0.05, cov_bin=None, jobs=1, asvcf=None,
+                bcftools='bcftools', dump=None, exons=None,
+                n_threads=4, fsnp_maf=0.0, timeout=3600, knockoff=False):
+    """RASQUAL over genes, fed the VCF text it is designed to read.
+
+    RASQUAL takes a VCF on stdin and decides what is a feature SNP FROM THE
+    POSITION -- isExon(pos, starts, ends, nexon) at main.c:516 -- so -m is only
+    an allocation count and record order does not matter. Its own example pipes
+    a region of a VCF straight in.
+
+    This used to rebuild that text in Python: ~312,000 f-strings and numpy
+    scalar lookups per gene, producing bytes already on disk. Besides being
+    wasted work it ran in the interpreter, so it held the GIL and capped the
+    thread pool at 3-4 concurrent RASQUAL processes instead of the 32 asked
+    for. Feeding a tabix slice of an AS-annotated VCF removes the work and the
+    contention together: workers now sit in subprocess.run, GIL released.
+    """
+    if knockoff:
+        # The pipe feeds RASQUAL the real genotypes from the AS-VCF, so a
+        # knockoff override of xL/xR never reaches it. Say so per gene rather
+        # than re-running the observed data and calling it a null.
+        return pd.DataFrame([dict(gene=g, stat=np.nan, log_afc=np.nan,
+                                  phi=np.nan, status='knockoff_null_not_implemented')
+                             for g in genes])
     td = Path(tmp or tempfile.mkdtemp())
     np.asarray(Y, np.float64).tofile(td / 'Y.bin')
     np.asarray(K, np.float64).tofile(td / 'K.bin')
-    pos = vdf['pos'].values
-    # Genes are independent RASQUAL processes and the binary is
-    # single-threaded (no -t), so the only parallelism available is across
-    # genes -- and it is the difference between hours and days: measured on
-    # real BrainVar input a single gene with ~3,400 tested variants takes
-    # 4+ minutes, which serially is ~9 days for 300 genes x 11 rounds.
-    # subprocess.run releases the GIL, so threads are enough.
+    # RASQUAL tests every record in the slice, feature SNPs included. The
+    # lead is taken over the variants hapmixQTL tests too (in window, outside
+    # gene bodies, above the MAF floor), or the arms would score different
+    # variant sets under one reported count.
+    tested_pos = None
+    if tested is not None:
+        tv = np.asarray(tested, bool)
+        tested_pos = set(zip(vdf['chrom'].values[tv].astype(str),
+                             vdf['pos'].values[tv].astype(int)))
+
     def _one(jg):
         j, g = jg
         row = pos_df.loc[g]
         chrom, tss = str(row['chr']), int(row['pos'])
         gs, ge = int(row['start']), int(row['end'])
-        same = vdf['chrom'].values == chrom
-        fidx = [v for v in np.where(same & (pos >= gs) & (pos <= ge))[0]
-                if (chrom, int(pos[v])) in allelic]
-        ridx = np.where(same & (np.abs(pos - tss) <= window)
-                        & ~((pos >= gs) & (pos <= ge)))[0]
-        # Test the SAME variants hapmixQTL tests. Without this the two arms
-        # differ twice over: the mask excludes variants inside ANY selected
-        # gene body while this excludes only THIS gene's, and --maf gated only
-        # hapmixQTL while RASQUAL fell back to its own default of 0.05. At
-        # --maf 0.05 they coincided by accident; at any other value the arms
-        # would silently score different variant sets under one reported count.
-        if tested is not None:
-            ridx = ridx[tested[ridx]]
-        if not fidx or ridx.size == 0:
+        # -s/-e are the exon union when we have it. Feature SNPs are sites
+        # where reads land; the gene span adds every intron, which inflates
+        # the fSNP count 5-99x on real genes and blows RASQUAL's budget.
+        ex = exons.get(g) if exons else None
+        if ex:
+            s_arg, e_arg = ex
+            ivs = [(int(a), int(b)) for a, b in zip(s_arg.split(','),
+                                                    e_arg.split(','))]
+        else:
+            s_arg, e_arg = str(gs), str(ge)
+            ivs = [(gs, ge)]
+        # rasqualTools: cis region is the GENE BODY +/- window, not the TSS
+        lo = max(1, gs - window)
+        hi = ge + window
+        slice_vcf = td / f'g{j}.vcf'
+        with open(slice_vcf, 'w') as fh:
+            r = subprocess.run(
+                [bcftools, 'view', '-H', '-r', f'{chrom}:{lo}-{hi}', str(asvcf)],
+                stdout=fh, stderr=subprocess.DEVNULL)
+        if r.returncode != 0:
+            slice_vcf.unlink(missing_ok=True)
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
+                        status='bcftools_failed')
+        # -l is every record in the slice; -m the ones inside the gene body,
+        # which is what isExon classifies as feature SNPs.
+        n_l = n_m = 0
+        with open(slice_vcf) as fh:
+            for line in fh:
+                n_l += 1
+                pv = int(line.split('\t', 2)[1])
+                if any(a <= pv <= b for a, b in ivs):
+                    n_m += 1
+        if n_l == 0 or n_m == 0:
+            slice_vcf.unlink(missing_ok=True)
             return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
                         status='no_fsnp_or_rsnp')
-        lines = []
-        for v in fidx:                                  # fSNPs: never permuted
-            cnt = allelic[(chrom, int(pos[v]))]
-            fl = [f'{int(xL[v,k])}|{int(xR[v,k])}:{cnt.get(s,(0,0))[0]},'
-                  f'{cnt.get(s,(0,0))[1]}' for k, s in enumerate(order)]
-            lines.append('\t'.join([chrom, str(int(pos[v])), f'f_{vdf.index[v]}',
-                                    'A', 'G', '100', 'PASS', 'RSQ=1.0', 'GT:AS'] + fl))
-        src = np.arange(N) if perm is None else np.asarray(perm)
-        for v in ridx:                                  # rSNPs: permuted
-            fl = [f'{int(xL[v,src[k]])}|{int(xR[v,src[k]])}:0,0' for k in range(N)]
-            lines.append('\t'.join([chrom, str(int(pos[v])), str(vdf.index[v]),
-                                    'A', 'G', '100', 'PASS', 'RSQ=1.0', 'GT:AS'] + fl))
         cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
-               '-n', str(N), '-j', str(j + 1), '-l', str(len(lines)),
-               '-m', str(len(fidx)), '-s', str(gs), '-e', str(ge),
-               '-f', str(g), '-z',
-               '-d', str(min_coverage)] + (
-               # -x only: RASQUAL sets P = ncol(file)+1 at main.c:299, and the
-               # -p parser at 321 runs AFTER the X allocation, so passing -p
-               # can overwrite the derived count against an array already
-               # sized from the file.
-               ['-x', str(cov_bin)] if cov_bin else []) + [
-               # match hapmixQTL's floor; RASQUAL's own default is 0.05
-               # (main.c:386). The HWE gate is already bypassed by -z, which
-               # sets noPriorGenotype (main.c:498), and RSQ=1.0 clears the
-               # imputation-quality gate, so MAF is the only one left to align.
-               '-a', str(maf)]
+               '-n', str(len(order)), '-j', str(j + 1), '-l', str(n_l),
+               '-m', str(n_m), '-s', s_arg, '-e', e_arg,
+               '-f', str(g), '-z', '-d', str(min_coverage),
+               # --force: RASQUAL aborts any gene with (fSNPs+1) x tested >
+               # 30,000 (main.c:582), which is undocumented. rasqualTools
+               # batches genes by that product into tiers up to >=100,000
+               # and excludes none, so production practice is to run heavy
+               # genes -- isolated and threaded -- not to skip them.
+               '--force', '--n-threads', str(n_threads)] + (
+               # RASQUAL's own permutation null: "-r generates a random
+               # permutation for each feature to break the correlation between
+               # genotype and total feature count as well as AS counts" (README).
+               # It draws its own permutation (seeded time+pid, main.c:209), so
+               # the null is not paired with hapmixQTL's perm vector.
+               ['-r'] if perm is not None else []) + (
+               ['-x', str(cov_bin)] if cov_bin else []) + ['-a', str(maf)] + (
+               # the authors' own lever for very long genes
+               ['--minor-allele-frequency-fsnp', str(fsnp_maf)] if fsnp_maf else [])
         try:
-            pr = subprocess.run(cmd, input='\n'.join(lines) + '\n',
-                                capture_output=True, text=True, timeout=900)
+            with open(slice_vcf) as fh:
+                pr = subprocess.run(cmd, stdin=fh, capture_output=True,
+                                    text=True, errors='replace',
+                                    timeout=timeout)
         except Exception as e:
             return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan,
                         status=f'error:{type(e).__name__}')
+        finally:
+            slice_vcf.unlink(missing_ok=True)
         best = None
         for ln in pr.stdout.strip().split('\n'):
             f = ln.split('\t')
-            if len(f) < 25 or f[1] == 'SKIPPED' or f[1].startswith('f_'):
-                continue                                # lead over rSNPs only
+            if len(f) < 25 or f[1] == 'SKIPPED':
+                continue
+            if tested_pos is not None and (f[2], int(f[3])) not in tested_pos:
+                continue
             try:
                 if int(float(f[22])) != 0:
                     continue
@@ -415,6 +459,14 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 pi = min(max(pi, 1e-6), 1 - 1e-6)
                 best = dict(gene=g, stat=chi2, log_afc=np.log(pi / (1 - pi)),
                             phi=float(f[13]), status='ok')
+        if best is None and dump is not None:
+            # Keep RASQUAL's own output when nothing converged. Column 23
+            # (0-based 22) is pbound, its convergence status: non-zero means a
+            # parameter hit a boundary, so the raw row says WHICH one.
+            Path(dump).mkdir(parents=True, exist_ok=True)
+            (Path(dump) / f'{g}.out').write_text(pr.stdout[:200000])
+            if pr.stderr:
+                (Path(dump) / f'{g}.err').write_text(pr.stderr[:20000])
         return best or dict(gene=g, stat=np.nan, log_afc=np.nan,
                             phi=np.nan, status='no_converged_row')
 
@@ -422,7 +474,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
         recs = [_one(jg) for jg in enumerate(genes)]
     else:
         with cf.ThreadPoolExecutor(max_workers=jobs) as ex:
-            recs = list(ex.map(_one, enumerate(genes)))   # ex.map keeps order
+            recs = list(ex.map(_one, enumerate(genes)))
     return pd.DataFrame(recs)
 
 
@@ -544,34 +596,85 @@ def run(args):
     # roughly three quarters of an hour. It depends only on the manifest, the
     # tx2gene table and the haplotype suffixes, so cache it: iterating on gene
     # selection, covariates or the null should not re-pay it every time.
+    # Gene list first: it determines which rows of the cache and which
+    # intervals of the VCF and the allelic counts are needed at all.
+    want_genes = None
+    if args.gene_list:
+        want_genes = [l.strip() for l in open(args.gene_list) if l.strip()]
+        print(f'Gene list: {len(want_genes)} genes')
+
+    # Cache as .npy, not .npz. An .npz is one compressed archive and
+    # np.load decompresses the whole thing; separate .npy files can be
+    # memory-mapped, so a 30-gene run reads 30 rows off disk instead of
+    # materialising 34,457 x 92 x 200 to use 0.09% of it.
     cache = None
     if args.cache_dir:
         key = hashlib.sha256(
             (Path(args.salmon).read_text() + Path(args.tx2gene).read_text()
              + ','.join(sufs)).encode()).hexdigest()[:16]
-        cache = Path(args.cache_dir) / f'gibbs_{key}.npz'
-    if cache is not None and cache.exists():
-        print(f'Loading cached Gibbs arrays from {cache}')
-        z = np.load(cache, allow_pickle=True)
-        genes_all, samples = list(z['genes']), list(z['samples'])
-        YL, YR, YT = z['YL'], z['YR'], z['YT']
-        print(f'  {len(genes_all)} genes x {len(samples)} samples x '
-              f'{YL.shape[2]} draws')
+        cache = Path(args.cache_dir) / f'gibbs_{key}'
+    if cache is not None and (cache / 'genes.txt').exists():
+        genes_all = (cache / 'genes.txt').read_text().split()
+        samples = (cache / 'samples.txt').read_text().split()
+        mm = {k: np.load(cache / f'{k}.npy', mmap_mode='r')
+              for k in ('YL', 'YR', 'YT')}
+        if want_genes is not None:
+            keep_g = {g: i for i, g in enumerate(genes_all)}
+            rows = [keep_g[g] for g in want_genes if g in keep_g]
+            print(f'Cache: slicing {len(rows)} of {len(genes_all)} genes '
+                  f'(memory-mapped, {mm["YL"].shape[2]} draws)')
+            YL, YR, YT = (np.asarray(mm[k][rows]) for k in ('YL', 'YR', 'YT'))
+            genes_all = [genes_all[i] for i in rows]
+        else:
+            print(f'Cache: loading all {len(genes_all)} genes')
+            YL, YR, YT = (np.asarray(mm[k]) for k in ('YL', 'YR', 'YT'))
     else:
         genes_all, samples, YL, YR, YT = H.load_counts(args.salmon, args.tx2gene,
                                                        sufs, out)
         if cache is not None:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            print(f'Caching Gibbs arrays to {cache}')
-            np.savez(cache, genes=np.array(genes_all, object),
-                     samples=np.array(samples, object), YL=YL, YR=YR, YT=YT)
+            cache.mkdir(parents=True, exist_ok=True)
+            print(f'Caching Gibbs arrays to {cache}/ (memory-mappable .npy)')
+            for k, v in (('YL', YL), ('YR', YR), ('YT', YT)):
+                np.save(cache / f'{k}.npy', v)
+            (cache / 'genes.txt').write_text('\n'.join(map(str, genes_all)))
+            (cache / 'samples.txt').write_text('\n'.join(map(str, samples)))
+        if want_genes is not None:
+            keep_g = {g: i for i, g in enumerate(genes_all)}
+            rows = [keep_g[g] for g in want_genes if g in keep_g]
+            YL, YR, YT = YL[rows], YR[rows], YT[rows]
+            genes_all = [genes_all[i] for i in rows]
     # yT is the gene total over ALL transcripts. Without it the total
     # channel is a heterozygous-transcript subtotal whose zeros are in LD
     # with the tested variants.
     A, T, Va, Vt, _ = compute_summaries_from_gibbs(YL, YR, yT=YT)
 
+    regions = None
+    if want_genes is not None:
+        gtmp = pd.read_csv(args.genes, sep='\t', header=None, dtype={1: str})
+        gtmp.columns = ['gene', 'chr', 'start', 'end', 'pos'][:gtmp.shape[1]]
+        sel = gtmp[gtmp['gene'].isin(set(want_genes))]
+        regions = Path(out) / 'regions.bed'
+        with open(regions, 'w') as fh:
+            for _, r in sel.sort_values(['chr', 'start']).iterrows():
+                fh.write(f"{r['chr']}\t{max(1, int(r['start'])-args.window)}"
+                         f"\t{int(r['end'])+args.window}\t{r['gene']}\n")
+        span = sum(int(r['end']) + args.window - max(1, int(r['start']) - args.window)
+                   for _, r in sel.iterrows())
+        print(f'Regions: {len(sel)} windows spanning {span/1e6:.0f} Mb '
+              f'-- VCF and allelic counts are read only there')
+
+    exons = None
+    if args.exons:
+        exons = {}
+        for l in open(args.exons):
+            f = l.rstrip('\n').split('\t')
+            if len(f) >= 3:
+                exons[f[0]] = (f[1], f[2])
+        print(f'Exon unions for {len(exons)} genes (RASQUAL -s/-e)')
+
     print('Genotypes (use rephased.vcf.gz from phaser_to_matrix.py)')
-    vdf, dos, xL, xR, order = H.read_phased_vcf(args.vcf, set(samples))
+    vdf, dos, xL, xR, order = H.read_phased_vcf(args.vcf, set(samples),
+                                                regions=regions)
     keep = [samples.index(s) for s in order]
     A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
     vdf['chrom'] = vdf['chrom'].astype(str)
@@ -587,7 +690,22 @@ def run(args):
               'RASQUAL fits them in a GLM on the count scale.')
 
     print('RASQUAL input: phASER per-feature-SNP counts')
-    allelic = H.load_allelic_counts(args.allelic_counts, order)
+    allelic = H.load_allelic_counts(args.allelic_counts, order, regions=regions)
+
+    # RASQUAL reads VCF text with an AS field. --asvcf supplies a prebuilt
+    # one; otherwise build it here from the same inputs, over the same
+    # regions, so an ad-hoc run and the self-test go through the pipe too.
+    asvcf = args.asvcf
+    if args.rasqual and not asvcf:
+        asvcf = Path(out) / 'as.vcf.gz'
+        n_rec, n_as = ASV.annotate(args.vcf, ASV.load_counts(args.allelic_counts, regions),
+                                   asvcf, regions=regions)
+        if n_rec == 0:
+            raise SystemExit(f'no records read from {args.vcf} for the AS-VCF '
+                             '(a region-scoped read needs a bgzipped, indexed VCF)')
+        subprocess.run(['bcftools', 'index', '-t', '-f', str(asvcf)], check=True)
+        print(f'AS-VCF built for the RASQUAL pipe: {n_rec} biallelic records, '
+              f'{n_as} with allele counts -> {asvcf}')
 
     if cov_df is not None:
         missing = [s_ for s_ in order if s_ not in cov_df.index]
@@ -617,11 +735,6 @@ def run(args):
     # silently drops. Probing with a cheap RASQUAL-only pass and feeding the
     # genes it actually used back in via --gene-list removes the approximation
     # rather than correcting for it afterwards.
-    want_genes = None
-    if args.gene_list:
-        want_genes = [l.strip() for l in open(args.gene_list) if l.strip()]
-        print(f'Gene list supplied: {len(want_genes)} genes '
-              '(candidate filter skipped)')
     usable = []
     cidx = chrom_index(vdf)
     gp_rec = gp.to_dict('index')          # pandas .loc per gene is ~100us
@@ -654,7 +767,10 @@ def run(args):
                          np.ones((len(pool), len(order))), args.window,
                          None, tested=None, maf=args.maf,
                          min_coverage=args.min_coverage, cov_bin=cov_bin,
-                        jobs=args.rasqual_jobs)
+                        jobs=args.rasqual_jobs, asvcf=asvcf,
+                        dump=args.dump_rasqual, exons=exons,
+                        n_threads=args.rasqual_threads,
+                        fsnp_maf=args.fsnp_maf, timeout=args.rasqual_timeout)
         ok_genes = list(pr[pr['status'] == 'ok']['gene'])
         by_status = pr['status'].value_counts().to_dict()
         print(f'  RASQUAL used {len(ok_genes)}/{len(pool)} '
@@ -705,9 +821,14 @@ def run(args):
                                maf=args.maf)
 
     # RASQUAL total counts and offsets follow the expression (never permuted)
-    Ytot = read_salmon_totals(args.salmon, args.tx2gene, order, sufs)
-    Ytot = Ytot.reindex(usable).fillna(0.0).values
-    K = np.outer(Ytot.mean(1), size_factors(Ytot))
+    Ytot_full = read_salmon_totals(args.salmon, args.tx2gene, order, sufs)
+    Ytot = Ytot_full.reindex(usable).fillna(0.0).values
+    # rasqualTools: size_factors = colSums(FULL counts) / mean, applied as a
+    # gene-constant offset. Computing it on the <=300 selected genes made the
+    # offset depend on which genes were sampled; the README says outright that
+    # the offset must come from the complete expression data.
+    lib = Ytot_full.sum(0).values
+    K = np.outer(Ytot.mean(1), lib / lib.mean())
 
     known = None
     if args.known_egenes:
@@ -728,7 +849,13 @@ def run(args):
         r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
                         order, Ytot, K, args.window, perm,
                         tested=tested, maf=args.maf,
-                        min_coverage=args.min_coverage, cov_bin=cov_bin)
+                        min_coverage=args.min_coverage, cov_bin=cov_bin,
+                        jobs=args.rasqual_jobs, asvcf=asvcf,
+                        dump=args.dump_rasqual,
+                        exons=exons,
+                        n_threads=args.rasqual_threads,
+                        fsnp_maf=args.fsnp_maf, timeout=args.rasqual_timeout,
+                        knockoff=(XL is not xL or XR is not xR))
         tr = time.time() - t0
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
@@ -932,6 +1059,24 @@ def main(argv=None):
                          'which destroys their LD and mis-calibrates BOTH arms '
                          'in opposite directions. "knockoff" substitutes '
                          'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--rasqual-threads', type=int, default=4,
+                    help='--n-threads per RASQUAL process (pthread)')
+    ap.add_argument('--fsnp-maf', type=float, default=0.0,
+                    help="RASQUAL's --minor-allele-frequency-fsnp; the "
+                         'authors recommend it for very long genes. 0 = off')
+    ap.add_argument('--rasqual-timeout', type=int, default=3600,
+                    help='seconds per gene before giving up (default 3600)')
+    ap.add_argument('--exons',
+                    help='exons.tsv from gtf_to_tables.py: gene, '
+                         'comma-separated exon starts, ends. Used '
+                         "for RASQUAL's -s/-e")
+    ap.add_argument('--dump-rasqual',
+                    help="save RASQUAL's raw output for genes where nothing "
+                         'converged, so the bounded parameter is visible')
+    ap.add_argument('--asvcf',
+                    help='AS-annotated tabix-indexed VCF from '
+                         'scripts/build_asvcf.py; RASQUAL is fed '
+                         'a slice of it directly')
     ap.add_argument('--rasqual-jobs', type=int, default=1,
                     help='genes to run through RASQUAL concurrently. The '
                          'binary is single-threaded, so this is the only '
@@ -1080,6 +1225,8 @@ def selftest():
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
         null='permute', knockoff_k=4, min_coverage=0.05, covariates=None,
         gene_list=None, probe_genes=0, cache_dir=None, rasqual_jobs=2,
+        asvcf=None, dump_rasqual=None, exons=None,
+        rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
         str_vcf=None, multiallelic=False, min_hap=10)
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
@@ -1117,9 +1264,11 @@ def selftest():
     rb = r['reference_bias_hapmixqtl']
     assert 'ref_fraction' in rb and 'message' in rb, rb
     assert rb['n_obs'] >= 0, rb
-    for m in ('RASQUAL', 'hapmixQTL'):
-        assert 'power' in rk[m], f'{m}: no power estimate under knockoffs'
-        assert rk[m]['n_null_stats'] > 0, (m, rk[m])
+    assert 'power' in rk['hapmixQTL'], 'hapmixQTL: no power estimate under knockoffs'
+    assert rk['hapmixQTL']['n_null_stats'] > 0, rk['hapmixQTL']
+    # the RASQUAL pipe cannot take knockoff haplotypes yet; the arm must
+    # report that, not pass the observed run off as a null
+    assert rk['RASQUAL']['n_null_stats'] == 0, rk['RASQUAL']
     # the MAF floor must gate TESTED variants and leave fSNPs alone: raising it
     # above every simulated frequency must drop tested variants without
     # touching the fSNPs the allelic channel needs
@@ -1134,7 +1283,12 @@ def selftest():
     for f in ('observed_hapmixqtl.tsv', 'observed_rasqual.tsv'):
         a = (td / 'deploy' / f).read_text(); b = (td / 'deploy_ns' / f).read_text()
         assert a == b, f'{f} changed when the opt-in arm was enabled'
-    assert r2['hapmixQTL'] == r['hapmixQTL'] and r2['RASQUAL'] == r['RASQUAL']
+    assert r2['hapmixQTL'] == r['hapmixQTL']
+    # RASQUAL's -r draws its own permutation, seeded from time and pid, so
+    # its null (and the power it implies) is not reproducible run to run;
+    # the observed rows were compared byte for byte above
+    for k in ('n_genes_scored', 'n_genes_this_method_alone'):
+        assert r2['RASQUAL'][k] == r['RASQUAL'][k], (k, r2['RASQUAL'], r['RASQUAL'])
     x = r2['hapmixQTL_nonstandard']
     assert 'power' in x
     # lead over a superset of tested variants, same whitening -> stat can only go up

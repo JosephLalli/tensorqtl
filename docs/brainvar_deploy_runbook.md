@@ -412,10 +412,11 @@ Hours of work; run it detached.
 
 ```bash
 nohup python3 scripts/compare_pipelines.py \
-    --vcf prepped/rephased.vcf.gz --genes annot/genes.tsv \
+    --vcf prepped/rephased.vcf.gz --genes annot/genes.tsv --exons annot/exons.tsv \
     --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
     --allelic-counts prepped/allelic_counts_manifest.tsv \
-    --rasqual rasqual_src/src/rasqual \
+    --rasqual rasqual_src/src/rasqual --rasqual-jobs 8 --rasqual-threads 8 \
+    --covariates cov/covariates.tsv --cache-dir cache/ \
     --known-egenes brain_egenes.txt \
     --hap-suffix _L,_R \
     --n-genes 300 --n-perm 10 --out deploy/ > deploy.log 2>&1 &
@@ -423,6 +424,61 @@ nohup python3 scripts/compare_pipelines.py \
 
 `--hap-suffix _L,_R` is required for the quantifications described above; the
 default is `_hapA,_hapB` and would pair nothing.
+
+### How RASQUAL is actually run
+
+RASQUAL is a C program that reads a phased VCF as text on stdin and decides
+which records are feature SNPs from their position alone. Every one of the
+following is a way the first attempts went wrong on real genes, and each is
+now what the driver does by default:
+
+- **`-s/-e` are the union of exons, not the gene span.** The README says so;
+  `gtf_to_tables.py` writes `annot/exons.tsv` (merged exon starts and ends per
+  gene) and `--exons` passes it. On the pilot genes the gene span classified
+  421 records as feature SNPs where the exon union classified 17: introns
+  contribute no allele-specific reads, only budget.
+- **The cis region is the gene body plus/minus the window**, following
+  rasqualTools, and the records RASQUAL sees are a tabix slice of an
+  **AS-annotated VCF** piped straight in (`bcftools view -H -r REGION as.vcf.gz
+  | rasqual ...`). `scripts/build_asvcf.py` builds that VCF once (`AS` FORMAT
+  field, `ref,alt` per sample, `0,0` where phASER counted nothing; bgzip, not
+  gzip, or tabix refuses it) and `--asvcf` points at it. Without `--asvcf` the
+  driver builds one in `--out` over the regions it is about to test, so an
+  ad-hoc run needs nothing prebuilt.
+- **`--force`.** RASQUAL refuses any gene where `(fSNPs + 1) x tested SNPs`
+  exceeds 30,000 (`main.c:582`, "Estimated computational time is too long
+  ... aborted", one `SKIPPED` row) and the check is undocumented. Every pilot
+  gene with a 1 Mb window is over it (12-33 fSNPs x 4,700-6,900 tested SNPs).
+  rasqualTools batches genes by that product and excludes none, so the
+  production practice is to run heavy genes, isolated and threaded, not to
+  drop them. `--n-threads` parallelizes the tested-SNP loop within a gene;
+  `--rasqual-jobs` runs genes concurrently on top of that.
+- **Offsets come from the full expression matrix** (`colSums(counts)/mean`,
+  as rasqualTools computes them), not from the genes sampled for the run.
+- **Covariates are passed to RASQUAL** (`-x`, covariate-major binary written
+  by the driver from `--covariates`), not regressed out of the counts.
+- **The permutation null uses RASQUAL's own `-r`**, which permutes total and
+  allele-specific counts against genotype inside RASQUAL. It draws its own
+  permutation (seeded from time and pid), so the RASQUAL null is not paired
+  with the hapmixQTL permutation. What `-r` moves (`nbem.c`, `randomPerm`):
+  the total counts with their offsets and weights under one random order,
+  and each feature SNP's genotype, allele counts and offset as a block under
+  its own order; the tested-SNP genotypes and the `-x` covariates stay where
+  they are. Under `-r` the covariates therefore explain nothing about the
+  permuted totals, which is a difference from a null that permutes
+  genotype alone. **The knockoff null does not reach the
+  RASQUAL arm yet**: the pipe feeds RASQUAL the real genotypes, and the arm
+  reports `knockoff_null_not_implemented` per gene rather than passing an
+  observed run off as a null. Writing knockoff haplotypes into the VCF slice
+  is the remaining piece.
+- `--dump-rasqual DIR` keeps RASQUAL's raw stdout/stderr for every gene that
+  produced no converged row. Column 23 is its convergence flag; the stderr
+  says which gate fired. Read the dump before changing anything else.
+
+For iteration, `--gene-list` restricts every input read (VCF, allelic counts,
+Gibbs draws) to the windows around those genes, and `--cache-dir` keeps the
+Gibbs load as memory-mapped arrays keyed by the input paths. An 8-gene rerun
+then costs minutes of setup rather than the hour a whole-cohort load takes.
 
 `salmon.tsv` is `sample_id <TAB> Salmon output directory` -- the directory
 holding `aux_info/bootstraps/`, not the `quant.sf` file.
