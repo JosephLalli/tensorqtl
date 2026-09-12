@@ -141,3 +141,26 @@ class TestCLIErrorHandling:
 
             # Should fail due to file format issues
             assert result.returncode != 0
+
+class TestHapmixQTLDefaults:
+    """The hapmixQTL CLI defaults are the validated ones."""
+
+    def test_tau_mode_defaults_to_estimate(self):
+        """tau_mode='zero' was the CLI default long after the library had
+        moved to 'estimate' (docs/ase_validation.md: 'zero' is anticonservative
+        by up to 107x at alpha = 1e-3). The CLI must not silently reproduce
+        the defect."""
+        from tensorqtl.tensorqtl import build_parser
+        args = build_parser().parse_args(['geno', 'pheno.bed', 'out'])
+        assert args.tau_mode == 'estimate'
+        assert args.se_mode == 'model'
+        assert args.ase_covariates == 'shared'
+        assert build_parser().parse_args(['g', 'p', 'o', '--tau_mode', 'zero']).tau_mode == 'zero'
+        assert build_parser().parse_args(['g', 'p', 'o', '--ase_covariates', 'none']).ase_covariates == 'none'
+
+    def test_help_documents_the_hapmixqtl_options(self):
+        result = subprocess.run([
+            sys.executable, '-m', 'tensorqtl', '--help'
+        ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+        assert result.returncode == 0
+        assert '--tau_mode' in result.stdout and '--ase_covariates' in result.stdout

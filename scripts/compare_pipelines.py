@@ -104,12 +104,12 @@ from make_rasqual_inputs import read_salmon_totals
 from str_integrate import parse_str_vcf, parse_multiallelic_vcf, extend_scan   # opt-in arm only
 
 try:
-    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, map_cis,
+    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, map_cis, SAME_COVARIATES,
                                      reference_bias_diagnostic,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(HERE.parent / 'tensorqtl'))
-    from hapmixqtl import (compute_summaries_from_gibbs, map_cis,
+    from hapmixqtl import (compute_summaries_from_gibbs, map_cis, SAME_COVARIATES,
                            reference_bias_diagnostic,
                            map_str_curvature, map_multiallelic)
 
@@ -119,9 +119,15 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
-               tested_mask, perm=None, cov_df=None):
+               tested_mask, perm=None, cov_df=None, ase_cov='none'):
     """Return DataFrame(gene, stat, log_afc). stat = chi2(1)-equivalent of the
-    lead nominal p over TESTED variants, so it sits on RASQUAL's scale."""
+    lead nominal p over TESTED variants, so it sits on RASQUAL's scale.
+
+    cov_df is projected out of the TOTAL channel. ase_cov says what the
+    ALLELIC channel gets: 'none' (intercept only; the log haplotype ratio is
+    a within-sample contrast in which sample-level covariates cancel) or
+    'shared' (the same set, which costs one informative sample per column).
+    """
     idx = np.where(tested_mask)[0]
     v = vdf.iloc[idx]
     cols = order if perm is None else [order[i] for i in perm]
@@ -141,6 +147,7 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
         res = map_cis(g, v[['chrom', 'pos']], mk(A), mk(T), mk(Va), mk(Vt),
                       pos_df, xL_df=xl, xR_df=xr, window=window, nperm=50,
                       covariates_df=cov_df,
+                      ase_covariates_df=(None if ase_cov == 'none' else SAME_COVARIATES),
                       verbose=False)
     p = pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1)
     # map_cis returns the gene ID as the INDEX (named phenotype_id), not a column
@@ -337,7 +344,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 window, perm=None, tmp=None, tested=None, maf=0.05,
                 min_coverage=0.05, cov_bin=None, jobs=1, asvcf=None,
                 bcftools='bcftools', dump=None, exons=None,
-                n_threads=4, fsnp_maf=0.0, timeout=3600, knockoff=False):
+                n_threads=4, fsnp_maf=0.0, timeout=3600, knockoff=False,
+                rows=None):
     """RASQUAL over genes, fed the VCF text it is designed to read.
 
     RASQUAL takes a VCF on stdin and decides what is a feature SNP FROM THE
@@ -443,6 +451,11 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                         status=f'error:{type(e).__name__}')
         finally:
             slice_vcf.unlink(missing_ok=True)
+        if rows is not None:
+            # every per-variant row RASQUAL wrote, so its statistic at ANY
+            # variant (the other arm's lead, say) can be read back later
+            Path(rows).mkdir(parents=True, exist_ok=True)
+            (Path(rows) / f'{g}.tsv').write_text(pr.stdout)
         best = None
         for ln in pr.stdout.strip().split('\n'):
             f = ln.split('\t')
@@ -789,7 +802,8 @@ def run(args):
                         jobs=args.rasqual_jobs, asvcf=asvcf,
                         dump=args.dump_rasqual, exons=exons,
                         n_threads=args.rasqual_threads,
-                        fsnp_maf=args.fsnp_maf, timeout=args.rasqual_timeout)
+                        fsnp_maf=args.fsnp_maf, timeout=args.rasqual_timeout,
+                        rows=args.rasqual_rows)
         ok_genes = list(pr[pr['status'] == 'ok']['gene'])
         by_status = pr['status'].value_counts().to_dict()
         print(f'  RASQUAL used {len(ok_genes)}/{len(pool)} '
@@ -863,7 +877,7 @@ def run(args):
         t0 = time.time()
         h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
                        pos_df[['chr', 'pos']], args.window, tested, perm,
-                       cov_df=cov_df)
+                       cov_df=cov_df, ase_cov=args.ase_covariates)
         th = time.time() - t0; t0 = time.time()
         if args.reuse_rasqual and perm is None and XL is xL and XR is xR:
             # observed RASQUAL rows from an earlier run of the same genes, so
@@ -885,7 +899,9 @@ def run(args):
                         exons=exons,
                         n_threads=args.rasqual_threads,
                         fsnp_maf=args.fsnp_maf, timeout=args.rasqual_timeout,
-                        knockoff=(XL is not xL or XR is not xR))
+                        knockoff=(XL is not xL or XR is not xR),
+                        rows=(args.rasqual_rows if perm is None and XL is xL
+                              else None))
         tr = time.time() - t0
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
@@ -1104,6 +1120,9 @@ def main(argv=None):
                          'input (default 6, GTEx)')
     ap.add_argument('--min-count-frac', type=float, default=0.2,
                     help='...in at least this fraction of samples (default 0.2)')
+    ap.add_argument('--rasqual-rows',
+                    help='directory in which to keep every per-variant row '
+                         'RASQUAL writes for the observed run (one file per gene)')
     ap.add_argument('--reuse-rasqual',
                     help='an earlier --out directory whose observed_rasqual.tsv '
                          'is taken as this run\'s observed RASQUAL arm')
@@ -1149,7 +1168,18 @@ def main(argv=None):
                          'gate rather than an approximation of it')
     ap.add_argument('--covariates',
                     help='TSV from scripts/build_covariates.py: samples as '
-                         'rows, covariates as columns. Fed to BOTH arms')
+                         'rows, covariates as columns. Fed to BOTH arms: '
+                         "RASQUAL's total-count model and hapmixQTL's total "
+                         'channel (see --ase-covariates for the allelic one)')
+    ap.add_argument('--ase-covariates', choices=('none', 'shared'), default='none',
+                    help="what hapmixQTL projects out of its ALLELIC channel: "
+                         "'none' (intercept only; the log haplotype ratio is a "
+                         'within-sample contrast in which sample-level '
+                         "covariates cancel) or 'shared' (the --covariates "
+                         'set, as in the total channel; each column costs one '
+                         'informative sample and halved the allelic statistic '
+                         'of well-covered BrainVar genes). RASQUAL applies '
+                         'covariates to its total-count model only')
     ap.add_argument('--min-coverage', type=float, default=0.05,
                     help="RASQUAL's -d/--min-coverage-depth. Default is "
                          "RASQUAL's own (main.c:396); passed explicitly so the "
@@ -1276,6 +1306,7 @@ def selftest():
         asvcf=None, dump_rasqual=None, exons=None,
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
         count_noise=True, min_count=6, min_count_frac=0.2, reuse_rasqual=None,
+        rasqual_rows=None, ase_covariates='none',
         str_vcf=None, multiallelic=False, min_hap=10)
     # count_noise contract, which fabricated Poisson(30) draws cannot probe:
     # a sample with the same count in every draw has v_inf = 0. The term must

@@ -522,14 +522,68 @@ independently show the same imbalance). `tests/test_hapmixqtl_calibration.py`
 carries the gate, and the validation harness now drives `_prepare_channels`
 rather than its own copy of the weight formula, which had the same clamp.
 
-Two properties of the corrected arm to keep in mind when reading its numbers
-against RASQUAL's. tau is estimated under the null model, so a gene's own cis
+One property of the corrected arm to keep in mind when reading its numbers
+against RASQUAL's: tau is estimated under the null model, so a gene's own cis
 signal inflates it and the test is conservative where the signal is strong
 (CCNI: the 22 heterozygotes at the lead show corr(a, s) = -0.90, a hets-only
-regression gives chi2 86, the arm 17). And covariates are projected out of
-BOTH channels, whereas RASQUAL applies them to the total-count model only;
-with 10 expression PCs against 46-62 informative samples the allelic channel
-loses about half its statistic (CCNI 17 -> 9, CYP51A1 17 -> 8).
+regression gives chi2 86, the arm 17). A second one, covariates projected out
+of both channels, is resolved in the next section.
+
+### Covariates per channel, the sparse-channel rule and the permutation null
+
+hapmixQTL used to project the same covariate set out of both channels,
+whereas RASQUAL applies covariates to its total-count model only. The
+allelic contrast `a = log((yL + k)/(yR + k))` is a within-sample difference
+in which anything that acts on both haplotypes alike -- library size, the
+expression PCs, sex, age, RIN -- cancels, so there is nothing for those
+columns to remove from it; each one projected out costs one of the
+informative samples (with 10 expression PCs against 46-62 informative
+samples the allelic statistic of CCNI and CYP51A1 halved). `map_cis`,
+`map_nominal`, `map_susie` and the second-pass functions now take
+`ase_covariates_df` for the allelic channel: `SAME_COVARIATES` (the library
+default, the previous behaviour), `None` for an intercept only, or the
+channel's own DataFrame. The driver's `--ase-covariates` defaults to `none`
+(`shared` reproduces the earlier runs); the CLI's `--ase_covariates` keeps
+`shared` as its default. `run_hapmixqtl_from_salmon.py` passes no
+covariates to either channel, so it is unaffected. The nominal p-value uses
+one t reference for both channels, `dof = N - 2 - max(n_cov, n_cov_a)`, and
+`map_cis` passes that dof to the permutation code, which used to take the
+allelic residualizer's (with an intercept-only allelic channel the two
+differ by the covariate count, and `map_cis` and `map_nominal` disagreed on
+the same pair by a factor of 3.5 in p).
+
+Two rules travel with it. A channel with fewer informative samples
+(`v_inf > 1e-12`) than its design has columns plus two is switched off --
+every weight zero, nothing projected, infinite SE -- and the meta-analysis
+takes the other channel alone; the tau estimator raises rather than falling
+back to every sample, which an earlier version did and which re-admitted
+exactly the zero-variance rows for sparse genes. And the permutation null of
+`map_cis` is now Freedman-Lane in whitened space: the whitened null
+residuals of each channel are permuted among that channel's informative
+samples (the two channels share one draw), instead of the raw `a` and `t`
+being moved between samples at fixed weights. The old scheme handed a sample
+another sample's value at its own precision; with inferential variances
+spanning 0.01-2 and 10% samples without allele-specific coverage a null
+gene's `pval_perm` averaged 0.94 with no rejection at 0.05 in 100 genes.
+With the whitened permutation the same design gives mean 0.44, 6% at 0.05
+(`test_pval_perm_is_calibrated_under_heteroskedasticity`). `map_cis` refuses
+`se_mode='robust'`: the permutation statistic is the known-variance GLS
+statistic and a sandwich SE has no counterpart in it; `map_nominal` still
+offers it.
+
+On the 30 well-expressed genes (`pilotL`, RASQUAL rows reused from
+`pilotI`) the intercept-only allelic channel raises 19 of the 30 gene
+statistics and lowers 11 (median change +1.1), and the number of genes above
+15, roughly the null-maximum level, goes from 6 to 13 against RASQUAL's 11;
+the Spearman correlation with RASQUAL's statistics is 0.38 (p = 0.037).
+The 12-gene external permutation null (genotype columns permuted against
+expression, 10 draws) is unchanged by the covariate split: null-maximum
+means 9.7-17.6 with the intercept-only channel against 10.7-17.4 with the
+shared set, while the observed values on the genes with signal rise (CYP51A1
+14.7 -> 21.8 against RASQUAL's 31.8, TTC3 13.8 -> 16.9, APC 17.0 -> 20.8,
+CCNI 13.9 -> 16.2; ANKRD36B 39.9 -> 37.5). RASQUAL's and hapmixQTL's lead
+variants coincide on 1 of the 30 genes, which is why the effect comparison
+has to be made at matched variants (below) rather than gene-wise.
 
 Separately, a gene RASQUAL can use is not necessarily one Salmon quantifies:
 CYP3A7 had allele counts at its feature SNPs from the aligner and a median

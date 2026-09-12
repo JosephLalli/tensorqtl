@@ -39,6 +39,10 @@ from tensorqtl.hapmixqtl import (
     map_susie,
     fine_mapping_provenance,
     cis_trans_diagnostic,
+    _prepare_channels,
+    _estimate_tau_informative,
+    _permute_within_informative,
+    SAME_COVARIATES,
 )
 
 
@@ -993,3 +997,207 @@ class TestIO:
 
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))
+
+
+# ---------------------------------------------------------------------------
+#  Per-channel covariates and the sparse-channel rule
+# ---------------------------------------------------------------------------
+
+def _gene_with_covariates(seed, N=60, V=8, n_cov=5, n_off=0, sigma_bio=0.5):
+    """One null gene: heteroskedastic v, covariates that act on both haplotypes
+    alike (they enter t, not the within-sample contrast a), and n_off samples
+    with no allele-specific coverage (a = 0, va = 0 exactly)."""
+    rng = np.random.RandomState(seed)
+    g = rng.binomial(2, 0.4, size=(V, N)).astype(float)
+    sign = np.zeros((V, N))
+    het = g == 1
+    sign[het] = rng.choice([-1.0, 1.0], size=int(het.sum()))
+    va = rng.uniform(0.05, 0.3, N)
+    vt = rng.uniform(0.05, 0.3, N)
+    C = rng.normal(size=(N, n_cov))
+    a = np.sqrt(va) * rng.normal(size=N) + rng.normal(0, sigma_bio, N)
+    t = (2.0 + C @ rng.normal(size=n_cov) + np.sqrt(vt) * rng.normal(size=N)
+         + rng.normal(0, sigma_bio, N))
+    if n_off:
+        k = rng.choice(N, n_off, replace=False)
+        a[k] = 0.0
+        va[k] = 0.0
+    return g, sign, a, t, va, vt, C
+
+
+def _nominal(g, s, a, t, va, vt, C, device, ase='same', tau_mode='estimate'):
+    T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+    C_t = None if C is None else T(C)
+    ase_t = ase if isinstance(ase, str) else (None if ase is None else T(ase))
+    wa, wt, ra, rt = _prepare_channels(T(a), T(t), T(va), T(vt), C_t, tau_mode,
+                                       device, ase_covariates_t=ase_t)
+    res = calculate_hapmixqtl_nominal(T(g), T(s), T(a), T(t), wa, wt, ra, rt)
+    return dict(zip(['tstat', 'slope', 'se', 'slope_a', 'se_a', 'slope_t', 'se_t'], res),
+                wa=wa, wt=wt, ra=ra, rt=rt)
+
+
+class TestPerChannelCovariates:
+
+    def test_intercept_only_allelic_channel_ignores_total_covariates(self, device):
+        """ase_covariates_t=None: the allelic slope and SE are those of the
+        no-covariate fit, the total channel's are those of the covariate fit,
+        and the allelic residualizer projects an intercept only."""
+        g, s, a, t, va, vt, C = _gene_with_covariates(1)
+        split = _nominal(g, s, a, t, va, vt, C, device, ase=None)
+        none = _nominal(g, s, a, t, va, vt, None, device)
+        shared = _nominal(g, s, a, t, va, vt, C, device)
+        assert torch.allclose(split['slope_a'], none['slope_a'])
+        assert torch.allclose(split['se_a'], none['se_a'])
+        assert torch.allclose(split['slope_t'], shared['slope_t'])
+        assert torch.allclose(split['se_t'], shared['se_t'])
+        assert split['ra'].Q_t.shape[1] == 1
+        assert split['rt'].Q_t.shape[1] == 1 + C.shape[1]
+        assert split['ra'].dof == len(a) - 2
+        assert split['rt'].dof == len(a) - 2 - C.shape[1]
+        # the default keeps the previous behaviour
+        default = _nominal(g, s, a, t, va, vt, C, device, ase=SAME_COVARIATES)
+        assert torch.allclose(default['se_a'], shared['se_a'])
+
+    def test_projecting_covariates_out_of_the_allelic_channel_only_loses_precision(self, device):
+        """At fixed weights the intercept-only design is nested in the shared
+        one, so residualizing the covariates as well can only shrink the
+        predictor's residual norm: the known-variance SE of the allelic slope
+        is never smaller with them than without (CCNI: 17 -> 9 with 17
+        covariates on ~50 informative samples)."""
+        g, s, a, t, va, vt, C = _gene_with_covariates(2, N=50, n_cov=12, n_off=5)
+        split = _nominal(g, s, a, t, va, vt, C, device, ase=None)
+        wa = split['wa']
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        a_star = (T(a) * wa).unsqueeze(0)
+        s_star = T(s) * wa.unsqueeze(0)
+        _, se_int = _wls_regression(a_star, s_star, WeightedResidualizer(None, wa))
+        _, se_cov = _wls_regression(a_star, s_star, WeightedResidualizer(T(C), wa))
+        ok = torch.isfinite(se_int) & torch.isfinite(se_cov)
+        assert ok.any()
+        assert (se_cov[ok] >= se_int[ok] * (1 - 1e-9)).all()
+        assert (se_cov[ok] > se_int[ok]).any()
+
+    def test_map_cis_and_map_nominal_share_the_dof_rule(self, tmp_path):
+        """With an intercept-only allelic channel the two residualizers have
+        different dof; the nominal p-value must use one rule in both mapping
+        functions (N - 2 - max(n_cov, n_cov_a)), so map_cis's pval_nominal at
+        the lead equals map_nominal's for that pair."""
+        d = _make_dataset(seed=105, n_samples=60)
+        rng = np.random.RandomState(9)
+        cov_df = pd.DataFrame(rng.normal(size=(60, 4)), index=d['A_df'].columns,
+                              columns=[f'c{i}' for i in range(4)])
+        common = dict(covariates_df=cov_df, ase_covariates_df=None,
+                      window=1000000, verbose=False)
+        cis = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                      d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                      xR_df=d['xR_df'], nperm=200, seed=1, **common)
+        map_nominal(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                    d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                    xR_df=d['xR_df'], prefix='t', output_dir=str(tmp_path), **common)
+        pairs = pd.read_parquet(tmp_path / 't.hapmixqtl_pairs.chr1.parquet')
+        for pid, row in cis.iterrows():
+            pair = pairs[(pairs['phenotype_id'] == pid) & (pairs['variant_id'] == row['variant_id'])]
+            assert len(pair) == 1
+            pn, pc = float(pair['pval_nominal'].iloc[0]), float(row['pval_nominal'])
+            assert np.isclose(pn, pc, rtol=1e-4, atol=0), (pid, pn, pc)
+            assert np.isclose(float(pair['slope'].iloc[0]), float(row['slope']), rtol=1e-4, atol=0)
+
+
+class TestSparseChannel:
+
+    def test_tau_estimator_refuses_too_few_informative_samples(self, device):
+        """Zero-variance rows never reach the estimator, and there is no
+        fallback that re-admits them: below design columns + 2 informative
+        samples it raises."""
+        N, n_cov = 40, 5
+        g, s, a, t, va, vt, C = _gene_with_covariates(3, N=N, n_cov=n_cov)
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        for n_inf, ok in ((7, False), (8, True)):
+            v = va.copy(); v[n_inf:] = 0.0
+            if ok:
+                tau = _estimate_tau_informative(T(a), T(v), T(C), device)
+                assert torch.isfinite(tau) and tau >= 0
+            else:
+                with pytest.raises(ValueError, match='informative samples'):
+                    _estimate_tau_informative(T(a), T(v), T(C), device)
+
+    def test_switched_off_channel_yields_total_only(self, device):
+        """4 informative allelic samples against 5 covariates: the allelic
+        channel is off (every weight zero, nothing projected, SE infinite)
+        and the combined statistic is the total channel's. With an intercept
+        only, the same 4 samples keep the channel on."""
+        N = 60
+        g, s, a, t, va, vt, C = _gene_with_covariates(4, N=N, n_cov=5, n_off=N - 4)
+        off = _nominal(g, s, a, t, va, vt, C, device)
+        assert (off['wa'] == 0).all()
+        assert off['ra'].Q_t.shape == (N, 0)
+        assert torch.isinf(off['se_a']).all()
+        total_only = _nominal(g, np.zeros_like(s), a, t, va, vt, C, device)
+        assert torch.allclose(off['tstat'], total_only['tstat'])
+        assert torch.allclose(off['slope'], total_only['slope_t'])
+        assert torch.allclose(off['se'], total_only['se_t'])
+        on = _nominal(g, s, a, t, va, vt, C, device, ase=None)
+        assert int((on['wa'] > 0).sum()) == 4
+        assert torch.isfinite(on['se_a']).any()
+
+    def test_zero_weight_residualizer_is_the_identity(self, device):
+        N = 12
+        w = torch.zeros(N, dtype=torch.float64, device=device)
+        C = torch.randn(N, 3, dtype=torch.float64, device=device)
+        M = torch.randn(4, N, dtype=torch.float64, device=device)
+        res = WeightedResidualizer(C, w)
+        assert res.Q_t.shape == (N, 0)
+        assert torch.equal(res.transform(M), M)
+        assert res.dof == N - 1 - 4
+
+    def test_map_cis_runs_with_a_switched_off_allelic_channel(self):
+        """A phenotype with two allele-specific samples goes through map_cis
+        on its total channel alone: finite p-values, infinite allelic SE, and
+        the planted association in the other phenotype is still found."""
+        d = _make_dataset(seed=106, n_samples=60)
+        sparse = d['A_df'].index[1]
+        A, Va = d['A_df'].copy(), d['Va_df'].copy()
+        A.loc[sparse, A.columns[2:]] = 0.0
+        Va.loc[sparse, Va.columns[2:]] = 0.0
+        rng = np.random.RandomState(8)
+        cov_df = pd.DataFrame(rng.normal(size=(60, 3)), index=A.columns, columns=list('xyz'))
+        res = map_cis(d['genotype_df'], d['variant_df'], A, d['T_df'], Va, d['Vt_df'],
+                      d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=200,
+                      seed=3, covariates_df=cov_df, ase_covariates_df=None, verbose=False)
+        row = res.loc[sparse]
+        assert 0 < row['pval_nominal'] <= 1 and 0 < row['pval_perm'] <= 1
+        assert np.isinf(row['slope_a_se'])
+        assert np.isfinite(row['slope_t_se'])
+        assert res.loc[d['causal_pheno'], 'variant_id'] == d['causal_variant']
+
+
+class TestWhitenedResidualPermutation:
+
+    def test_permutes_only_within_informative_samples(self, device):
+        N, nperm = 10, 200
+        rng = np.random.RandomState(0)
+        r = torch.tensor(rng.normal(size=N), dtype=torch.float64, device=device)
+        inf = torch.tensor([1, 1, 0, 1, 0, 1, 1, 0, 1, 1], dtype=torch.bool, device=device)
+        perm = torch.tensor(np.array([rng.permutation(N) for _ in range(nperm)]),
+                            dtype=torch.long, device=device)
+        out = _permute_within_informative(r, inf, perm)
+        assert out.shape == (nperm, N)
+        # non-informative entries untouched
+        assert torch.equal(out[:, ~inf], r[~inf].unsqueeze(0).expand(nperm, -1))
+        # each row is a permutation of the informative entries
+        ref = torch.sort(r[inf]).values
+        for row in out:
+            assert torch.allclose(torch.sort(row[inf]).values, ref)
+        # most informative entries move
+        moved = (out[:, inf] != r[inf].unsqueeze(0)).float().mean().item()
+        assert moved > 0.7
+        # with every sample informative this is the plain permutation
+        all_inf = torch.ones(N, dtype=torch.bool, device=device)
+        assert torch.equal(_permute_within_informative(r, all_inf, perm), r[perm])
+
+    def test_map_cis_rejects_robust_se(self):
+        d = _make_dataset(seed=107)
+        with pytest.raises(ValueError, match='robust'):
+            map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                    d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                    xR_df=d['xR_df'], nperm=10, se_mode='robust', verbose=False)

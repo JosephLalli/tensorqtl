@@ -120,8 +120,12 @@ def simulate_channels(N, V, rng, beta=0.0, maf=0.35,
     return g, sign, a, t, va, vt
 
 
-def run_association(g, sign, a, t, va, vt, tau_mode='zero', covariates=None):
-    """Drive the production statistic. Returns (tstat, slope, se, slope_t, se_t)."""
+def run_association(g, sign, a, t, va, vt, tau_mode='zero', covariates=None,
+                    ase_covariates='same'):
+    """Drive the production statistic. Returns (tstat, slope, se, slope_t, se_t).
+
+    covariates go to the total channel; ase_covariates to the allelic one:
+    'same' (the production default), None (intercept only) or an array."""
     dev = 'cpu'
     g_t = torch.tensor(g, dtype=DTYPE, device=dev)
     s_t = torch.tensor(sign, dtype=DTYPE, device=dev)
@@ -134,8 +138,13 @@ def run_association(g, sign, a, t, va, vt, tau_mode='zero', covariates=None):
     # the production weights and residualizers, raw variances in: a copy of
     # the weight formula here once clamped v to 1e-8 and estimated tau on
     # every sample, so no test could see what zero-coverage samples do
+    if isinstance(ase_covariates, str):
+        ase_t = ase_covariates
+    else:
+        ase_t = None if ase_covariates is None else torch.tensor(
+            ase_covariates, dtype=DTYPE, device=dev)
     sqrt_wa, sqrt_wt, res_a, res_t = _prepare_channels(
-        a_t, t_t, va_t, vt_t, cov_t, tau_mode, dev)
+        a_t, t_t, va_t, vt_t, cov_t, tau_mode, dev, ase_covariates_t=ase_t)
     tstat, slope, se, slope_a, se_a, slope_tc, se_tc = calculate_hapmixqtl_nominal(
         g_t, s_t, a_t, t_t, sqrt_wa, sqrt_wt, res_a, res_t)
     return (tstat.numpy(), slope.numpy(), se.numpy(),

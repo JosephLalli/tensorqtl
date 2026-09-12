@@ -331,7 +331,14 @@ class WeightedResidualizer:
             design = torch.cat([intercept, C_star], dim=1)
         else:
             design = intercept
-        self.Q_t, _ = torch.linalg.qr(design)
+        if bool((sqrt_w_t != 0).any()):
+            self.Q_t, _ = torch.linalg.qr(design)
+        else:
+            # A switched-off channel (every weight zero; see _prepare_channels)
+            # has nothing to project. The QR of an all-zero design returns
+            # unit vectors, which would "residualize" the first design.shape[1]
+            # samples of whatever is transformed.
+            self.Q_t = design.new_zeros((N, 0))
         self.dof = N - 1 - design.shape[1]
 
     def transform(self, M_t):
@@ -438,14 +445,69 @@ def _estimate_tau(y_t, v_inf_t, covariates_t, device):
 def _estimate_tau_informative(y_t, v_inf_t, covariates_t, device, eps=1e-12):
     """_estimate_tau over the samples with v_inf > eps (see _prepare_channels).
 
-    Falls back to every sample when fewer remain than the design has columns.
+    A sample with v_inf = 0 carries no information and must never enter the
+    moment estimator: it would dominate mean(1/v) and collapse tau. There is
+    deliberately no fallback to every sample when few informative ones remain
+    (an earlier version had one, and re-admitted exactly those rows for
+    sparse genes). Raises instead; _prepare_channels switches such a channel
+    off before getting here, so reaching the error means the sparse-channel
+    rule was bypassed.
     """
     keep = v_inf_t > eps
-    n_cov = 0 if covariates_t is None else covariates_t.shape[1]
-    if int(keep.sum()) <= n_cov + 2:
-        return _estimate_tau(y_t, v_inf_t, covariates_t, device)
+    n_keep = int(keep.sum())
+    if n_keep < _min_informative(covariates_t):
+        n_cols = 1 + (0 if covariates_t is None else covariates_t.shape[1])
+        raise ValueError(
+            f'tau cannot be estimated from {n_keep} informative samples against '
+            f'a design of {n_cols} columns; the channel must be switched off')
     c = None if covariates_t is None else covariates_t[keep]
     return _estimate_tau(y_t[keep], v_inf_t[keep], c, device)
+
+
+def _min_informative(covariates_t, extra=2):
+    """Informative samples a channel needs to stay on: one per design column
+    (intercept + covariates) plus `extra` residual degrees of freedom."""
+    n_cov = 0 if covariates_t is None else covariates_t.shape[1]
+    return 1 + n_cov + extra
+
+
+def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12):
+    """sqrt weights of one channel, or all zeros when the channel is off.
+
+    The sparse-channel rule: with fewer informative samples (v > eps) than
+    the channel's design has columns plus two, neither the regression nor
+    tau is identifiable from that channel, so it contributes nothing (every
+    weight zero -> xx = 0 -> the meta-analysis takes the other channel alone).
+    """
+    n_inf = int((v_t > eps).sum())
+    if n_inf < _min_informative(covariates_t):
+        return torch.zeros_like(v_t)
+    if tau_mode == 'estimate':
+        tau = _estimate_tau_informative(y_t, v_t, covariates_t, device, eps)
+        return torch.sqrt(1.0 / (v_t.clamp(min=1e-8) + tau))
+    return torch.sqrt(1.0 / v_t.clamp(min=1e-8))
+
+
+SAME_COVARIATES = 'same'
+
+
+def _resolve_ase_covariates(ase_covariates_df, covariates_df, samples, device, logger):
+    """The allelic channel's covariate design as _prepare_channels wants it:
+    SAME_COVARIATES (the total channel's), None (intercept only) or a tensor
+    built from its own DataFrame. Also returns its column count for the dof
+    rule."""
+    if isinstance(ase_covariates_df, str) and ase_covariates_df == SAME_COVARIATES:
+        n = 0 if covariates_df is None else covariates_df.shape[1]
+        logger.write('  * allelic channel covariates: same as the total channel')
+        return SAME_COVARIATES, n
+    if ase_covariates_df is None:
+        logger.write('  * allelic channel covariates: none (intercept only)')
+        return None, 0
+    assert np.all(np.asarray(samples) == np.asarray(ase_covariates_df.index)), \
+        'Allelic-channel covariate samples must match phenotype samples'
+    logger.write(f'  * allelic channel covariates: {ase_covariates_df.shape[1]}')
+    t = torch.tensor(ase_covariates_df.values, dtype=torch.float32).to(device)
+    return t, ase_covariates_df.shape[1]
 
 
 def _warn_tau_zero(tau_mode):
@@ -463,7 +525,8 @@ def _warn_tau_zero(tau_mode):
             RuntimeWarning, stacklevel=3)
 
 
-def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device):
+def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
+                      ase_covariates_t=SAME_COVARIATES, eps=1e-12):
     """
     Per-phenotype whitening shared by every mapping function.
 
@@ -479,32 +542,41 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device):
     1e-12); the floor is applied here, inside the weight, where it is
     harmless.
 
+    tau is estimated on the samples that carry information (v > eps). A
+    sample with v_inf = 0 (no allele-specific reads; a zero total) would
+    enter the moment estimator with weight 1/1e-8 and dominate mean(1/v), so
+    a handful of them drove tau to ~1e-6 for the whole gene and left the
+    informative samples weighted by v_inf alone, which understates the
+    between-sample variance of a by 2-25x on well-covered BrainVar genes:
+    the allelic channel's permutation null reached chi2 40-120 (CRMP1 97.7
+    against a calibrated ~12-16). Estimated on informative samples, the same
+    genes give tau_a 0.007-0.13 and near-uniform weights.
+
+    Sparse-channel rule: a channel with fewer informative samples than its
+    design has columns plus two is switched off (all weights zero), so the
+    meta-analysis falls back to the other channel. Zero-variance rows never
+    reach the tau estimator under any branch.
+
+    The two channels take separate covariate designs. ``covariates_t`` is
+    the total channel's; ``ase_covariates_t`` is the allelic channel's:
+    SAME_COVARIATES (default) reuses the total channel's, None fits an
+    intercept only. The allelic contrast a = log(yL/yR) is a within-sample
+    difference in which anything acting on both haplotypes alike (library
+    size, expression PCs, sex, age) cancels, so the total channel's
+    covariates are normally not wanted there: each column costs one of the
+    informative samples and can only remove signal (10 expression PCs
+    against ~50 informative samples halved CCNI's allelic statistic).
+
     Returns:
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
     """
     _warn_tau_zero(tau_mode)
-    if tau_mode == 'estimate':
-        # tau is estimated on the samples that carry information. A sample
-        # with v_inf = 0 (no allele-specific reads; a zero total) enters the
-        # moment estimator with weight 1/1e-8 and dominates mean(1/v), so a
-        # handful of them drive tau to ~1e-6 for the whole gene. The guard
-        # below then zeroes their weights, but the remaining samples are left
-        # weighted by v_inf alone, which understates the between-sample
-        # variance of a by 2-25x on well-covered BrainVar genes: the
-        # known-variance SE is too small by that factor and the allelic
-        # channel's permutation null reaches chi2 40-120 (CRMP1 97.7 against
-        # a calibrated ~12-16). Estimated on informative samples, the same
-        # genes give tau_a 0.007-0.13 and near-uniform weights.
-        tau_a = _estimate_tau_informative(a_t, va_t, covariates_t, device)
-        tau_t_val = _estimate_tau_informative(t_t, vt_t, covariates_t, device)
-        sqrt_wa_t = _zero_degenerate_ase_weights(
-            torch.sqrt(1.0 / (va_t.clamp(min=1e-8) + tau_a)), va_t)
-        sqrt_wt_t = torch.sqrt(1.0 / (vt_t.clamp(min=1e-8) + tau_t_val))
-    else:
-        sqrt_wa_t = _zero_degenerate_ase_weights(
-            torch.sqrt(1.0 / va_t.clamp(min=1e-8)), va_t)
-        sqrt_wt_t = torch.sqrt(1.0 / vt_t.clamp(min=1e-8))
-    residualizer_a = WeightedResidualizer(covariates_t, sqrt_wa_t)
+    if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
+        ase_covariates_t = covariates_t
+    sqrt_wa_t = _zero_degenerate_ase_weights(
+        _channel_weights(a_t, va_t, ase_covariates_t, tau_mode, device, eps), va_t, eps)
+    sqrt_wt_t = _channel_weights(t_t, vt_t, covariates_t, tau_mode, device, eps)
+    residualizer_a = WeightedResidualizer(ase_covariates_t, sqrt_wa_t)
     residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t)
     return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
 
@@ -588,18 +660,58 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
     return tstat_combined, slope_combined, se_combined, slope_a, se_a, slope_tc, se_tc
 
 
+def _permute_within_informative(r_t, informative_t, permutation_ix_t):
+    """Permute the entries of r_t [N] among the samples flagged informative,
+    once per row of permutation_ix_t [nperm, N] (each row a permutation of
+    0..N-1). Returns [nperm, N].
+
+    A row's permutation is restricted to the informative subset by keeping
+    the informative samples in the order the row visits them, which is a
+    uniformly random permutation of that subset and lets both channels share
+    one draw. Entries that are not informative keep their value (zero for a
+    sample the channel does not use), so no information lands on a zero
+    weight and no zero lands on an informative sample.
+    """
+    nperm, N = permutation_ix_t.shape
+    out = r_t.unsqueeze(0).expand(nperm, N).clone()
+    inf_ix = torch.nonzero(informative_t, as_tuple=False).flatten()
+    n_inf = inf_ix.numel()
+    if n_inf <= 1:
+        return out
+    visits = informative_t[permutation_ix_t]
+    src = permutation_ix_t[visits].view(nperm, n_inf)
+    out[:, inf_ix] = r_t[src]
+    return out
+
+
 def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
                                       sqrt_wa_t, sqrt_wt_t,
                                       residualizer_a, residualizer_t,
-                                      permutation_ix_t):
+                                      permutation_ix_t, dof=None):
     """
     Compute nominal and permutation statistics for hapmixQTL.
 
-    Uses fixed weights across permutations (approximate permutation):
-    only phenotype values (a, t) are shuffled while weights remain in
-    original sample order. This enables efficient batch computation via
-    matrix multiplication. The approximation is very good when inferential
-    variances are similar across samples.
+    ``dof`` is the t-reference used to map the known-variance statistic to a
+    correlation scale; the mapping is monotonic, so the empirical p-value does
+    not depend on it, but the nominal p-value the caller derives from
+    r_nominal does. Default: the smaller of the two channels' residualizer
+    dof, which with per-channel covariates is the total channel's (the
+    larger design). map_cis passes its own N - 2 - n_cov so both agree.
+
+    The permutation null is Freedman-Lane in whitened space. Under the null
+    the whitened residuals e*_i = sqrt(w_i) (y_i - C b) have unit variance
+    whatever the sample's v_inf, so they are exchangeable and are what a
+    permutation may move between samples; the predictors and the weights
+    stay in sample order, so every permuted statistic is one matrix product.
+    The earlier scheme permuted the RAW phenotype values at fixed weights,
+    handing sample i another sample's value at its own precision; under
+    heteroskedastic v_inf that mis-scales the null (v_inf spanning 0.01-2:
+    a null gene's empirical p averaged 0.94, type-I 0.000 at alpha 0.05).
+    Each channel permutes among its informative samples only (weight > 0),
+    and the two channels share the draw (see _permute_within_informative).
+    Because the residualized predictors are orthogonal to the null design,
+    re-residualizing the permuted residuals would leave xy unchanged, and
+    _combined_tstat2 does not use yy, so that step is skipped.
 
     Returns:
         r_nominal:  signed correlation-scale statistic for best variant (scalar)
@@ -609,7 +721,8 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
         r2_perm_t:  max r^2 per permutation [nperm]
         g_best:     genotype vector for best variant [N]
     """
-    dof = residualizer_a.dof
+    if dof is None:
+        dof = min(residualizer_a.dof, residualizer_t.dof)
 
     # --- Pre-transform and residualize fixed predictors ---
     # ASE
@@ -667,22 +780,15 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     std_ratio = torch.where(r_nominal.abs() > 0, slope_nom / r_nominal,
                             torch.zeros_like(slope_nom))
 
-    # --- Permutation statistics ---
-    nperm = permutation_ix_t.shape[0]
+    # --- Permutation statistics: whitened residuals permuted within each
+    # channel's informative samples (see the docstring) ---
+    a_res_perms = _permute_within_informative(a_star_res[0], sqrt_wa_t > 0, permutation_ix_t)
+    t_res_perms = _permute_within_informative(t_star_res[0], sqrt_wt_t > 0, permutation_ix_t)
 
-    a_perms = a_t[permutation_ix_t]
-    t_perms = t_t[permutation_ix_t]
-
-    a_star_perms = a_perms * sqrt_wa_t.unsqueeze(0)
-    t_star_perms = t_perms * sqrt_wt_t.unsqueeze(0)
-
-    a_star_res_perms = residualizer_a.transform(a_star_perms)
-    t_star_res_perms = residualizer_t.transform(t_star_perms)
-
-    xy_a_perm = torch.mm(s_star_res, a_star_res_perms.t())
-    yy_a_perm = (a_star_res_perms * a_star_res_perms).sum(1)
-    xy_t_perm = torch.mm(g_half_star_res, t_star_res_perms.t())
-    yy_t_perm = (t_star_res_perms * t_star_res_perms).sum(1)
+    xy_a_perm = torch.mm(s_star_res, a_res_perms.t())
+    yy_a_perm = (a_res_perms * a_res_perms).sum(1)
+    xy_t_perm = torch.mm(g_half_star_res, t_res_perms.t())
+    yy_t_perm = (t_res_perms * t_res_perms).sum(1)
 
     tstat2_perm = _combined_tstat2(xy_a_perm, xx_a, yy_a_perm,
                                     xy_t_perm, xx_t, yy_t_perm, dof)
@@ -790,7 +896,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 phenotype_pos_df, xL_df=None, xR_df=None, prefix='',
                 covariates_df=None, maf_threshold=0, window=1000000,
                 tau_mode='estimate', se_mode='model',
-                output_dir='.', logger=None, verbose=True):
+                output_dir='.', logger=None, verbose=True,
+                ase_covariates_df=SAME_COVARIATES):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
@@ -808,7 +915,16 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         xL_df:            haplotype L ALT allele (0/1) [variants x samples] or None
         xR_df:            haplotype R ALT allele (0/1) [variants x samples] or None
         prefix:           output file prefix
-        covariates_df:    covariates [samples x covariates] or None
+        covariates_df:    covariates [samples x covariates] or None, applied
+                          to the TOTAL channel (and, by default, the allelic one)
+        ase_covariates_df: covariates for the ALLELIC channel: SAME_COVARIATES
+                          (default; the total channel's), None (intercept only)
+                          or a DataFrame [samples x k]. The allelic contrast is
+                          a within-sample difference in which covariates that act
+                          on both haplotypes alike cancel, so None is the usual
+                          choice; each column projected out of the allelic
+                          channel costs one informative sample and can only
+                          remove signal (see _prepare_channels)
         maf_threshold:    minimum minor allele frequency
         window:           cis-window size in bases
         tau_mode:         'estimate' (default) or 'zero'.
@@ -895,7 +1011,10 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         logger.write(f'  * applying in-sample {maf_threshold} MAF filter')
     logger.write(f'  * cis-window: ±{window:,}')
 
-    dof = N - 2 - n_cov
+    ase_covariates_t, n_cov_a = _resolve_ase_covariates(
+        ase_covariates_df, covariates_df, samples, device, logger)
+    # one t reference for the combined statistic: the larger design's
+    dof = N - 2 - max(n_cov, n_cov_a)
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -952,7 +1071,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
             sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
-                a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
+                a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
+                ase_covariates_t=ase_covariates_t)
 
             genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1070,13 +1190,22 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             phenotype_pos_df, xL_df=None, xR_df=None,
             covariates_df=None, maf_threshold=0, beta_approx=True,
             nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
-            logger=None, seed=None, verbose=True, warn_monomorphic=True):
+            logger=None, seed=None, verbose=True, warn_monomorphic=True,
+            ase_covariates_df=SAME_COVARIATES):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
+    ``ase_covariates_df`` is the allelic channel's covariate design (see
+    map_nominal): SAME_COVARIATES, None for an intercept only, or its own
+    DataFrame. The nominal p-value uses one t reference for both channels,
+    dof = N - 2 - max(n_cov, n_cov_a).
+
     For each phenotype, finds the best cis variant and computes empirical
-    p-values by permuting sample labels. Uses approximate permutation with
-    fixed weights for computational efficiency.
+    p-values by permuting the whitened null residuals of each channel among
+    its informative samples (Freedman-Lane in whitened space; see
+    calculate_hapmixqtl_permutations). ``se_mode`` must be 'model': the
+    permutation statistic is the known-variance GLS statistic, which has no
+    sandwich counterpart here; use map_nominal for robust standard errors.
 
     Returns:
         DataFrame with one row per phenotype, analogous to cis.map_cis output.
@@ -1103,7 +1232,12 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     logger.write(f'  * {N} samples')
     logger.write(f'  * {A_df.shape[0]} phenotypes')
 
-    robust = se_mode == 'robust'
+    if se_mode != 'model':
+        raise ValueError(
+            f"map_cis: se_mode={se_mode!r} is not available. The permutation "
+            "statistic is the known-variance GLS statistic, and sandwich "
+            "standard errors have no permutation counterpart here; use "
+            "map_nominal for se_mode='robust'")
 
     if covariates_df is not None:
         assert covariates_df.index.equals(A_df.columns), \
@@ -1126,7 +1260,10 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         logger.write(f'  * applying in-sample {maf_threshold} MAF filter')
     logger.write(f'  * cis-window: ±{window:,}')
 
-    dof = N - 2 - n_cov
+    ase_covariates_t, n_cov_a = _resolve_ase_covariates(
+        ase_covariates_df, covariates_df, samples, device, logger)
+    # one t reference for the combined statistic: the larger design's
+    dof = N - 2 - max(n_cov, n_cov_a)
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -1163,7 +1300,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
-            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
+            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
+            ase_covariates_t=ase_covariates_t)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1206,7 +1344,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             genotypes_t, sign_t, a_t, t_t,
             sqrt_wa_t, sqrt_wt_t,
             residualizer_a, residualizer_tc,
-            permutation_ix_t,
+            permutation_ix_t, dof=dof,
         )
         r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
         best_local = int(var_ix)
@@ -1216,8 +1354,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         _, _, _, lead_a, lead_a_se, lead_t, lead_t_se = [
             float(x.cpu().numpy()[0]) for x in calculate_hapmixqtl_nominal(
                 genotypes_t[best_local:best_local + 1], sign_t[best_local:best_local + 1],
-                a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc,
-                robust=(se_mode == 'robust'))]
+                a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)]
         alpha_cis, pval_cis_trans = cis_trans_diagnostic(
             lead_a, lead_a_se, lead_t, lead_t_se, dof)
 
@@ -1332,7 +1469,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
               coverage=0.95, min_abs_corr=0.5, maf_threshold=0,
               tau_mode='estimate', max_iter=500, window=1000000, tol=1e-3,
               summary_only=True, logger=None, verbose=True,
-              warn_monomorphic=False):
+              warn_monomorphic=False, ase_covariates_df=SAME_COVARIATES):
     """
     hapmixQTL SuSiE fine-mapping.
 
@@ -1385,6 +1522,8 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     else:
         covariates_t = None
         ld_residualizer = None
+    ase_covariates_t, _ = _resolve_ase_covariates(
+        ase_covariates_df, covariates_df, samples, device, logger)
 
     has_phase = xL_df is not None and xR_df is not None
     if has_phase:
@@ -1427,7 +1566,8 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
-            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
+            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
+            ase_covariates_t=ase_covariates_t)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1823,7 +1963,8 @@ def _cis_sites(site_chrom, site_pos, phenotype_pos_df, window):
 def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
                  covariates_df=None, window=1000000, tau_mode='estimate',
-                 se_mode='model', logger=None, verbose=True):
+                 se_mode='model', logger=None, verbose=True,
+                 ase_covariates_df=SAME_COVARIATES):
     """Shared per-phenotype driver: whiten once per gene, call fit_site for
     every site in the cis window, collect its row dicts."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1844,6 +1985,9 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
         n_cov = covariates_df.shape[1]
     else:
         covariates_t = None; n_cov = 0
+    ase_covariates_t, n_cov_a = _resolve_ase_covariates(
+        ase_covariates_df, covariates_df, samples, device, logger)
+    n_cov = max(n_cov, n_cov_a)          # one dof rule for both channels
     robust = se_mode == 'robust'
     pos_df = phenotype_pos_df.loc[phenotype_pos_df.index.isin(A_df.index)]
     cis = _cis_sites(site_chrom, site_pos, pos_df, window)
@@ -1861,7 +2005,8 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
         sqrt_wa_t, sqrt_wt_t, res_a, res_t = _prepare_channels(
-            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device)
+            a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
+            ase_covariates_t=ase_covariates_t)
         ctx = dict(a_t=a_t, t_t=t_t, sqrt_wa_t=sqrt_wa_t, sqrt_wt_t=sqrt_wt_t,
                    res_a=res_a, res_t=res_t, robust=robust, n_cov=n_cov, N=N,
                    device=device, site_ix=site_ix, pid=pid, start=start)
@@ -1898,7 +2043,8 @@ def _pvals(fit, N, n_cov):
 def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_df,
                      phenotype_pos_df, hap_phased=None, covariates_df=None,
                      window=1000000, min_hap=10, tau_mode='estimate',
-                     se_mode='model', logger=None, verbose=True):
+                     se_mode='model', logger=None, verbose=True,
+                     ase_covariates_df=SAME_COVARIATES):
     """
     Categorical (per-allele) cis-QTL test for multiallelic non-repeat sites:
     the K-1 split-biallelic rows of a site fitted jointly.
@@ -1958,7 +2104,8 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
     _second_pass('categorical, multiallelic sites', len(site_df),
                  site_df['chrom'].values, site_df['pos'].values, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
-                 covariates_df, window, tau_mode, se_mode, logger, verbose)
+                 covariates_df, window, tau_mode, se_mode, logger, verbose,
+                 ase_covariates_df=ase_covariates_df)
     site_cols = ['phenotype_id', 'site_id', 'start_distance', 'n_alleles', 'n_tested',
                  'ref_allele', 'pooled_other', 'n_missing_hap', 'pval_joint', 'chi2',
                  'dof', 'rank_deficient']
@@ -1971,7 +2118,7 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
 def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_df, Vt_df,
                       phenotype_pos_df, covariates_df=None, window=1000000,
                       winsor=(0.01, 0.99), tau_mode='estimate', se_mode='model',
-                      logger=None, verbose=True):
+                      logger=None, verbose=True, ase_covariates_df=SAME_COVARIATES):
     """
     Linear + curvature cis-QTL model for STRs: per haplotype
     f(L) = b1 (L - c) + b2 (L - c)^2 in repeat units, c = cohort mean length.
@@ -2040,7 +2187,8 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
     _second_pass('linear + curvature, STRs', len(str_df),
                  str_df['chrom'].values, str_df['pos'].values, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
-                 covariates_df, window, tau_mode, se_mode, logger, verbose)
+                 covariates_df, window, tau_mode, se_mode, logger, verbose,
+                 ase_covariates_df=ase_covariates_df)
     cols = ['phenotype_id', 'str_id', 'start_distance', 'n_called', 'n_phased',
             'len_center', 'len_lo', 'len_hi', 'slope_lin', 'slope_lin_se', 'pval_lin',
             'slope_l', 'slope_l_se', 'slope_sq', 'slope_sq_se', 'pval_curv',

@@ -17,7 +17,8 @@ from post import *
 import genotypeio, cis, trans, susie, nbqtl, hapmixqtl
 
 
-def main():
+def build_parser():
+    """The command-line interface, separated from main() so its defaults can be tested."""
     parser = argparse.ArgumentParser(description='tensorQTL: GPU-based QTL mapper')
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
@@ -65,10 +66,15 @@ def main():
     parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional; loaded for inspection only -- intentionally unused by the method, see the hapmixqtl module docstring)')
     parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
-    parser.add_argument('--tau_mode', default='zero', type=str, choices=['zero', 'estimate'], help='Overdispersion handling: zero (default) or estimate per phenotype')
+    parser.add_argument('--tau_mode', default='estimate', type=str, choices=['zero', 'estimate'], help="hapmixqtl modes: overdispersion handling. 'estimate' (default) adds a per-phenotype, per-channel moment-estimated tau to the Gibbs inferential variances; 'zero' asserts the inferential variance is the entire error variance, which is anticonservative on real data (up to 107x nominal type-I error; docs/ase_validation.md) and is kept only to reproduce earlier results")
+    parser.add_argument('--ase_covariates', default='shared', type=str, choices=['shared', 'none'], help="hapmixqtl modes: what --covariates are projected out of the allelic channel. 'shared' (default) applies them to both channels; 'none' fits the allelic channel with an intercept only (its log haplotype ratio is a within-sample contrast in which sample-level covariates cancel, and each column projected out costs one informative sample)")
     parser.add_argument('--se_mode', default='model', type=str, choices=['model', 'robust'], help='SE mode: model-based (default) or robust/sandwich')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     # check inputs
     if args.mode == 'cis_independent' and (args.cis_output is None or not os.path.exists(args.cis_output)):
@@ -120,6 +126,7 @@ def main():
             logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
 
     if args.mode.startswith('hapmixqtl'):
+        ase_covariates = hapmixqtl.SAME_COVARIATES if args.ase_covariates == 'shared' else None
         covariates_df = None
         if args.covariates is not None:
             logger.write(f'  * reading covariates ({args.covariates})')
@@ -441,6 +448,7 @@ def main():
             covariates_df=covariates_df, maf_threshold=maf_threshold,
             window=args.window, tau_mode=args.tau_mode, se_mode=args.se_mode,
             output_dir=args.output_dir, logger=logger, verbose=True,
+            ase_covariates_df=ase_covariates,
         )
 
     elif args.mode == 'hapmixqtl':
@@ -458,6 +466,7 @@ def main():
             tau_mode=args.tau_mode, se_mode=args.se_mode,
             beta_approx=not args.disable_beta_approx,
             logger=logger, seed=args.seed, verbose=True,
+            ase_covariates_df=ase_covariates,
         )
         logger.write('  * writing output')
         if has_rpy2:
@@ -479,6 +488,7 @@ def main():
             L=args.max_effects, tau_mode=args.tau_mode,
             max_iter=500, window=args.window, summary_only=False,
             logger=logger, verbose=True,
+            ase_covariates_df=ase_covariates,
         )
         logger.write('  * writing output')
         summary_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl_SuSiE_summary.parquet'))

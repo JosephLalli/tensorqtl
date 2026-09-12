@@ -147,3 +147,89 @@ def test_channel_estimators_uncorrelated_under_correlated_noise():
         ba.append(slope_a[0]); bt.append(slope_t[0])
     r = float(np.corrcoef(ba, bt)[0, 1])
     assert abs(r) <= 0.15, f'corr(beta_a, beta_t) = {r:.3f} at rho = 0.9'
+
+
+def test_per_channel_covariates_stay_calibrated():
+    """BrainVar's layout: covariates that move total expression are projected
+    out of the total channel, the allelic channel gets an intercept only, the
+    variances are heteroskedastic with unmodelled biological variance, and 10%
+    of samples carry no allele-specific coverage. The null must stay nominal
+    on the shared t reference (N - 2 - n_cov), and an allelic channel fitted
+    without the covariates must not be less calibrated than one fitted with
+    them."""
+    n_cov = 8
+
+    def pvals(ase, seed):
+        rng = np.random.RandomState(seed)
+        out = []
+        for _ in range(30):
+            g, s, a, t, va, vt = simulate_channels(N, V, rng, beta=0.0, sigma_bio=0.6)
+            C = rng.normal(size=(N, n_cov))
+            t = t + C @ rng.normal(0, 0.3, n_cov)
+            k = rng.choice(N, N // 10, replace=False)
+            a[k] = 0.0
+            va[k] = 0.0
+            tstat = run_association(g, s, a, t, va, vt, tau_mode='estimate',
+                                    covariates=C, ase_covariates=ase)[0]
+            out.append(pvals_from_t(tstat, N, n_cov=n_cov))
+        return np.concatenate(out)
+
+    p = pvals(None, seed=41)
+    assert _type1(p, 0.05) < 0.08, _type1(p, 0.05)
+    assert 0.8 < _lambda_gc(p) < 1.2, _lambda_gc(p)
+    p_shared = pvals('same', seed=41)
+    assert _type1(p_shared, 0.05) < 0.08, _type1(p_shared, 0.05)
+
+
+def _map_cis_null_pvals(reps, nperm=200, seed=3, n_samples=80, n_variants=20):
+    """map_cis on null genes with heteroskedastic v_inf (0.01-2), covariates
+    on the total channel, an intercept-only allelic channel and 10% samples
+    without allele-specific coverage; returns (pval_perm, pval_beta)."""
+    import io, contextlib
+    import pandas as pd
+    from tensorqtl.hapmixqtl import map_cis
+    N, V = n_samples, n_variants
+    rng = np.random.RandomState(seed)
+    pp, pb = [], []
+    samples = [f'S{i}' for i in range(N)]
+    vids = [f'chr1_{1000 + i * 100}_A_G' for i in range(V)]
+    vdf = pd.DataFrame({'chrom': ['chr1'] * V, 'pos': [1000 + i * 100 for i in range(V)]}, index=vids)
+    pos = pd.DataFrame({'chr': ['chr1'], 'pos': [1000]}, index=['G1'])
+    for rep in range(reps):
+        g, s, a, t, va, vt = simulate_channels(N, V, rng, beta=0.0, v_inf_lo=0.01,
+                                               v_inf_hi=2.0, sigma_bio=0.3)
+        C = rng.normal(size=(N, 4))
+        t = t + C @ rng.normal(0, 0.3, 4)
+        k = rng.choice(N, N // 10, replace=False)
+        a[k] = 0.0
+        va[k] = 0.0
+        xL = ((g == 2) | ((g == 1) & (s > 0))).astype(float)
+        xR = ((g == 2) | ((g == 1) & (s < 0))).astype(float)
+        mk = lambda x: pd.DataFrame(x[None, :], index=['G1'], columns=samples)
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = map_cis(pd.DataFrame(g, index=vids, columns=samples), vdf,
+                          mk(a), mk(t), mk(va), mk(vt), pos,
+                          xL_df=pd.DataFrame(xL, index=vids, columns=samples),
+                          xR_df=pd.DataFrame(xR, index=vids, columns=samples),
+                          nperm=nperm, covariates_df=pd.DataFrame(C, index=samples),
+                          ase_covariates_df=None, seed=rep, verbose=False)
+        pp.append(float(res['pval_perm'].iloc[0]))
+        pb.append(float(res['pval_beta'].iloc[0]))
+    return np.array(pp), np.array(pb)
+
+
+def test_pval_perm_is_calibrated_under_heteroskedasticity():
+    """The empirical p-value must be uniform on null genes whose samples have
+    very different inferential precision. Permuting the RAW phenotype values
+    at fixed weights (the scheme before the whitened-residual permutation)
+    hands each sample another sample's value at its own precision and
+    mis-scales the null: on this design pval_perm averaged 0.94 with no
+    rejection at 0.05 in 100 genes. A valid scheme gives mean 0.5 and the
+    nominal rejection rate."""
+    pp, pb = _map_cis_null_pvals(60)
+    assert 0.40 <= pp.mean() <= 0.60, pp.mean()
+    assert (pp < 0.05).mean() <= 0.13, (pp < 0.05).mean()
+    assert 0.35 <= (pp < 0.5).mean() <= 0.65, (pp < 0.5).mean()
+    ok = np.isfinite(pb)
+    assert ok.mean() > 0.9
+    assert 0.40 <= pb[ok].mean() <= 0.60, pb[ok].mean()
