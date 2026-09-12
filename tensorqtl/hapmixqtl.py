@@ -502,21 +502,35 @@ def _min_informative(covariates_t, extra=2):
     return 1 + n_cov + extra
 
 
-def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12):
-    """sqrt weights of one channel, or all zeros when the channel is off.
+def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12, tau_extra_t=None):
+    """sqrt weights of one channel, or all zeros when the channel is off, with
+    the tau used (None under tau_mode='zero') and whether tau was estimated
+    with the extra column(s) in its design.
 
     The sparse-channel rule: with fewer informative samples (v > eps) than
     the channel's design has columns plus two, neither the regression nor
     tau is identifiable from that channel, so it contributes nothing (every
     weight zero -> xx = 0 -> the meta-analysis takes the other channel alone).
+
+    tau_extra_t ([N, k] or None) adds columns to the design tau is estimated
+    under, without changing what the residualizer projects out: the lead
+    refit passes the lead's predictor so tau stops absorbing the tested
+    effect (see map_cis). When the informative samples cannot support the
+    larger design the null-design tau is kept and the flag says so; the refit
+    never switches a channel off that the scan had on.
     """
     n_inf = int((v_t > eps).sum())
     if n_inf < _min_informative(covariates_t):
-        return torch.zeros_like(v_t)
-    if tau_mode == 'estimate':
-        tau = _estimate_tau_informative(y_t, v_t, covariates_t, device, eps)
-        return torch.sqrt(1.0 / (v_t.clamp(min=1e-8) + tau))
-    return torch.sqrt(1.0 / v_t.clamp(min=1e-8))
+        return torch.zeros_like(v_t), None, False
+    if tau_mode != 'estimate':
+        return torch.sqrt(1.0 / v_t.clamp(min=1e-8)), None, False
+    design, refit = covariates_t, False
+    if tau_extra_t is not None:
+        cand = tau_extra_t if covariates_t is None else torch.cat([covariates_t, tau_extra_t], dim=1)
+        if n_inf >= _min_informative(cand):
+            design, refit = cand, True
+    tau = _estimate_tau_informative(y_t, v_t, design, device, eps)
+    return torch.sqrt(1.0 / (v_t.clamp(min=1e-8) + tau)), float(tau), refit
 
 
 SAME_COVARIATES = 'same'
@@ -557,7 +571,8 @@ def _warn_tau_zero(tau_mode):
 
 
 def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
-                      ase_covariates_t=SAME_COVARIATES, eps=1e-12):
+                      ase_covariates_t=SAME_COVARIATES, eps=1e-12,
+                      tau_extra_a_t=None, tau_extra_t_t=None, return_info=False):
     """
     Per-phenotype whitening shared by every mapping function.
 
@@ -598,17 +613,27 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
     informative samples and can only remove signal (10 expression PCs
     against ~50 informative samples halved CCNI's allelic statistic).
 
+    tau is estimated under the design the residualizer projects out (the
+    null model). ``tau_extra_a_t`` / ``tau_extra_t_t`` add columns to that
+    design for the tau estimate only -- the lead refit passes the lead's
+    predictor of each channel -- so a strong cis effect stops inflating tau
+    and shrinking the reported scale (_channel_weights).
+
     Returns:
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
+        (+ info dict with tau_a, tau_t, refit_a, refit_t when return_info)
     """
     _warn_tau_zero(tau_mode)
     if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
         ase_covariates_t = covariates_t
-    sqrt_wa_t = _zero_degenerate_ase_weights(
-        _channel_weights(a_t, va_t, ase_covariates_t, tau_mode, device, eps), va_t, eps)
-    sqrt_wt_t = _channel_weights(t_t, vt_t, covariates_t, tau_mode, device, eps)
+    wa, tau_a, refit_a = _channel_weights(a_t, va_t, ase_covariates_t, tau_mode, device, eps, tau_extra_a_t)
+    sqrt_wa_t = _zero_degenerate_ase_weights(wa, va_t, eps)
+    sqrt_wt_t, tau_t, refit_t = _channel_weights(t_t, vt_t, covariates_t, tau_mode, device, eps, tau_extra_t_t)
     residualizer_a = WeightedResidualizer(ase_covariates_t, sqrt_wa_t)
     residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t)
+    if return_info:
+        return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t, dict(
+            tau_a=tau_a, tau_t=tau_t, refit_a=refit_a, refit_t=refit_t)
     return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
 
 
@@ -1009,6 +1034,11 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             'zero' is retained only for reproducing prior results and emits a
             warning.
         se_mode:          'model' (default) or 'robust' (sandwich)
+                          Statistics are on the null-model tau scale (tau
+                          estimated once per gene without a genotype term);
+                          map_cis(tau_refit=True) reports its lead with tau
+                          re-estimated under the alternative, so a strong
+                          gene's lead pair is larger there than here.
         output_dir:       output directory
         logger:           SimpleLogger instance
         verbose:          print progress
@@ -1245,9 +1275,26 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             covariates_df=None, maf_threshold=0, beta_approx=True,
             nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
-            ase_covariates_df=SAME_COVARIATES):
+            ase_covariates_df=SAME_COVARIATES, tau_refit=False):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
+
+    ``tau_refit``: tau is estimated once per gene under the null model (no
+    genotype term) for the scan, so a strong cis effect inflates it and
+    shrinks every statistic in the window by a common factor (30-110% on
+    BrainVar genes with real signal). That factor cancels in ``pval_perm``
+    and ``pval_beta``, which compare the scan statistic with permutations
+    carrying the same tau, but not in the nominal scale. With
+    ``tau_refit=True`` each channel's tau is re-estimated with the lead's
+    predictor in the model and the lead's ``slope``, ``slope_se``,
+    ``pval_nominal`` and per-channel diagnostics are reported on that scale
+    (the like-for-like with a model that fits its dispersion under the
+    alternative, as RASQUAL does); ``pval_perm`` and ``pval_beta`` stay on
+    the scan scale, where they are calibrated. ``tau_a``/``tau_t`` are the
+    tau of the reported statistic, ``tau_a_null``/``tau_t_null`` the scan's.
+    A lead's ``pval_nominal`` is never a gene-level p (it is the best of the
+    window), and the refit makes it more selective; ``pval_beta`` is the
+    gene-level p. map_nominal stays on the null-model scale.
 
     ``ase_covariates_df`` is the allelic channel's covariate design (see
     map_nominal): SAME_COVARIATES, None for an intercept only, or its own
@@ -1353,9 +1400,9 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
-        sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
+        sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc, tau_info = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
-            ase_covariates_t=ase_covariates_t)
+            ase_covariates_t=ase_covariates_t, return_info=True)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1404,11 +1451,25 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         best_local = int(var_ix)
         var_ix = genotype_range[var_ix]
 
-        # per-channel slopes at the lead variant, for the cis/trans diagnostic
-        _, _, _, lead_a, lead_a_se, lead_t, lead_t_se = [
-            float(x.cpu().numpy()[0]) for x in calculate_hapmixqtl_nominal(
-                genotypes_t[best_local:best_local + 1], sign_t[best_local:best_local + 1],
-                a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)]
+        # the lead on the scan scale: per-channel slopes for the cis/trans diagnostic
+        g_lead = genotypes_t[best_local:best_local + 1]
+        s_lead = sign_t[best_local:best_local + 1]
+        lead_stat = calculate_hapmixqtl_nominal(
+            g_lead, s_lead, a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)
+        tau_used = dict(tau_a=tau_info['tau_a'], tau_t=tau_info['tau_t'], refit=False)
+        if tau_refit and tau_mode == 'estimate':
+            # tau with the lead's predictor in the model; the residualizers
+            # still project out the null design only
+            wa_r, wt_r, res_a_r, res_t_r, info_r = _prepare_channels(
+                a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
+                ase_covariates_t=ase_covariates_t, return_info=True,
+                tau_extra_a_t=s_lead.t(), tau_extra_t_t=(g_lead / 2).t())
+            lead_stat = calculate_hapmixqtl_nominal(
+                g_lead, s_lead, a_t, t_t, wa_r, wt_r, res_a_r, res_t_r)
+            tau_used = dict(tau_a=info_r['tau_a'], tau_t=info_r['tau_t'],
+                            refit=bool(info_r['refit_a'] or info_r['refit_t']))
+        (lead_tstat, lead_slope, lead_slope_se, lead_a, lead_a_se, lead_t, lead_t_se) = [
+            float(x.cpu().numpy()[0]) for x in lead_stat]
         alpha_cis, pval_cis_trans = cis_trans_diagnostic(
             lead_a, lead_a_se, lead_t, lead_t_se, dof)
 
@@ -1416,12 +1477,18 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         start_distance = variant_df['pos'].values[var_ix] - igc.phenotype_start[phenotype_id]
         end_distance = variant_df['pos'].values[var_ix] - igc.phenotype_end[phenotype_id]
 
+        # empirical p and the beta approximation stay on the scan scale
         r2_nominal = r_nominal * r_nominal
         pval_perm = (np.sum(r2_perm >= r2_nominal) + 1) / (nperm + 1)
 
-        slope = r_nominal * std_ratio
-        tstat2 = dof * r2_nominal / (1 - r2_nominal) if r2_nominal < 1 else np.inf
-        slope_se = np.abs(slope) / np.sqrt(tstat2) if tstat2 > 0 else np.inf
+        if tau_used['refit']:
+            slope, slope_se = lead_slope, lead_slope_se
+            pval_nominal = float(get_t_pval(lead_tstat, dof)) if np.isfinite(lead_tstat) else np.nan
+        else:
+            slope = r_nominal * std_ratio
+            tstat2 = dof * r2_nominal / (1 - r2_nominal) if r2_nominal < 1 else np.inf
+            slope_se = np.abs(slope) / np.sqrt(tstat2) if tstat2 > 0 else np.inf
+            pval_nominal = pval_from_corr(r2_nominal, dof)
 
         n2 = 2 * len(g)
         af = np.sum(g) / n2
@@ -1444,7 +1511,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('ma_samples', ma_samples),
             ('ma_count', ma_count),
             ('af', af),
-            ('pval_nominal', pval_from_corr(r2_nominal, dof)),
+            ('pval_nominal', pval_nominal),
             ('slope', slope),
             ('slope_se', slope_se),
             ('slope_a', lead_a),
@@ -1455,6 +1522,11 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('pval_cis_trans', float(pval_cis_trans[0])),
             ('pval_perm', pval_perm),
             ('pval_beta', np.nan),
+            ('tau_a', tau_used['tau_a']),
+            ('tau_t', tau_used['tau_t']),
+            ('tau_a_null', tau_info['tau_a']),
+            ('tau_t_null', tau_info['tau_t']),
+            ('tau_refit', tau_used['refit']),
         ]), name=phenotype_id)
 
         if beta_approx:

@@ -122,9 +122,11 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
                tested_mask, perm=None, cov_df=None, ase_cov='none', nperm=1000, seed=0):
     """Return DataFrame(gene, stat, log_afc, lead, pval_perm). stat = chi2(1)-
     equivalent of the lead nominal p over TESTED variants, so it sits on
-    RASQUAL's scale; pval_perm is map_cis's empirical p of the lead against
-    the gene's own whitened-residual permutation null (nperm draws, seeded so
-    the table is reproducible), which RASQUAL's arm has no counterpart for.
+    RASQUAL's scale, with tau re-estimated at the lead (map_cis tau_refit) so
+    a strong gene's own signal does not shrink it; pval_perm is map_cis's
+    empirical p of the lead against the gene's own whitened-residual
+    permutation null (nperm draws, seeded so the table is reproducible),
+    which RASQUAL's arm has no counterpart for.
 
     cov_df is projected out of the TOTAL channel. ase_cov says what the
     ALLELIC channel gets: 'none' (intercept only; the log haplotype ratio is
@@ -151,7 +153,7 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
                       pos_df, xL_df=xl, xR_df=xr, window=window, nperm=nperm,
                       seed=seed, covariates_df=cov_df,
                       ase_covariates_df=(None if ase_cov == 'none' else SAME_COVARIATES),
-                      verbose=False)
+                      tau_refit=True, verbose=False)
     p = pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1)
     # map_cis returns the gene ID as the INDEX (named phenotype_id), not a column
     return pd.DataFrame({'gene': res.index.values,
@@ -526,7 +528,7 @@ def hapmix_at(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
                 res = map_cis(one(dos), v[['chrom', 'pos']], mk(A), mk(T), mk(Va), mk(Vt),
                               pos_df.loc[[g]], xL_df=one(xL), xR_df=one(xR),
                               window=window, nperm=10, covariates_df=cov_df,
-                              ase_covariates_df=ase, verbose=False,
+                              ase_covariates_df=ase, tau_refit=True, verbose=False,
                               warn_monomorphic=False, beta_approx=False)
             except ValueError:          # no valid variant in the gene's window
                 continue
@@ -1180,6 +1182,7 @@ def run(args):
                    'count_noise': bool(args.count_noise),
                    'ase_covariates': args.ase_covariates,
                    'hapmix_nperm': args.hapmix_nperm,
+                   'tau_refit': True,
                    'expression_floor': {'min_count': args.min_count,
                                         'min_count_frac': args.min_count_frac,
                                         'n_dropped': len(dropped)},

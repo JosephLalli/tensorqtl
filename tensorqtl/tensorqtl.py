@@ -67,6 +67,7 @@ def build_parser():
     parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--tau_mode', default='estimate', type=str, choices=['zero', 'estimate'], help="hapmixqtl modes: overdispersion handling. 'estimate' (default) adds a per-phenotype, per-channel moment-estimated tau to the Gibbs inferential variances; 'zero' asserts the inferential variance is the entire error variance, which is anticonservative on real data (up to 107x nominal type-I error; docs/ase_validation.md) and is kept only to reproduce earlier results")
+    parser.add_argument('--tau_refit', action='store_true', help="hapmixqtl mode: re-estimate each channel's tau with the lead variant in the model and report the lead's slope, SE and nominal p on that scale (tau estimated under the null absorbs a strong cis effect and shrinks the nominal scale; pval_perm and pval_beta are unaffected either way)")
     parser.add_argument('--ase_covariates', default='shared', type=str, choices=['shared', 'none'], help="hapmixqtl modes: what --covariates are projected out of the allelic channel. 'shared' (default) applies them to both channels; 'none' fits the allelic channel with an intercept only (its log haplotype ratio is a within-sample contrast in which sample-level covariates cancel, and each column projected out costs one informative sample)")
     parser.add_argument('--se_mode', default='model', type=str, choices=['model', 'robust'], help='SE mode: model-based (default) or robust/sandwich')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
@@ -466,7 +467,7 @@ def main():
             tau_mode=args.tau_mode, se_mode=args.se_mode,
             beta_approx=not args.disable_beta_approx,
             logger=logger, seed=args.seed, verbose=True,
-            ase_covariates_df=ase_covariates,
+            ase_covariates_df=ase_covariates, tau_refit=args.tau_refit,
         )
         logger.write('  * writing output')
         if has_rpy2:

@@ -155,6 +155,8 @@ class TestHapmixQTLDefaults:
         assert args.tau_mode == 'estimate'
         assert args.se_mode == 'model'
         assert args.ase_covariates == 'shared'
+        assert args.tau_refit is False
+        assert build_parser().parse_args(['g', 'p', 'o', '--tau_refit']).tau_refit is True
         assert build_parser().parse_args(['g', 'p', 'o', '--tau_mode', 'zero']).tau_mode == 'zero'
         assert build_parser().parse_args(['g', 'p', 'o', '--ase_covariates', 'none']).ase_covariates == 'none'
 

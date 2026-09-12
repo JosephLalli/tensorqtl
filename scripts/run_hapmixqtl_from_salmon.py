@@ -1103,7 +1103,8 @@ def main():
     print(f'\nRunning map_cis on {len(common)} genes '
           f"(tau_mode='estimate', the validated default)")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
-                  xL_df=xLdf, xR_df=xRdf, window=args.window, verbose=True)
+                  xL_df=xLdf, xR_df=xRdf, window=args.window, tau_refit=True,
+                  verbose=True)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
     res = res.reset_index()
@@ -1115,7 +1116,7 @@ def main():
         'n_samples': len(order), 'n_genes_tested': int(len(common)),
         'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
-        'tau_mode': 'estimate'})
+        'tau_mode': 'estimate', 'tau_refit': True})
     if vtype is not None:
         print('\nNon-standard second pass')
         cur, site_res, _ = run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos,

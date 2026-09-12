@@ -1282,3 +1282,101 @@ class TestPermutedNullScale:
         expected_deficit = (N - (p + 1)) / N                    # 0.70
         assert abs(raw - expected_deficit) < 0.08, (raw, expected_deficit)
         assert abs(std - 1.0) < 0.08, std
+
+
+def _heteroskedastic_dataset(seed, n_samples=80, beta=0.6, tau=0.05):
+    """_make_dataset with a planted effect on phenotype 0, heteroskedastic
+    inferential variances and between-sample variance tau, so tau estimated
+    under the null absorbs the planted signal."""
+    d = _make_dataset(seed=seed, n_samples=n_samples)
+    rng = np.random.RandomState(seed + 1)
+    N = n_samples
+    xL, xR, g = d['xL_df'].values, d['xR_df'].values, d['genotype_df'].values
+    for k, pid in enumerate(d['A_df'].index):
+        va = rng.uniform(0.01, 0.2, N); vt = rng.uniform(0.01, 0.2, N)
+        a = np.sqrt(va + tau) * rng.normal(size=N); t = 2.0 + np.sqrt(vt + tau) * rng.normal(size=N)
+        if k == 0:
+            a = a + beta * (xL[0] - xR[0]); t = t + beta * g[0] / 2
+        d['A_df'].loc[pid] = a.astype(np.float32); d['T_df'].loc[pid] = t.astype(np.float32)
+        d['Va_df'].loc[pid] = va.astype(np.float32); d['Vt_df'].loc[pid] = vt.astype(np.float32)
+    return d
+
+
+class TestLeadRefit:
+
+    def _run(self, d, refit, cov_df=None):
+        return map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'], d['Va_df'],
+                       d['Vt_df'], d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=300,
+                       seed=5, covariates_df=cov_df, ase_covariates_df=None, verbose=False,
+                       tau_refit=refit)
+
+    def test_refit_changes_only_the_reported_scale(self):
+        """Same lead, same pval_perm and pval_beta to the bit (the scan is
+        untouched); on the planted gene tau falls and pval_nominal shrinks;
+        the tau columns record both estimates."""
+        d = _heteroskedastic_dataset(seed=201)
+        rng = np.random.RandomState(3)
+        cov_df = pd.DataFrame(rng.normal(size=(80, 4)), index=d['A_df'].columns, columns=list('wxyz'))
+        off = self._run(d, False, cov_df); on = self._run(d, True, cov_df)
+        assert (off['variant_id'] == on['variant_id']).all()
+        assert np.array_equal(off['pval_perm'].values.astype(float), on['pval_perm'].values.astype(float))
+        assert np.array_equal(off['pval_beta'].values.astype(float), on['pval_beta'].values.astype(float))
+        assert (~off['tau_refit'].astype(bool)).all() and on['tau_refit'].astype(bool).all()
+        assert np.allclose(off['tau_a'].astype(float), off['tau_a_null'].astype(float))
+        assert np.allclose(on['tau_a_null'].astype(float), off['tau_a_null'].astype(float))
+        pid = d['causal_pheno']
+        assert on.loc[pid, 'tau_a'] < on.loc[pid, 'tau_a_null']
+        assert on.loc[pid, 'tau_t'] < on.loc[pid, 'tau_t_null']
+        assert on.loc[pid, 'pval_nominal'] < off.loc[pid, 'pval_nominal'] / 10
+        assert on.loc[pid, 'slope_se'] < off.loc[pid, 'slope_se']
+        # the null phenotypes move little: tau within 30% and p within a factor of 3
+        for q in d['A_df'].index[1:]:
+            assert abs(on.loc[q, 'tau_a'] - off.loc[q, 'tau_a']) <= 0.3 * off.loc[q, 'tau_a'] + 1e-3
+            assert on.loc[q, 'pval_nominal'] > off.loc[q, 'pval_nominal'] / 3
+
+    def test_refit_matches_a_manual_refit(self, device):
+        """_estimate_tau with [covariates, lead column] -> weights -> the null
+        residualizer -> _wls_regression reproduces map_cis's refit slope and
+        SE at the lead in both channels."""
+        d = _heteroskedastic_dataset(seed=202)
+        rng = np.random.RandomState(4)
+        cov_df = pd.DataFrame(rng.normal(size=(80, 3)), index=d['A_df'].columns, columns=list('xyz'))
+        on = self._run(d, True, cov_df)
+        pid = d['causal_pheno']; lead = on.loc[pid, 'variant_id']
+        T = lambda x: torch.tensor(np.asarray(x, dtype=np.float32), dtype=torch.float32)
+        a, t = T(d['A_df'].loc[pid]), T(d['T_df'].loc[pid])
+        va, vt = T(d['Va_df'].loc[pid]), T(d['Vt_df'].loc[pid])
+        s = T(d['xL_df'].loc[lead].values - d['xR_df'].loc[lead].values)
+        g2 = T(d['genotype_df'].loc[lead].values / 2); C = T(cov_df.values)
+        ka = va > 1e-12
+        tau_a = _estimate_tau(a[ka], va[ka], s[ka].unsqueeze(1), 'cpu')
+        tau_t = _estimate_tau(t, vt, torch.cat([C, g2.unsqueeze(1)], 1), 'cpu')
+        wa = torch.sqrt(1.0 / (va.clamp(min=1e-8) + tau_a)); wt = torch.sqrt(1.0 / (vt.clamp(min=1e-8) + tau_t))
+        sl_a, se_a = _wls_regression((a * wa).unsqueeze(0), (s * wa).unsqueeze(0), WeightedResidualizer(None, wa))
+        sl_t, se_t = _wls_regression((t * wt).unsqueeze(0), (g2 * wt).unsqueeze(0), WeightedResidualizer(C, wt))
+        assert np.isclose(float(tau_a), on.loc[pid, 'tau_a'], rtol=1e-4)
+        assert np.isclose(float(tau_t), on.loc[pid, 'tau_t'], rtol=1e-4)
+        assert np.isclose(float(sl_a[0]), on.loc[pid, 'slope_a'], rtol=1e-4)
+        assert np.isclose(float(se_a[0]), on.loc[pid, 'slope_a_se'], rtol=1e-4)
+        assert np.isclose(float(sl_t[0]), on.loc[pid, 'slope_t'], rtol=1e-4)
+        assert np.isclose(float(se_t[0]), on.loc[pid, 'slope_t_se'], rtol=1e-4)
+        ia, it = 1 / float(se_a[0]) ** 2, 1 / float(se_t[0]) ** 2
+        comb = (float(sl_a[0]) * ia + float(sl_t[0]) * it) / (ia + it)
+        assert np.isclose(comb, on.loc[pid, 'slope'], rtol=1e-4)
+        assert np.isclose(1 / np.sqrt(ia + it), on.loc[pid, 'slope_se'], rtol=1e-4)
+
+    def test_refit_keeps_a_barely_identifiable_channel_on_the_null_tau(self):
+        """An allelic channel with exactly design columns + 2 informative
+        samples is on for the scan; the refit's extra column would need one
+        more, so that channel keeps its null tau and the flag is False."""
+        d = _heteroskedastic_dataset(seed=203)
+        A, Va = d['A_df'].copy(), d['Va_df'].copy()
+        sparse = A.index[1]
+        A.loc[sparse, A.columns[3:]] = 0.0; Va.loc[sparse, Va.columns[3:]] = 0.0    # 3 informative = 1 + 2
+        d['A_df'], d['Va_df'] = A, Va
+        on = self._run(d, True)
+        row = on.loc[sparse]
+        assert np.isclose(row['tau_a'], row['tau_a_null'])      # allelic: null tau kept
+        assert row['tau_refit']                                  # the total channel was refit
+        assert row['tau_t'] != row['tau_t_null']
+        assert np.isfinite(row['pval_nominal']) and 0 < row['pval_perm'] <= 1
