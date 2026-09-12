@@ -574,16 +574,105 @@ offers it.
 On the 30 well-expressed genes (`pilotL`, RASQUAL rows reused from
 `pilotI`) the intercept-only allelic channel raises 19 of the 30 gene
 statistics and lowers 11 (median change +1.1), and the number of genes above
-15, roughly the null-maximum level, goes from 6 to 13 against RASQUAL's 11;
-the Spearman correlation with RASQUAL's statistics is 0.38 (p = 0.037).
-The 12-gene external permutation null (genotype columns permuted against
-expression, 10 draws) is unchanged by the covariate split: null-maximum
-means 9.7-17.6 with the intercept-only channel against 10.7-17.4 with the
-shared set, while the observed values on the genes with signal rise (CYP51A1
-14.7 -> 21.8 against RASQUAL's 31.8, TTC3 13.8 -> 16.9, APC 17.0 -> 20.8,
-CCNI 13.9 -> 16.2; ANKRD36B 39.9 -> 37.5). RASQUAL's and hapmixQTL's lead
-variants coincide on 1 of the 30 genes, which is why the effect comparison
-has to be made at matched variants (below) rather than gene-wise.
+15 goes from 6 to 13 against RASQUAL's 11; the Spearman correlation with
+RASQUAL's statistics is 0.38 (p = 0.037). A fixed 15 is not a null level: on
+the 12-gene external permutation null (genotype columns permuted against
+expression, 10 draws) the per-gene null-maximum means run 9.7-17.6 and the
+maxima 13.6-23.1 with the intercept-only channel (10.7-17.4 and 14.8-24.0
+with the shared set), so the covariate split leaves the null where it was
+while the observed values on the genes with signal rise (CYP51A1 14.7 ->
+21.8 against RASQUAL's 31.8, TTC3 13.8 -> 16.9, APC 17.0 -> 20.8, CCNI 13.9
+-> 16.2; ANKRD36B 39.9 -> 37.5). APC at 20.8 sits below its own null-maximum
+mean of 17.6 only by that comparison, which is why the driver now carries
+each gene's own empirical p (`pval_perm`, 1000 whitened-residual
+permutations, `--hapmix-nperm`): in the final run (`pilotM`) 9 of 30 genes
+are below 0.05 against their own null (SLC6A15, MON2, AGPAT5, CYCS, PDZD8,
+EXOC2, CYP51A1, ANKRD36B, TCF4; 1.5 expected under a global null). RASQUAL's
+arm has no per-gene empirical p (its statistic is a likelihood ratio), so
+its 11 genes above 15 are not the same kind of count. RASQUAL's and
+hapmixQTL's lead variants coincide on 1 of the 30 genes, which is why the
+effect comparison has to be made at matched variants (below) rather than
+gene-wise. The sparse-channel rule admits an allelic channel with as few as
+three informative samples under an intercept-only design; the calibration
+gates use about 70 and the 12 BrainVar genes had 46-85, so the floor is
+untested below that.
+
+### The reference-bias gate's orientation, and what the runner feeds RASQUAL
+
+`reference_bias_diagnostic` needs, for every gene-sample, which haplotype
+carries the reference allele where that sample's reads land. A gene has
+many heterozygous sites, and the reference allele sits on L at some and on
+R at others, so no single site's phase describes the gene. What mapping
+bias adds to the haplotype totals is `sum_v reads_v * s_v` (bias favours REF
+at every site carrying reads; `s_v = xL - xR` says which haplotype is ALT
+there), so the orientation that exposes it is the sign of that
+depth-weighted sum: `orient_haplotypes` in the library, and
+`gene_orientation` in `run_hapmixqtl_from_salmon.py`, which assembles the
+sites from the exon union when `--exons` is given, else the gene body, else
+the het site nearest the TSS, with per-site depths from the phASER counts
+when they are available and uniform weights otherwise. The driver and the
+runner share it. Before this the runner oriented gene i by row i of the sign
+matrix (an unrelated variant for every gene past the first) and the driver
+used the single deepest feature SNP; a planted-bias test now shows the
+diagnostic flags bias through the depth-weighted orientation and not through
+a fixed unrelated site.
+
+The runner also fed RASQUAL `expm1` of hapmixQTL's log phenotype
+`log(tot/2 + kappa)`, i.e. half the count, with unit library sizes. It now
+passes the Gibbs-mean totals of the tested genes and the per-sample library
+size summed over every quantified gene, as the driver does (offset
+`K = gene mean x relative library size`). The runner passes no covariates to
+either hapmixQTL channel; the driver is the arm that carries the covariate
+set.
+
+### Effects at matched variants
+
+`--rasqual-rows DIR` keeps every per-variant row RASQUAL writes (one file
+per gene; `pilotK` re-ran the 30 genes with it, 98 min, and reproduces
+`pilotI` exactly: the same lead, chi2, effect and phi on all 30). With the
+rows, `matched_effects` reads RASQUAL at hapmixQTL's lead and re-runs
+hapmixQTL at RASQUAL's lead through the same `map_cis` path restricted to
+that variant (`hapmix_at`), and reports sign agreement, correlation and the
+slope of hapmixQTL's effect on RASQUAL's at hapmixQTL's leads, at RASQUAL's
+leads and at their union (a shared lead entering once). Both effects are
+log(ALT/REF): RASQUAL's pi is the ALT haplotype's share of expression
+(`nbem.c:1058`: expected expression 2(1 - pi) for hom-REF, 2 pi for hom-ALT)
+and hapmixQTL's slope is per ALT dosage on the same VCF record, so no allele
+flip is applied. Records are matched on (chrom, pos, ref, alt): a
+multi-allelic site split into biallelic records occupies one position twice
+(886 such positions in the 30 windows) and bcftools leaves the same joined
+ID on both records, so `read_phased_vcf` now replaces a joined or missing ID
+with `chrom_pos_ref_alt` and carries ref/alt columns.
+
+`pilotM` (hapmixQTL arm with the intercept-only allelic channel and
+`pval_perm`; RASQUAL rows from `pilotK`), 30 genes, per-gene table in
+`matched_effects.tsv`:
+
+| read at | pairs | sign agreement | r | slope (hapmixQTL on RASQUAL) |
+|---|---|---|---|---|
+| gene-wise leads (the old comparison) | 30 | | 0.24 | 0.26 +/- 0.19 |
+| hapmixQTL's lead | 26 | 0.96 | 0.86 | 1.19 +/- 0.15 |
+| RASQUAL's lead | 30 | 0.93 | 0.80 | 0.53 +/- 0.08 |
+| union of leads | 55 | 0.95 | 0.78 | 0.75 +/- 0.08 |
+
+The gene-wise comparison was measuring different quantities: at the same
+variant the two arms agree in sign on 52 of 55 pairs. The slopes are
+asymmetric in the direction each arm's lead selection predicts: an arm's own
+lead is the maximum over about 4,600 tested variants, so its effect there is
+inflated (the winner's curse) and the other arm's estimate at that variant
+regresses toward zero, giving 1.19 at hapmixQTL's leads and 0.53 at
+RASQUAL's. The union slope, 0.75, blends the two and is not a scale
+calibration of either arm. Four of the 30 hapmixQTL leads have no RASQUAL
+value: RASQUAL's row at those variants did not converge (negative
+likelihood ratio, boundary flags in column 23: SLC6A15, AGPAT5, CAMSAP2,
+CRMP1), so the comparison at hapmixQTL's leads is conditioned on variants
+where RASQUAL's fit succeeded. Genes both arms put above their respective
+levels are PDZD8 (RASQUAL 47.8 at its lead, 42.1 at hapmixQTL's; hapmixQTL
+27.5, p = 0.001), CYP51A1 (31.8 / 27.9; 21.8, p = 0.003) and EXOC2 (24.6 /
+4.7; 14.5, p = 0.034). FABP7 is the clearest disagreement: RASQUAL 23.6 with
+log aFC -0.32 at its lead, where hapmixQTL re-run gives 0.004 with +0.002,
+while at hapmixQTL's lead 32 kb away both see the effect (RASQUAL 11.6 /
+-0.31, hapmixQTL 15.2 / -0.25).
 
 Separately, a gene RASQUAL can use is not necessarily one Salmon quantifies:
 CYP3A7 had allele counts at its feature SNPs from the aligner and a median
