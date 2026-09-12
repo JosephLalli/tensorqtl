@@ -524,10 +524,12 @@ rather than its own copy of the weight formula, which had the same clamp.
 
 One property of the corrected arm to keep in mind when reading its numbers
 against RASQUAL's: tau is estimated under the null model, so a gene's own cis
-signal inflates it and the test is conservative where the signal is strong
+signal inflates it and shrinks the nominal scale where the signal is strong
 (CCNI: the 22 heterozygotes at the lead show corr(a, s) = -0.90, a hets-only
-regression gives chi2 86, the arm 17). A second one, covariates projected out
-of both channels, is resolved in the next section.
+regression gives chi2 86, the arm 17). What that does and does not cost, and
+the lead refit that restores the scale, are in "What tau is" below. A second
+one, covariates projected out of both channels, is resolved in the next
+section.
 
 ### Covariates per channel, the sparse-channel rule and the permutation null
 
@@ -582,7 +584,8 @@ offers it.
 On the 30 well-expressed genes (`pilotL`, RASQUAL rows reused from
 `pilotI`) the intercept-only allelic channel raises 19 of the 30 gene
 statistics and lowers 11 (median change +1.1), and the number of genes above
-15 goes from 6 to 13 against RASQUAL's 11; the Spearman correlation with
+15 goes from 6 to 13 against RASQUAL's 11 (17 once tau is refit at the
+lead, "What tau is" below); the Spearman correlation with
 RASQUAL's statistics is 0.38 (p = 0.037). A fixed 15 is not a null level: on
 the 12-gene external permutation null (genotype columns permuted against
 expression, 10 draws) the per-gene null-maximum means run 9.7-17.6 and the
@@ -610,6 +613,87 @@ gene-wise. The sparse-channel rule admits an allelic channel with as few as
 three informative samples under an intercept-only design; the calibration
 gates use about 70 and the 12 BrainVar genes had 46-85, so the floor is
 untested below that.
+
+### What tau is, what the Gibbs draws are not, and the lead refit
+
+The weight of a sample is `1/(v_inf + tau)`. `v_inf` is the Gibbs
+inferential variance, the ambiguity of that sample's read assignment, plus
+the Poisson counting term; `tau` is the between-sample variance the model
+does not explain -- biological variation in expression or allelic ratio and
+unmodelled technical variation -- estimated once per gene and channel from
+the residuals after the channel's design (intercept and covariates) is
+projected out. It is the biological-variance term of sleuth's
+decomposition, the overdispersion of DESeq2 and edgeR, the residual
+heterogeneity of a random-effects meta-analysis, and no within-sample
+sampler can measure it. On the 30 well-expressed genes (medians of
+per-sample variances on the log scale):
+
+| | allelic channel (a) | total channel (t) |
+|---|---|---|
+| Gibbs variance | 0.013 | 0.0002 |
+| Poisson counting term | 0.001 | 0.0002 |
+| tau (intercept-only design) | 0.029 | 0.151 |
+| tau / Gibbs variance | 2.1 (IQR 1.1-6.8) | 763 |
+
+So the Gibbs draws carry about a third of the allelic channel's error and
+0.1% of the total channel's; the total channel is in effect ordinary least
+squares with a shared error variance.
+
+Whether the covariates remove much of tau splits by channel, and that is
+the direct evidence for the intercept-only allelic design. With the 17
+covariates the total channel's tau falls from 0.151 to 0.007: they explain
+96% of the whitened residual variance, F-test p < 1e-3 on 30 of 30 genes.
+The allelic channel's tau goes from 0.0294 to 0.0292: 24% explained against
+22% expected by chance for 17 columns on ~77 informative samples, 3 of 30
+genes at p < 0.05 against 1.5 expected. Two of the three are real (ANKRD36B
+and CALM2, p < 1e-3, 45-47% of the allelic residual explained). ANKRD36B is
+the strongest hapmixQTL-only hit and survives either design (39.9 with the
+covariates in the allelic channel, 37.5 without), but an allelic ratio that
+tracks the expression PCs is a flag to check paralog mapping (the ANKRD36
+family) before the gene is reported.
+
+Because tau is estimated under the null model, a gene's own cis effect is
+in the residuals it is estimated from, so tau is inflated by about
+`beta^2 * f_het` and every statistic in the window is shrunk by the same
+factor `1/(1 + beta^2 f_het / sigma^2)`. Measured by re-estimating tau with
+the lead in the model on eight genes: CCNI's allelic statistic 19.7 -> 40.2,
+ANKRD36B's combined 49 -> 75, PDZD8 34 -> 44, CYP51A1 26 -> 35, while
+genes with little signal at the lead (FABP7, TTC3, APC) move by under 10%.
+What that costs is only the nominal scale. The same tau scales the observed
+statistic and every permuted one, so the empirical p is unchanged (CCNI,
+ANKRD36B and CYP51A1: identical at 20,000 draws under either tau), and in
+simulation (80 informative samples, 300 variants, 600 replicates) tau
+re-estimated per variant or refit at the lead raised the causal variant's
+statistic and the null maximum by the same proportion (12.9 -> 16.2), giving
+identical power at matched false-positive rate (0.49 vs 0.45, 0.92 vs 0.91,
+1.00 vs 1.00) and the same lead. The shrinkage bites in comparisons across
+genes or methods on the nominal scale: against RASQUAL's likelihood ratio,
+whose theta is fitted under the alternative for every SNP, and in any
+threshold pooled across genes.
+
+`map_cis(tau_refit=True)` therefore keeps the null-tau scan (shared weights,
+the fast whitened-residual permutation, `pval_perm` and `pval_beta` exactly
+as before) and, once the lead is found, re-estimates each channel's tau with
+the lead's predictor in the model, rebuilds the weights and reports the
+lead's `slope`, `slope_se`, `pval_nominal` and per-channel diagnostics on
+that scale, with `tau_a`/`tau_t` (refit) and `tau_a_null`/`tau_t_null`
+(scan) as columns. A channel whose informative samples cannot support the
+extra column keeps its null tau (`tau_refit` says whether any channel was
+refit). `map_nominal` stays on the null-model scale. The driver and the
+runner turn the refit on; the library and CLI default (`--tau_refit`) leave
+it off. A lead's `pval_nominal` is never a gene-level p, and the refit makes
+it more selective; `pval_beta` is the gene-level p and is unchanged.
+
+On the 30 genes (`pilotN` against `pilotM`) the refit leaves every lead and
+every `pval_perm` identical and raises the nominal statistic by a median
+14% (range 2-89%; CCNI 16.2 -> 30.7, ANKRD36B 37.5 -> 51.0, PDZD8 27.5 ->
+34.2, CYP51A1 21.8 -> 28.4), so 17 of 30 genes now sit above 15 against
+RASQUAL's 11, while the genes below 0.05 on their own null stay at 5. CCNI
+is the instructive case: a lead at chi2 30.7 whose gene-level empirical p is
+0.44, because the best of ~4,600 correlated variants under the null reaches
+about 16 on the scan scale in that window. The nominal statistic is the
+like-for-like with RASQUAL's likelihood ratio; the empirical p is the
+detection call.
 
 ### The reference-bias gate's orientation, and what the runner feeds RASQUAL
 
@@ -658,16 +742,17 @@ multi-allelic site split into biallelic records occupies one position twice
 ID on both records, so `read_phased_vcf` now replaces a joined or missing ID
 with `chrom_pos_ref_alt` and carries ref/alt columns.
 
-`pilotM` (hapmixQTL arm with the intercept-only allelic channel and
-`pval_perm`; RASQUAL rows from `pilotK`), 30 genes, per-gene table in
-`matched_effects.tsv`:
+`pilotN` (hapmixQTL arm with the intercept-only allelic channel, the lead
+refit and `pval_perm`; RASQUAL rows from `pilotK`), 30 genes, per-gene table
+in `matched_effects.tsv`; `pilotM` is the same run before the refit and its
+effect sizes differ by at most 0.012:
 
 | read at | pairs | sign agreement | r | slope (hapmixQTL on RASQUAL) |
 |---|---|---|---|---|
-| gene-wise leads (the old comparison) | 30 | | 0.24 | 0.26 +/- 0.19 |
-| hapmixQTL's lead | 26 | 0.96 | 0.86 | 1.19 +/- 0.15 |
-| RASQUAL's lead | 30 | 0.93 | 0.80 | 0.53 +/- 0.08 |
-| union of leads | 55 | 0.95 | 0.78 | 0.75 +/- 0.08 |
+| gene-wise leads (the old comparison) | 30 | | 0.24 | 0.26 +/- 0.20 |
+| hapmixQTL's lead | 26 | 0.96 | 0.86 | 1.202 +/- 0.147 |
+| RASQUAL's lead | 30 | 0.93 | 0.80 | 0.539 +/- 0.077 |
+| union of leads | 55 | 0.95 | 0.78 | 0.757 +/- 0.082 |
 
 The gene-wise comparison was measuring different quantities: at the same
 variant the two arms agree in sign on 52 of 55 pairs. The slopes are
@@ -687,7 +772,7 @@ RASQUAL's (24.6 at its lead, 4.7 at hapmixQTL's; hapmixQTL 14.5, p = 0.12)
 and ANKRD36B, SLC6A15 and CYCS are hapmixQTL's (RASQUAL 4.5, non-converged
 and 10.3 at those leads). Read at the other arm's lead, each arm keeps a
 similar fraction of its own lead signal: RASQUAL a median 0.38 of its chi2
-(n = 26) and hapmixQTL 0.43 (n = 30), and 0.57 and 0.58 of the effect
+(n = 26) and hapmixQTL 0.42 (n = 30), and 0.57 and 0.58 of the effect
 magnitude, which is the symmetric loss the winner's-curse reading predicts.
 FABP7 is the clearest disagreement: RASQUAL 23.6 with
 log aFC -0.32 at its lead, where hapmixQTL re-run gives 0.004 with +0.002,
