@@ -475,6 +475,39 @@ now what the driver does by default:
   produced no converged row. Column 23 is its convergence flag; the stderr
   says which gate fired. Read the dump before changing anything else.
 
+### Low-count genes: counting noise and the expression floor
+
+The comparison found a hapmixQTL failure that the self-tests, built on
+Poisson(30) counts, could not: the Gibbs across-draw variance is
+read-assignment uncertainty only, so a sample whose count is identical in
+every draw -- zero reads, or reads compatible with nothing else -- has
+`v_inf = 0` and, under `w = 1/(v_inf + tau)`, the largest weight in the
+gene. On LOC124902138 (median 9 reads per sample) three zero-count samples
+had `Vt = 1e-32`, the tau moment estimator collapsed to 4e-6, and the three
+carried 99.8% of the total channel's weight: chi2 141 at a variant where an
+unweighted regression of the same `t` gives 31, a Poisson GLM on the raw
+totals 34, and RASQUAL 3.0. The seven pilot genes with no zero-count sample
+had their three heaviest samples at 3-4% of the weight, i.e. uniform. The
+allelic channel has had a guard for exactly this since the validation work
+(`_zero_degenerate_ase_weights`); the total channel had none.
+
+`compute_summaries_from_gibbs(..., count_noise=True)` adds the plug-in
+Poisson variance of a log count to both channels (`1/(tot + 2 kappa)` for
+`t`, `1/(yL + kappa) + 1/(yR + kappa)` for `a`), which is far below
+`v_inf + tau` for a well-covered gene and dominant for a zero. Both the
+driver and `run_hapmixqtl_from_salmon.py` default it on (`--no-count-noise`
+to reproduce earlier results; the library default stays off so the
+validation scripts under `tests/` are unchanged). With it LOC124902138 is
+6.8, VLDLR-AS1 (56 reads/sample) moves from 12.8 to 11.5, SRPK1 (2,300
+reads/sample) from 45.2 to 43.3 with the same lead.
+
+Separately, a gene RASQUAL can use is not necessarily one Salmon quantifies:
+CYP3A7 had allele counts at its feature SNPs from the aligner and a median
+of 0 Salmon reads (73/92 zero samples), so hapmixQTL's statistic was exactly
+0 against RASQUAL's chi2 12. `--min-count 6 --min-count-frac 0.2` (GTEx's
+floor) now applies to the Salmon totals before the probe, and the design
+record reports how many candidates it dropped.
+
 For iteration, `--gene-list` restricts every input read (VCF, allelic counts,
 Gibbs draws) to the windows around those genes, and `--cache-dir` keeps the
 Gibbs load as memory-mapped arrays keyed by the input paths. An 8-gene rerun

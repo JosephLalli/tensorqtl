@@ -235,7 +235,7 @@ def reference_bias_diagnostic(yL, yR, sign, min_total=10, min_sites=20):
                 message=message)
 
 
-def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None):
+def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=False):
     """
     Compute hapmixQTL summary statistics from Gibbs draws.
 
@@ -253,6 +253,27 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None):
             is determined by local heterozygosity -- which is in LD with the
             cis variants being tested. Pass the total summed over ALL
             transcripts. Defaults to yL + yR for backwards compatibility.
+        count_noise: add per-sample Poisson counting noise to Va and Vt. This
+            is for Salmon GIBBS draws, which reassign one fixed set of reads:
+            their across-draw variance is read-ASSIGNMENT uncertainty only.
+            (Bootstrap draws resample the reads and already carry counting
+            noise; the term would double-count it.) A sample
+            whose count is the same in every draw -- zero reads, or reads
+            compatible with nothing else -- has v_inf exactly 0 and, under
+            w = 1/(v_inf + tau), the largest weight in the gene, while on the
+            log scale it is the least informative observation there is. On
+            BrainVar LOC124902138 (median 9 reads per sample) three zero-count
+            samples had Vt = 1e-32, the tau moment estimator collapsed to
+            4e-6, and the three carried 99.8% of the total channel's weight:
+            chi2 141 at a variant where an unweighted regression of t gives
+            31, a Poisson GLM 34 and RASQUAL 3.0. The seven pilot genes with
+            no zero-count sample had their three heaviest samples at 3-4% of
+            the weight, i.e. uniform. The term is the plug-in Poisson
+            variance of a log count -- 1/(tot + 2 kappa) for t = log(tot/2 +
+            kappa), 1/(yL + kappa) + 1/(yR + kappa) for a -- so for a
+            well-covered gene it sits far below v_inf + tau and changes
+            nothing. Samples with no allele-specific reads at all keep Va = 0
+            so _zero_degenerate_ase_weights still excludes them.
 
     Returns:
         A:   allelic contrast mean [features, samples]
@@ -273,6 +294,12 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None):
     Vt = t_draws.var(axis=2, ddof=0)
     Cat = ((a_draws - a_draws.mean(axis=2, keepdims=True)) *
            (t_draws - t_draws.mean(axis=2, keepdims=True))).mean(axis=2)
+
+    if count_noise:
+        mL, mR, mT = yL.mean(axis=2), yR.mean(axis=2), tot.mean(axis=2)
+        no_cov = (mL + mR) <= 0
+        Va = np.where(no_cov, 0.0, Va + 1.0 / (mL + kappa) + 1.0 / (mR + kappa))
+        Vt = Vt + 1.0 / (mT + 2.0 * kappa)
 
     return A, T, Va, Vt, Cat
 

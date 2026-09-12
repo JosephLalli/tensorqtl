@@ -906,6 +906,10 @@ def main():
     ap.add_argument('--tx2gene'); ap.add_argument('--out', default='hapmix_out')
     ap.add_argument('--gene-pos', help='TSV: gene_id, chr, pos (TSS)')
     ap.add_argument('--hap-suffix', default='_hapA,_hapB')
+    ap.add_argument('--count-noise', action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help='per-sample Poisson counting noise in the Gibbs '
+                         'variances; see compute_summaries_from_gibbs')
     ap.add_argument('--window', type=int, default=1_000_000)
     ap.add_argument('--force', action='store_true',
                     help='proceed despite a reference-bias flag (NOT recommended)')
@@ -954,7 +958,8 @@ def main():
                                              sufs, out)
 
     print('Computing Gibbs summaries (production code path)')
-    A, T, Va, Vt, Cat = compute_summaries_from_gibbs(YL, YR, yT=YT)
+    A, T, Va, Vt, Cat = compute_summaries_from_gibbs(
+        YL, YR, yT=YT, count_noise=getattr(args, 'count_noise', True))
 
     print('Reading phased VCF')
     vdf, dos, xL, xR, order = read_phased_vcf(args.vcf, set(samples))

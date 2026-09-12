@@ -646,7 +646,8 @@ def run(args):
     # yT is the gene total over ALL transcripts. Without it the total
     # channel is a heterozygous-transcript subtotal whose zeros are in LD
     # with the tested variants.
-    A, T, Va, Vt, _ = compute_summaries_from_gibbs(YL, YR, yT=YT)
+    A, T, Va, Vt, _ = compute_summaries_from_gibbs(YL, YR, yT=YT,
+                                                  count_noise=args.count_noise)
 
     regions = None
     if want_genes is not None:
@@ -748,6 +749,20 @@ def run(args):
         body = variants_in(cidx, r['chr'], int(r['start']), int(r['end']))
         if any((str(r['chr']), int(pos[v])) in allelic for v in body):
             usable.append(g)
+    # Expression floor, GTEx-style: >= --min-count reads in >= --min-count-frac
+    # of samples in the Salmon input. A gene RASQUAL can use (allele counts at
+    # its feature SNPs, from the aligner) can be one Salmon assigns nothing
+    # to: CYP3A7 in the pilot had a median of 0 reads and 73/92 zero samples,
+    # so hapmixQTL's statistic was 0 while RASQUAL reported chi2 12.
+    tot_mean = YT.mean(2)            # cache sample order; a fraction is order-free
+    floor_ok = {g for g in usable
+                if (tot_mean[gi_all[g]] >= args.min_count).mean() >= args.min_count_frac}
+    dropped = [g for g in usable if g not in floor_ok]
+    print(f'  expression floor (>= {args.min_count:g} reads in >= '
+          f'{100*args.min_count_frac:.0f}% of samples): {len(dropped)} of '
+          f'{len(usable)} candidate genes dropped'
+          + (f' ({", ".join(dropped[:6])}{"..." if len(dropped) > 6 else ""})' if dropped else ''))
+    usable = [g for g in usable if g in floor_ok]
     # PROBE. The candidate filter above can only approximate RASQUAL's gate,
     # so ask RASQUAL directly: run it once, observed only, over a larger
     # candidate pool and keep the genes it actually produced a statistic for.
@@ -951,6 +966,10 @@ def run(args):
                             'tested rSNPs permuted across samples as a block; '
                             'fSNP genotypes + allele counts fixed with expression'),
                    'null_kind': args.null,
+                   'count_noise': bool(args.count_noise),
+                   'expression_floor': {'min_count': args.min_count,
+                                        'min_count_frac': args.min_count_frac,
+                                        'n_dropped': len(dropped)},
                    'n_genes': len(usable), 'n_samples': len(order),
                    'n_tested_variants': int(tested.sum()), 'n_perm': args.n_perm,
                    'n_genes_both_converged': len(common_genes),
@@ -1059,6 +1078,17 @@ def main(argv=None):
                          'which destroys their LD and mis-calibrates BOTH arms '
                          'in opposite directions. "knockoff" substitutes '
                          'LD-preserving knockoff haplotypes instead')
+    ap.add_argument('--count-noise', action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help='add per-sample Poisson counting noise to the Gibbs '
+                         'variances (compute_summaries_from_gibbs); without '
+                         'it a zero-count sample has zero variance and the '
+                         'largest weight in the gene')
+    ap.add_argument('--min-count', type=float, default=6,
+                    help='expression floor: reads per sample in the Salmon '
+                         'input (default 6, GTEx)')
+    ap.add_argument('--min-count-frac', type=float, default=0.2,
+                    help='...in at least this fraction of samples (default 0.2)')
     ap.add_argument('--rasqual-threads', type=int, default=4,
                     help='--n-threads per RASQUAL process (pthread)')
     ap.add_argument('--fsnp-maf', type=float, default=0.0,
@@ -1227,7 +1257,23 @@ def selftest():
         gene_list=None, probe_genes=0, cache_dir=None, rasqual_jobs=2,
         asvcf=None, dump_rasqual=None, exons=None,
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
+        count_noise=True, min_count=6, min_count_frac=0.2,
         str_vcf=None, multiallelic=False, min_hap=10)
+    # count_noise contract, which fabricated Poisson(30) draws cannot probe:
+    # a sample with the same count in every draw has v_inf = 0. The term must
+    # give a zero-count sample Vt = 1/(2 kappa), a constant nonzero count a
+    # positive Vt, and leave Va = 0 exactly where there are no allele-specific
+    # reads so the degenerate-ASE guard still fires.
+    yl = np.zeros((1, 3, ND)); yr = np.zeros((1, 3, ND)); yt = np.zeros((1, 3, ND))
+    yl[0, 1], yr[0, 1], yt[0, 1] = 5.0, 5.0, 10.0            # constant, nonzero
+    yl[0, 2], yr[0, 2] = rng.poisson(20, ND), rng.poisson(20, ND); yt[0, 2] = yl[0, 2] + yr[0, 2]
+    _, _, va, vt, _ = compute_summaries_from_gibbs(yl, yr, kappa=0.5, yT=yt, count_noise=True)
+    assert abs(vt[0, 0] - 1.0 / (0 + 2 * 0.5)) < 1e-12 and va[0, 0] == 0.0, (vt[0, 0], va[0, 0])
+    assert vt[0, 1] > 0 and abs(va[0, 1] - 2 / 5.5) < 1e-12, (vt[0, 1], va[0, 1])
+    _, _, va0, vt0, _ = compute_summaries_from_gibbs(yl, yr, kappa=0.5, yT=yt, count_noise=False)
+    assert vt0[0, 0] == 0.0 and vt0[0, 1] == 0.0 and vt[0, 2] > vt0[0, 2] > 0, (vt0[0, :], vt[0, 2])
+    print('count_noise contract: zero-count Vt = 1/(2 kappa), constant count Vt > 0, '
+          'no-coverage Va stays 0 -- OK')
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
     print('\n' + (td / 'deploy' / 'deploy_comparison.md').read_text())
