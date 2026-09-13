@@ -34,6 +34,8 @@ $v^{\mathrm{inf}}$ is the inferential variance: the uncertainty of assigning the
 $$ v_{a,i} = \begin{cases} v^{\mathrm{inf}}_{a,i} + \dfrac{1}{\bar y_{L,i} + \kappa} + \dfrac{1}{\bar y_{R,i} + \kappa} & \bar y_{L,i} + \bar y_{R,i} > 0 \\[2ex] 0 & \text{otherwise,} \end{cases} \qquad v_{t,i} = v^{\mathrm{inf}}_{t,i} + \frac{1}{\bar y_{T,i} + 2\kappa}. \tag{4} $$
 Bootstrap draws resample reads and already carry this term, so it is added for Gibbs draws only (`count_noise=True` in the deployment; the library default is off).
 
+**Normalization of the total.** $t_i$ carries no library-size offset. mixQTL's total-count model has one explicitly; here between-sample depth variation is left to the covariates of (6). On BrainVar the log library size has a standard deviation of 0.305 (a 4.9-fold range) and correlates at $-0.93$ with the first expression principal component, so the deployed covariate set absorbs it: the median $\hat\tau_t$ is 0.151 under an intercept alone, 0.043 with log library size alone (71% of it is depth), and 0.0066 with the 17 covariates. A run with no covariates therefore inflates the total channel's standard error by about $\sqrt{0.151/0.0066} \approx 4.8$ (Section 8, item 10).
+
 **Why the total is not $y_L + y_R$.** Against a personalized diploid transcriptome the second haplotype copy of a transcript exists only where the sample is heterozygous, so $y_L + y_R$ is a heterozygous-transcript subtotal whose level is set by local heterozygosity, which is in linkage disequilibrium with the variants being tested. The total must be summed over all transcripts of the gene.
 
 **Informative samples.** A sample is informative for channel $c \in \{a, t\}$ if $v_{c,i} > \varepsilon$ with $\varepsilon = 10^{-12}$; the informative set is $I_c$. A sample with no allele-specific reads has $a_i = 0$ and $v_{a,i} = 0$ and is never informative for the allelic channel.
@@ -52,6 +54,8 @@ Equation (5) is exact under the definition of $\beta$: a heterozygote with the A
 
 $$ \mathrm{Var}(e_{c,i}) = v_{c,i} + \tau_c, \qquad c \in \{a, t\}, \tag{7} $$
 with errors independent across samples. $\tau_c \ge 0$ is a per-gene, per-channel between-sample variance: biological variation in expression or in the allelic ratio, plus unmodelled technical variation. It is the biological-variance term of sleuth's decomposition and the residual heterogeneity of a random-effects meta-regression, and no within-sample sampler can measure it; it is estimated across samples (Section 4.3). Once $\tau_c$ is set the variance is treated as known: standard errors are not rescaled by an estimated dispersion, which is what lets the inferential variance propagate into the standard error in absolute terms (inflating every $v$ inflates every SE).
+
+**Relation to mixQTL's variance model.** This is the one place where hapmixQTL departs structurally from its parent. mixQTL writes the allele-specific error as $\mathcal{N}\big(0, \sigma^2 (1/Y_1 + 1/Y_2)\big)$: the counts set only the *shape* of the weights and $\sigma^2$ is a free *multiplicative* scale inferred from the data. Equation (7) instead adds a free *additive* term. The two coincide only when $v$ is constant across samples. A multiplicative scale is the right correction when the quantifier's variance has the right shape and the wrong size; an additive term is the right one for biological variance, which does not shrink with read depth, and it is the more conservative choice when $v$ spans orders of magnitude, since the weights then approach uniformity rather than tracking $v$. The additive form, the multiplicative form and the nested $\sigma^2 v_i + \tau_c$ were compared on mixQTL's own simulation design (allelic fold changes 1 to 3, $N$ = 25 to 100, power at empirical false-positive rate 10%): the additive form is the best of the three and the nested model adds nothing to it.
 
 ### 3.3 Covariates per channel
 
@@ -174,10 +178,11 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 | Known variance without $\tau$ (`tau_mode='zero'`) | Type-I error up to 107x nominal at $\alpha = 10^{-3}$ on simulations with unmodelled variance; 64.5% coverage of nominal 95% intervals |
 | With $\tau$ from (13) | Type-I within 0.85-1.02x nominal across the same conditions; interval coverage 0.96-0.99 |
 | Channel estimators | Correlation of $\hat\beta_a$, $\hat\beta_t$ indistinguishable from 0 at inferential correlation 0.9 |
-| What the draws measure (30 BrainVar genes, medians) | Allelic channel: Gibbs variance 0.013, counting term 0.001, $\hat\tau_a$ 0.029. Total channel: Gibbs 0.0002, counting 0.0002, $\hat\tau_t$ 0.151 |
+| What the draws measure (30 BrainVar genes, medians, per sample) | Allelic channel: Gibbs variance 0.013, counting term 0.001, $\hat\tau_a$ 0.029 (intercept-only design, which is the deployed allelic design). Total channel: Gibbs 0.0002, counting 0.0002, $\hat\tau_t$ 0.151 under an intercept alone but **0.0066 under the deployed 17-covariate design**; the deployed ratio of $\hat\tau_t$ to the per-sample quantification variance is 22, not the 373 an intercept-only design implies |
 | Covariates per channel (30 genes, 17 covariates) | Total channel: 96% of whitened residual variance explained, $F$ test $p < 10^{-3}$ on 30/30 genes ($\hat\tau_t$ 0.151 to 0.007). Allelic channel: 24% explained against 22% expected by chance, $\hat\tau_a$ 0.0294 to 0.0292, 3/30 genes at $p < 0.05$ against 1.5 expected |
 | Zero-variance samples in the $\tau$ estimator | Three zero-count samples carried 99.8% of a gene's total-channel weight before the counting term and the informative-sample rule; the allelic channel's permutation null reached $\chi^2$ 40-120 where 12-16 is calibrated |
 | Permuting raw values at fixed weights | Null genes with $v \in [0.01, 2]$: mean empirical p 0.94, no rejection at 0.05 in 100 genes |
+| Permutation under a misspecified variance *shape* (60 null genes, $v$ spanning 200x, Monte Carlo SE 0.037 on the mean) | Truth additive, as (7) assumes: mean empirical p 0.499, 5.0% below 0.05. Truth multiplicative ($\mathrm{Var} = c\,v_i$, mixQTL's structure): 0.597, 1.7% (conservative). Truth constant ($v$ carrying no information): 0.441, 8.3% |
 | Whitened residuals, unstandardized | Mean empirical p 0.44 on the same design (deficit $(N-1-p)/N$) |
 | Whitened residuals, leverage-standardized (17) | 400 null genes: mean empirical p 0.503, 5.2% below 0.05, 49.7% below 0.5; the permuted statistic's variance equals $xx$ (0.70 of it before standardization with 18 columns on 60 samples) |
 | $\tau$ under the null versus with the lead in the model | Nominal statistic of strong genes shrunk 30-110% (CCNI allelic 19.7 vs 40.2); the lead's empirical p identical at 20,000 draws; simulated power at matched false-positive rate identical (0.49 vs 0.45, 0.92 vs 0.91, 1.00 vs 1.00) |
@@ -194,6 +199,8 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 7. **The $t$ reference** of (16) is a convention; the empirical p (19)-(20) is the calibrated quantity.
 8. **Independence across samples**: no relatedness or repeated measures.
 9. **Sparse channels** are admitted down to $(1 + p_c) + 2$ informative samples; calibration was measured with about 70 and the deployment's genes had 46 to 85.
+10. **No library-size offset** (Section 2). Depth is absorbed by the covariates of (6) or not at all; a run without covariates loses power in the total channel rather than becoming miscalibrated.
+11. **Exchangeability of the whitened residuals** requires the variance model (7) to have the right *shape* up to a constant, not merely the right average. $\hat\tau_c$ by (13) fixes the average, so a misspecified shape leaves the permutation null approximately, not exactly, calibrated; the measured degradation over a 200-fold spread in $v$ is in Section 7, and is conservative when the truth is multiplicative.
 
 ## 9. Symbols, defaults and implementation
 

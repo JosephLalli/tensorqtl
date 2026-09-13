@@ -1025,11 +1025,19 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             the allele-specific channel provides, performing no better than
             total-count-only. See docs/ase_validation.md.
 
-            This mirrors the parent method: mixQTL (Liang et al. 2021) writes the
-            ASE error as N(0, sigma^2 * (1/Y1 + 1/Y2)) where the counts set only
-            the SHAPE of the weights and sigma^2 is a free scale parameter it
-            infers from the data (Supplementary Notes 5.2). 'zero' is what you
-            get by dropping that free scale; 'estimate' restores it.
+            The parent method makes the same point differently: mixQTL (Liang
+            et al. 2021) writes the ASE error as N(0, sigma^2 * (1/Y1 + 1/Y2)),
+            where the counts set only the SHAPE of the weights and sigma^2 is a
+            free scale parameter inferred from the data (Supplementary Notes
+            5.2). 'zero' drops that free parameter; 'estimate' restores a free
+            parameter, but ADDITIVELY (v_inf + tau) rather than multiplicatively
+            (sigma^2 * v_inf), so it is not mixQTL's variance model. A
+            multiplicative scale suits quantification noise of the right shape
+            and the wrong size; an additive term suits biological variance,
+            which does not shrink with read depth. Both, and the nested
+            sigma^2 * v_inf + tau, were measured on mixQTL's own simulation
+            design: the additive form wins and the nested form buys nothing
+            (docs/ase_validation.md sec 7b).
 
             'zero' is retained only for reproducing prior results and emits a
             warning.

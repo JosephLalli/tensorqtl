@@ -632,12 +632,21 @@ per-sample variances on the log scale):
 |---|---|---|
 | Gibbs variance | 0.013 | 0.0002 |
 | Poisson counting term | 0.001 | 0.0002 |
-| tau (intercept-only design) | 0.029 | 0.151 |
-| tau / Gibbs variance | 2.1 (IQR 1.1-6.8) | 763 |
+| tau, intercept-only design | 0.029 | 0.151 |
+| tau, the design each channel is actually fitted under | 0.029 | 0.0066 |
+| tau / per-sample quantification variance, as deployed | 2.1 (IQR 1.1-6.8) | 22 |
 
 So the Gibbs draws carry about a third of the allelic channel's error and
-0.1% of the total channel's; the total channel is in effect ordinary least
-squares with a shared error variance.
+under 1% of the total channel's; the total channel is in effect ordinary least
+squares with a shared error variance. The allelic channel is deployed with an
+intercept alone, so its 0.029 is the figure the pipeline uses; the total
+channel's 0.151 is not, because its covariates remove 96% of it (below). Most
+of what they remove is sequencing depth: log library size alone, with a
+standard deviation of 0.305 across the cohort, accounts for 71% of the
+intercept-only tau_t and correlates at -0.93 with the first expression PC.
+`run_hapmixqtl_from_salmon.py` passes no covariates, so its total channel
+carries tau_t = 0.151 and a standard error about 4.8x the driver's; that is
+lost power, not miscalibration, and supplying covariates fixes it.
 
 Whether the covariates remove much of tau splits by channel, and that is
 the direct evidence for the intercept-only allelic design. With the 17
