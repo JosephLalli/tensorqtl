@@ -846,6 +846,66 @@ of 0 Salmon reads (73/92 zero samples), so hapmixQTL's statistic was exactly
 floor) now applies to the Salmon totals before the probe, and the design
 record reports how many candidates it dropped.
 
+### The null calibration, and why a fixed threshold was the wrong instrument
+
+Every comparison in the sections above thresholds both arms at a chi-squared of
+15, a guess at where a null maximum sits. `null_calibration_29b` replaces that
+guess. The same 29 genes (AGPAT5 dropped, below), 92 samples and 126,326 tested
+variants, five permutation draws, 145 null gene-statistics per arm, each arm
+thresholded against its own pooled null:
+
+| | RASQUAL | hapmixQTL |
+|---|---|---|
+| null median | 11.00 | 13.75 |
+| threshold at empirical FPR 10% | 14.58 | 20.02 |
+| threshold at empirical FPR 5% | 15.49 | 21.49 |
+| genes discovered at FPR 10% | 11 / 29 | 9 / 29 |
+| genes discovered at FPR 5% | 11 / 29 | 8 / 29 |
+
+**At matched false-positive rate RASQUAL discovers more**, which reverses what
+the raw statistics suggest (hapmixQTL's median 17.3 against RASQUAL's 12.9).
+hapmixQTL's statistics are larger under the null as well as observed, and
+thresholding each arm against its own null removes exactly that. The fixed 15
+used elsewhere in this runbook sits almost exactly on RASQUAL's own 5% point and
+far below hapmixQTL's 21.5, so every "genes above 15" count in the earlier
+sections is generous to hapmixQTL and should be read against this table instead.
+
+Two figures in `deploy_comparison.md` must not be read at face value. The
+`λ_GC on permuted null` row is 24.2 and 30.2; that is
+`median(null) / 0.4549`, a per-gene MAXIMUM over ~4,400 correlated variants
+divided by a single-test reference. Values far above 1 are expected for both
+arms and the row is only meaningful between methods. And `power` is a discovery
+count, not power: no ground truth is supplied (`--known-egenes` was not used).
+
+**A pooled threshold is the wrong instrument for these genes.** Per-gene null
+means span 10.6 to 23.8, and that spread across genes exceeds the spread across
+draws; APC's null averages 23.8 over five draws against an observed 25.4. Judged
+against its own permutation null rather than the pooled one, hapmixQTL calls 5
+genes (ANKRD36B, CYCS, CYP51A1, PDZD8, SLC6A15), not 8: the three it drops (APC,
+CCNI, RPL15) are exactly the noisy-window genes. Those 5 are the calls that have
+been stable through every scale correction. RASQUAL reports no per-gene
+empirical p, so its 11 cannot be refined the same way.
+
+**The two arms do not share one null.** hapmixQTL sees relabelled samples, so the
+window's LD is preserved exactly; RASQUAL is given its own `-r`, which permutes
+the expression side and each feature SNP's allele-specific block by an
+independent order and leaves the tested genotypes untouched. Each is valid for
+its own arm and power is scored per arm, but a single shared null needs knockoff
+haplotypes written into the slice RASQUAL is fed, which is not implemented.
+
+**Resolution and cost.** 145 null values put the 5% threshold at roughly the
+eighth largest, so it is coarsely placed; RASQUAL's identical count at both
+thresholds is that resolution, not a plateau. Each draw took 39-48 min with all
+29 genes concurrent. AGPAT5 is excluded because its 22,821-variant window was
+the only gene to exceed a two-hour per-gene timeout under permutation, where the
+flat likelihood costs far more iterations than real data; it is not one of the
+genes either arm calls.
+
+**The chi-squared values quoted in the earlier sections predate the scale
+correction** of commit a368f97 and are understated by a median 1.87 points, up
+to 22.5. The corrected observed values are in `final30_matched_scale/` and
+`null_calibration_29b/`.
+
 ### Choosing pilot genes
 
 `scripts/select_pilot_genes.py` draws a gene list both methods can use,
