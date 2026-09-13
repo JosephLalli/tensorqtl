@@ -85,6 +85,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 import warnings
@@ -1047,7 +1048,9 @@ def run(args):
     if args.known_egenes:
         known = set(l.strip() for l in open(args.known_egenes) if l.strip())
 
-    def both(perm, tag, XL=None, XR=None, DOS=None):
+    hapmix_lock = threading.Lock()   # torch work is serialized; it costs seconds
+
+    def both(perm, tag, XL=None, XR=None, DOS=None, jobs=None):
         # XL/XR/DOS override the real genotypes. The knockoff null substitutes
         # knockoff haplotypes at the tested variants and leaves perm=None;
         # the permutation null leaves them None and passes a perm vector.
@@ -1055,10 +1058,11 @@ def run(args):
         XR = xR if XR is None else XR
         DOS = dos if DOS is None else DOS
         t0 = time.time()
-        h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
-                       pos_df[['chr', 'pos']], args.window, tested, perm,
-                       cov_df=cov_df, ase_cov=args.ase_covariates,
-                       nperm=args.hapmix_nperm)
+        with hapmix_lock:
+            h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
+                           pos_df[['chr', 'pos']], args.window, tested, perm,
+                           cov_df=cov_df, ase_cov=args.ase_covariates,
+                           nperm=args.hapmix_nperm)
         th = time.time() - t0; t0 = time.time()
         if args.reuse_rasqual and perm is None and XL is xL and XR is xR:
             # observed RASQUAL rows from an earlier run of the same genes, so
@@ -1075,7 +1079,8 @@ def run(args):
                         order, Ytot, K, args.window, perm,
                         tested=tested, maf=args.maf,
                         min_coverage=args.min_coverage, cov_bin=cov_bin,
-                        jobs=args.rasqual_jobs, asvcf=asvcf,
+                        jobs=(args.rasqual_jobs if jobs is None else jobs),
+                        asvcf=asvcf,
                         dump=args.dump_rasqual,
                         exons=exons,
                         n_threads=args.rasqual_threads,
@@ -1138,21 +1143,67 @@ def run(args):
                                      K=args.knockoff_k, seed=args.seed)
         win_row = {int(v): i for i, v in enumerate(win_idx)}
     sel_t = np.where(tested)[0]
-    for p in range(args.n_perm):
+    rounds_dir = out / 'null_rounds'
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    draw_jobs = max(1, min(args.draw_jobs, args.n_perm))
+    per_draw_jobs = max(1, args.rasqual_jobs // draw_jobs)
+
+    def _draw_tag(p):
+        return (f'knockoff {p+1}/{args.n_perm}' if args.null == 'knockoff'
+                else f'perm {p+1}/{args.n_perm}')
+
+    def _draw_genotypes(p):
+        """The null genotypes of draw p. Seeded FROM p rather than drawn in
+        sequence, so a draw reproduces itself whatever order the draws run in
+        and whatever subset a resumed run has to redo."""
         if args.null == 'knockoff':
             rows = [win_row[int(v)] for v in sel_t]
             XLm = xL.copy(); XRm = xR.copy()
             XLm[sel_t] = kL[p][rows]; XRm[sel_t] = kR[p][rows]
-            DOSm = (XLm + XRm).astype(np.int8)
-            h, r, _, _, x, sp, _ = both(None, f'knockoff {p+1}/{args.n_perm}',
-                                        XLm, XRm, DOSm)
-            del XLm, XRm, DOSm
-        else:
-            perm = rng.permutation(len(order))
-            h, r, _, _, x, sp, _ = both(perm, f'perm {p+1}/{args.n_perm}')
+            return None, XLm, XRm, (XLm + XRm).astype(np.int8)
+        seed0 = 0 if args.seed is None else int(args.seed)
+        prm = np.random.RandomState(seed0 + 10007 + p).permutation(len(order))
+        return prm, None, None, None
+
+    def _one_draw(p):
+        """Run (or reload) one null draw. Each finished round is written before
+        the next starts, so a killed run resumes from the rounds on disk
+        instead of repaying them; a RASQUAL null round costs over an hour."""
+        fh = rounds_dir / f'hapmixqtl.{p:03d}.tsv'
+        fr = rounds_dir / f'rasqual.{p:03d}.tsv'
+        fx = rounds_dir / f'nonstandard.{p:03d}.tsv'
+        if fh.exists() and fr.exists():
+            print(f'  {_draw_tag(p)}: reusing the round already on disk', flush=True)
+            return (pd.read_csv(fh, sep='\t'), pd.read_csv(fr, sep='\t'),
+                    pd.read_csv(fx, sep='\t') if fx.exists() else None, None)
+        prm, XLm, XRm, DOSm = _draw_genotypes(p)
+        h, r, _, _, x, sp, _ = both(prm, _draw_tag(p), XLm, XRm, DOSm,
+                                    jobs=per_draw_jobs)
+        h.to_csv(fh, sep='\t', index=False)
+        r.to_csv(fr, sep='\t', index=False)
+        if x is not None:
+            x.to_csv(fx, sep='\t', index=False)
+        return h, r, x, sp
+
+    if args.n_perm:
+        done = sum((rounds_dir / f'hapmixqtl.{p:03d}.tsv').exists()
+                   and (rounds_dir / f'rasqual.{p:03d}.tsv').exists()
+                   for p in range(args.n_perm))
+        print(f'\nNull: {args.n_perm} draws'
+              + (f', {done} already on disk' if done else '')
+              + (f', {draw_jobs} at a time x {per_draw_jobs} genes'
+                 if draw_jobs > 1 else '') + f' -> {rounds_dir}')
+    if draw_jobs > 1:
+        with cf.ThreadPoolExecutor(max_workers=draw_jobs) as ex:
+            results = list(ex.map(_one_draw, range(args.n_perm)))
+    else:
+        results = [_one_draw(p) for p in range(args.n_perm)]
+    for h, r, x, sp in results:
         nulls_h.append(h); nulls_r.append(r)
         if x is not None:
-            nulls_x.append(x); sp_nulls.append(sp)
+            nulls_x.append(x)
+            if sp is not None:
+                sp_nulls.append(sp)
     null_h = pd.concat(nulls_h) if nulls_h else obs_h.iloc[0:0]
     null_r = pd.concat(nulls_r) if nulls_r else obs_r.iloc[0:0]
 
@@ -1392,6 +1443,12 @@ def main(argv=None):
                          'rows, covariates as columns. Fed to BOTH arms: '
                          "RASQUAL's total-count model and hapmixQTL's total "
                          'channel (see --ase-covariates for the allelic one)')
+    ap.add_argument('--draw-jobs', type=int, default=1,
+                    help='null draws to run concurrently, each getting '
+                         '--rasqual-jobs / --draw-jobs genes at a time. Only '
+                         'worth raising if --rasqual-threads is lowered to '
+                         'match: one draw of 29 genes at 8 threads already '
+                         'asks for 232 cores')
     ap.add_argument('--hapmix-nperm', type=int, default=1000,
                     help="permutations per gene for hapmixQTL's own empirical p "
                          '(pval_perm; whitened-residual permutation). Seconds '
@@ -1532,6 +1589,7 @@ def selftest():
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
         count_noise=True, min_count=6, min_count_frac=0.2, reuse_rasqual=None,
         rasqual_rows=str(td / 'rows'), ase_covariates='none', hapmix_nperm=200,
+        draw_jobs=1,
         str_vcf=None, multiallelic=False, min_hap=10)
     # count_noise contract, which fabricated Poisson(30) draws cannot probe:
     # a sample with the same count in every draw has v_inf = 0. The term must
@@ -1593,6 +1651,18 @@ def selftest():
     # above every simulated frequency must drop tested variants without
     # touching the fSNPs the allelic channel needs
     assert r['design']['n_tested_variants'] > 0, r['design']
+    # null rounds are checkpointed as they finish, and a rerun into the same
+    # directory must REUSE them rather than repay an hour of RASQUAL per draw
+    rounds = sorted((td / 'deploy' / 'null_rounds').glob('rasqual.*.tsv'))
+    assert len(rounds) == base_args['n_perm'], [q.name for q in rounds]
+    first = pd.concat([pd.read_csv(q, sep='\t') for q in rounds])
+    r_again = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
+    again = pd.concat([pd.read_csv(q, sep='\t') for q in
+                       sorted((td / 'deploy' / 'null_rounds').glob('rasqual.*.tsv'))])
+    assert first.equals(again), 'a resumed run changed the null rounds it reused'
+    assert r_again['RASQUAL']['n_null_stats'] == r['RASQUAL']['n_null_stats']
+    print(f"resume: {len(rounds)} null rounds reused byte-identically")
+
     me = r.get('matched_effects') or {}
     print('matched-variant effects:', json.dumps({k: me[k] for k in me if k != 'note'}))
     assert me.get('union_of_leads', {}).get('n', 0) >= 10, me
