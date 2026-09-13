@@ -166,3 +166,49 @@ class TestHapmixQTLDefaults:
         ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
         assert result.returncode == 0
         assert '--tau_mode' in result.stdout and '--ase_covariates' in result.stdout
+
+
+class TestRasqualRowParsing:
+    """A malformed RASQUAL output line must not kill a multi-hour run."""
+
+    def _row(self, pos='1000', chi2='12.5', pi='0.6', conv='0'):
+        f = ['GENE', 'rs1', 'chr1', pos, 'A', 'G'] + ['0.5'] * 4
+        f += [chi2, pi, '0.01', '0.5', '1.0']          # 10..14
+        f += ['0'] * 7                                  # 15..21
+        f += [conv] + ['0'] * 2                         # 22..24
+        return '\t'.join(f)
+
+    def test_interleaved_line_is_skipped_and_counted(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
+        from compare_pipelines import best_rasqual_row
+        good = self._row()
+        # what actually killed a null round: a thread-interleaved line whose
+        # position field holds an allele with a byte of binary on the end
+        bad = self._row(pos='CCCGGCTGCCGCGTCTGGGAGGTGAGCGCC\udcc0')
+        best, n = best_rasqual_row('\n'.join([bad, good, bad]), 'GENE')
+        assert n == 2
+        assert best is not None and best['stat'] == 12.5
+        assert best['lead'] == 'chr1_1000_A_G'
+
+    def test_short_and_skipped_lines_are_not_counted_as_malformed(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
+        from compare_pipelines import best_rasqual_row
+        lines = [self._row(), 'GENE\tSKIPPED', 'too\tshort']
+        best, n = best_rasqual_row('\n'.join(lines), 'GENE')
+        assert n == 0 and best['stat'] == 12.5
+
+    def test_unconverged_rows_are_excluded_and_tested_set_respected(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
+        from compare_pipelines import best_rasqual_row
+        big_unconverged = self._row(pos='2000', chi2='99.0', conv='1')
+        ok = self._row(pos='1000', chi2='12.5')
+        best, n = best_rasqual_row('\n'.join([big_unconverged, ok]), 'GENE')
+        assert n == 0 and best['stat'] == 12.5
+        best2, _ = best_rasqual_row(ok, 'GENE', tested_pos={('chr1', 9999)})
+        assert best2 is None

@@ -386,6 +386,42 @@ def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
 #  RASQUAL arm: native per-fSNP counts, tested rSNPs permuted, fSNPs fixed
 # ---------------------------------------------------------------------------
 
+def best_rasqual_row(stdout, gene, tested_pos=None):
+    """The best converged row of one gene's RASQUAL output, and how many lines
+    could not be parsed.
+
+    RASQUAL is run with --n-threads, and its worker threads can interleave
+    within a line: a 2026-09-13 null round died after 40 minutes on a row whose
+    position field held a 120-base allele with a byte of binary spliced onto
+    the end. Every field access therefore sits inside the guard, and a bad line
+    is skipped and counted rather than killing a run that costs hours. Counting
+    matters, because silently dropping rows would quietly shrink the tested set.
+    """
+    best, malformed = None, 0
+    for ln in stdout.strip().split('\n'):
+        f = ln.split('\t')
+        if len(f) < 25 or f[1] == 'SKIPPED':
+            continue
+        try:
+            pos = int(f[3])
+            if tested_pos is not None and (f[2], pos) not in tested_pos:
+                continue
+            if int(float(f[22])) != 0:          # RASQUAL's convergence status
+                continue
+            chi2, pi, phi = float(f[10]), float(f[11]), float(f[13])
+        except (ValueError, IndexError):
+            malformed += 1
+            continue
+        if best is None or chi2 > best['stat']:
+            pi = min(max(pi, 1e-6), 1 - 1e-6)
+            # lead as chrom_pos_ref_alt, the id hapmixQTL's arm reports, so
+            # lead agreement between arms can be read off the tables
+            best = dict(gene=gene, stat=chi2, log_afc=np.log(pi / (1 - pi)),
+                        phi=phi, status='ok',
+                        lead=f'{f[2]}_{pos}_{f[4]}_{f[5]}')
+    return best, malformed
+
+
 def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 window, perm=None, tmp=None, tested=None, maf=0.05,
                 min_coverage=0.05, cov_bin=None, jobs=1, asvcf=None,
@@ -502,26 +538,10 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             # variant (the other arm's lead, say) can be read back later
             Path(rows).mkdir(parents=True, exist_ok=True)
             (Path(rows) / f'{g}.tsv').write_text(pr.stdout)
-        best = None
-        for ln in pr.stdout.strip().split('\n'):
-            f = ln.split('\t')
-            if len(f) < 25 or f[1] == 'SKIPPED':
-                continue
-            if tested_pos is not None and (f[2], int(f[3])) not in tested_pos:
-                continue
-            try:
-                if int(float(f[22])) != 0:
-                    continue
-                chi2, pi = float(f[10]), float(f[11])
-            except ValueError:
-                continue
-            if best is None or chi2 > best['stat']:
-                pi = min(max(pi, 1e-6), 1 - 1e-6)
-                # lead as chrom_pos_ref_alt, the id hapmixQTL's arm reports,
-                # so lead agreement between arms can be read off the tables
-                best = dict(gene=g, stat=chi2, log_afc=np.log(pi / (1 - pi)),
-                            phi=float(f[13]), status='ok',
-                            lead=f'{f[2]}_{f[3]}_{f[4]}_{f[5]}')
+        best, malformed = best_rasqual_row(pr.stdout, g, tested_pos)
+        if malformed:
+            print(f'  {g}: skipped {malformed} unparseable RASQUAL output line(s)',
+                  flush=True)
         if best is None and dump is not None:
             # Keep RASQUAL's own output when nothing converged. Column 23
             # (0-based 22) is pbound, its convergence status: non-zero means a
