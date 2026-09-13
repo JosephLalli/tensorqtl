@@ -1425,10 +1425,21 @@ def main(argv=None):
     ap.add_argument('--n-perm', type=int, default=10)
     ap.add_argument('--window', type=int, default=1_000_000)
     ap.add_argument('--null', choices=('permute', 'knockoff'), default='permute',
-                    help="'permute' shuffles rSNP genotypes across samples, "
-                         'which destroys their LD and mis-calibrates BOTH arms '
-                         'in opposite directions. "knockoff" substitutes '
-                         'LD-preserving knockoff haplotypes instead')
+                    help="'permute' relabels the samples of the genotype and "
+                         'phase matrices. Every variant moves together, so the '
+                         "window's LD is preserved exactly -- which is what the "
+                         'null maximum over thousands of correlated variants '
+                         'needs -- and only the genotype-expression association '
+                         'is destroyed. RASQUAL is given its own -r instead, '
+                         'which permutes the expression side and each feature '
+                         "SNP's allele-specific block by its own order, leaving "
+                         'the tested genotypes alone. Both are valid nulls for '
+                         'their own arm and power is scored against each arm\'s '
+                         'own null, but they are NOT one shared null. '
+                         "'knockoff' would substitute knockoff haplotypes at the "
+                         'tested variants; it reaches the hapmixQTL arm only, '
+                         'since they are never written into the slice RASQUAL is '
+                         'fed (status knockoff_null_not_implemented)')
     ap.add_argument('--count-noise', action=argparse.BooleanOptionalAction,
                     default=True,
                     help='add per-sample Poisson counting noise to the Gibbs '
