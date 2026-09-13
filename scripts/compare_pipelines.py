@@ -48,11 +48,37 @@ WHAT IS REPORTED  (all aggregate; shareable under a DUA)
   power           fraction of genes discovered at empirical FPR 10% and 5%,
                   thresholded on each method's OWN null
   effect sizes    RASQUAL pi -> log aFC = log(pi/(1-pi)); hapmixQTL slope IS
-                  log aFC. Regressed across genes: slope 1 = same quantity.
+                  log aFC. Two comparisons: regressed across genes at each
+                  arm's OWN lead, and -- given --rasqual-rows -- at MATCHED
+                  variants, each arm read at the other's lead and at their
+                  union (matched_effects.tsv). The arms' leads differ on most
+                  genes, so the gene-wise regression mixes two quantities;
+                  the matched comparison is the one to read.
+  gene-level p    hapmixQTL's own empirical p per gene (pval_perm, from
+                  --hapmix-nperm whitened-residual permutations). RASQUAL's
+                  statistic is a likelihood ratio and has no counterpart.
   concordance     Spearman of gene statistics; overlap of top-k
   replication     with --known-egenes: of each method's discoveries, the
                   fraction that are published eGenes -- the external truth
   compute         wall time per method
+
+Both arms' statistics sit on RASQUAL's chi2(1) scale: RASQUAL's 2 x log
+likelihood ratio, and hapmixQTL's T^2 = (slope/slope_se)^2 taken directly rather
+than round-tripped through its t nominal p (the t tail is 6.7x the normal at
+|T| = 5, a penalty that grows precisely where hapmixQTL is strongest), with tau
+re-estimated at the lead (map_cis tau_refit) so a strong gene's own signal does
+not shrink it.
+
+RESUMING A RUN
+==============
+Each null draw is written to <out>/null_rounds/{hapmixqtl,rasqual}.NNN.tsv as it
+finishes, and a rerun into the same --out reuses every round already on disk. A
+RASQUAL null round costs over an hour per draw, so a killed run resumes rather
+than repays them. Each draw's permutation is seeded from its own index, so a
+draw reproduces itself whatever order the draws run in and whatever subset a
+resumed run redoes. --draw-jobs runs that many draws concurrently, each getting
+--rasqual-jobs / --draw-jobs genes; it is only worth raising alongside a lower
+--rasqual-threads, and the torch work is serialized behind a lock.
 
 NON-STANDARD, OPT-IN (off by default)
 =====================================
@@ -65,13 +91,15 @@ it measures what the extra variant classes add. The standard RASQUAL and
 hapmixQTL arms are computed exactly as without the flags (the self-test
 asserts they are byte-identical).
 
-Run:
+Run (docs/brainvar_deploy_runbook.md is the full operating procedure, including
+how RASQUAL is actually invoked and how the inputs are built):
   RASQUAL_BIN=.../rasqual python3 scripts/compare_pipelines.py --selftest
   python3 scripts/compare_pipelines.py \\
-      --vcf prepped/rephased.vcf.gz --genes genes.tsv \\
+      --vcf prepped/rephased.vcf.gz --genes genes.tsv --exons exons.tsv \\
       --salmon salmon.tsv --tx2gene tx2gene.tsv \\
       --allelic-counts prepped/allelic_counts_manifest.tsv \\
-      --rasqual rasqual_src/src/rasqual \\
+      --covariates cov/covariates.tsv \\
+      --rasqual rasqual_src/src/rasqual --rasqual-rows rows/ \\
       --n-genes 300 --n-perm 10 --out deploy/
 """
 

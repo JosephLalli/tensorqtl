@@ -16,15 +16,50 @@ GPU-vectorized computation across all cis variants simultaneously.
 
 Inferential variances from Gibbs draws propagate into weights as
 w_i = 1 / (v_inf_i + tau), where v_inf_i is the across-draw variance of
-the transformed expression for sample i, and tau is an optional
-overdispersion parameter.
+the transformed expression for sample i and tau is a per-phenotype,
+per-channel overdispersion term. tau_mode='estimate' is the DEFAULT: tau is
+a moment estimate fitted under the null model (intercept and covariates, no
+genotype term) on the samples that carry information (v_inf > 0), with the
+exact leverage denominator sum_i w_i(1 - h_i) -- DerSimonian-Laird's form
+for an intercept-only design. tau_mode='zero' asserts the Gibbs variance is the entire error
+variance, which is severely anticonservative on real data; it is retained
+only to reproduce earlier results and warns when used.
+
+Four further things shape what the mapping functions do:
+
+  * Per-channel covariate designs. covariates_df is the TOTAL channel's;
+    ase_covariates_df is the ALLELIC channel's -- SAME_COVARIATES (the
+    default) reuses the total channel's, None fits an intercept only. The
+    allelic contrast is a within-sample difference in which covariates
+    acting on both haplotypes alike cancel, so None is the usual choice on
+    real data: each column projected out costs one informative sample.
+    scripts/compare_pipelines.py defaults its allelic channel to an
+    intercept only (--ase-covariates none).
+  * A sparse-channel rule. A channel with fewer informative samples than its
+    design has columns plus two is switched off (all weights zero) and the
+    meta-analysis falls back to the other channel.
+  * map_cis's permutation null is Freedman-Lane in whitened space: each
+    channel's null residuals are leverage-standardized and permuted among
+    that channel's own informative samples. map_cis therefore REQUIRES
+    se_mode='model' and raises otherwise -- the permutation statistic is the
+    known-variance GLS statistic and has no sandwich counterpart; robust
+    standard errors are available in map_nominal only.
+  * map_cis(tau_refit=True) re-estimates each channel's tau with the lead's
+    predictor in the design and reports the lead's slope, SE and nominal p
+    on that scale ALONE. pval_perm and pval_beta stay on the scan scale,
+    where they are calibrated, and map_nominal stays on the null-model scale.
+
+docs/hapmixqtl_methods.md specifies all of this for reproduction.
 
 Phase determines the signed heterozygote indicator s_i = xL_i - xR_i:
   s = +1 if ALT allele is on haplotype L
   s = -1 if ALT allele is on haplotype R
   s =  0 if homozygous (or phase unknown)
 When phase is unavailable (s=0 for all samples), the ASE channel contributes
-nothing and results match total-channel-only regression.
+nothing and results match total-channel-only regression. The phase frames are
+indexed POSITIONALLY by the genotype frame's column order; _assert_phase_columns
+guards that at every entry point, because the same samples in a different order
+silently corrupts the allelic channel while leaving the total channel correct.
 
 Cat, the a-t inferential covariance, is INTENTIONALLY UNUSED.
 compute_summaries_from_gibbs returns it and read_hapmixqtl_inputs / --hap_Cat
@@ -37,7 +72,7 @@ project any shared noise onto orthogonal directions. Measured:
 corr(beta_a, beta_t) = +0.01 / -0.03 / -0.02 at a-t noise correlation
 rho = 0 / 0.5 / 0.9 (95% CIs all cover zero), unchanged under 50% phasing error
 (docs/ase_validation.md sec 3 and 7f; tests/test_hapmixqtl_calibration.py
-asserts it on every push). Adding a 2*w_a*w_t*Cat term to the combined SE would
+asserts it in the test suite). Adding a 2*w_a*w_t*Cat term to the combined SE would
 change a statistic that is correct as written -- do not "fix" this.
 """
 

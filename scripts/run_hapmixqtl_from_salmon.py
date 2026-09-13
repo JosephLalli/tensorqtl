@@ -28,18 +28,34 @@ WHAT IT DOES
   1. Reads each sample's Salmon output including aux_info/bootstrap
      (--numGibbsSamples 200), giving a [transcript x draw] matrix per sample.
   2. Pairs haplotype transcripts, aggregates to gene level per haplotype per
-     draw -> yL / yR [genes x samples x draws].
+     draw -> yL / yR [genes x samples x draws], and separately sums EVERY
+     transcript of the gene, paired or not, into the total yT. A
+     personalized diploid transcriptome emits the second copy only where
+     the sample is heterozygous, so yL + yR is a heterozygous-transcript
+     subtotal whose pattern tracks local heterozygosity -- which is in LD
+     with the cis variants under test.
   3. Calls the production compute_summaries_from_gibbs -> A, T, Va, Vt. The
      inferential variance therefore comes from YOUR Gibbs draws, which is the
-     whole point of the method.
+     whole point of the method. Per-sample Poisson counting noise is added to
+     those variances by default (--count-noise / --no-count-noise): the Gibbs
+     draws describe allelic assignment given the observed total, so a
+     zero-count sample has zero across-draw variance and would otherwise carry
+     the largest weight in the gene.
   4. Reads phased genotypes from the VCF -> dosages and the signed het
      indicator s = xL - xR.
   5. GATES on reference_bias_diagnostic. hapmixQTL does not model reference
      mapping bias and fails catastrophically rather than gradually in its
      presence (docs/ase_validation.md sec 7i), so this refuses to proceed when
-     bias is detected.
+     bias is detected. The diagnostic needs to know which haplotype carries
+     the reference allele where each sample's reads land, so the sign it is
+     given is orient_haplotypes over each GENE's own feature sites rather than
+     one cohort-wide orientation. --force proceeds anyway (not recommended).
   6. Runs hapmixqtl.map_cis with tau_mode='estimate' (the default; do not
-     override -- sec 2, 6, 7d).
+     override -- sec 2, 6, 7d) and tau_refit=True, so the lead's slope, SE and
+     nominal p are reported with tau re-estimated at the lead instead of under
+     the null model, which is the like-for-like with a method that fits its
+     dispersion under the alternative. pval_perm and pval_beta stay on the
+     scan scale. No covariates are passed to either channel on this route.
   7. Optionally runs the REAL RASQUAL binary on the same genes (--rasqual)
      for a side-by-side comparison.
   8. Writes an EVAL BUNDLE of aggregate statistics only.

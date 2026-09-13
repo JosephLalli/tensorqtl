@@ -9,20 +9,33 @@ the cloud container is load-bearing except the git history, and that is pushed.
 Everything. The working tree is clean and pushed to
 `claude/hapmixqtl-gibbs-uncertainty-IQ6Za`. That includes:
 
-- the two production fixes (`tau_mode='estimate'` default; the
-  zero-information ASE weight guard) and `reference_bias_diagnostic`
+- the library changes: the `tau_mode='estimate'` default and its exact
+  DerSimonian-Laird denominator, tau estimated on each channel's informative
+  samples, the zero-information ASE weight guard, the sparse-channel rule,
+  per-channel covariate designs (`ase_covariates_df`, `SAME_COVARIATES`), the
+  Freedman-Lane permutation null over leverage-standardized whitened
+  residuals, the lead refit (`map_cis(tau_refit=True)`), the sample-order
+  guard `_assert_phase_columns`, and `reference_bias_diagnostic` with
+  `orient_haplotypes`
 - every validation harness under `tests/ase_*.py`
 - every result as JSON under `docs/ase_*.json` — the numbers do not need re-running
 - `docs/ase_validation.md`, the full record (§1–§10)
+- `docs/hapmixqtl_methods.md`, the method specified for reproduction:
+  the model, the estimator at one variant, the scan and gene-level
+  inference, the measured properties and the assumptions
 - `scripts/build_rasqual.sh` — builds the real RASQUAL from source
 - `scripts/prep_brainvar.py` — the BrainVar ingest pipeline
 - `scripts/extract_gtex_phaser.py` — regenerates the §7d real-data inputs
-- the four scripts of the head-to-head comparison chain, each with a
+- the scripts of the head-to-head comparison chain, each with a
   `--selftest` that runs on fabricated inputs in seconds:
   `gtf_to_tables.py` (annotation tables from a GTF), `phaser_to_matrix.py`
   (phASER output to matrices, plus the read-backed phase overlay),
-  `make_rasqual_inputs.py` (RASQUAL's native inputs), and
-  `compare_pipelines.py` (the comparison itself)
+  `build_covariates.py` (the shared covariate matrix, written to
+  `cov/covariates.tsv` and passed to both arms rather than pre-residualized),
+  `select_pilot_genes.py` (a gene list both methods can use, stratified by
+  expression and bounded by RASQUAL's cost), `build_asvcf.py` (the
+  AS-annotated VCF RASQUAL reads), `make_rasqual_inputs.py` (RASQUAL's native
+  inputs), and `compare_pipelines.py` (the comparison itself)
 - `docs/brainvar_deploy_runbook.md` — the operating procedure for running that
   chain on BrainVar, end to end
 
@@ -40,12 +53,17 @@ and records the bugs found along the way. Point a new session at it first.
 sudo apt-get install -y libgsl-dev liblapack-dev libblas-dev zlib1g-dev
 
 # python
-pip install numpy scipy pandas torch pandas_plink h5py qtl pytest
+pip install numpy scipy pandas torch pandas_plink h5py qtl pysam pytest
 pip install -e . --no-deps        # tensorqtl itself, for the test suite
 ```
 
 Versions this work was validated against: numpy 2.4.6, scipy 1.17.1,
 pandas 3.0.5, torch 2.14.0, pandas-plink 2.3.2, h5py 3.16.0, qtl 0.1.10.
+Those are not a floor. On 2026-09-13 the hapmixQTL suite
+(`tests/test_hapmixqtl.py`, `tests/test_hapmixqtl_calibration.py`,
+`tests/test_cli.py`, 72 tests) also passed on a materially older stack:
+numpy 1.26.4, scipy 1.16.2, pandas 2.2.3, torch 2.7.0, pandas-plink 2.3.2,
+h5py 3.13.0, qtl 0.1.10, pysam 0.24.0.
 
 **Intermediate data.** The GTEx haplotype-count extracts used in §7d are not
 committed (they are derived data). Regenerate:
@@ -61,7 +79,7 @@ python3 scripts/extract_gtex_phaser.py \
 git clone <repo> && cd tensorqtl
 git checkout claude/hapmixqtl-gibbs-uncertainty-IQ6Za
 # install as above
-pytest tests/test_hapmixqtl.py -q          # expect 32 passed
+pytest tests/test_hapmixqtl.py -q          # expect 54 passed
 ./scripts/build_rasqual.sh                 # optional; real RASQUAL
 claude                                     # start a session in the repo
 ```
@@ -121,14 +139,19 @@ Open:
 
   On real data this is no longer blocked on tooling: `compare_pipelines.py`
   gives each method its native input on the same genes and the same phase, and
-  `docs/brainvar_deploy_runbook.md` is the procedure. The inputs are all on the
+  `docs/brainvar_deploy_runbook.md` is the procedure **and the record of how
+  far it has been run** — read its pilot sections for the current state rather
+  than this file, which is not updated per run. The inputs are all on the
   server. Personalized diploid quantifications with 200 Gibbs draws cover 228
   subjects (`personalized_T2T_NCBI110_pseudoalignment`), and reference-aligned
   T2T BAMs for phASER cover 93 — **92 subjects in common**, which is the usable
   N. That arm has no aligned reads of its own, so the allelic counts come from
   the reference-aligned arm, and its BAMs are named by RefSeq accession where
-  the VCF uses `chr`; both are handled in the runbook. What remains is phASER
-  and the run itself.
+  the VCF uses `chr`; both are handled in the runbook. phASER and the pilot
+  comparisons have since been run: the runbook records both arms on 30 genes
+  (`pilotI` through `pilotN`), with calibration, the per-channel covariate
+  check, the lead refit and the matched-variant effect comparison. What
+  remains is the run at scale.
 - **Four axes blocked on genotypes** (§9): effect-size concordance against GTEx
   aFC, eGene replication, functional/motif enrichment, and the `slope_a` vs
   `slope_tc` concordance check. BrainVar unblocks all four.

@@ -1,6 +1,12 @@
 """
 hapmixQTL under the PUBLISHED simulation designs of mixQTL and RASQUAL.
 
+REVIEWED 2026-09-13: the generative model below is RASQUAL's (negative-binomial
+total, beta-binomial allelic); what comes from mixQTL is the aFC grid and the
+replicate count, not its estimators. The columns labelled trcQTL and ascQTL are
+NB and beta-binomial likelihood-ratio tests, not mixQTL's own. See the
+withdrawal note in docs/ase_validation.md sec 7b before quoting anything here.
+
 This supersedes the parameter choices in ase_external_benchmark.py, which were
 our own because the papers were unreachable at the time. With the papers in hand
 the designs are now taken from source:
@@ -55,6 +61,15 @@ independent component" (good for biological variance, which does not shrink with
 read depth). This script also evaluates the nesting model Var = sigma^2*v_inf +
 tau, which contains both, and mixQTL's weight cap as a third, cheaper mitigation.
 
+It does NOT run a purely multiplicative arm, so nothing here ranks additive
+against multiplicative. Two of the four arms cannot differ from their
+comparators in this harness: no yT is passed, so the simulated total is fixed,
+every total weight clamps to 1e8 and a max/min RATIO cap on a uniform vector is
+the identity map -- 'capped' is bit-identical to 'zero' in all 24 cells of
+ase_published_designs.json -- and 'nested' collapses onto 'estimate' by the
+moment estimator's own algebra. docs/ase_validation.md sec 7b carries the
+withdrawal in full.
+
 Run:  python3 tests/ase_published_designs.py --reps 200 --out published.json
 """
 
@@ -107,8 +122,9 @@ def _apply_weight_cap(w, N, weight_cap=WEIGHT_CAP):
 
 def hapmix_variants(d, rng, mode, n_draws=80, kappa_pseudo=0.5):
     """
-    mode: 'zero'      w = 1/v_inf                       (current default)
-          'estimate'  w = 1/(v_inf + tau)               (additive, current fix)
+    mode: 'zero'      w = 1/v_inf                       (the former default)
+          'estimate'  w = 1/(v_inf + tau)               (additive; the default
+                                                         everywhere since the fix)
           'capped'    w = 1/v_inf then mixQTL weight cap
           'nested'    w = 1/(sigma^2 * v_inf + tau)     (nests both)
     """

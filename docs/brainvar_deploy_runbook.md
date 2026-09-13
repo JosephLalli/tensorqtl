@@ -75,6 +75,9 @@ python3 scripts/diploid_tx2gene.py --selftest
 python3 scripts/brainvar_pairing.py --selftest
 python3 scripts/verify_pairing.py --selftest
 python3 scripts/phaser_to_matrix.py --selftest
+python3 scripts/build_covariates.py --selftest
+python3 scripts/build_asvcf.py --selftest
+python3 scripts/select_pilot_genes.py --selftest
 python3 scripts/make_rasqual_inputs.py --selftest
 RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest
 ```
@@ -424,6 +427,54 @@ nohup python3 scripts/compare_pipelines.py \
 
 `--hap-suffix _L,_R` is required for the quantifications described above; the
 default is `_hapA,_hapB` and would pair nothing.
+
+`cov/covariates.tsv` is written by `scripts/build_covariates.py` (metadata
+covariates and genotype PCs, then expression PCs computed on expression already
+residualized against those, so the columns are orthogonal by construction and
+the PCs do not re-encode age, batch and ancestry):
+
+```bash
+python3 scripts/build_covariates.py --metadata <metadata_v1.4.tsv> \
+    --pairing <pairing.tsv> --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
+    --vcf prepped/rephased.vcf.gz --hap-suffix _L,_R --out cov/
+```
+
+It is passed to both arms rather than regressed out first: hapmixQTL projects
+covariates out inside the weighted space and its two channels carry different
+weights, and RASQUAL fits a GLM on the count scale, so a pre-residualized
+phenotype is wrong for both. `--ase-covariates` defaults to `none`, leaving the
+allelic channel with an intercept only.
+
+### The scale both arms are reported on
+
+RASQUAL's statistic is 2 x its log likelihood ratio against a chi2(1);
+hapmixQTL's is `T^2 = (slope/slope_se)^2`, with tau re-estimated at the lead.
+Until the correction of 2026-09-13 the driver obtained hapmixQTL's value by
+converting its *t* nominal p back through `chi2.isf`, which imported the t tail
+into the comparison and cost a median 1.87 and up to 22.5 chi2 points on these
+30 genes (`docs/hapmixqtl_methods.md` §7). **The hapmixQTL chi2 values quoted
+in the pilot sections below (`pilotI` through `pilotN`) were produced before
+that change and are understated by about that much**; the leads, effect sizes
+and empirical p-values are unaffected, and the statistics will not reproduce
+exactly on a rerun.
+
+### Resuming a killed run
+
+Each null draw is written to `<out>/null_rounds/{hapmixqtl,rasqual}.NNN.tsv` as
+it finishes, and a rerun into the same `--out` reuses every round already there.
+A RASQUAL null round costs over an hour per draw, so a killed calibration
+resumes instead of repaying them. Each draw's permutation is seeded from its own
+index rather than drawn in sequence, so a draw reproduces itself whatever order
+the draws run in and whatever subset a resumed run redoes. `--draw-jobs N` runs
+N draws concurrently, each getting `--rasqual-jobs / N` genes; it is only worth
+raising alongside a lower `--rasqual-threads`, since one draw of 29 genes at 8
+threads already asks for 232 cores.
+
+The observed arm can be carried across runs the same way: `--reuse-rasqual DIR`
+takes an earlier `--out` directory's `observed_rasqual.tsv` as this run's
+observed RASQUAL arm, so a change confined to the hapmixQTL side does not have
+to pay for RASQUAL again. That is separate from `--rasqual-rows`, which keeps
+the per-variant rows the matched-effect lookups read.
 
 ### How RASQUAL is actually run
 

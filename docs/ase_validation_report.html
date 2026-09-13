@@ -576,6 +576,19 @@
   hapmixQTL's additive offset, does not beat plain additive τ (0.575 vs 0.615 at N = 100)
   and is marginally worse at larger N. The simple fix is the right one.</p>
 
+  <p class="vnote"><strong class="bad">WITHDRAWN (reviewed 2026-09-13).</strong> The two
+  paragraphs above compare arms that could not have differed from their comparators.
+  The harness passes no <code>yT</code>, so the simulated total is fixed, <code>Vt</code> is
+  ~1e-31, every total weight clamps to 1e8, and a max/min <em>ratio</em> cap on a uniform
+  vector is the identity map: <code>zero</code> and <code>capped</code> are bit-identical in
+  all 24 cells of <code>ase_published_designs.json</code>. The nested arm collapses onto the
+  additive one by the moment estimator's own algebra (<code>s2a = var(a − mean(a)) /
+  mean(va + ta)</code>, and once <code>ta</code> is the DerSimonian–Laird estimate
+  <code>mean(v + τ) ≈ var(a)</code>, so <code>s² ≈ 1</code> by construction). No purely
+  multiplicative arm was ever run, so nothing in this section ranks additive against
+  multiplicative; and the generative model here is RASQUAL's, not mixQTL's. See
+  <code>docs/ase_validation.md</code> §7b.</p>
+
   <p><strong>And <code>tau='zero'</code> tracks trcQTL almost exactly</strong> at matched
   FPR (0.495 vs 0.535 at N = 100, aFC 1.25) — confirming on the published design that the
   broken default discards the allele-specific channel entirely.</p>
@@ -1015,9 +1028,11 @@
   <ol class="recs">
     <li><code>tau_mode='estimate'</code> is the default in <code>map_nominal</code>,
     <code>map_cis</code> and <code>map_susie</code>; <code>'zero'</code> is kept only for
-    reproducing prior results and emits a warning stating why it is invalid. §7b is why the
-    simple additive τ is the right fix: mixQTL's weight cap alone does nothing, and the
-    nested <code>σ²·v_inf + τ</code> buys nothing.</li>
+    reproducing prior results and emits a warning stating why it is invalid. §7b's support
+    for the additive τ is narrower than first written: the free scale parameter is the
+    load-bearing part of mixQTL's model, but the weight-cap and nested arms were
+    arithmetically incapable of differing from their comparators (see the withdrawal note in
+    §7b), and no multiplicative arm was run.</li>
     <li>The reference-bias diagnostic (§7i) ships as
     <code>hapmixqtl.reference_bias_diagnostic()</code>, and the Salmon runner refuses to
     proceed when it flags.</li>

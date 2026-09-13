@@ -90,9 +90,28 @@ Column | Description
 `pval_t` | Nominal p-value of the total-expression channel
 `slope_t` | Effect size from the total-expression channel
 `slope_t_se` | Standard error of `slope_t`
+`pval_cis_trans` | Wald test that the two channels estimate the same effect (`hapmixqtl.cis_trans_diagnostic`). A small value flags a pair whose combined slope should not be read as a cis log allelic fold change; a diagnostic column, not a filter
+
+All statistics are on the null-model tau scale (tau estimated once per phenotype per channel without a genotype term); `map_cis(tau_refit=True)` is the only entry point that reports a lead on a refit scale.
 
 #### Mode `hapmixqtl`
-The columns match `cis` (top association per phenotype with permutation and Beta-approximated p-values), where `slope`/`slope_se`/`pval_nominal` are the combined ASE + total estimates and `slope` is interpretable as the log allelic fold change per ALT allele. Written to `${prefix}.hapmixqtl.txt.gz`.
+Top association per phenotype with permutation and Beta-approximated p-values, written to `${prefix}.hapmixqtl.txt.gz`. The columns of `cis` are all present (plus `qval` and `pval_nominal_threshold` when rpy2/qvalue is available), where `slope`/`slope_se`/`pval_nominal` are the combined ASE + total estimates and `slope` is interpretable as the log allelic fold change per ALT allele. `beta_shape1`, `beta_shape2`, `true_df`, `pval_true_df` and `pval_beta` are NaN when `--disable_beta_approx` is set or the Beta fit fails. The following columns are additional to `cis`:
+
+Column | Description
+--- | ---
+`slope_a` | Lead variant's effect size from the ASE channel
+`slope_a_se` | Standard error of `slope_a`
+`slope_t` | Lead variant's effect size from the total-expression channel
+`slope_t_se` | Standard error of `slope_t`
+`alpha_cis` | `slope_a / slope_t` at the lead
+`pval_cis_trans` | Wald test that the two channels estimate the same effect at the lead (`hapmixqtl.cis_trans_diagnostic`); a diagnostic column, not a filter
+`tau_a` | Overdispersion of the ASE channel used for the reported `slope`/`slope_se`/`pval_nominal`
+`tau_t` | Overdispersion of the total channel used for the reported `slope`/`slope_se`/`pval_nominal`
+`tau_a_null` | ASE-channel overdispersion of the scan, estimated under the null model (no genotype term)
+`tau_t_null` | Total-channel overdispersion of the scan, estimated under the null model
+`tau_refit` | Whether either channel's tau was re-estimated with the lead in the design (`--tau_refit`; false otherwise, in which case `tau_a`/`tau_t` equal `tau_a_null`/`tau_t_null`)
+
+Two scales coexist in this table. `pval_perm` and `pval_beta` are always on the scan scale, where the permutations carry the same tau and the empirical p is calibrated; `pval_nominal`, `slope` and `slope_se` move to the refit scale when `tau_refit` is true. `pval_nominal` is the best of the cis-window and is never a gene-level p — `pval_beta` is.
 
 #### Mode `hapmixqtl_susie`
 SuSiE fine-mapping of the combined ASE + total signal. Two files are written: a credible-set summary parquet `${prefix}.hapmixqtl_SuSiE_summary.parquet` and a pickle `${prefix}.hapmixqtl_SuSiE.pickle` with the full per-phenotype SuSiE results (PIPs, credible sets, log Bayes factors, ELBO, convergence).
@@ -104,3 +123,4 @@ Column | Description
 `pip` | Posterior inclusion probability
 `af` | In-sample ALT allele frequency of the variant
 `cs_id` | Credible-set index (the SuSiE single-effect `L` this variant belongs to)
+`tau_mode` | The `tau_mode` the fine-mapping was run under, recorded as provenance. Results produced under `zero` are invalid (`docs/ase_validation.md` §7g); `hapmixqtl.fine_mapping_provenance()` classifies a file as `ok`, `stale` or `unknown`
