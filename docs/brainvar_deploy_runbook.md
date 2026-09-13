@@ -862,10 +862,23 @@ thresholded against its own pooled null:
 | genes discovered at FPR 10% | 11 / 29 | 9 / 29 |
 | genes discovered at FPR 5% | 11 / 29 | 8 / 29 |
 
-**At matched false-positive rate RASQUAL discovers more**, which reverses what
-the raw statistics suggest (hapmixQTL's median 17.3 against RASQUAL's 12.9).
-hapmixQTL's statistics are larger under the null as well as observed, and
-thresholding each arm against its own null removes exactly that. The fixed 15
+**The difference between the two counts does not clear the noise floor.** The
+comparison is paired, so the test is on the discordant genes: at FPR 5% eight
+genes are RASQUAL-only and five hapmixQTL-only, McNemar exact p = 0.58 (at 10%,
+seven and five, p = 0.77). On 29 genes, 11 against 8 is a coin flip. What the
+calibration establishes is not that RASQUAL wins but that **hapmixQTL's apparent
+advantage on raw statistics was an artefact**: its median of 17.3 against
+RASQUAL's 12.9 does not survive matching, because
+its statistics are larger under the null as well as observed, and thresholding
+each arm against its own null removes exactly that.
+
+**The two methods mostly do not find the same genes.** At FPR 5%, of 16 genes
+called by either, only 3 are called by both (CCNI, CYP51A1, PDZD8); 8 are
+RASQUAL-only (CEBPG, CNTN2, CRMP1, EXOC2, FABP7, LRP3, PIP4K2B, TTC3) and 5
+hapmixQTL-only (ANKRD36B, APC, CYCS, RPL15, SLC6A15). That disagreement, not the
+count, is the substantive result: the two are drawing on different evidence, and
+which of those 13 discordant calls are real cannot be settled from these data
+without a replication set. The fixed 15
 used elsewhere in this runbook sits almost exactly on RASQUAL's own 5% point and
 far below hapmixQTL's 21.5, so every "genes above 15" count in the earlier
 sections is generous to hapmixQTL and should be read against this table instead.
