@@ -292,7 +292,12 @@ eps_asc ~ N(0, sigma^2 · (1/Y1 + 1/Y2))       z_tilde ~ N(0, sigma0_tilde^2)
 
 The counts set only the **shape** of the weights. `sigma^2` and `sigma0_tilde^2` are **free
 scale parameters**, and Supplementary Notes §5.2 — titled *"Inferring σ̃₀² and σ²"* — solves
-for both from the data under a mixed/random-effect model (via the R package EMMA).
+for both from the data. **Correction (2026-09-13):** that EMMA/REML procedure serves
+mixQTL's fine-mapping and prediction step, not its single-variant scan. The scan hapmixQTL
+descends from uses a per-regression residual SD, `sqrt(RSS/(n-1))` for the allelic channel
+and `sqrt(RSS/(n-2))` for the total, refit at **every tested variant**. So hapmixQTL's
+per-gene null-model τ is the departure, and `map_cis(tau_refit=True)` is a move back toward
+the parent's convention.
 
 **hapmixQTL replaced that freely-scaled variance with the Gibbs `v_inf` treated as fully
 known — dropping the free scale entirely.** That is exactly the `tau_mode='zero'` defect.
@@ -309,7 +314,22 @@ Note the variance models are not identical, which matters:
 | hapmixQTL | `Var = v_inf + τ` | additive — "an extra independent component" |
 
 A multiplicative scale suits misspecified quantification noise; an additive offset suits
-biological variance, which does not shrink with read depth. Both were tested.
+biological variance, which does not shrink with read depth.
+
+> **WITHDRAWN (reviewed 2026-09-13).** The multiplicative form was never run. The four arms
+> below are `zero`, `capped`, `estimate` and `nested`; there is no `w = 1/(sigma^2 v)` arm
+> anywhere in `tests/`, so nothing here ranks additive against multiplicative. Two further
+> conclusions are withdrawn. (1) The **weight cap** arm could not have differed from `zero`:
+> this harness passes no `yT`, so the total is `yL + yR`, which the simulated draws hold
+> fixed; `Vt` is then ~1e-31, every total weight clamps to 1e8, and a max/min *ratio* cap on
+> a uniform vector is the identity map. `zero` and `capped` are bit-identical in all 24
+> cells of `ase_published_designs.json`. (2) The **nested** arm collapses onto `estimate` by
+> the moment estimator's algebra: the harness sets `s2a = var(a - mean(a)) / mean(va + ta)`,
+> and once `ta` is the DL estimate `mean(v + tau) ~ var(a)`, so `s2 ~ 1` by construction.
+> The generative model here is also RASQUAL's (negative binomial total, beta-binomial
+> allelic) -- "beta-binomial" appears nowhere in the mixQTL paper -- so the columns labelled
+> `trcQTL` and `ascQTL` are NB and BB likelihood-ratio tests, not mixQTL's own estimators;
+> only the aFC grid and replicate count come from mixQTL. Conclusions 2 and 3 stand.
 
 ### Results — power at empirical FPR 10%
 
@@ -866,9 +886,10 @@ unchanged (the r² mapping is monotone). This matters for the effect-size concor
 
 1. `tau_mode='estimate'` is the default in `map_nominal`, `map_cis` and `map_susie`.
    `'zero'` is kept only for reproducing prior results and emits a warning stating why it
-   is invalid. §7b is why the simple additive τ is the right fix: the free scale parameter
-   is the load-bearing part of mixQTL's model, mixQTL's `weight_cap` alone does **not**
-   work (identical to the broken default), and the nested `σ²·v_inf + τ` buys nothing.
+   is invalid. §7b's support for the additive τ is narrower than first written: the free
+   scale parameter is the load-bearing part of mixQTL's model, but the weight-cap and
+   nested arms were arithmetically incapable of differing from their comparators (see the
+   withdrawal note in §7b), and no multiplicative arm was run.
 2. The reference-bias diagnostic (§7i) ships as `hapmixqtl.reference_bias_diagnostic()`,
    and the Salmon runner refuses to proceed when it flags.
 3. The zero-coverage weight defect found in §7h (an exactly-zero inferential variance

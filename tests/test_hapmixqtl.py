@@ -1380,3 +1380,45 @@ class TestLeadRefit:
         assert row['tau_refit']                                  # the total channel was refit
         assert row['tau_t'] != row['tau_t_null']
         assert np.isfinite(row['pval_nominal']) and 0 < row['pval_perm'] <= 1
+
+
+class TestTauDenominator:
+
+    def test_intercept_only_tau_is_exactly_dersimonian_laird(self, device):
+        """With an intercept alone the leverage is h_i = w_i / sum_j w_j, so the
+        moment estimator's denominator sum_i w_i(1-h_i) equals DerSimonian and
+        Laird's sum w - sum w^2 / sum w. The estimator must match that closed
+        form exactly. Dividing by (n-q)*mean(w) instead, as an earlier version
+        did, agrees only under equal weights."""
+        rng = np.random.RandomState(5)
+        n = 60
+        v = rng.uniform(0.02, 2.0, n)                       # 100x spread in precision
+        y = rng.normal(0, np.sqrt(v + 0.4), n)              # true tau = 0.4
+        y_t = torch.tensor(y, dtype=torch.float64, device=device)
+        v_t = torch.tensor(v, dtype=torch.float64, device=device)
+        tau = float(_estimate_tau(y_t, v_t, None, device))
+
+        w = 1.0 / v
+        sw = np.sqrt(w); q = sw / np.linalg.norm(sw)
+        rss = float(((y * sw) - q * (q @ (y * sw))) @ ((y * sw) - q * (q @ (y * sw))))
+        dl_denom = w.sum() - (w ** 2).sum() / w.sum()
+        assert np.isclose(dl_denom, (w * (1 - q ** 2)).sum())      # the identity itself
+        assert np.isclose(tau, max(0.0, (rss - (n - 1)) / dl_denom), rtol=1e-6)
+
+        old = max(0.0, (rss / (n - 1) - 1.0) / w.mean())           # the superseded form
+        assert not np.isclose(tau, old, rtol=1e-3), (tau, old)
+
+    def test_equal_weights_make_the_two_denominators_agree(self, device):
+        """The superseded form was not wrong everywhere: under equal weights the
+        two denominators coincide, which is why the error stayed small."""
+        rng = np.random.RandomState(6)
+        n = 60
+        v = np.full(n, 0.25)
+        y = rng.normal(0, np.sqrt(v[0] + 0.4), n)
+        tau = float(_estimate_tau(torch.tensor(y, dtype=torch.float64, device=device),
+                                  torch.tensor(v, dtype=torch.float64, device=device), None, device))
+        w = 1.0 / v
+        sw = np.sqrt(w); q = sw / np.linalg.norm(sw)
+        r = (y * sw) - q * (q @ (y * sw)); rss = float(r @ r)
+        old = max(0.0, (rss / (n - 1) - 1.0) / w.mean())
+        assert np.isclose(tau, old, rtol=1e-6)

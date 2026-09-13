@@ -154,10 +154,21 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
                       seed=seed, covariates_df=cov_df,
                       ase_covariates_df=(None if ase_cov == 'none' else SAME_COVARIATES),
                       tau_refit=True, verbose=False)
-    p = pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1)
+    # The statistic must sit on RASQUAL's scale. RASQUAL reports 2*log-likelihood-ratio
+    # against a chi2(1), i.e. a NORMAL reference. hapmixQTL's known-variance statistic is
+    # also asymptotically normal, but map_cis's pval_nominal is quoted against a t with
+    # N-2-n_cov df as a finite-sample convention, and round-tripping that p back through
+    # chi2.isf imported the t tail into the comparison: measured on the 30 BrainVar genes
+    # it cost a median 1.87 chi2 points and up to 22.5 (ANKRD36B 50.1 where the statistic
+    # is 72.6), because the t_73 tail is 6.7x the normal at |T|=5 and 35x at |T|=6 --
+    # a penalty that grows precisely where hapmixQTL is strongest. Take the statistic
+    # itself, which also avoids the 1e-300 clip that silently capped it near 1372.
+    slope = pd.to_numeric(res['slope'], errors='coerce')
+    slope_se = pd.to_numeric(res['slope_se'], errors='coerce')
+    stat = (slope / slope_se) ** 2
     # map_cis returns the gene ID as the INDEX (named phenotype_id), not a column
     return pd.DataFrame({'gene': res.index.values,
-                         'stat': stats.chi2.isf(p.values, 1),
+                         'stat': stat.values,
                          'log_afc': pd.to_numeric(res['slope'], errors='coerce').values,
                          'lead': res['variant_id'].values,
                          'pval_perm': pd.to_numeric(res['pval_perm'], errors='coerce').values})
@@ -532,9 +543,9 @@ def hapmix_at(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
                               warn_monomorphic=False, beta_approx=False)
             except ValueError:          # no valid variant in the gene's window
                 continue
-        pv = float(pd.to_numeric(res['pval_nominal'], errors='coerce').clip(1e-300, 1).iloc[0])
-        rows.append(dict(gene=g, variant=var, stat=float(stats.chi2.isf(pv, 1)),
-                         log_afc=float(res['slope'].iloc[0])))
+        sl = float(res['slope'].iloc[0]); se = float(res['slope_se'].iloc[0])
+        rows.append(dict(gene=g, variant=var, stat=(sl / se) ** 2 if se > 0 else np.nan,
+                         log_afc=sl))
     return pd.DataFrame(rows, columns=['gene', 'variant', 'stat', 'log_afc'])
 
 

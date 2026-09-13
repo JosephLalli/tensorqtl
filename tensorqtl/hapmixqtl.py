@@ -98,6 +98,27 @@ def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
     return A_df, T_df, Va_df, Vt_df, Cat_df, pos_df
 
 
+def _assert_phase_columns(xL_df, xR_df, genotype_df):
+    """The phase frames are indexed POSITIONALLY by the genotype frame's column
+    order (genotype_ix is built from genotype_df.columns, then applied to
+    xL_df.values). If the frames carry the same samples in a different order,
+    the allelic channel is silently computed from the wrong samples while the
+    total channel stays correct: on a planted effect of 0.9 the combined slope
+    came back 0.47 with the total-channel slope still reading 0.95, and nothing
+    raised. Checked once per call."""
+    for name, df in (('xL_df', xL_df), ('xR_df', xR_df)):
+        if not genotype_df.columns.equals(df.columns):
+            if set(df.columns) == set(genotype_df.columns):
+                raise ValueError(
+                    f'{name} has the same samples as genotype_df in a different order. '
+                    'Phase is indexed positionally by the genotype column order, so this '
+                    f'would corrupt the allelic channel silently. Reindex with '
+                    f'{name} = {name}[genotype_df.columns].')
+            raise ValueError(
+                f'{name} columns do not match genotype_df columns '
+                f'({len(df.columns)} vs {len(genotype_df.columns)} samples).')
+
+
 def _zero_degenerate_ase_weights(sqrt_wa_t, va_t, eps=1e-12):
     """Zero the ASE weight of samples carrying NO allele-specific information.
 
@@ -450,22 +471,33 @@ def _estimate_tau(y_t, v_inf_t, covariates_t, device):
     """
     Estimate overdispersion parameter tau using moment estimator.
 
-    Under the model Var(error_i) = v_inf_i + tau, the weighted
-    residuals (with w_i = 1/v_inf_i) have expected variance
-    1 + tau * mean(1/v_inf). This function solves for tau from
-    the observed residual variance.
+    Under Var(error_i) = v_inf_i + tau, whitening by w_i = 1/v_inf_i gives
+    Var(y*_i) = 1 + tau*w_i, so the residual sum of squares after projecting
+    out the null design P = QQ' has expectation
+
+        E[RSS] = tr((I - P) diag(1 + tau*w)) = (n - q) + tau * sum_i w_i(1-h_i)
+
+    with h_i the leverage (the diagonal of P) and q the design's rank. Solving
+    gives the estimator below. The denominator is sum_i w_i(1-h_i), NOT
+    (n - q) * mean(w): the two agree only when every sample has the same
+    leverage, and for an intercept-only design (h_i = w_i / sum_j w_j) the
+    correct form reduces exactly to DerSimonian and Laird's
+    sum_i w_i - sum_i w_i^2 / sum_j w_j. Using the mean weight understated tau
+    by a median 0.8% in the allelic channel and 3.0% in the total channel of
+    the BrainVar genes, whose whitened 18-column design reaches a leverage of
+    0.74.
     """
-    sqrt_w = torch.sqrt(1.0 / v_inf_t.clamp(min=1e-8))
+    w = 1.0 / v_inf_t.clamp(min=1e-8)
+    sqrt_w = torch.sqrt(w)
     res = WeightedResidualizer(covariates_t, sqrt_w)
     y_star = (y_t * sqrt_w).unsqueeze(0)
     y_res = res.transform(y_star).squeeze()
 
     rss = (y_res * y_res).sum()
     dof_null = y_t.shape[0] - res.Q_t.shape[1]
-    sigma2_hat = rss / max(dof_null, 1)
-
-    mean_inv_v = (1.0 / v_inf_t.clamp(min=1e-8)).mean()
-    tau = torch.clamp((sigma2_hat - 1.0) / mean_inv_v, min=0.0)
+    h = (res.Q_t * res.Q_t).sum(1)
+    denom = (w * (1.0 - h)).sum()
+    tau = torch.clamp((rss - dof_null) / denom.clamp(min=1e-30), min=0.0)
     return tau
 
 
@@ -1034,10 +1066,13 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             (sigma^2 * v_inf), so it is not mixQTL's variance model. A
             multiplicative scale suits quantification noise of the right shape
             and the wrong size; an additive term suits biological variance,
-            which does not shrink with read depth. Both, and the nested
-            sigma^2 * v_inf + tau, were measured on mixQTL's own simulation
-            design: the additive form wins and the nested form buys nothing
-            (docs/ase_validation.md sec 7b).
+            which does not shrink with read depth. The two have NOT been
+            compared: docs/ase_validation.md sec 7b runs no-tau, a weight cap,
+            additive tau and the nested sigma^2 * v_inf + tau, and has no
+            multiplicative arm. This contrast applies to the ALLELE-SPECIFIC
+            channel only; mixQTL's total-count channel carries a single flat
+            variance that hapmixQTL's v_t + tau_t decomposes rather than
+            departs from (docs/hapmixqtl_methods.md sec 3.2).
 
             'zero' is retained only for reproducing prior results and emits a
             warning.
@@ -1093,6 +1128,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             "xL variant IDs must match genotype variant IDs"
         assert (xR_df.index == genotype_df.index).all(), \
             "xR variant IDs must match genotype variant IDs"
+        _assert_phase_columns(xL_df, xR_df, genotype_df)
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
@@ -1361,6 +1397,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     has_phase = xL_df is not None and xR_df is not None
     if has_phase:
         logger.write('  * phase genotypes available (ASE + total channels)')
+        _assert_phase_columns(xL_df, xR_df, genotype_df)
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
@@ -1662,6 +1699,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     has_phase = xL_df is not None and xR_df is not None
     if has_phase:
         logger.write('  * phase genotypes available (ASE + total channels)')
+        _assert_phase_columns(xL_df, xR_df, genotype_df)
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
