@@ -322,7 +322,7 @@ def orient_haplotypes(sign_sites, depth_sites=None):
     return np.sign((w * s).sum(0))
 
 
-def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=False):
+def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=True):
     """
     Compute hapmixQTL summary statistics from Gibbs draws.
 
@@ -340,7 +340,15 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=False):
             is determined by local heterozygosity -- which is in LD with the
             cis variants being tested. Pass the total summed over ALL
             transcripts. Defaults to yL + yR for backwards compatibility.
-        count_noise: add per-sample Poisson counting noise to Va and Vt. This
+        count_noise: add per-sample Poisson counting noise to Va and Vt.
+            DEFAULT TRUE since 2026-09-13: three separate failures close when it
+            is on and are open when it is off. A sample with zero counts in every
+            draw drives the total channel's type-I error to 52% at alpha = 0.05;
+            a sample whose draws are unanimous because its reads are unambiguous
+            rather than absent is discarded as uninformative, throwing away the
+            most informative allele-specific observation in the channel; and the
+            tau moment estimator collapses on either. Pass False only to
+            reproduce results from before that date. This
             is for Salmon GIBBS draws, which reassign one fixed set of reads:
             their across-draw variance is read-ASSIGNMENT uncertainty only.
             (Bootstrap draws resample the reads and already carry counting
@@ -1043,7 +1051,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 covariates_df=None, maf_threshold=0, window=1000000,
                 tau_mode='estimate', se_mode='model',
                 output_dir='.', logger=None, verbose=True,
-                ase_covariates_df=SAME_COVARIATES):
+                ase_covariates_df=None):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
@@ -1063,14 +1071,18 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         prefix:           output file prefix
         covariates_df:    covariates [samples x covariates] or None, applied
                           to the TOTAL channel (and, by default, the allelic one)
-        ase_covariates_df: covariates for the ALLELIC channel: SAME_COVARIATES
-                          (default; the total channel's), None (intercept only)
-                          or a DataFrame [samples x k]. The allelic contrast is
-                          a within-sample difference in which covariates that act
-                          on both haplotypes alike cancel, so None is the usual
-                          choice; each column projected out of the allelic
-                          channel costs one informative sample and can only
-                          remove signal (see _prepare_channels)
+        ase_covariates_df: covariates for the ALLELIC channel: None (the
+                          default since 2026-09-13, an intercept only),
+                          SAME_COVARIATES (the total channel's set) or a
+                          DataFrame [samples x k]. The allelic contrast is a
+                          within-sample difference in which covariates that act
+                          on both haplotypes alike cancel. Measured on 30
+                          BrainVar genes: the 17-covariate set explains 96% of
+                          the total channel's whitened residual variance but
+                          only 24% of the allelic channel's against 22% expected
+                          by chance, while each column costs one informative
+                          sample. Pass SAME_COVARIATES to reproduce earlier
+                          results (see _prepare_channels)
         maf_threshold:    minimum minor allele frequency
         window:           cis-window size in bases
         tau_mode:         'estimate' (default) or 'zero'.
@@ -1354,7 +1366,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             covariates_df=None, maf_threshold=0, beta_approx=True,
             nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
-            ase_covariates_df=SAME_COVARIATES, tau_refit=False):
+            ase_covariates_df=None, tau_refit=False):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
@@ -1376,8 +1388,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     gene-level p. map_nominal stays on the null-model scale.
 
     ``ase_covariates_df`` is the allelic channel's covariate design (see
-    map_nominal): SAME_COVARIATES, None for an intercept only, or its own
-    DataFrame. The nominal p-value uses one t reference for both channels,
+    map_nominal): None for an intercept only (the default), SAME_COVARIATES for
+    the total channel's set, or its own DataFrame. The nominal p-value uses one t reference for both channels,
     dof = N - 2 - max(n_cov, n_cov_a).
 
     For each phenotype, finds the best cis variant and computes empirical
@@ -1675,7 +1687,7 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
               coverage=0.95, min_abs_corr=0.5, maf_threshold=0,
               tau_mode='estimate', max_iter=500, window=1000000, tol=1e-3,
               summary_only=True, logger=None, verbose=True,
-              warn_monomorphic=False, ase_covariates_df=SAME_COVARIATES):
+              warn_monomorphic=False, ase_covariates_df=None):
     """
     hapmixQTL SuSiE fine-mapping.
 
@@ -2171,7 +2183,7 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
                  covariates_df=None, window=1000000, tau_mode='estimate',
                  se_mode='model', logger=None, verbose=True,
-                 ase_covariates_df=SAME_COVARIATES):
+                 ase_covariates_df=None):
     """Shared per-phenotype driver: whiten once per gene, call fit_site for
     every site in the cis window, collect its row dicts."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -2251,7 +2263,7 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
                      phenotype_pos_df, hap_phased=None, covariates_df=None,
                      window=1000000, min_hap=10, tau_mode='estimate',
                      se_mode='model', logger=None, verbose=True,
-                     ase_covariates_df=SAME_COVARIATES):
+                     ase_covariates_df=None):
     """
     Categorical (per-allele) cis-QTL test for multiallelic non-repeat sites:
     the K-1 split-biallelic rows of a site fitted jointly.
@@ -2325,7 +2337,7 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
 def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_df, Vt_df,
                       phenotype_pos_df, covariates_df=None, window=1000000,
                       winsor=(0.01, 0.99), tau_mode='estimate', se_mode='model',
-                      logger=None, verbose=True, ase_covariates_df=SAME_COVARIATES):
+                      logger=None, verbose=True, ase_covariates_df=None):
     """
     Linear + curvature cis-QTL model for STRs: per haplotype
     f(L) = b1 (L - c) + b2 (L - c)^2 in repeat units, c = cohort mean length.

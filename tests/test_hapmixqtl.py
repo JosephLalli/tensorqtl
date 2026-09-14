@@ -238,7 +238,10 @@ class TestGibbsSummaries:
         yR = rng.gamma(2.0, 2.0, (F, S, D))
         kappa = 0.5
 
-        A, T, Va, Vt, Cat = compute_summaries_from_gibbs(yL, yR, kappa=kappa)
+        # count_noise defaults True; this test checks the raw draw summaries,
+        # so it asks for them explicitly. The counting term is covered below.
+        A, T, Va, Vt, Cat = compute_summaries_from_gibbs(yL, yR, kappa=kappa,
+                                                         count_noise=False)
 
         assert A.shape == (F, S)
         assert T.shape == (F, S)
@@ -255,6 +258,27 @@ class TestGibbsSummaries:
         assert np.isclose(Vt[0, 0], t_draws.var())
         cov = np.mean((a_draws - a_draws.mean()) * (t_draws - t_draws.mean()))
         assert np.isclose(Cat[0, 0], cov)
+
+    def test_counting_noise_is_on_by_default(self):
+        """The default gained the Poisson counting term on 2026-09-13: without
+        it a sample whose draws are unanimous has zero variance and the largest
+        weight in the gene, which is what drove the total channel's type-I error
+        to 52% at alpha = 0.05."""
+        yL = np.full((1, 3, 5), 8.0)            # unanimous draws: raw v_inf == 0
+        yR = np.full((1, 3, 5), 8.0)
+        yT = np.full((1, 3, 5), 40.0)
+        _, _, Va_d, Vt_d, _ = compute_summaries_from_gibbs(yL, yR, yT=yT)
+        _, _, Va_raw, Vt_raw, _ = compute_summaries_from_gibbs(yL, yR, yT=yT,
+                                                               count_noise=False)
+        assert (Va_raw == 0).all() and (Vt_raw == 0).all()
+        assert (Va_d > 0).all() and (Vt_d > 0).all()
+        assert np.allclose(Va_d, 2 / (8 + 0.5))
+        assert np.allclose(Vt_d, 1 / (40 + 1.0))
+        # a sample with NO allele-specific reads still gets Va = 0, so the
+        # degenerate-ASE guard keeps excluding it
+        z = np.zeros((1, 1, 5))
+        _, _, Va_z, _, _ = compute_summaries_from_gibbs(z, z, yT=np.full((1, 1, 5), 12.0))
+        assert (Va_z == 0).all()
 
     def test_variance_nonnegative(self):
         """Inferential variances are always non-negative."""

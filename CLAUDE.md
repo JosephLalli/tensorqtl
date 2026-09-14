@@ -32,11 +32,13 @@ The operating knowledge is large and split by purpose. Start in the right place:
 - **Sample order is positional.** Phase frames are indexed by the genotype frame's
   column order. `_assert_phase_columns` now guards it; before that, reordered columns
   corrupted the allelic channel while the total channel stayed correct.
-- **Library defaults differ from the drivers' defaults** by design, pending a
-  decision: `count_noise` and `tau_refit` are off in the library and on in
-  `scripts/compare_pipelines.py` and `scripts/run_hapmixqtl_from_salmon.py`;
-  `ase_covariates_df` defaults to the total channel's set in the library and to
-  intercept-only in the comparison driver.
+- **Library and driver defaults agree except on one flag.** `count_noise` is on
+  and `ase_covariates_df` is intercept-only everywhere since 2026-09-13; pass
+  `count_noise=False` or `ase_covariates_df=SAME_COVARIATES` to reproduce
+  earlier results. `tau_refit` is the exception: on in both drivers, off in the
+  library and CLI, because it carries a known unfixed selection bias (below) and
+  a default should fail conservative. It should flip once the refit is charged
+  the selection it performs.
 
 ## Claims withdrawn on 2026-09-13 — do not re-assert
 
