@@ -87,11 +87,15 @@ existing state only; it does not imply or start a new experiment.
   genes vs 6; the one gene among the 29 that is an eGene in the independent
   225-sample total-expression run (CCNI) is caught by it and by RASQUAL and
   missed by both additive configurations. The pure multiplicative model
-  (weights 1/v, fitted scale, mixQTL's allelic form) is anticonservative here
-  (15.1% at nominal 5%) because its whitened residuals are not exchangeable
-  under a floor; a fitted-scale permutation must re-project permuted residuals
-  onto the design complement, which the known-variance construction does not
-  need. Same report as above. PM is not the 2026-09-16 "fitted
+  (weights 1/v with a fitted scale; mixQTL's form, but mixQTL caps the weight
+  dynamic range at 10x and filters counts, which is a floor on v by another
+  name) is anticonservative here (15.1% at nominal 5%) because its whitened
+  residuals are not exchangeable under a floor and the allelic effective
+  sample size collapses (Kish 70.6 -> 43.6); a fitted-scale permutation must
+  also re-project permuted residuals onto the design complement, which the
+  known-variance construction does not need. Verified independently: the SE
+  rule is nearly inert for the gene-level permutation p, the weight rule is
+  everything. Same report as above. PM is not the 2026-09-16 "fitted
   residual scale" rule: away from the `tau = 0` boundary the two coincide
   (SE_codex = s_v * SE_lib and s_v = 1 at the PM fixed point), but at the
   boundary the fitted-scale rule discards the Gibbs variance floor and halves
