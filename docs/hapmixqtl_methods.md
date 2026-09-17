@@ -235,7 +235,7 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 6. **First-order total channel** (Section 3.1) and a single causal variant per window (the combined statistic is a marginal test; the stacked-design SuSiE extension in `map_susie` addresses multiple effects).
 7. **The $t$ reference** of (16) is a convention; the empirical p (19)-(20) is the calibrated quantity.
 8. **Independence across samples**: no relatedness or repeated measures.
-9. **Sparse channels** are admitted down to $(1 + p_c) + 2$ informative samples, where mixQTL requires 15 in both channels before combining them at all. Calibration was measured with about 70 informative samples; the 12-gene diagnostic subset of the deployment had 46 to 85 and the 30-gene set about 77. Below that the behaviour is untested, and the known-variance interval becomes increasingly conservative rather than anticonservative.
+9. **Sparse channels** are admitted down to $q_c + 2$ informative samples ($q_a = p_a$, so 2 for the default allelic design; $q_t = 1 + p_t$), where mixQTL requires 15 in both channels before combining them at all. Calibration was measured with about 70 informative samples; the 12-gene diagnostic subset of the deployment had 46 to 85 and the 30-gene set about 77. Below that the behaviour is untested, and the known-variance interval becomes increasingly conservative rather than anticonservative.
 10. **No library-size offset** (Section 2). Depth is absorbed by the covariates of (6) or not at all; a run without covariates loses power in the total channel rather than becoming miscalibrated.
 11. **Exchangeability of the whitened residuals** requires the variance model (7) to have the right *shape* up to a constant, not merely the right average. $\hat\tau_c$ by (13) fixes the average, so a misspecified shape leaves the permutation null approximately, not exactly, calibrated; the measured degradation over a 200-fold spread in $v$ is in Section 7, and is conservative when the truth is multiplicative.
 12. **The two channels are defined over different features.** $y_L, y_R$ cover the transcripts quantified per haplotype and $y_T$ all of the gene's transcripts (Section 1), which is unavoidable against a personalized diploid transcriptome but means $\beta_a$ and $\beta_t$ need not be the same parameter for a multi-isoform gene with a transcript-specific effect. Equation (14) then averages two quantities; (21) is the diagnostic, but the design guarantees the mismatch rather than merely permitting it. mixQTL's two channels cover the same reads.
@@ -251,7 +251,7 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 | counting term (4) | Poisson plug-in variance | off (library); on (driver, runner) | `count_noise` |
 | $\varepsilon$ | informative threshold | $10^{-12}$ | `_channel_weights(eps)` |
 | variance floor in (8) | | $10^{-8}$ | `_channel_weights` |
-| sparse-channel rule | minimum informative samples | $(1 + p_c) + 2$ | `_min_informative` |
+| sparse-channel rule | minimum informative samples | $q_c + 2$ ($q_a = p_a$, $q_t = 1 + p_t$) | `_min_informative` |
 | $C_a$ | allelic covariate design | no nuisance columns and no intercept (API and driver) | `ase_covariates_df` |
 | $\hat\tau$ | moment estimator (13) | `tau_mode='estimate'` | `_estimate_tau`, `_estimate_tau_informative` |
 | lead refit | $\tau$ with the lead in the design | off (library, CLI); on (driver, runner) | `map_cis(tau_refit)` |

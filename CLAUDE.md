@@ -50,13 +50,21 @@ existing state only; it does not imply or start a new experiment.
   the sampling noise of cells that have reads, and a census of the production
   draws shows the docstring's other case, reads with unanimous draws, never
   occurs (0 of 76,286 cells). On the 29 calibration genes removing `q` moves
-  the lead statistic by a median 0.19 chi2 and changes no call. The 52% type-I
-  figure of 2026-09-13 came from zero-count samples entering the total channel
-  at the clamp weight; since the clamp fix (31e0730) a zero-variance cell is
-  excluded instead, so that mechanism cannot recur, and the flag's remaining
-  job is to *keep* those cells: 39.95% of cells in 2,000 random genes have no
-  reads, and without `q` they leave the total channel. The default stays True
-  until that case gets a coverage-based rule; see
+  the lead statistic by a median 0.19 chi2 and changes no call. The flag is
+  nevertheless load-bearing, for a reason neither side stated: the total
+  channel has no degenerate-sample guard (`_zero_degenerate_ase_weights` exists
+  only for ASE), so a zero-count total sample keeps weight `1/(1e-8 + tau_t)`,
+  and in low-expressed genes where `tau_t` clamps to zero that is the
+  2026-09-13 "52% type-I" weight-domination failure. `q` prevents it only
+  because `1/(0 + 2*kappa) = 1` acts as a floor. 39.95% of cells in 2,000
+  random genes have no reads (none in the 29 calibration genes); a verifier
+  measured that without `q` such samples hold a median 89.5% of the total
+  channel's weight in the 281 of 1,079 sampled genes that have them, against
+  17.4% with `q`. The fix is a coverage-based floor for zero-count total
+  samples that is independent of the flag, then dropping `q` for samples with
+  reads; excluding zero-count total samples is wrong (t = log kappa is real
+  low-expression information, and exclusion conditions on the outcome). The
+  default stays True until that is done; see
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`.
 
 - **The DerSimonian-Laird `tau` understates the allelic residual scale.** With
@@ -72,7 +80,17 @@ existing state only; it does not imply or start a new experiment.
   adopted: `_estimate_tau` is still DL. The residual shape is also wrong: after
   PM whitening the standardized squared residual still rises with `log v`
   (pooled slope +0.21, s.e. 0.03), so a two-parameter `c*v + tau` form is the
-  next candidate. Same report as above.
+  next candidate. Same report as above. PM is not the 2026-09-16 "fitted
+  residual scale" rule: away from the `tau = 0` boundary the two coincide
+  (SE_codex = s_v * SE_lib and s_v = 1 at the PM fixed point), but at the
+  boundary the fitted-scale rule discards the Gibbs variance floor and halves
+  the SE, and a verifier measured that boundary at 64.5% of allelic and 47.2%
+  of total channels in 600 unfiltered cohort genes (41.5% / 13.5% without
+  `q`; 0% for total at depth >= 50). Every experiment so far (29-gene null,
+  30-gene pilot, shape pilot, influence audit) lives in the high-depth regime
+  where the rules agree; the disagreement lives in the low-expression genes
+  none of them included. Keep the absolute floor (known-variance SE, PM
+  `tau`), and run a depth-stratified arm before any genome-wide scan.
 
 - **Gene-level Gibbs shape has bounded real-data evidence.** The completed
   three-library pilot found Gaussian competitive within 0.05 bits/draw for
@@ -140,11 +158,15 @@ An eight-angle review retired these. They may survive in older text.
 
 Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
 
-- "`count_noise` is load-bearing: without it the total channel's type-I error
-  is 52%." That number was measured before the clamp fix, when zero-count
-  samples entered at weight 1e8; they are now excluded, and the docstring's
-  unanimous-nonzero case never occurs in production output. The flag is inert
-  on the 29 genes; its live effect is on zero-read cells (above).
+- The stated reasons for `count_noise=True`: "Gibbs across-draw variance is
+  read-assignment uncertainty only" (false: Salmon's default Gamma draw
+  carries shot noise, CollapsedGibbsSampler.cpp:122) and "a sample with
+  unambiguous reads has unanimous draws and would be discarded" (impossible
+  under default flags: identical draws occur only with zero reads). The flag
+  stays on for the reason above, which is a missing floor, not a variance
+  term.
+- `count_noise=False` dropping zero-read cells from the total channel: wrong,
+  they stay in at weight `1/(1e-8 + tau_t)` (the guard is ASE-only).
 - "The pooled 5% threshold calls 8 genes against 5 by the per-gene null" as a
   property of the data: it was the DL `tau` scale inflation of three genes.
 
@@ -160,9 +182,17 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
 - `_estimate_tau` is DerSimonian-Laird, whose allelic scale is 22% low at the
   median (above); Paule-Mandel is measured, not adopted, and the residual
   shape (`c*v + tau`) is untested.
-- `count_noise=False` drops zero-read cells from the total channel (40% of
-  cells transcriptome-wide); an informative rule based on coverage rather than
-  `v > eps` is the fix, not the flag.
+- The total channel has no zero-count guard; `count_noise` is standing in for
+  a floor (above). A coverage-based floor for zero-count total samples, then
+  no `q` for samples with reads, is the fix, not the flag.
+- Three input-validation defects found by the 2026-09-14 audit are unfixed
+  and unarguable: a NaN at a zero-weight sample drives `pval_perm` to the
+  `1/(nperm+1)` floor; variant-row identity between the genotype and phase
+  frames is not checked beyond column order; the QR is taken on a
+  rank-deficient design without a rank check.
+- After the through-origin change, `_joint_gls`/`_pvals` (the robust
+  second-pass path) still charge the ASE channel `1 + n_cov` columns, so the
+  robust SE there is ~6% conservative; `map_cis`/`map_nominal` are unaffected.
 
 ## Estimator debates go through the ablation
 
