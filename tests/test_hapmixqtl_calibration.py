@@ -15,9 +15,12 @@ it, run on every push:
     simulator change that hides the defect fails too;
   * 95% CI coverage of a planted log aFC: 'estimate' covers, 'zero' does not;
   * the two channel estimators stay uncorrelated when the a and t noise is
-    correlated at 0.9 -- the measured basis for ignoring Cat (docs sec 3).
+    correlated at 0.9 -- the measured basis for ignoring Cat (docs sec 3);
+  * the COMBINED SE stays calibrated when donors differ two orders of
+    magnitude in v_inf (BrainVar's allelic range) with that same correlated
+    noise, against a homogeneous-v control.
 
-Deterministic seeds; about 10 s on CPU.
+Deterministic seeds; about 50 s on CPU.
 """
 import sys
 from pathlib import Path
@@ -147,6 +150,153 @@ def test_channel_estimators_uncorrelated_under_correlated_noise():
         ba.append(slope_a[0]); bt.append(slope_t[0])
     r = float(np.corrcoef(ba, bt)[0, 1])
     assert abs(r) <= 0.15, f'corr(beta_a, beta_t) = {r:.3f} at rho = 0.9'
+
+
+def test_combined_se_calibrated_under_heterogeneous_gibbs_variance():
+    """The test above shows corr(beta_a, beta_t) stays at zero under rho = 0.9
+    when every donor has the same v. On BrainVar the allelic v_inf spans two
+    orders of magnitude within a gene, so a few donors dominate both channels'
+    weighted sums and the per-gene covariance the combination ignores is no
+    longer a sum of many small random-sign terms. This checks the COMBINED
+    SE in that regime: 92 donors, het fraction 0.4 with random phase, v_a
+    log-uniform on [1e-3, 0.5] and v_t on [1e-4, 0.05], a-t inferential noise
+    correlated at 0.9, biological tau_a = 0.03 and tau_t = 0.01, through the
+    production path (_prepare_channels with tau_mode='estimate' and a
+    through-origin allelic channel, then calculate_hapmixqtl_nominal); the
+    control is the same design with every donor at the geometric-mean v.
+
+    Measured on 20000 null genes per arm (MC SE 0.010 on mean t^2, 0.0015 on
+    the 0.05 tail, 0.0007 on the 0.01 tail): heterogeneous v gives mean t^2
+    1.023, |t| > 1.96 in 0.0512 and > 2.576 in 0.0106, corr(beta_a, beta_t)
+    -0.009 (SE 0.007), median allelic share of the combined weight 0.51;
+    homogeneous v gives 1.000, 0.0479, 0.0094, -0.006. The heterogeneous
+    design with rho = 0 gives mean t^2 1.023 as well, so the 2% residual
+    inflation is not the ignored covariance: it is the tau plug-in. The
+    moment estimate of tau is noisier when 1/v spans three decades (SD 0.0084
+    against 0.0077 on tau_a, 0.0027 against 0.0018 on tau_t) and the
+    known-variance SE does not propagate that noise. Both arms sit far inside
+    the 0.1 tolerance on mean t^2 and inside 3 binomial SD on both tails.
+
+    Coverage of a planted beta = 0.3 is checked on both tau paths. The
+    nominal scan estimates tau under the null design, so the planted effect
+    inflates tau (0.066 against 0.030 on the allelic channel, 0.019 against
+    0.010 on the total) and the interval over-covers, 0.981 heterogeneous and
+    0.987 homogeneous: that path is only required not to under-cover. The
+    lead refit puts the tested predictor into tau's design, as map_cis does
+    for the reported lead, and must cover at 0.95 two-sided: 0.946
+    heterogeneous and 0.949 homogeneous with the production t_{N-2}
+    multiplier (0.943 and 0.946 with 1.96; SE 0.0024 on 8000 genes), with
+    var(slope) / mean(se^2) = 1.05 and 1.01, i.e. the SE is understated by
+    at most 1-3% under heterogeneity, and the per-channel intervals under-
+    cover by the same amount, so the combination adds nothing. Type-I is
+    taken from pvals_from_t (the production t_{N-2} reference; the
+    1.96 / 2.576 normal fractions are reported alongside). Tolerances: 3
+    binomial SD on every proportion, 0.1 on mean t^2 (5.5 SD at 6000 genes).
+    About 40 s on CPU.
+    """
+    import torch
+    from tensorqtl.hapmixqtl import _prepare_channels, calculate_hapmixqtl_nominal
+
+    n, het_frac = 92, 0.4
+    maf = 0.5 * (1.0 - np.sqrt(1.0 - 2.0 * het_frac))   # HWE: 2p(1-p) = het_frac
+    rho, tau_a, tau_t, beta_alt = 0.9, 0.03, 0.01, 0.3
+    va_lo, va_hi, vt_lo, vt_hi = 1e-3, 5e-1, 1e-4, 5e-2
+    n_null, n_cov = 6000, 4000
+    q95 = float(stats.t.ppf(0.975, n - 2))   # the multiplier pvals_from_t implies
+
+    def simulate(rng, beta, homogeneous, rho_at):
+        g = rng.binomial(2, maf, n).astype(np.float64)
+        s = np.zeros(n)
+        het = g == 1
+        s[het] = rng.choice([-1.0, 1.0], size=int(het.sum()))
+        if homogeneous:
+            va = np.full(n, np.sqrt(va_lo * va_hi))
+            vt = np.full(n, np.sqrt(vt_lo * vt_hi))
+        else:
+            va = np.exp(rng.uniform(np.log(va_lo), np.log(va_hi), n))
+            vt = np.exp(rng.uniform(np.log(vt_lo), np.log(vt_hi), n))
+        z = rng.multivariate_normal([0.0, 0.0], [[1.0, rho_at], [rho_at, 1.0]], size=n)
+        a = np.sqrt(va) * z[:, 0] + rng.normal(0.0, np.sqrt(tau_a), n) + beta * s
+        t = 2.0 + np.sqrt(vt) * z[:, 1] + rng.normal(0.0, np.sqrt(tau_t), n) + beta * g / 2.0
+        return g, s, a, t, va, vt
+
+    def fit(g, s, a, t, va, vt, refit):
+        """tstat, slope, se, slope_a, se_a, slope_t, se_t of the one variant;
+        refit=True adds the tested predictor to tau's design (the lead refit)."""
+        g_t, s_t, a_t, t_t, va_t, vt_t = (torch.tensor(x, dtype=torch.float64)
+                                          for x in (g, s, a, t, va, vt))
+        wa, wt, res_a, res_t = _prepare_channels(
+            a_t, t_t, va_t, vt_t, None, 'estimate', 'cpu', ase_covariates_t=None,
+            tau_extra_a_t=s_t.unsqueeze(1) if refit else None,
+            tau_extra_t_t=(g_t / 2.0).unsqueeze(1) if refit else None)
+        out = calculate_hapmixqtl_nominal(g_t[None, :], s_t[None, :], a_t, t_t,
+                                          wa, wt, res_a, res_t)
+        return [float(x[0]) for x in out]
+
+    def null_arm(homogeneous, rho_at, seed):
+        rng = np.random.RandomState(seed)
+        r = np.array([fit(*simulate(rng, 0.0, homogeneous, rho_at), False)
+                      for _ in range(n_null)])
+        tstat, p = r[:, 0], pvals_from_t(r[:, 0], n)
+        share_a = r[:, 6] ** 2 / (r[:, 4] ** 2 + r[:, 6] ** 2)   # inv_var_a / total
+        return dict(t2=float(np.mean(tstat ** 2)),
+                    t1_05=_type1(p, 0.05), t1_01=_type1(p, 0.01),
+                    z_05=float(np.mean(np.abs(tstat) > 1.96)),
+                    z_01=float(np.mean(np.abs(tstat) > 2.576)),
+                    corr=float(np.corrcoef(r[:, 3], r[:, 5])[0, 1]),
+                    share_a=float(np.median(share_a)),
+                    ratio=float(np.var(r[:, 1]) / np.mean(r[:, 2] ** 2)))
+
+    def coverage_arm(homogeneous, seed):
+        rng = np.random.RandomState(seed)
+        nominal, refit = [], []
+        for _ in range(n_cov):
+            d = simulate(rng, beta_alt, homogeneous, rho)
+            nominal.append(fit(*d, False))
+            refit.append(fit(*d, True))
+        out = {}
+        for name, r in (('nominal', np.array(nominal)), ('refit', np.array(refit))):
+            err = np.abs(r[:, 1] - beta_alt) / r[:, 2]
+            out[name] = dict(cov=float(np.mean(err <= q95)),
+                             cov196=float(np.mean(err <= 1.96)),
+                             ratio=float(np.var(r[:, 1]) / np.mean(r[:, 2] ** 2)))
+        return out
+
+    def tol(p0, m):
+        return 3.0 * np.sqrt(p0 * (1.0 - p0) / m)
+
+    arms = {}
+    for name, homogeneous in (('heterogeneous', False), ('homogeneous', True)):
+        arms[name] = (null_arm(homogeneous, rho, seed=55), coverage_arm(homogeneous, seed=66))
+    control = null_arm(False, 0.0, seed=55)   # heterogeneous v, independent a-t noise
+
+    lines = []
+    for name, (nul, cov) in arms.items():
+        lines.append(
+            f"{name} v: null mean t^2 {nul['t2']:.3f} (+-{np.sqrt(2.0 / n_null):.3f}), "
+            f"type-I {nul['t1_05']:.4f} at 0.05 and {nul['t1_01']:.4f} at 0.01 "
+            f"(|t| > 1.96: {nul['z_05']:.4f}, > 2.576: {nul['z_01']:.4f}), "
+            f"corr(beta_a, beta_t) {nul['corr']:.3f}, median allelic share {nul['share_a']:.3f}, "
+            f"var(slope)/mean(se^2) {nul['ratio']:.3f}; beta = {beta_alt} coverage "
+            f"{cov['nominal']['cov']:.4f} nominal / {cov['refit']['cov']:.4f} lead-refit "
+            f"(1.96 multiplier: {cov['nominal']['cov196']:.4f} / {cov['refit']['cov196']:.4f}; "
+            f"var(slope)/mean(se^2) {cov['nominal']['ratio']:.3f} / {cov['refit']['ratio']:.3f})")
+    lines.append(f"heterogeneous v, rho = 0 control: null mean t^2 {control['t2']:.3f}, "
+                 f"type-I {control['t1_05']:.4f} / {control['t1_01']:.4f}, "
+                 f"corr(beta_a, beta_t) {control['corr']:.3f}")
+    summary = '\n'.join(lines)
+    print('\n' + summary)
+
+    for name, (nul, cov) in arms.items():
+        assert abs(nul['t2'] - 1.0) <= 0.1, f'{name}: mean t^2 = {nul["t2"]:.3f}\n{summary}'
+        assert abs(nul['t1_05'] - 0.05) <= tol(0.05, n_null), \
+            f'{name}: type-I at 0.05 = {nul["t1_05"]:.4f}, tolerance {tol(0.05, n_null):.4f}\n{summary}'
+        assert abs(nul['t1_01'] - 0.01) <= tol(0.01, n_null), \
+            f'{name}: type-I at 0.01 = {nul["t1_01"]:.4f}, tolerance {tol(0.01, n_null):.4f}\n{summary}'
+        assert abs(cov['refit']['cov'] - 0.95) <= tol(0.95, n_cov), \
+            f"{name}: lead-refit coverage = {cov['refit']['cov']:.4f}, tolerance {tol(0.95, n_cov):.4f}\n{summary}"
+        assert cov['nominal']['cov'] >= 0.95 - tol(0.95, n_cov), \
+            f"{name}: nominal-path coverage = {cov['nominal']['cov']:.4f} under-covers\n{summary}"
 
 
 def test_per_channel_covariates_stay_calibrated():

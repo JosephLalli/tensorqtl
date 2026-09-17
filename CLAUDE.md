@@ -208,10 +208,16 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
 - After the through-origin change, `_joint_gls`/`_pvals` (the robust
   second-pass path) still charge the ASE channel `1 + n_cov` columns, so the
   robust SE there is ~6% conservative; `map_cis`/`map_nominal` are unaffected.
-- The cross-channel covariance test covers the correlation of the two slope
-  estimates under random phase, not the SE of the combined estimator when
-  donors differ sharply in `v_inf`; a ~30-line calibration test would close
-  that gap without touching the statistic.
+- Closed 2026-09-17: `test_combined_se_calibrated_under_heterogeneous_gibbs_variance`
+  (tests/test_hapmixqtl_calibration.py) shows the combined SE stays calibrated
+  when donors span two orders of magnitude in `v_inf` with a-t noise
+  correlated at 0.9: null mean t^2 1.023 with correlation 0.9 and 1.023 with
+  0 (20,000 genes each), corr(beta_a, beta_t) -0.009, type-I 0.051 / 0.011.
+  Ignoring `Cat` is safe in BrainVar's regime; the 2% residual inflation is
+  the tau plug-in, not the covariance. Two side facts: the null-design tau
+  over-covers a planted effect (0.98) by construction, which is why the lead
+  refit exists, and the refit SE is understated by 1-3% in variance
+  (unresolved at 8,000 genes).
 
 ## Estimator debates go through the ablation
 
