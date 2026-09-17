@@ -1,7 +1,7 @@
 # Current scientific state: hapmixQTL
 
-Reconciled 2026-09-16. This is a router for the next scientific phase, not a
-new analysis or an authorization to run one.
+Reconciled 2026-09-16. A router to the current state: what is implemented,
+what was measured, and what is open.
 
 ## State at a glance
 
@@ -58,79 +58,39 @@ next candidate. Settled directions: log2 units, no automatic ASE intercept,
 GPU matrix scan; `count_noise` stays True until zero-read cells in the total
 channel get a coverage-based rule.
 
-**Historical OLS-first alternative:** the earlier fixed-coefficient/RSS
-candidate remains pending validation, not an adopted confirmatory default or a
-constraint on the weighted recommendation. See its formula and calibration
-boundaries in the status record.
+**Decision record.**
 
-**Recommended weighted architecture, not method adoption:** fix W within a
-gene, fit WLS per variant, and estimate its weighted total residual scale from
-that variant's residuals. Gibbs uncertainty informs precision; the residual
-scale is not biological tau or an absolute known-variance SE. Weight-rule
-selection, paired-channel covariance, and calibration remain open; see the
-exact equations and required matching-null path in the status record.
-No finding requires replacing the existing overdispersion framework; the
-voom-style Gibbs trend remains a proposal, not a necessary change.
+1. Settled by measurement (`estimator_ablation_20260916`): the allelic channel
+   is through-origin (bea450c); the counting term `q` is inert for genes with
+   reads and stays on only as a floor for zero-count total samples until a
+   coverage-based floor replaces it; a fitted per-variant residual scale is the
+   shipped known-variance estimator with a self-consistent `tau`, so it is not
+   a new method; the cross-channel Gibbs covariance `Cat` stays out of the
+   statistic (measured corr(beta_a, beta_t) within 0.03 of zero at noise
+   correlation 0.9, live test); the moment/GPU representation of the draws is
+   retained (shape pilot and two-gene influence audit, reports below).
+2. Awaiting the user's decision: DerSimonian-Laird vs Paule-Mandel `tau`. The
+   numbers are in the ablation report; nothing further needs measuring for the
+   level. The residual shape (`c*v + tau`) needs one more ablation configuration.
+3. Open and unmeasured: the `tau = 0` boundary and zero-read total cells, both
+   invisible on well-expressed genes; a depth-stratified arm of the ablation
+   from the existing cache is the experiment. Whether the Gibbs posterior
+   covariance stands in for repeated-library measurement error cannot be
+   settled on BrainVar (one library per donor).
+4. `tau_A`/`tau_T` name the biological residual variance after the tested cis
+   effect and covariates (the user's definition of the target); the estimator
+   is and will remain an aggregate residual moment, since the design cannot
+   separate biological from technical residual.
 
-**Current specification question:** how should covariance enter haplotype-derived
-phenotypes and joint ASE/total effects? WLS with an empirical per-variant
-residual scale remains the working direction. Technical Gibbs covariance is not
-automatically the total residual covariance.
-
-**Covariance walkthrough outcome, not adoption:** fit ASE and total WLS slopes
-with separate per-variant empirical scales, then combine only with a coherent
-2×2 slope covariance. The prior donor-row joint GLS audit remains a separate
-estimator; it is not generally identical to two-stage combined WLS.
-
-The [next-step record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/BIMODALITY_NEXT_STEPS.md)
-records the completed existing-output audit and the subsequent interpretation.
-
-The [completed interpretation and proposed decision table](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/PILOT_INTERPRETATION_AND_DECISIONS.md)
-recommended the gene-level moment/GPU baseline. The completed two-gene audit
-used 92 donors (87 ASE) and three genotype-selected common SNPs per gene; all
-552 selected-locus VCI L/R calls matched the original GT. Primary maximum
-single-block mean-plus-covariance shifts were 0.0736 working SE for ZNF529 and
-0.1396 for RNF175; leave-one-block maxima were 0.00901 and 0.01028. With the
-zero-ASE-proxy sensitivity, maximum block shifts were 0.0848 and 0.1188 SE.
-The working moment/GPU baseline remains appropriate for this bounded result.
-Read `/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/REPORT.md`.
-
-1. **Clarified parent baseline:** TensorQTL and mixQTL already estimate a
-   per-variant aggregate residual scale after covariates/genotype. It includes
-   measurement, biology, and other residual sources; it is not identified as
-   biological tau. Accurate biological decomposition is not required for an
-   association test, and M must not be added unchanged on top of that scale.
-2. **Working direction and extension boundary:** ordinary parent residual-scale
-   modeling remains the comparison baseline. The existing diagonal additive
-   residual treatment is implemented; full-M wiring and per-variant extension
-   are not integrated. M is an absolute measurement covariance when that
-   extension is used, rather than a term added unchanged to the parent scale.
-   Its channel moment is empirical excess RSS after the tested fit, not a
-   demand to model every other residual cause. M removes known modeled
-   uncertainty in expectation, not realized noise. In single-channel OLS with
-   equal m, `tau_raw = RSS/df - m`; away from the zero boundary, `m+tau_raw`
-   equals ordinary OLS residual variance and the fitted coefficients are OLS.
-   For diagonal M, the correction is `sum_i (1-h_i)m_i / df`. Tau remains a
-   biological target, while its empirical estimate can absorb technical or
-   mean-model error. Biological purity is not required for association under
-   an adequate residual-covariance model.
-3. Retain the posterior-moment working measurement-error baseline unless
-   stable shape adds consequential information. If it does, specify one
-   GPU-compatible shape-sensitive statistic and matching null calibration.
-
-**Clarification outcome:** parent OLS/WLS residual scales already model what
-remains after each variant's fit, without separating biological variance from
-measurement error. The residual-moment direction is not inherent to haplotype
-testing or GPU scanning, and remains an alternative under reassessment; the
-audit introduced no replacement model. The audit is closed.
-
-The hard GPU matrix scan remains a requirement. tau_A and tau_T mean biological
-residual variance after the tested cis effect and covariates, in squared log2
-units; Salmon M remains separate and includes modeled counting and competition.
-The counting fixture supports removing unconditional extra q for its tested
-Salmon configuration; it does not validate every configuration. Beta fitting is
-established machinery. Workflow integration is deferred and minimal tests are
-the only completed validation for the uncommitted ASE-intercept change.
+The Codex-period experiments remain the record for what they measured: the
+[mixQTL algorithm review](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md),
+the [counting simulation](/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md),
+the [Gibbs shape pilot](/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_shape_pilot_20260915/REPORT.md),
+the [two-gene influence audit](/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/REPORT.md)
+(a self-contained GLS, not the production mapper), and the equations of the
+proposed extensions in [IMPLEMENTATION_STATUS_20260916.md](IMPLEMENTATION_STATUS_20260916.md).
+The influence audit's restart-block occupancy instability (RNF175 blocks
+44,0,0,0,0,72,36,0%) is carried forward as an unresolved fact about the draws.
 
 ## Routing and run state
 

@@ -3,7 +3,8 @@
 A fork of tensorQTL adding **hapmixQTL**: cis-eQTL mapping from haplotype-resolved
 expression posteriors (Salmon Gibbs draws against a personalized diploid
 transcriptome), with the quantifier's inferential uncertainty carried into the
-standard error. Work lives on `claude/hapmixqtl-gibbs-uncertainty-IQ6Za`.
+standard error. Work lives on the worktree branch `hapmix-runbook-local`,
+pushed as `origin/claude/hapmixqtl-gibbs-uncertainty-IQ6Za`.
 
 ## Which document answers which question
 
@@ -150,11 +151,15 @@ An eight-angle review retired these. They may survive in older text.
 - `docs/ase_validation.md` §7b's weight-cap and nested conclusions are void; both
   arms were arithmetically incapable of differing from their comparators.
 - The additive `tau` is **not** "the one place hapmixQTL departs from mixQTL".
-  mixQTL's total channel already carries a flat additive variance, so `v_t + tau_t`
+
+Corrected facts that replaced them (these are true; do not negate them):
+
+- mixQTL's total channel already carries a flat additive variance, so `v_t + tau_t`
   decomposes the parent rather than departing from it; the multiplicative scale is
   the allele-specific channel only.
 - mixQTL's scan refits its dispersion at **every** variant, so hapmixQTL's per-gene
   null-model `tau` is the departure and `tau_refit` moves back toward the parent.
+  mixQTL's allelic regression is also through the origin (`y ~ -1 + x`).
 
 Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
 
@@ -193,6 +198,10 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
 - After the through-origin change, `_joint_gls`/`_pvals` (the robust
   second-pass path) still charge the ASE channel `1 + n_cov` columns, so the
   robust SE there is ~6% conservative; `map_cis`/`map_nominal` are unaffected.
+- The cross-channel covariance test covers the correlation of the two slope
+  estimates under random phase, not the SE of the combined estimator when
+  donors differ sharply in `v_inf`; a ~30-line calibration test would close
+  that gap without touching the statistic.
 
 ## Estimator debates go through the ablation
 

@@ -4,8 +4,10 @@ This inventory distinguishes settled directions, current source, bounded
 prototype evidence, and deferred extension work. The current gate is a
 from-beginning weighted-OLS recommendation: empirical per-variant residual
 variance plus Gibbs-informed precision, without assuming absolute known-variance
-SEs. Exact preservation of unweighted OLS coefficients is not a constraint; no
-run, production edit, test, experiment, or new method adoption is authorized.
+SEs. Exact preservation of unweighted OLS coefficients is not a constraint.
+Measured on 2026-09-16: see `brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`;
+the fitted-scale rule coincides with the shipped estimator at a self-consistent
+`tau` away from the `tau = 0` boundary and discards the Gibbs variance floor at it.
 
 The current specification question is covariance in haplotype-derived
 phenotypes and joint ASE/total effects. Technical Gibbs covariance is not
@@ -88,8 +90,8 @@ Classical OLS and HC3 are baselines. The direct Gibbs slope-sensitivity
 not a total population SE and is not divided by B. Calibration must bridge
 posterior M to repeated-sampling covariance and establish mean-zero error with
 respect to genotype; it does not automatically repair bias. Do not add M
-blindly or use naive Rubin pooling. The user has now accepted WLS as the
-recommendation direction; this older fixed-OLS alternative does not constrain it.
+blindly or use naive Rubin pooling. The user said on 2026-09-17 that weighted OLS makes sense here ("in line with
+what Smyth's group was proposing"); this older fixed-OLS alternative does not constrain it.
 The existing tau target remains biological residual variance; its empirical
 estimator can absorb technical or mean-model error.
 
