@@ -109,6 +109,18 @@ class TestWeightedResidualizer:
         dotp = (M_res * sqrt_w.unsqueeze(0)).sum(1)
         assert torch.allclose(dotp, torch.zeros_like(dotp), atol=1e-4)
 
+    def test_through_origin_without_covariates_is_identity(self, device):
+        """An ASE through-origin design has no automatic projection column."""
+        N = 23
+        rng = _make_gaussian_seed(101)
+        sqrt_w = torch.tensor(rng.uniform(0.2, 2.0, N), dtype=torch.float64,
+                              device=device)
+        M = torch.tensor(rng.normal(size=(4, N)), dtype=torch.float64, device=device)
+        res = WeightedResidualizer(None, sqrt_w, intercept=False)
+        assert res.Q_t.shape == (N, 0)
+        assert res.dof == N - 1
+        assert torch.equal(res.transform(M), M)
+
     def test_covariate_projection(self, device):
         """Transform removes both weighted intercept and weighted covariates."""
         N = 60
@@ -134,6 +146,24 @@ class TestWeightedResidualizer:
 # ---------------------------------------------------------------------------
 
 class TestWLSRegression:
+
+    def test_through_origin_matches_raw_weighted_formula(self, device):
+        """The ASE no-covariate path is exactly sum(w*s*a)/sum(w*s^2)."""
+        rng = _make_gaussian_seed(102)
+        N = 41
+        s = rng.choice([-1.0, 0.0, 1.0], N)
+        a = 0.8 + 1.4 * s + rng.normal(0, 0.2, N)
+        w = rng.uniform(0.2, 3.0, N)
+        sw = np.sqrt(w)
+        res = WeightedResidualizer(None,
+                                   torch.tensor(sw, dtype=torch.float64, device=device),
+                                   intercept=False)
+        slope, slope_se = _wls_regression(
+            torch.tensor((a * sw)[None, :], dtype=torch.float64, device=device),
+            torch.tensor((s * sw)[None, :], dtype=torch.float64, device=device), res)
+        xx = np.sum(w * s * s)
+        assert np.isclose(slope.item(), np.sum(w * s * a) / xx, atol=1e-10)
+        assert np.isclose(slope_se.item(), 1 / np.sqrt(xx), atol=1e-10)
 
     def test_matches_reference_no_cov(self, device):
         """Single-predictor WLS matches numpy normal-equation reference."""
@@ -304,7 +334,7 @@ def _build_channel_inputs(genotypes, sign, a, t, va, vt, device, dtype=torch.flo
     vt_t = torch.tensor(vt, dtype=dtype, device=device).clamp(min=1e-8)
     sqrt_wa_t = torch.sqrt(1.0 / va_t)
     sqrt_wt_t = torch.sqrt(1.0 / vt_t)
-    res_a = WeightedResidualizer(None, sqrt_wa_t)
+    res_a = WeightedResidualizer(None, sqrt_wa_t, intercept=False)
     res_t = WeightedResidualizer(None, sqrt_wt_t)
     return (genotypes_t, sign_t, a_t, t_t, sqrt_wa_t, sqrt_wt_t, res_a, res_t)
 
@@ -1065,10 +1095,72 @@ def _nominal(g, s, a, t, va, vt, C, device, ase='same', tau_mode='estimate'):
 
 class TestPerChannelCovariates:
 
-    def test_intercept_only_allelic_channel_ignores_total_covariates(self, device):
+    def test_total_channel_retains_automatic_intercept(self, device):
+        """Changing ASE to through-origin does not change the total WLS fit."""
+        rng = _make_gaussian_seed(103)
+        N = 47
+        g = rng.choice([0.0, 1.0, 2.0], N)
+        t = 1.3 + 0.7 * (g / 2) + rng.normal(0, 0.15, N)
+        a = rng.normal(0, 0.2, N)
+        s = rng.choice([-1.0, 0.0, 1.0], N)
+        va = rng.uniform(0.1, 0.3, N)
+        vt = rng.uniform(0.1, 0.3, N)
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        wa, wt, ra, rt = _prepare_channels(T(a), T(t), T(va), T(vt), None,
+                                           'zero', device, ase_covariates_t=None)
+        out = calculate_hapmixqtl_nominal(T(g[None, :]), T(s[None, :]), T(a), T(t),
+                                           wa, wt, ra, rt)
+        beta, se = _wls_reference(t, np.column_stack([np.ones(N), g / 2]), 1 / vt)
+        assert rt.Q_t.shape[1] == 1
+        assert np.isclose(float(out[5][0]), beta[1], atol=1e-10)
+        assert np.isclose(float(out[6][0]), se[1], atol=1e-10)
+
+    def test_donor_label_swaps_preserve_ase_tau_and_observed_fits(self, device):
+        """Swapping an arbitrary donor subset leaves through-origin ASE fits invariant.
+
+        This checks observed null and lead-refit tau plus the ASE, total, and
+        combined nominal fits. It intentionally makes no assertion about a
+        finite-seed permutation p-value.
+        """
+        rng = _make_gaussian_seed(104)
+        N = 37
+        g = rng.choice([0.0, 1.0, 2.0], N).astype(float)
+        s = np.zeros(N)
+        het = g == 1.0
+        s[het] = rng.choice([-1.0, 1.0], int(het.sum()))
+        a = 0.9 * s + rng.normal(0, 0.25, N)
+        t = 1.1 + 0.9 * (g / 2) + rng.normal(0, 0.2, N)
+        va = rng.uniform(0.05, 0.25, N)
+        vt = rng.uniform(0.05, 0.25, N)
+        flip = rng.rand(N) < 0.45
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+
+        def fit(a0, s0, lead):
+            args = dict(ase_covariates_t=None, return_info=True)
+            if lead:
+                args.update(tau_extra_a_t=T(s0[:, None]),
+                            tau_extra_t_t=T((g / 2)[:, None]))
+            wa, wt, ra, rt, info = _prepare_channels(T(a0), T(t), T(va), T(vt),
+                                                      None, 'estimate', device, **args)
+            nominal = calculate_hapmixqtl_nominal(
+                T(g[None, :]), T(s0[None, :]), T(a0), T(t), wa, wt, ra, rt)
+            return info, nominal
+
+        a_swap, s_swap = a.copy(), s.copy()
+        a_swap[flip] *= -1
+        s_swap[flip] *= -1
+        for lead in (False, True):
+            info, nominal = fit(a, s, lead)
+            info_swap, nominal_swap = fit(a_swap, s_swap, lead)
+            assert np.isclose(info['tau_a'], info_swap['tau_a'], rtol=1e-10, atol=1e-12)
+            assert np.isclose(info['tau_t'], info_swap['tau_t'], rtol=1e-10, atol=1e-12)
+            for got, expected in zip(nominal, nominal_swap):
+                assert torch.allclose(got, expected, rtol=1e-10, atol=1e-10)
+
+    def test_through_origin_allelic_channel_ignores_total_covariates(self, device):
         """ase_covariates_t=None: the allelic slope and SE are those of the
         no-covariate fit, the total channel's are those of the covariate fit,
-        and the allelic residualizer projects an intercept only."""
+        and the allelic residualizer is through-origin."""
         g, s, a, t, va, vt, C = _gene_with_covariates(1)
         split = _nominal(g, s, a, t, va, vt, C, device, ase=None)
         none = _nominal(g, s, a, t, va, vt, None, device)
@@ -1077,16 +1169,16 @@ class TestPerChannelCovariates:
         assert torch.allclose(split['se_a'], none['se_a'])
         assert torch.allclose(split['slope_t'], shared['slope_t'])
         assert torch.allclose(split['se_t'], shared['se_t'])
-        assert split['ra'].Q_t.shape[1] == 1
+        assert split['ra'].Q_t.shape[1] == 0
         assert split['rt'].Q_t.shape[1] == 1 + C.shape[1]
-        assert split['ra'].dof == len(a) - 2
+        assert split['ra'].dof == len(a) - 1
         assert split['rt'].dof == len(a) - 2 - C.shape[1]
-        # the default keeps the previous behaviour
+        # Explicit shared covariates retain the same ASE design in both calls.
         default = _nominal(g, s, a, t, va, vt, C, device, ase=SAME_COVARIATES)
         assert torch.allclose(default['se_a'], shared['se_a'])
 
     def test_projecting_covariates_out_of_the_allelic_channel_only_loses_precision(self, device):
-        """At fixed weights the intercept-only design is nested in the shared
+        """At fixed weights the through-origin design is nested in the shared
         one, so residualizing the covariates as well can only shrink the
         predictor's residual norm: the known-variance SE of the allelic slope
         is never smaller with them than without (CCNI: 17 -> 9 with 17
@@ -1097,15 +1189,16 @@ class TestPerChannelCovariates:
         T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
         a_star = (T(a) * wa).unsqueeze(0)
         s_star = T(s) * wa.unsqueeze(0)
-        _, se_int = _wls_regression(a_star, s_star, WeightedResidualizer(None, wa))
-        _, se_cov = _wls_regression(a_star, s_star, WeightedResidualizer(T(C), wa))
+        _, se_int = _wls_regression(a_star, s_star, WeightedResidualizer(None, wa, intercept=False))
+        _, se_cov = _wls_regression(a_star, s_star,
+                                    WeightedResidualizer(T(C), wa, intercept=False))
         ok = torch.isfinite(se_int) & torch.isfinite(se_cov)
         assert ok.any()
         assert (se_cov[ok] >= se_int[ok] * (1 - 1e-9)).all()
         assert (se_cov[ok] > se_int[ok]).any()
 
     def test_map_cis_and_map_nominal_share_the_dof_rule(self, tmp_path):
-        """With an intercept-only allelic channel the two residualizers have
+        """With a through-origin allelic channel the two residualizers have
         different dof; the nominal p-value must use one rule in both mapping
         functions (N - 2 - max(n_cov, n_cov_a)), so map_cis's pval_nominal at
         the lead equals map_nominal's for that pair."""
@@ -1151,8 +1244,8 @@ class TestSparseChannel:
     def test_switched_off_channel_yields_total_only(self, device):
         """4 informative allelic samples against 5 covariates: the allelic
         channel is off (every weight zero, nothing projected, SE infinite)
-        and the combined statistic is the total channel's. With an intercept
-        only, the same 4 samples keep the channel on."""
+        and the combined statistic is the total channel's. Through-origin,
+        the same 4 samples keep the channel on."""
         N = 60
         g, s, a, t, va, vt, C = _gene_with_covariates(4, N=N, n_cov=5, n_off=N - 4)
         off = _nominal(g, s, a, t, va, vt, C, device)
@@ -1178,14 +1271,14 @@ class TestSparseChannel:
         assert res.dof == N - 1 - 4
 
     def test_map_cis_runs_with_a_switched_off_allelic_channel(self):
-        """A phenotype with two allele-specific samples goes through map_cis
+        """A phenotype with one allele-specific sample goes through map_cis
         on its total channel alone: finite p-values, infinite allelic SE, and
         the planted association in the other phenotype is still found."""
         d = _make_dataset(seed=106, n_samples=60)
         sparse = d['A_df'].index[1]
         A, Va = d['A_df'].copy(), d['Va_df'].copy()
-        A.loc[sparse, A.columns[2:]] = 0.0
-        Va.loc[sparse, Va.columns[2:]] = 0.0
+        A.loc[sparse, A.columns[1:]] = 0.0
+        Va.loc[sparse, Va.columns[1:]] = 0.0
         rng = np.random.RandomState(8)
         cov_df = pd.DataFrame(rng.normal(size=(60, 3)), index=A.columns, columns=list('xyz'))
         res = map_cis(d['genotype_df'], d['variant_df'], A, d['T_df'], Va, d['Vt_df'],
@@ -1373,10 +1466,11 @@ class TestLeadRefit:
         s = T(d['xL_df'].loc[lead].values - d['xR_df'].loc[lead].values)
         g2 = T(d['genotype_df'].loc[lead].values / 2); C = T(cov_df.values)
         ka = va > 1e-12
-        tau_a = _estimate_tau(a[ka], va[ka], s[ka].unsqueeze(1), 'cpu')
+        tau_a = _estimate_tau(a[ka], va[ka], s[ka].unsqueeze(1), 'cpu', intercept=False)
         tau_t = _estimate_tau(t, vt, torch.cat([C, g2.unsqueeze(1)], 1), 'cpu')
         wa = torch.sqrt(1.0 / (va.clamp(min=1e-8) + tau_a)); wt = torch.sqrt(1.0 / (vt.clamp(min=1e-8) + tau_t))
-        sl_a, se_a = _wls_regression((a * wa).unsqueeze(0), (s * wa).unsqueeze(0), WeightedResidualizer(None, wa))
+        sl_a, se_a = _wls_regression((a * wa).unsqueeze(0), (s * wa).unsqueeze(0),
+                                      WeightedResidualizer(None, wa, intercept=False))
         sl_t, se_t = _wls_regression((t * wt).unsqueeze(0), (g2 * wt).unsqueeze(0), WeightedResidualizer(C, wt))
         assert np.isclose(float(tau_a), on.loc[pid, 'tau_a'], rtol=1e-4)
         assert np.isclose(float(tau_t), on.loc[pid, 'tau_t'], rtol=1e-4)
@@ -1396,7 +1490,7 @@ class TestLeadRefit:
         d = _heteroskedastic_dataset(seed=203)
         A, Va = d['A_df'].copy(), d['Va_df'].copy()
         sparse = A.index[1]
-        A.loc[sparse, A.columns[3:]] = 0.0; Va.loc[sparse, Va.columns[3:]] = 0.0    # 3 informative = 1 + 2
+        A.loc[sparse, A.columns[2:]] = 0.0; Va.loc[sparse, Va.columns[2:]] = 0.0    # 2 informative = through-origin + 2
         d['A_df'], d['Va_df'] = A, Va
         on = self._run(d, True)
         row = on.loc[sparse]

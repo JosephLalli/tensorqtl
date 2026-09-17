@@ -443,7 +443,9 @@ It is passed to both arms rather than regressed out first: hapmixQTL projects
 covariates out inside the weighted space and its two channels carry different
 weights, and RASQUAL fits a GLM on the count scale, so a pre-residualized
 phenotype is wrong for both. `--ase-covariates` defaults to `none`, leaving the
-allelic channel with an intercept only.
+allelic channel through the origin. Since 2026-09-15 neither its regression
+nor its tau estimator adds an intercept; the total channel keeps its intercept.
+Historical pilot/calibration results below predate this correction.
 
 ### The scale both arms are reported on
 

@@ -4,7 +4,22 @@
 
 This document specifies the statistics implemented in `tensorqtl/hapmixqtl.py` at the level needed to reproduce them: every quantity, its estimator, the null distribution used for inference, and the defaults. Section 7 lists the measured properties on which the choices rest, Section 8 the assumptions, Section 9 a symbol-to-code map. Equation numbers are referenced throughout.
 
+**2026-09-15 correction.** The ASE regression and both null/lead tau designs
+now add no intercept; the total channel retains its intercept. Historical
+pilot and calibration measurements below predate this change and do not
+validate the revised design. Separately, default Salmon Gibbs includes counting
+noise: the completed controlled experiment contradicts the assignment-only
+explanation of equation (4). The counting formula remains in the implementation
+pending a separate variance-model decision; it is not justified by that
+explanation. See the [corrected algorithm review](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md).
+
 ### Summary
+
+**Project unit convention (2026-09-15):** use log2 for expression, ASE ratios,
+aFC, and associated uncertainty. beta=1 denotes a twofold effect; variance and
+covariance use squared log2 units. Runtime conversion remains pending, so the
+as-implemented equations and historical results below still describe natural-log
+units. See the [conversion record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).
 
 For each gene, hapmixQTL takes two measurements per sample from the posterior draws of a diploid (personalized) quantification: the log ratio of the two haplotypes' expression, and the log total. Both are regressed on the phased genotype of each cis variant in a known-variance generalized least squares (GLS) whose per-sample error variance is the sum of the quantifier's inferential variance, a Poisson counting term, and a per-gene between-sample variance $\tau$ estimated across samples. The two regressions estimate the same parameter, the log allelic fold change of the ALT haplotype relative to the REF haplotype, and are combined by inverse-variance weighting. The lead variant is the maximum of the combined statistic over the window; its gene-level significance is empirical, from a Freedman-Lane permutation of leverage-standardized whitened residuals, with a Beta approximation of the permutation distribution. Effect sizes are reported at the lead with $\tau$ re-estimated under the alternative so that a gene's own signal does not shrink its reported scale.
 
@@ -18,7 +33,7 @@ One gene is analysed at a time. Samples are indexed $i = 1,\dots,N$ and cis vari
 $$ s_{v,i} = x_{L,v,i} - x_{R,v,i} \in \{-1, 0, +1\}, \tag{1} $$
 so $s = +1$ when the ALT allele sits on haplotype $L$, $-1$ when on $R$, and $0$ for homozygotes.
 
-**Covariates.** $C_t$ ($N \times p_t$) is the covariate matrix of the total channel and $C_a$ ($N \times p_a$) that of the allelic channel. The deployment driver uses $p_a = 0$ (intercept only; Section 3.3); the library default is $C_a = C_t$.
+**Covariates.** $C_t$ ($N \times p_t$) is the covariate matrix of the total channel and $C_a$ ($N \times p_a$) that of the allelic channel. The public API and deployment default to $p_a = 0$: an ASE regression through the origin. No ASE intercept is added for custom covariates either. The total channel retains its intercept.
 
 **Parameter of interest.** $\beta$ is the log allelic fold change (natural logarithm): if the REF haplotype of a heterozygote is expressed at level $e$ and the ALT haplotype at $e\,\mathrm{e}^{\beta}$, then $\beta = \log(e_{\mathrm{ALT}} / e_{\mathrm{REF}})$.
 
@@ -45,7 +60,7 @@ Bootstrap draws resample reads and already carry this term, so it is added for G
 ### 3.1 Two channels for one parameter
 
 For a causal variant $v$ with log aFC $\beta$,
-$$ a_i = \alpha_a + \beta\, s_{v,i} + C_{a,i}\, b_a + e_{a,i}, \tag{5} $$
+$$ a_i = \beta\, s_{v,i} + C_{a,i}\, b_a + e_{a,i}, \tag{5} $$
 $$ t_i = \alpha_t + \beta\, \tfrac{1}{2} g_{v,i} + C_{t,i}\, b_t + e_{t,i}. \tag{6} $$
 
 Equation (5) is exact under the definition of $\beta$: a heterozygote with the ALT allele on $L$ has $\mathbb{E}[\log(y_L/y_R)] = \beta$, one with the ALT allele on $R$ has $-\beta$, and a homozygote has $0$, which is $\beta s_{v,i}$. Equation (6) is first order: relative to a diploid REF baseline the expected total is $(2 - g + g\,\mathrm{e}^{\beta})/2$, so $\mathbb{E}[t \mid g] - \text{const} = \log\!\big(1 + g(\mathrm{e}^{\beta} - 1)/2\big)$, which equals $\beta\,g/2$ exactly at $g \in \{0, 2\}$. At $g = 1$ it is exactly
@@ -67,7 +82,7 @@ with errors independent across samples. $\tau_c \ge 0$ is a per-gene, per-channe
 
 ### 3.3 Covariates per channel
 
-$a_i$ is a within-sample contrast. Any covariate that acts on both haplotypes alike (library size, expression principal components, sex, age, RNA integrity) cancels in it, so the total channel's covariates have nothing to remove from the allelic channel, and each column projected out of it costs one informative sample. $C_a$ should therefore contain only allelic nuisance terms, if any; the deployment uses an intercept alone. Section 7 gives the measurement behind this.
+$a_i$ is a within-sample contrast. A covariate acting equally on both haplotypes cancels in it. The default ASE design has no nuisance columns and no intercept. This preserves the observed fit when H1/H2 are swapped within any donor: both $a_i$ and $s_i$ change sign. Custom ASE nuisance columns must have a justified allelic interpretation and transform consistently under that swap; the API does not infer their orientation. Shared donor-level covariates are not automatically suitable allelic nuisance predictors.
 
 ## 4. Estimation at one variant
 
@@ -76,8 +91,8 @@ $a_i$ is a within-sample contrast. Any covariate that acts on both haplotypes al
 Per channel, with $\tau_c$ from Section 4.3, the weights and square-root weights are
 $$ w_{c,i} = \frac{1}{\max(v_{c,i}, 10^{-8}) + \tau_c}, \qquad r_{c,i} = \sqrt{w_{c,i}}, \tag{8} $$
 and for the allelic channel $r_{a,i} = 0$ for every non-informative sample. Whitened responses and predictors are $y^{*}_c = r_c \circ y_c$ and $x^{*}_{c,v} = r_c \circ x_{c,v}$ (elementwise), with $y_a = a$, $y_t = t$, $x_{a,v} = s_v$ and $x_{t,v} = g_v/2$. The whitened null design is
-$$ D_c = \big[\, r_c \;\; r_c \circ C_c \,\big] \in \mathbb{R}^{N \times (1 + p_c)}, \tag{9} $$
-whose first column is the whitened intercept (a constant $\alpha$ becomes $\alpha r_i$ after whitening). With the thin QR factorization $D_c = Q_c R_c$, residualization is the projection
+$$ D_a = \mathrm{diag}(r_a)C_a \in \mathbb{R}^{N \times p_a}, \qquad D_t = \big[\, r_t \;\; \mathrm{diag}(r_t)C_t \,\big] \in \mathbb{R}^{N \times (1 + p_t)}. \tag{9} $$
+Only the total design includes the whitened intercept. With no ASE covariates, $D_a$ and $Q_a$ have zero columns and ASE residualization is the identity. Otherwise, with the thin QR factorization $D_c = Q_c R_c$, residualization is the projection
 $$ P_c z = z - Q_c\,(Q_c^{\top} z). \tag{10} $$
 If every $r_{c,i}$ is zero (a switched-off channel, Section 4.3) $Q_c$ has no columns and $P_c$ is the identity.
 
@@ -89,14 +104,14 @@ Equation (12) is the GLS estimator and its exact variance when (7) holds with kn
 
 ### 4.3 Estimating $\tau$
 
-$\tau_c$ is a moment estimator on the informative samples. With inferential-only weights $w^{0}_i = 1/\max(v_{c,i}, 10^{-8})$, whiten $y_c$ and the null design by $\sqrt{w^{0}}$, residualize as in (10), and let $\mathrm{RSS}_c$ be the residual sum of squares, $q_c = 1 + p_c$ the column count of the whitened null design (its rank, absent collinear covariates, which the QR does not detect) and $h_{c,i} = \sum_k Q^2_{c,ik}$ the leverage of *that* design, whitened by $\sqrt{w^{0}}$ rather than by $r_c$, so it is not the $h$ of (17). Whitening gives $\mathrm{Var}(y^{*}_{c,i}) = 1 + \tau_c w^{0}_i$ under (7), so
+$\tau_c$ is a moment estimator on the informative samples. With weights $w^{0}_i = 1/\max(v_{c,i}, 10^{-8})$, whiten $y_c$ and the null design by $\sqrt{w^{0}}$, residualize as in (10), and let $\mathrm{RSS}_c$ be the residual sum of squares. The null-design column counts are $q_a=p_a$ and $q_t=1+p_t$ (their ranks absent collinear covariates, which the QR does not detect). Let $h_{c,i} = \sum_k Q^2_{c,ik}$ be the leverage of *that* design, whitened by $\sqrt{w^{0}}$ rather than by $r_c$, so it is not the $h$ of (17). With no ASE covariates, $q_a=0$ and $h_{a,i}=0$: the null tau fit uses the uncentered ASE response. Whitening gives $\mathrm{Var}(y^{*}_{c,i}) = 1 + \tau_c w^{0}_i$ under (7), so
 $$ \mathbb{E}[\mathrm{RSS}_c] = \mathrm{tr}\big((I - Q_cQ_c^{\top})\,\mathrm{diag}(1 + \tau_c w^{0})\big) = (|I_c| - q_c) + \tau_c \sum_{i \in I_c} w^{0}_i (1 - h_{c,i}), $$
 $$ \hat\tau_c = \max\Big\{0,\; \frac{\mathrm{RSS}_c - (|I_c| - q_c)}{\sum_{i \in I_c} w^{0}_i (1 - h_{c,i})}\Big\}. \tag{13} $$
 The denominator is $\sum w^{0}(1 - h)$, not $(|I_c| - q_c)\,\overline{w^{0}}$; the two agree only under equal leverage, and for an intercept-only design ($h_i = w^{0}_i / \sum_j w^{0}_j$) the form above reduces exactly to DerSimonian and Laird's $\sum_i w^{0}_i - \sum_i (w^{0}_i)^2 / \sum_j w^{0}_j$, so (13) is that estimator generalized to a covariate design. Zero-variance samples never enter it: a sample with $v = 0$ would enter at weight $10^{8}$ and collapse $\hat\tau$.
 
-**Sparse-channel rule.** If $|I_c| < (1 + p_c) + 2$, neither the regression nor $\tau_c$ is identifiable from the channel; every $r_{c,i}$ is set to zero and the channel contributes nothing to the gene (the other channel is used alone).
+**Sparse-channel rule.** The implementation requires $|I_c| \ge q_c + 2$, with $q_a=p_a$ and $q_t=1+p_t$. Otherwise every $r_{c,i}$ is set to zero and the channel contributes nothing to the gene (the other channel is used alone). The default no-covariate ASE minimum is therefore two informative samples, while total with an intercept requires three.
 
-**Lead refit.** After the scan (Section 5), $\hat\tau_c$ is re-estimated with the lead's predictor $x_{c,\mathrm{lead}}$ appended to the design of (13), so $q_c$ becomes $2 + p_c$, while the residualizer of (10) still projects out the null design only. If $|I_c| < (2 + p_c) + 2$ the channel keeps its null $\hat\tau_c$ and the `tau_refit` flag reports which channels were refit.
+**Lead refit.** After the scan (Section 5), $\hat\tau_c$ is re-estimated with the lead's predictor $x_{c,\mathrm{lead}}$ appended to the design of (13). Thus the refit design has $p_a+1$ columns in ASE and $p_t+2$ in total, while the residualizer of (10) still projects out the null design only. If $|I_c|$ is less than the refit column count plus two, the channel keeps its null $\hat\tau_c$ and the `tau_refit` flag reports which channels were refit.
 
 Under (5)-(6) the null-design residuals contain the effect, so the null estimate exceeds $\tau_c$ by about $\beta^2 f_{\mathrm{het}}$ ($f_{\mathrm{het}}$ the heterozygote fraction among informative samples), and the reported scale is shrunk with it. Restoring that scale is what the refit is for, and where the lead is the causal variant it does so: the refit recovers $\tau_c$ to within 2-5% at $\beta$ = 0.2 to 0.8, where the null design overstates it by 1.5x to 9x.
 
@@ -168,7 +183,7 @@ The scan costs $O(VN)$ and the permutations $O(VNP)$, as dense matrix products; 
 
 ### 6.1 The allelic fold change
 
-$\hat\beta$ estimates $\log(e_{\mathrm{ALT}}/e_{\mathrm{REF}})$, so the allelic fold change is $\mathrm{aFC} = \mathrm{e}^{\hat\beta}$ with the 95% interval $\exp(\hat\beta \pm 1.96\,\mathrm{SE})$. $\hat\beta_a$ is carried by the heterozygotes, but not by them alone: the whitened intercept of (9) centres $s$, so homozygotes enter through the centring whenever the weighted mean of $s$ is nonzero. Measured at the 29 BrainVar leads, that mean has median 0.032 and maximum 0.115, and homozygotes supply a median 0.6% of $xx_a$ and 1.0% of $|xy_a|$, reaching 48% on one gene. $\hat\beta_t$ uses every sample. The interval above is a fixed-variant interval evaluated at a selected maximum: coverage at the lead is 0.94 with the refit and 0.97 to 1.00 without, against 0.95 nominal, where a prespecified variant covers at 0.95-0.99. The effect allele is the VCF's ALT allele, the same orientation as RASQUAL's $\log(\pi/(1-\pi))$, so the two are directly comparable at the same variant.
+$\hat\beta$ estimates $\log(e_{\mathrm{ALT}}/e_{\mathrm{REF}})$, so the allelic fold change is $\mathrm{aFC} = \mathrm{e}^{\hat\beta}$ with the nominal interval $\exp(\hat\beta \pm 1.96\,\mathrm{SE})$. With the default through-origin ASE design, homozygotes have $s=0$ and contribute neither to $xy_a$ nor to $xx_a$; informative homozygotes can still contribute to estimating tau. Custom ASE nuisance covariates can change the residualized predictor. $\hat\beta_t$ uses all informative total-channel samples. Earlier measurements of homozygote contributions through centering and lead-interval coverage used the former ASE intercept and do not validate this revised design. The interval above is evaluated at a selected lead, so fixed-variant coverage is not guaranteed there. The effect allele is the VCF's ALT allele, the same orientation as RASQUAL's $\log(\pi/(1-\pi))$.
 
 ### 6.2 The cis/trans diagnostic
 
@@ -236,7 +251,7 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 | $\varepsilon$ | informative threshold | $10^{-12}$ | `_channel_weights(eps)` |
 | variance floor in (8) | | $10^{-8}$ | `_channel_weights` |
 | sparse-channel rule | minimum informative samples | $(1 + p_c) + 2$ | `_min_informative` |
-| $C_a$ | allelic covariate design | same as $C_t$ (library); intercept only (driver) | `ase_covariates_df` |
+| $C_a$ | allelic covariate design | no nuisance columns and no intercept (API and driver) | `ase_covariates_df` |
 | $\hat\tau$ | moment estimator (13) | `tau_mode='estimate'` | `_estimate_tau`, `_estimate_tau_informative` |
 | lead refit | $\tau$ with the lead in the design | off (library, CLI); on (driver, runner) | `map_cis(tau_refit)` |
 | $\nu$ | t reference in (16) | $N - 2 - \max(p_t, p_a)$ | `map_cis`, `map_nominal` |

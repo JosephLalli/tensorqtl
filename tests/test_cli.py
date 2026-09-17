@@ -154,7 +154,7 @@ class TestHapmixQTLDefaults:
         args = build_parser().parse_args(['geno', 'pheno.bed', 'out'])
         assert args.tau_mode == 'estimate'
         assert args.se_mode == 'model'
-        # the allelic channel is fitted with an intercept only by default: the
+        # the allelic channel is fitted through the origin by default: the
         # 17-covariate set explains 24% of its whitened residual variance
         # against 22% expected by chance, while each column costs a sample
         assert args.ase_covariates == 'none'

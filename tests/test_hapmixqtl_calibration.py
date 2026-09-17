@@ -151,10 +151,10 @@ def test_channel_estimators_uncorrelated_under_correlated_noise():
 
 def test_per_channel_covariates_stay_calibrated():
     """BrainVar's layout: covariates that move total expression are projected
-    out of the total channel, the allelic channel gets an intercept only, the
+    out of the total channel, the allelic channel is through-origin, the
     variances are heteroskedastic with unmodelled biological variance, and 10%
     of samples carry no allele-specific coverage. The null must stay nominal
-    on the shared t reference (N - 2 - n_cov), and an allelic channel fitted
+    on the shared t reference (N - 2 - n_cov), and a through-origin allelic channel
     without the covariates must not be less calibrated than one fitted with
     them."""
     n_cov = 8

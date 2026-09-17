@@ -185,7 +185,7 @@ hapmixQTL is a generalization of [mixQTL](https://www.nature.com/articles/s41467
 For each sample *i* and feature *f*, two information channels are combined:
 
 1. **Allelic contrast (ASE)** channel, using the posterior-mean expression of each haplotype (`L`, `R`) with pseudocount `κ`:
-   `a_i = log(yL_i + κ) − log(yR_i + κ)`, regressed on the **signed heterozygote indicator** `s_i = xL_i − xR_i ∈ {−1, 0, +1}` (from phased genotypes; `s_i = 0` if unphased/homozygous).
+   `a_i = log(yL_i + κ) − log(yR_i + κ)`, regressed **through the origin** on the **signed heterozygote indicator** `s_i = xL_i − xR_i ∈ {−1, 0, +1}` (from phased genotypes; `s_i = 0` if unphased/homozygous). The ASE regression and its tau estimator add no intercept, preserving the fit under paired expression/genotype H1/H2 relabeling within donors.
 2. **Total expression** channel:
    `t_i = log((yL_i + yR_i)/2 + κ)`, regressed on the **half dosage** `g_i/2` so that both channels estimate the same quantity — the log allelic fold change (log aFC).
 
@@ -211,7 +211,7 @@ se   = sqrt(1 / (1/se_a² + 1/se_t²))
 | `--phase_xL` | ALT allele on haplotype L (0/1), variants × samples, tab-delimited (optional) |
 | `--phase_xR` | ALT allele on haplotype R (0/1), variants × samples, tab-delimited (optional) |
 | `--tau_mode` | `estimate` (default): a per-phenotype, per-channel moment estimator of overdispersion, fitted under the null model on the samples that carry information (`v_inf > 0`). Its denominator is the exact `sum_i w_i(1 - h_i)`, which reduces to DerSimonian-Laird's for an intercept-only design. `zero` asserts the Gibbs inferential variance is the entire error variance, which is severely anticonservative on real data (up to 107× the nominal type-I error; `docs/ase_validation.md`) and is kept only to reproduce earlier results |
-| `--ase_covariates` | What `--covariates` are projected out of the **allelic** channel: `shared` (default, the same design as the total channel) or `none` (intercept only). The allelic contrast is a within-sample difference in which covariates acting on both haplotypes alike cancel, and each column projected out costs one informative sample, so `none` is the usual choice on real data (`scripts/compare_pipelines.py` defaults to it) |
+| `--ase_covariates` | What `--covariates` are projected out of the **allelic** channel: `none` (default, through-origin with no nuisance columns) or `shared` (the supplied total-channel covariates, without an automatic ASE intercept). Custom allelic nuisance predictors require an explicit biological interpretation and consistent sign under H1/H2 relabeling. The total channel retains its intercept. |
 | `--tau_refit` | `hapmixqtl` mode only. τ is estimated once per gene under the null model, so a strong cis effect inflates it and shrinks every nominal statistic in the window by a common factor. With this flag each channel's τ is re-estimated with the lead's predictor in the model and the lead's `slope`, `slope_se`, `pval_nominal` and per-channel diagnostics are reported on that scale; `pval_perm` and `pval_beta` stay on the scan scale, where they are calibrated |
 | `--se_mode` | `model` (default, known-variance GLS) or `robust` (HC1 sandwich). `robust` applies to `hapmixqtl_nominal` only — `map_cis` rejects it, because the permutation statistic is the known-variance GLS statistic and has no sandwich counterpart |
 
@@ -265,4 +265,3 @@ summary_df, susie_res = hapmixqtl.map_susie(
     phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
     covariates_df=covariates_df, L=10, summary_only=False)
 ```
-

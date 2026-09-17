@@ -18,7 +18,8 @@ Inferential variances from Gibbs draws propagate into weights as
 w_i = 1 / (v_inf_i + tau), where v_inf_i is the across-draw variance of
 the transformed expression for sample i and tau is a per-phenotype,
 per-channel overdispersion term. tau_mode='estimate' is the DEFAULT: tau is
-a moment estimate fitted under the null model (intercept and covariates, no
+a moment estimate fitted under the channel's null model (the total automatic
+intercept and covariates, or the ASE through-origin/covariate design, no
 genotype term) on the samples that carry information (v_inf > 0), with the
 exact leverage denominator sum_i w_i(1 - h_i) -- DerSimonian-Laird's form
 for an intercept-only design. tau_mode='zero' asserts the Gibbs variance is the entire error
@@ -28,13 +29,13 @@ only to reproduce earlier results and warns when used.
 Four further things shape what the mapping functions do:
 
   * Per-channel covariate designs. covariates_df is the TOTAL channel's;
-    ase_covariates_df is the ALLELIC channel's -- SAME_COVARIATES (the
-    default) reuses the total channel's, None fits an intercept only. The
+    ase_covariates_df is the ALLELIC channel's -- SAME_COVARIATES reuses the
+    total channel's, while its public default None is through-origin. The
     allelic contrast is a within-sample difference in which covariates
     acting on both haplotypes alike cancel, so None is the usual choice on
     real data: each column projected out costs one informative sample.
-    scripts/compare_pipelines.py defaults its allelic channel to an
-    intercept only (--ase-covariates none).
+    scripts/compare_pipelines.py defaults its allelic channel to a
+    through-origin (--ase-covariates none).
   * A sparse-channel rule. A channel with fewer informative samples than its
     design has columns plus two is switched off (all weights zero) and the
     meta-analysis falls back to the other channel.
@@ -407,26 +408,32 @@ class WeightedResidualizer:
     """
     Residualizer for weighted least squares via sqrt-weight transform.
 
-    In standard OLS the intercept is handled by centering. In WLS after the
-    sqrt-weight transform, a constant intercept alpha becomes alpha*sqrt(w_i),
-    which varies across samples. This class includes sqrt(w) as an explicit
-    column in the design matrix so the QR projection removes it correctly.
+    When ``intercept=True``, a constant intercept alpha becomes
+    alpha*sqrt(w_i) after the sqrt-weight transform. This class includes
+    sqrt(w) as an explicit design column so the QR projection removes it
+    correctly. ``intercept=False`` retains a through-origin fit; with no
+    covariates it has an empty design and is the identity transform.
     """
 
-    def __init__(self, C_t, sqrt_w_t):
+    def __init__(self, C_t, sqrt_w_t, intercept=True):
         """
         Args:
-            C_t: covariates [N, n_cov] (without intercept), or None
+            C_t: covariates [N, n_cov] (without automatic intercept), or None
             sqrt_w_t: sqrt per-sample weights [N]
+            intercept: include the automatic weighted intercept
         """
         N = sqrt_w_t.shape[0]
-        intercept = sqrt_w_t.unsqueeze(1)
+        cols = []
+        if intercept:
+            cols.append(sqrt_w_t.unsqueeze(1))
         if C_t is not None and C_t.numel() > 0 and C_t.shape[1] > 0:
             C_star = sqrt_w_t.unsqueeze(1) * C_t
-            design = torch.cat([intercept, C_star], dim=1)
+            cols.append(C_star)
+        if cols:
+            design = torch.cat(cols, dim=1)
         else:
-            design = intercept
-        if bool((sqrt_w_t != 0).any()):
+            design = sqrt_w_t.new_zeros((N, 0))
+        if design.shape[1] > 0 and bool((sqrt_w_t != 0).any()):
             self.Q_t, _ = torch.linalg.qr(design)
         else:
             # A switched-off channel (every weight zero; see _prepare_channels)
@@ -510,7 +517,7 @@ def _wls_regression(y_star_t, x_star_t, residualizer, robust=False):
     return slope, slope_se
 
 
-def _estimate_tau(y_t, v_inf_t, covariates_t, device):
+def _estimate_tau(y_t, v_inf_t, covariates_t, device, intercept=True):
     """
     Estimate overdispersion parameter tau using moment estimator.
 
@@ -532,7 +539,7 @@ def _estimate_tau(y_t, v_inf_t, covariates_t, device):
     """
     w = 1.0 / v_inf_t.clamp(min=1e-8)
     sqrt_w = torch.sqrt(w)
-    res = WeightedResidualizer(covariates_t, sqrt_w)
+    res = WeightedResidualizer(covariates_t, sqrt_w, intercept=intercept)
     y_star = (y_t * sqrt_w).unsqueeze(0)
     y_res = res.transform(y_star).squeeze()
 
@@ -548,7 +555,8 @@ def _estimate_tau(y_t, v_inf_t, covariates_t, device):
 #  Association tests
 # ---------------------------------------------------------------------------
 
-def _estimate_tau_informative(y_t, v_inf_t, covariates_t, device, eps=1e-12):
+def _estimate_tau_informative(y_t, v_inf_t, covariates_t, device, eps=1e-12,
+                              intercept=True):
     """_estimate_tau over the samples with v_inf > eps (see _prepare_channels).
 
     A sample with v_inf = 0 carries no information and must never enter the
@@ -561,23 +569,25 @@ def _estimate_tau_informative(y_t, v_inf_t, covariates_t, device, eps=1e-12):
     """
     keep = v_inf_t > eps
     n_keep = int(keep.sum())
-    if n_keep < _min_informative(covariates_t):
-        n_cols = 1 + (0 if covariates_t is None else covariates_t.shape[1])
+    if n_keep < _min_informative(covariates_t, intercept=intercept):
+        n_cols = int(intercept) + (0 if covariates_t is None else covariates_t.shape[1])
         raise ValueError(
             f'tau cannot be estimated from {n_keep} informative samples against '
             f'a design of {n_cols} columns; the channel must be switched off')
     c = None if covariates_t is None else covariates_t[keep]
-    return _estimate_tau(y_t[keep], v_inf_t[keep], c, device)
+    return _estimate_tau(y_t[keep], v_inf_t[keep], c, device, intercept=intercept)
 
 
-def _min_informative(covariates_t, extra=2):
+def _min_informative(covariates_t, extra=2, intercept=True):
     """Informative samples a channel needs to stay on: one per design column
-    (intercept + covariates) plus `extra` residual degrees of freedom."""
+    (automatic intercept, if present, plus covariates) plus `extra` residual
+    degrees of freedom."""
     n_cov = 0 if covariates_t is None else covariates_t.shape[1]
-    return 1 + n_cov + extra
+    return int(intercept) + n_cov + extra
 
 
-def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12, tau_extra_t=None):
+def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12,
+                     tau_extra_t=None, intercept=True):
     """sqrt weights of one channel, or all zeros when the channel is off, with
     the tau used (None under tau_mode='zero') and whether tau was estimated
     with the extra column(s) in its design.
@@ -595,16 +605,17 @@ def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12, tau_ex
     never switches a channel off that the scan had on.
     """
     n_inf = int((v_t > eps).sum())
-    if n_inf < _min_informative(covariates_t):
+    if n_inf < _min_informative(covariates_t, intercept=intercept):
         return torch.zeros_like(v_t), None, False
     if tau_mode != 'estimate':
         return torch.sqrt(1.0 / v_t.clamp(min=1e-8)), None, False
     design, refit = covariates_t, False
     if tau_extra_t is not None:
         cand = tau_extra_t if covariates_t is None else torch.cat([covariates_t, tau_extra_t], dim=1)
-        if n_inf >= _min_informative(cand):
+        if n_inf >= _min_informative(cand, intercept=intercept):
             design, refit = cand, True
-    tau = _estimate_tau_informative(y_t, v_t, design, device, eps)
+    tau = _estimate_tau_informative(y_t, v_t, design, device, eps,
+                                    intercept=intercept)
     return torch.sqrt(1.0 / (v_t.clamp(min=1e-8) + tau)), float(tau), refit
 
 
@@ -613,7 +624,7 @@ SAME_COVARIATES = 'same'
 
 def _resolve_ase_covariates(ase_covariates_df, covariates_df, samples, device, logger):
     """The allelic channel's covariate design as _prepare_channels wants it:
-    SAME_COVARIATES (the total channel's), None (intercept only) or a tensor
+    SAME_COVARIATES (the total channel's), None (through-origin) or a tensor
     built from its own DataFrame. Also returns its column count for the dof
     rule."""
     if isinstance(ase_covariates_df, str) and ase_covariates_df == SAME_COVARIATES:
@@ -621,7 +632,7 @@ def _resolve_ase_covariates(ase_covariates_df, covariates_df, samples, device, l
         logger.write('  * allelic channel covariates: same as the total channel')
         return SAME_COVARIATES, n
     if ase_covariates_df is None:
-        logger.write('  * allelic channel covariates: none (intercept only)')
+        logger.write('  * allelic channel covariates: none (through origin)')
         return None, 0
     assert np.all(np.asarray(samples) == np.asarray(ase_covariates_df.index)), \
         'Allelic-channel covariate samples must match phenotype samples'
@@ -653,9 +664,10 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
 
     Estimates tau per channel (unless tau_mode='zero'), builds the sqrt
     weights w_i = 1/(v_inf_i + tau) with zero-coverage ASE samples zeroed
-    out, and the weighted residualizers that project out the intercept and
-    covariates. Any second-pass regression that reuses this is whitened
-    exactly like the lead scan.
+    out. The total residualizer projects out its automatic intercept and
+    covariates; the ASE residualizer is through-origin and projects only
+    explicitly supplied ASE covariates. Any second-pass regression that
+    reuses this is whitened exactly like the lead scan.
 
     Takes the RAW inferential variances. The mapping functions used to
     clamp them to 1e-8 first, which hid every zero-coverage sample from
@@ -680,8 +692,8 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
 
     The two channels take separate covariate designs. ``covariates_t`` is
     the total channel's; ``ase_covariates_t`` is the allelic channel's:
-    SAME_COVARIATES (default) reuses the total channel's, None fits an
-    intercept only. The allelic contrast a = log(yL/yR) is a within-sample
+    SAME_COVARIATES (default) reuses the total channel's, None is
+    through-origin. The allelic contrast a = log(yL/yR) is a within-sample
     difference in which anything acting on both haplotypes alike (library
     size, expression PCs, sex, age) cancels, so the total channel's
     covariates are normally not wanted there: each column costs one of the
@@ -701,11 +713,15 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
     _warn_tau_zero(tau_mode)
     if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
         ase_covariates_t = covariates_t
-    wa, tau_a, refit_a = _channel_weights(a_t, va_t, ase_covariates_t, tau_mode, device, eps, tau_extra_a_t)
+    wa, tau_a, refit_a = _channel_weights(
+        a_t, va_t, ase_covariates_t, tau_mode, device, eps, tau_extra_a_t,
+        intercept=False)
     sqrt_wa_t = _zero_degenerate_ase_weights(wa, va_t, eps)
-    sqrt_wt_t, tau_t, refit_t = _channel_weights(t_t, vt_t, covariates_t, tau_mode, device, eps, tau_extra_t_t)
-    residualizer_a = WeightedResidualizer(ase_covariates_t, sqrt_wa_t)
-    residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t)
+    sqrt_wt_t, tau_t, refit_t = _channel_weights(
+        t_t, vt_t, covariates_t, tau_mode, device, eps, tau_extra_t_t,
+        intercept=True)
+    residualizer_a = WeightedResidualizer(ase_covariates_t, sqrt_wa_t, intercept=False)
+    residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t, intercept=True)
     if return_info:
         return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t, dict(
             tau_a=tau_a, tau_t=tau_t, refit_a=refit_a, refit_t=refit_t)
@@ -1070,9 +1086,10 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         xR_df:            haplotype R ALT allele (0/1) [variants x samples] or None
         prefix:           output file prefix
         covariates_df:    covariates [samples x covariates] or None, applied
-                          to the TOTAL channel (and, by default, the allelic one)
+                          to the TOTAL channel; pass SAME_COVARIATES to apply
+                          them to the allelic channel too
         ase_covariates_df: covariates for the ALLELIC channel: None (the
-                          default since 2026-09-13, an intercept only),
+                          default, through-origin),
                           SAME_COVARIATES (the total channel's set) or a
                           DataFrame [samples x k]. The allelic contrast is a
                           within-sample difference in which covariates that act
@@ -1388,7 +1405,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     gene-level p. map_nominal stays on the null-model scale.
 
     ``ase_covariates_df`` is the allelic channel's covariate design (see
-    map_nominal): None for an intercept only (the default), SAME_COVARIATES for
+    map_nominal): None for through-origin (the default), SAME_COVARIATES for
     the total channel's set, or its own DataFrame. The nominal p-value uses one t reference for both channels,
     dof = N - 2 - max(n_cov, n_cov_a).
 
@@ -1659,8 +1676,8 @@ def _build_stacked_design(genotypes_t, sign_t, a_t, t_t,
     Because the two channels estimate the *same* per-variant effect, we can
     stack them into one regression with 2N pseudo-samples and a single design
     matrix. ``WeightedResidualizer`` has already projected out the weighted
-    intercept and covariates from each channel, so the stacked responses and
-    predictors are covariate-free (SuSiE is then called with
+    total intercept/covariates and explicit ASE covariates from each channel,
+    so the stacked responses and predictors are covariate-free (SuSiE is then called with
     ``intercept=False``).
 
     Returns:

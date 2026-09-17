@@ -158,7 +158,7 @@ def hapmix_arm(A, T, Va, Vt, genes, order, vdf, dos, xL, xR, pos_df, window,
     which RASQUAL's arm has no counterpart for.
 
     cov_df is projected out of the TOTAL channel. ase_cov says what the
-    ALLELIC channel gets: 'none' (intercept only; the log haplotype ratio is
+    ALLELIC channel gets: 'none' (through-origin; the log haplotype ratio is
     a within-sample contrast in which sample-level covariates cancel) or
     'shared' (the same set, which costs one informative sample per column).
     """
@@ -933,7 +933,7 @@ def run(args):
               "out of its total channel inside the sqrt(w)-weighted space and, "
               f"with --ase-covariates {args.ase_covariates}, "
               + ('out of the allelic channel as well.' if args.ase_covariates == 'shared'
-                 else 'fits the allelic channel with an intercept only (the log '
+                 else 'fits the allelic channel through the origin (the log '
                       'haplotype ratio cancels sample-level covariates).'))
 
     print('RASQUAL input: phASER per-feature-SNP counts')
@@ -1514,7 +1514,7 @@ def main(argv=None):
                          'per thousand on 30 genes')
     ap.add_argument('--ase-covariates', choices=('none', 'shared'), default='none',
                     help="what hapmixQTL projects out of its ALLELIC channel: "
-                         "'none' (intercept only; the log haplotype ratio is a "
+                         "'none' (through-origin; the log haplotype ratio is a "
                          'within-sample contrast in which sample-level '
                          "covariates cancel) or 'shared' (the --covariates "
                          'set, as in the total channel; each column costs one '

@@ -16,12 +16,76 @@ The operating knowledge is large and split by purpose. Start in the right place:
 | What was measured, and how do I know the method is calibrated? | `docs/ase_validation.md` — the validation record, including withdrawn claims |
 | What do the output columns mean? | `docs/outputs.md` |
 | What does a new session need to pick this up? | `docs/LOCAL_HANDOFF.md` |
+| What is implemented, proposed, validated, or currently running? | `docs/CURRENT_SCIENTIFIC_STATE.md` — concise current-state router and phase gate |
+
+## Scientific phase transitions
+
+The user's phase-transition rule supersedes the earlier policy to offer
+`/reload`. Before a new substantive scientific phase, run a documentation agent
+to validate and reconcile the actual local state into concise authoritative
+pointers to the intellectual state, generated files, performed experiments and
+results, decisions, existing code, and how to find them. After that agent
+completes, resume already-authorized work.
+
+State boundaries explicitly: distinguish implemented behavior, proposed work,
+validated results, and current run state. This documentation pass records the
+existing state only; it does not imply or start a new experiment.
 
 ## Facts that are easy to get wrong
 
+- **Use log2 for expression, ASE ratios, aFC, and their uncertainty.** The user
+  established this project convention on 2026-09-15. beta=1 means a twofold
+  effect; tau_A/tau_T and Gibbs covariance use squared log2 units. Runtime
+  conversion is pending; current outputs still use natural logs. See the
+  [unit convention and conversion record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).
+
+- **ASE has no automatic intercept as of 2026-09-15.** This applies to its
+  regression, null tau, and lead-refit tau designs. `ase_covariates_df=None`
+  means through-origin with no nuisance columns; the total intercept remains.
+  Results recorded before this change used the old design and are historical.
+- **Default Salmon Gibbs includes counting noise.** The completed controlled
+  experiment at `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`
+  contradicts the earlier assignment-only explanation below. The approved
+  intercept correction does not change counting terms or select a new residual
+  variance model; those decisions remain separate.
+
+- **Gene-level Gibbs shape has bounded real-data evidence.** The completed
+  three-library pilot found Gaussian competitive within 0.05 bits/draw for
+  98.51% of 4,500 ASE and 99.93% of total summaries; it retained two
+  reproducible ASE candidates and no total candidates. ZNF529 and RNF175 are
+  exceptions to interpret, while RNF175 restart-block occupancy is unreliable.
+  This is not association or tau calibration. See
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_shape_pilot_20260915/REPORT.md`.
+
+- **The two-gene influence audit retained the moment/GPU baseline.** Across
+  three genotype-selected common SNPs per gene and 92 donors (87 ASE), maximum
+  one-block mean-plus-covariance shifts were 0.0736 working SE (ZNF529) and
+  0.1396 (RNF175); leave-one-block maxima were 0.00901 and 0.01028. These are
+  bounded sensitivity results, not association calibration. See
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/REPORT.md`.
+
+- **Parents already estimate aggregate residual variance.** TensorQTL and
+  mixQTL estimate a per-variant residual scale after fitting covariates and
+  genotype; it combines measurement, biology, and other residual sources.
+  They do not identify biological tau separately, and that identification is
+  not required for association. Do not add M unchanged to that residual scale.
+  The existing weighted leverage/M+tau extension is an alternative under
+  reassessment, not the current accepted objective. The current task is a
+  from-beginning recommendation for weighted OLS incorporating empirical
+  Salmon Gibbs precision and per-variant residual variance. Exact preservation
+  of unweighted OLS coefficients is not a constraint. The fixed-OLS candidate
+  remains a historical alternative, not the primary direction. The recommended
+  weighted architecture, its non-adoption boundary, and the deferred extension
+  map are in `docs/IMPLEMENTATION_STATUS_20260916.md`.
+  Recommendations are allowed; no new method is adopted or implemented. See
+  `docs/IMPLEMENTATION_STATUS_20260916.md` for the preserved source/prototype
+  boundary, first proposed OLS candidate, and deferred extension map; no model
+  is selected by it.
+
 - **`tau` is not something the Gibbs draws measure.** The per-sample weight is
-  `1/(v_inf + tau)`. `v_inf` is read-assignment uncertainty plus a Poisson counting
-  term; `tau` is the between-sample variance estimated across samples. On BrainVar's
+  `1/(v_inf + tau)`. The current code uses Gibbs measurement variance plus an
+  extra Poisson counting term (under review because default Gibbs already
+  includes counting noise); `tau` is the residual variance estimated across samples. On BrainVar's
   well-expressed genes `v_inf` is about a third of the allelic channel's error and
   under 1% of the total channel's.
 - **Two scales are reported.** `pval_perm` and `pval_beta` are gene-level and come
@@ -33,9 +97,10 @@ The operating knowledge is large and split by purpose. Start in the right place:
   column order. `_assert_phase_columns` now guards it; before that, reordered columns
   corrupted the allelic channel while the total channel stayed correct.
 - **Library and driver defaults agree except on one flag.** `count_noise` is on
-  and `ase_covariates_df` is intercept-only everywhere since 2026-09-13; pass
+  and `ase_covariates_df=None` is through-origin everywhere since 2026-09-15; pass
   `count_noise=False` or `ase_covariates_df=SAME_COVARIATES` to reproduce
-  earlier results. `tau_refit` is the exception: on in both drivers, off in the
+  earlier counting/covariate settings (this does not restore the former ASE
+  intercept). `tau_refit` is the exception: on in both drivers, off in the
   library and CLI, because it carries a known unfixed selection bias (below) and
   a default should fail conservative. It should flip once the refit is charged
   the selection it performs.
