@@ -130,17 +130,27 @@ existing state only; it does not imply or start a new experiment.
   damped Fisher scoring; rejected under `additive`. Measured on the 300-gene
   tiered calibration (`estimator_ablation_tiers_20260917/summary_prior.tsv`):
   type-I at 5% 0.040/0.036/0.030 with the prior against
-  0.040/0.032/0.030 clamped (s.e. 0.003), no gene at either bound, the same 43
-  calls plus two (EXOC6B, LOC124903631), 91% of leads identical. The prior removes the clamp but NOT
+  0.040/0.032/0.030 clamped (s.e. 0.003), no gene at either bound, the clamped fit's 43 plus EXOC6B, LOC124903631
+  called, 91% of leads identical. The prior removes the clamp but NOT
   the low-expression non-identifiability: below ~70 allele-resolved reads the
   prior on c is 0.035 with log-sd 2.4 and the weights stay near-equal. A
   normal-scale prior floored 41-54% of genes again and was rejected. The
-  `c_a_floored` output column is always False under the log-scale prior.
+  `c_a_floored` output column reports a clamp hit on the clamped
+  two-component path and is always False under the log-scale prior.
   The posterior-mode fit needs its backtracking line search with the merit
   consistent with the score (no 0.5), a direction-keeping step cap and the
-  objective-gain stop rule: without them 12.7% of fits two-cycle, and with
-  an inconsistent merit the fit converges to a point that is not the mode
-  (tests/test_hapmixqtl_variance_prior.py pins all three).
+  objective-gain stop rule, and TWO STARTS (prior mean and the clamped fit,
+  higher objective kept): without them 12.7% of fits two-cycle, an
+  inconsistent merit converges to a point that is not the mode, and under
+  the two lowest bins' prior (median c 0.0018) a single start from the prior
+  mean returns the spurious low-c mode for most identifiable genes
+  (tests/test_hapmixqtl_variance_prior.py pins all of it; a golden test pins
+  the additive path at 99921fd). The runner's library-scaled mode crashed on
+  any cohort with a quantified gene lacking a position row (fixed; self-test
+  covers it). Open: the bin prior estimator floors a negative raw mean in the
+  two lowest bins and its moment match manufactures the second mode; kappa
+  is global; run_second_pass ignores the variance model; outputs.md/README
+  lack the new columns and flags.
   Production form for BrainVar: `library_scaled` with the prior. Report:
   `estimator_ablation_20260916/REPORT.md`, last section.
 

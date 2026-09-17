@@ -1044,7 +1044,9 @@ def main():
     args = ap.parse_args()
 
     if args.selftest:
-        return selftest(extra=('--variance-model', args.variance_model) + (('--variance-prior',) if args.variance_prior else ()))
+        return selftest(extra=('--variance-model', args.variance_model) + (('--variance-prior',) if args.variance_prior else ())
+                        + (('--library-factor-min-reads', str(args.library_factor_min_reads))
+                           if args.variance_model.replace('-', '_') == 'library_scaled' else ()))
     for r in ('vcf', 'manifest', 'tx2gene'):
         if not getattr(args, r):
             raise SystemExit(f'--{r} is required (or use --selftest)')
@@ -1139,11 +1141,13 @@ def main():
     variance_model = args.variance_model.replace('-', '_')
     library_factor = None
     if variance_model == 'library_scaled':
-        reads = np.median(YLm + YRm, axis=1)
-        lf_genes = [g for g, r in zip(genes, reads) if r >= args.library_factor_min_reads]
+        # on the scanned genes only: sdf/vadf were sliced to ``common`` above, and
+        # estimate_library_factors rejects genes absent from them
+        reads = np.median((YLm + YRm)[gsel], axis=1)
+        lf_genes = [g for g, r in zip(common, reads) if r >= args.library_factor_min_reads]
         if len(lf_genes) < 20:
             print(f'WARNING: only {len(lf_genes)} genes reach {args.library_factor_min_reads:g} '
-                  f'median allele-resolved reads; estimating library factors from all {len(genes)} genes')
+                  f'median allele-resolved reads; estimating library factors from all {len(common)} genes')
             lf_genes = None
         library_factor = estimate_library_factors(
             sdf, vadf, genes=lf_genes, min_informative=min(40, max(10, len(order) // 2)))
@@ -1151,17 +1155,17 @@ def main():
             out / 'library_factor.tsv', sep='\t', index=False)
         print(f'Library factors from {library_factor.attrs["n_genes"]} genes '
               f'({"interior fits" if library_factor.attrs["interior_only"] else "non-degenerate fits, too few interior"}) '
-              f'among {len(genes) if lf_genes is None else len(lf_genes)} candidates: '
+              f'among {len(common) if lf_genes is None else len(lf_genes)} candidates: '
               f'range {library_factor.min():.2f}-{library_factor.max():.2f}, '
               f'sd {library_factor.std():.3f}')
     variance_prior = None
     if args.variance_prior:
         if variance_model == 'additive':
             raise SystemExit('--variance-prior needs --variance-model two-component or library-scaled')
-        reads = np.median(YLm + YRm, axis=1)
+        reads = np.median((YLm + YRm)[gsel], axis=1)
         variance_prior = estimate_variance_priors(
-            sdf, vadf, expression=pd.Series(reads, index=genes), library_factor=library_factor,
-            min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(genes) // 10)))
+            sdf, vadf, expression=pd.Series(reads, index=common), library_factor=library_factor,
+            min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(common) // 10)))
         variance_prior.rename_axis('gene').reset_index().to_csv(out / 'variance_priors.tsv', sep='\t', index=False)
         variance_prior.attrs['bins'].to_csv(out / 'variance_prior_bins.tsv', sep='\t', index=False)
         print(f"Variance priors from {variance_prior.attrs['n_genes']} genes in "
@@ -1243,7 +1247,11 @@ def selftest(extra=()):
     N, G, ND = 40, 25, 50
     rng = np.random.RandomState(0)
     samples = [f'S{i:03d}' for i in range(N)]
-    txs = [f'ENST{i:08d}' for i in range(G)]
+    # one transcript more than there are gene-position rows: its gene is
+    # quantified but cannot be scanned, which is the normal case in a real
+    # cohort, and once made the library-scaled path crash on the gene-set
+    # mismatch between the quantified and the scanned genes
+    txs = [f'ENST{i:08d}' for i in range(G + 1)]
     # phased VCF: one SNP per gene, plus a tri-allelic row every 5th gene
     # (skipped by the standard reader; used only with --multiallelic)
     hdr = ('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\t'

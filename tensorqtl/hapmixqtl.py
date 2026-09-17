@@ -619,7 +619,10 @@ def _check_variance_model(variance_model, tau_mode, library_factor_t, variance_p
             raise ValueError("variance_prior applies to the two-component models only; c is fixed at 1 under 'additive'")
         if not isinstance(variance_prior, pd.DataFrame) or 'prior_c' not in variance_prior.columns:
             raise ValueError('variance_prior must be the DataFrame returned by estimate_variance_priors')
-        if bool(variance_prior.attrs.get('library_scaled', False)) != (variance_model == 'library_scaled'):
+        if 'library_scaled' not in variance_prior.attrs or 'kappa' not in variance_prior.attrs:
+            raise ValueError('variance_prior has lost its attrs (kappa, library_scaled): pass the frame '
+                             'estimate_variance_priors returned, not one reloaded from a file')
+        if bool(variance_prior.attrs['library_scaled']) != (variance_model == 'library_scaled'):
             raise ValueError("variance_prior was estimated for a different model: pass library_factor to "
                              "estimate_variance_priors exactly when the scan uses 'library_scaled'")
     if variance_model not in VARIANCE_MODELS:
@@ -651,7 +654,7 @@ def _library_factor_tensor(library_factor, samples, device):
 
 
 def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
-                    max_iter=500, tol=1e-7, prior=None):
+                    max_iter=500, tol=1e-7, prior=None, _theta0=None):
     """
     Two-component variance fit for one channel of one gene,
 
@@ -694,8 +697,13 @@ def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
     objective, the gamma quasi-log-likelihood plus the log prior, does not
     decrease): without that, the step overshoots along the direction the
     gene's data do not identify and the iteration cycles between two points
-    at the step cap. ``floored`` is always False on this path and is kept for
-    the API.
+    at the step cap. The ascent is run from two starts, the prior mean and
+    the unpenalized clamped fit, and the higher objective is kept: under a
+    prior centred far below a gene's identified c the objective is bimodal
+    and the ascent from the prior mean alone stops in the spurious mode near
+    the prior. On the prior path ``floored`` is always False (nothing is
+    clamped); on the clamped path it reports whether a clamp branch was taken
+    on the final iteration.
 
     Returns a dict: c, tau (the values the weights use), converged,
     c_raw, tau_raw (the unpenalized, unclamped solution at the final
@@ -711,6 +719,7 @@ def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
         if y.shape[0] > 3 else 0.0
     ones = torch.ones_like(v)
     converged = False
+    hit = False
     c_raw, tau_raw = float('nan'), float('nan')
 
     def _moments(c_, tau_):
@@ -736,12 +745,15 @@ def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
             except Exception:
                 c_raw, tau_raw = c, tau
             cn, tn = c_raw, tau_raw
+            hit = False
             if cn < 0:
                 cn = 0.0
                 tn = float((om * e2).sum() / om.sum())
+                hit = True
             if tn < 0:
                 tn = 0.0
                 cn = float((om * e2 * v).sum() / (om * v * v).sum())
+                hit = True
             if cn <= 0 and tn <= 0:
                 cn, tn = 1e-6, 1e-6
             cn, tn = 0.5 * (c + cn), 0.5 * (tau + tn)
@@ -750,7 +762,7 @@ def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
             if done:
                 converged = True
                 break
-        return dict(c=c, tau=tau, converged=converged, c_raw=c_raw, tau_raw=tau_raw, floored=False)
+        return dict(c=c, tau=tau, converged=converged, c_raw=c_raw, tau_raw=tau_raw, floored=hit)
 
     m_logc, s_logc, m_logtau, s_logtau, kappa = [float(x) for x in prior]
     dev64 = dict(dtype=torch.float64, device=y.device)
@@ -770,7 +782,28 @@ def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
         dth = th - m
         return ll - 0.5 * float(dth @ (P @ dth)), (base, e2, om, X)
 
-    theta = m.clone()
+    if _theta0 is None:
+        # The penalized objective is bimodal under a low-centred prior (the
+        # two lowest expression bins on BrainVar have a prior median c of
+        # 0.0018): an ascent from the prior mean alone settles in the spurious
+        # low-c mode for a gene whose data identify c near 2, and reports it
+        # converged, 12 log-posterior units below the mode. Ascend from both
+        # the prior mean and the unpenalized clamped fit and keep the higher
+        # objective; the tau seed is floored because the clamped fit often
+        # returns tau = 0 exactly.
+        cl = _estimate_c_tau(y_t, v_t, covariates_t, device, intercept, d_t=d_t,
+                             max_iter=max_iter, tol=tol, prior=None)
+        alt = [float(np.log(max(cl['c'], 1e-8))),
+               float(np.log(max(cl['tau'], float(np.exp(m_logtau)) * 1e-3)))]
+        a = _estimate_c_tau(y_t, v_t, covariates_t, device, intercept, d_t=d_t,
+                            max_iter=max_iter, tol=tol, prior=prior,
+                            _theta0=[m_logc, m_logtau])
+        b = _estimate_c_tau(y_t, v_t, covariates_t, device, intercept, d_t=d_t,
+                            max_iter=max_iter, tol=tol, prior=prior, _theta0=alt)
+        ma = _merit(torch.tensor([np.log(a['c']), np.log(a['tau'])], **dev64))[0]
+        mb = _merit(torch.tensor([np.log(b['c']), np.log(b['tau'])], **dev64))[0]
+        return b if mb > ma else a
+    theta = torch.tensor([float(_theta0[0]), float(_theta0[1])], **dev64)
     merit, (base, e2, om, X) = _merit(theta)
     for _ in range(max_iter):
         Am = X.T @ (om[:, None] * X)
@@ -918,7 +951,12 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     moments (a normal prior on the natural scale is nearly uninformative
     about the sign of tau where its mean is small against its spread, and
     reintroduces the clamp), so the per-gene fit is penalized on the log
-    scale and needs no clamp.
+    scale and needs no clamp. A bin whose raw mean is not positive (on
+    BrainVar the two lowest expression bins, for c) has it replaced by a
+    twentieth of the raw spread so the log-normal exists; the per-bin table
+    reports the raw mean (mean_raw_c, mean_raw_tau) and whether the
+    replacement happened (c_mean_floored, tau_mean_floored). A bin left with
+    fewer than 10 genes by tied proxies takes the pooled prior (pooled).
 
     The prior is for the model the scan will use: pass ``library_factor``
     when the scan is 'library_scaled' (the raw fits are then on a/sqrt(d));
@@ -968,18 +1006,27 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
         spread = float(np.var(xw))
         noise = float(np.median(var_x))
         var_true = max(spread - noise, floor_frac * spread, 1e-24)
-        mu_pos = max(mu, 0.05 * np.sqrt(spread), 1e-12)
+        # The log-normal needs a positive mean. Where the bin's raw mean is at
+        # or below zero (the two lowest expression bins on BrainVar, whose raw
+        # mean of c is negative) it is replaced by a twentieth of the raw
+        # spread; the raw mean and the fact of the replacement are reported.
+        mu_floor = 0.05 * np.sqrt(spread)
+        mu_pos = max(mu, mu_floor, 1e-12)
         s2 = float(np.log1p(var_true / mu_pos ** 2))
-        return mu_pos, float(np.sqrt(var_true)), float(np.log(mu_pos) - 0.5 * s2), float(np.sqrt(s2))
+        return (mu_pos, float(np.sqrt(var_true)), float(np.log(mu_pos) - 0.5 * s2), float(np.sqrt(s2)),
+                mu, bool(mu_pos > mu))
     rows = []
     for k in range(n_bins):
         sel = b_est == k
-        mu_c, sd_c, lm_c, ls_c = _prior(c_raw[sel], var_c[sel])
-        mu_t, sd_t, lm_t, ls_t = _prior(tau_raw[sel], var_tau[sel])
+        pooled = int(sel.sum()) < 10   # tied proxies can leave a bin empty: fall back to all genes
+        use = np.ones_like(sel) if pooled else sel
+        mu_c, sd_c, lm_c, ls_c, raw_c, fl_c = _prior(c_raw[use], var_c[use])
+        mu_t, sd_t, lm_t, ls_t, raw_t, fl_t = _prior(tau_raw[use], var_tau[use])
         rows.append(dict(bin=k, genes=int(sel.sum()), proxy_lo=edges[k], proxy_hi=edges[k + 1],
                          prior_c=mu_c, prior_sd_c=sd_c, prior_tau=mu_t, prior_sd_tau=sd_t,
                          prior_logc_m=lm_c, prior_logc_s=ls_c, prior_logtau_m=lm_t, prior_logtau_s=ls_t,
-                         median_c_clamped=float(np.median(c[sel])), tau_zero_clamped=float(np.mean(tau[sel] < 1e-6))))
+                         mean_raw_c=raw_c, c_mean_floored=fl_c, mean_raw_tau=raw_t, tau_mean_floored=fl_t, pooled=pooled,
+                         median_c_clamped=float(np.median(c[use])), tau_zero_clamped=float(np.mean(tau[use] < 1e-6))))
     bins = pd.DataFrame(rows)
     proxy_all = np.where(np.isfinite(proxy), proxy, -np.inf)   # genes with no informative sample: lowest bin
     b_all = np.clip(np.searchsorted(edges, proxy_all, side='right') - 1, 0, n_bins - 1)
@@ -1005,9 +1052,12 @@ def _prior_tuple(variance_prior, gene):
         return None
     if gene not in variance_prior.index:
         raise KeyError(f'no variance prior for {gene}: estimate_variance_priors must be run on the same A_df')
+    if 'kappa' not in variance_prior.attrs:
+        raise ValueError('variance_prior has lost its attrs (kappa, library_scaled): pass the frame '
+                         'estimate_variance_priors returned, not one reloaded from a file')
     r = variance_prior.loc[gene]
     return (float(r['prior_logc_m']), float(r['prior_logc_s']), float(r['prior_logtau_m']),
-            float(r['prior_logtau_s']), float(variance_prior.attrs.get('kappa', 2.0)))
+            float(r['prior_logtau_s']), float(variance_prior.attrs['kappa']))
 
 
 def estimate_library_factors(A_df, Va_df, genes=None, min_informative=40,
@@ -1097,7 +1147,7 @@ def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12,
 
     variance_model selects the variance function (VARIANCE_MODELS); d_t is
     the per-sample library factor under 'library_scaled'; prior is the
-    gene's (m_c, m_tau, sd_c, sd_tau, kappa) for the shrinkage fit, or None
+    gene's (m_logc, s_logc, m_logtau, s_logtau, kappa) for the shrinkage fit, or None
     for the clamped fit. The last return value is the fit dict of
     _estimate_c_tau (None under the additive model and tau_mode='zero').
 
@@ -1185,7 +1235,7 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
     ``variance_model`` (VARIANCE_MODELS) selects the allelic channel's
     variance function: 'additive' v + tau, 'two_component' c v + tau, or
     'library_scaled' d_i (c v + tau) with ``library_factor_t`` the per-sample
-    d_i. ``prior`` is the gene's (m_c, m_tau, sd_c, sd_tau, kappa) from
+    d_i. ``prior`` is the gene's (m_logc, s_logc, m_logtau, s_logtau, kappa) from
     estimate_variance_priors (shrinkage in place of the clamp) or None. The
     total channel is v_t + tau_t under every model (module docstring).
 
@@ -1948,7 +1998,9 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     (the frame from estimate_variance_priors) replaces the zero clamp of the
     per-gene (c, tau) fit with empirical-Bayes shrinkage toward the gene's
     expression bin; the output then also carries ``c_a_raw``/``tau_a_raw``
-    (the unshrunk solution at the final weights) and ``c_a_floored``.
+    (the unshrunk solution at the final weights) and ``c_a_floored`` (a clamp
+    branch was taken on the final iteration of the clamped fit; always False
+    under a prior, where nothing is clamped).
 
     ``tau_refit``: tau is estimated once per gene under the null model (no
     genotype term) for the scan, so a strong cis effect inflates it and
@@ -2231,7 +2283,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     res_df.index.name = 'phenotype_id'
     n_floored = int(res_df['c_a_floored'].astype(bool).sum())
     if n_floored:
-        logger.write(f'  * {n_floored} of {len(res_df)} phenotypes were floored at zero (c_a_floored)')
+        logger.write(f'  * {n_floored} of {len(res_df)} phenotypes had c or tau clamped at zero in the allelic fit (c_a_floored)')
     n_unconverged = int((~res_df['c_a_converged'].astype(bool)).sum())
     if n_unconverged:
         logger.write(f'  * WARNING: the allelic (c, tau) fit did not converge on '

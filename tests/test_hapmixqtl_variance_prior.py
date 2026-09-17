@@ -2,7 +2,7 @@
 hapmixqtl._estimate_c_tau (variance_model='two_component' / 'library_scaled'
 with variance_prior).
 
-Two defects were found while landing the prior on BrainVar (2026-09-17) and
+Three defects were found while landing the prior on BrainVar (2026-09-17) and
 each test below fails on the code that had it:
 
 1. Undamped Fisher scoring in (log c, log tau) cycles between two points at
@@ -17,6 +17,13 @@ each test below fails on the code that had it:
    posterior mode (190 of 200 identified BrainVar genes moved, up to a factor
    9, every one toward the prior). The merit must be the quasi-likelihood
    whose gradient is the score: sum(-e2/base - log base) / kappa + log prior.
+3. Under the deployed low-expression priors (prior median c 0.0018, log-sd
+   2.4) the penalized objective is bimodal, and an ascent from the prior mean
+   alone stops in the spurious low-c mode for a gene whose data identify c
+   near 2, reporting convergence 12 log-posterior units below the mode (an
+   estimated 70% of identifiable genes in those two bins, a fifth of the
+   transcriptome). Fixed by ascending from both the prior mean and the
+   unpenalized clamped fit and keeping the higher objective.
 
 The checks are (a) convergence is reported, (b) the returned point solves the
 penalized score equation the fit claims to solve, and (c) with a near-flat
@@ -124,3 +131,41 @@ def test_near_flat_prior_never_reaches_a_lower_objective_than_the_clamped_fit(de
         q0 = _quasi_loglik(y, vv, max(f0['c'], 1e-12), max(f0['tau'], 1e-12), kappa)
         q1 = _quasi_loglik(y, vv, f1['c'], f1['tau'], kappa)
         assert q1 >= q0 - 1e-6 * (1.0 + abs(q0)), (g, q0, q1)
+
+
+# bins 1 and 2 of the deployed BrainVar prior (variance_prior_bins_cvt.tsv): the two that trap
+DEPLOYED_LOW_BINS = [(1, -6.321148, 2.439234, -1.514128, 1.688169),
+                     (2, -6.308367, 2.439854, -1.836938, 1.723303)]
+DEPLOYED_KAPPA = 2.3806
+
+
+def _penalized_objective(c, tau, prior, y, v):
+    m_lc, s_lc, m_lt, s_lt, kappa = prior
+    base = c * v + tau
+    ll = -np.sum(np.log(base) + y ** 2 / base) / kappa
+    d = np.array([np.log(c) - m_lc, np.log(tau) - m_lt])
+    return ll - 0.5 * np.sum(d * d * np.array([1 / s_lc ** 2, 1 / s_lt ** 2]))
+
+
+@pytest.mark.parametrize('bin_id,m_lc,s_lc,m_lt,s_lt', DEPLOYED_LOW_BINS)
+def test_prior_fit_is_not_trapped_below_the_clamped_fit(device, bin_id, m_lc, s_lc, m_lt, s_lt):
+    """A gene whose data identify c near 2.4 under the deployed low-expression
+    prior: the returned posterior mode must score at least as well on the
+    penalized objective as the unpenalized clamped fit does. A single ascent
+    from the prior mean returns c near 0.002 and fails this by 7 to 12
+    log-posterior units."""
+    rng = np.random.default_rng(5)
+    v = 10 ** rng.uniform(-2, -0.5, 80)
+    y = rng.normal(0, np.sqrt(2.5 * v + 0.02))
+    prior = (m_lc, s_lc, m_lt, s_lt, DEPLOYED_KAPPA)
+    yt, vt = _tensors(y, v, device)
+    clamped = hapmixqtl._estimate_c_tau(yt, vt, None, device, intercept=False)
+    fit = hapmixqtl._estimate_c_tau(yt, vt, None, device, intercept=False, prior=prior)
+    assert fit['converged']
+    tau_ref = max(clamped['tau'], np.exp(m_lt) * 1e-3)
+    o_fit = _penalized_objective(fit['c'], fit['tau'], prior, y, v)
+    o_ref = _penalized_objective(clamped['c'], tau_ref, prior, y, v)
+    assert o_fit >= o_ref - 1e-6, (
+        f"bin {bin_id}: prior fit c={fit['c']:.6g} is {o_ref - o_fit:.3f} log-posterior units "
+        f"below the clamped fit c={clamped['c']:.6g}, yet converged=True")
+    assert fit['c'] > 0.5 * clamped['c'], (fit['c'], clamped['c'])
