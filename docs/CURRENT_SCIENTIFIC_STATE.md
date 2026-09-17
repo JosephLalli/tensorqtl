@@ -55,7 +55,7 @@ measured content of the "fitted residual scale" recommendation in
 code still uses DL. The residual shape remains wrong after PM (standardized
 squared residual rises with `log v`, pooled slope +0.21), so `c*v + tau` is the
 next candidate. Settled directions: log2 units, no automatic ASE intercept,
-GPU matrix scan; `count_noise` stays True until zero-read cells in the total
+GPU matrix scan; `count_noise` stays True until zero-read samples in the total
 channel get a coverage-based rule.
 
 **Decision record.**
@@ -72,7 +72,7 @@ channel get a coverage-based rule.
 2. Awaiting the user's decision: DerSimonian-Laird vs Paule-Mandel `tau`. The
    numbers are in the ablation report; nothing further needs measuring for the
    level. The residual shape (`c*v + tau`) needs one more ablation configuration.
-3. Open and unmeasured: the `tau = 0` boundary and zero-read total cells, both
+3. Open and unmeasured: the `tau = 0` boundary and zero-read total samples, both
    invisible on well-expressed genes; a depth-stratified arm of the ablation
    from the existing cache is the experiment. Whether the Gibbs posterior
    covariance stands in for repeated-library measurement error cannot be

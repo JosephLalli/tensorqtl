@@ -32,6 +32,15 @@ State boundaries explicitly: distinguish implemented behavior, proposed work,
 validated results, and current run state. This documentation pass records the
 existing state only; it does not imply or start a new experiment.
 
+## Writing conventions (the user's)
+
+- Define every named statistical method on first use, in terms of what it
+  computes (DerSimonian-Laird, Paule-Mandel, Freedman-Lane, Kish, and so on).
+- Never write "cell" for a table entry or a (donor, gene) datapoint; in this
+  work "cell" means a biological cell. Say datapoint, donor-gene pair, or
+  zero-read sample.
+- Reports for the user are HTML pages with figures, not long markdown.
+
 ## Facts that are easy to get wrong
 
 - **Use log2 for expression, ASE ratios, aFC, and their uncertainty.** The user
@@ -48,16 +57,16 @@ existing state only; it does not imply or start a new experiment.
   well-expressed genes.** The controlled experiment at
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`
   (Gibbs-only variance / MSE 0.944, with `q` 1.906) shows `q` double-counts
-  the sampling noise of cells that have reads, and a census of the production
+  the sampling noise of donors that have reads, and a census of the production
   draws shows the docstring's other case, reads with unanimous draws, never
-  occurs (0 of 76,286 cells). On the 29 calibration genes removing `q` moves
+  occurs (0 of 76,286 datapoints). On the 29 calibration genes removing `q` moves
   the lead statistic by a median 0.19 chi2 and changes no call. The flag is
   nevertheless load-bearing, for a reason neither side stated: the total
   channel has no degenerate-sample guard (`_zero_degenerate_ase_weights` exists
   only for ASE), so a zero-count total sample keeps weight `1/(1e-8 + tau_t)`,
   and in low-expressed genes where `tau_t` clamps to zero that is the
   2026-09-13 "52% type-I" weight-domination failure. `q` prevents it only
-  because `1/(0 + 2*kappa) = 1` acts as a floor. 39.95% of cells in 2,000
+  because `1/(0 + 2*kappa) = 1` acts as a floor. 39.95% of donor-gene datapoints in 2,000
   random genes have no reads (none in the 29 calibration genes); a verifier
   measured that without `q` such samples hold a median 89.5% of the total
   channel's weight in the 281 of 1,079 sampled genes that have them, against
@@ -184,7 +193,7 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
   under default flags: identical draws occur only with zero reads). The flag
   stays on for the reason above, which is a missing floor, not a variance
   term.
-- `count_noise=False` dropping zero-read cells from the total channel: wrong,
+- `count_noise=False` dropping zero-read samples from the total channel: wrong,
   they stay in at weight `1/(1e-8 + tau_t)` (the guard is ASE-only).
 - "The pooled 5% threshold calls 8 genes against 5 by the per-gene null" as a
   property of the data: it was the DL `tau` scale inflation of three genes.
