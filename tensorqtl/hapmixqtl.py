@@ -15,16 +15,39 @@ and predictors by sqrt(w_i) converts WLS into OLS, enabling efficient
 GPU-vectorized computation across all cis variants simultaneously.
 
 Inferential variances from Gibbs draws propagate into weights as
-w_i = 1 / (v_inf_i + tau), where v_inf_i is the across-draw variance of
-the transformed expression for sample i and tau is a per-phenotype,
-per-channel overdispersion term. tau_mode='estimate' is the DEFAULT: tau is
-a moment estimate fitted under the channel's null model (the total automatic
-intercept and covariates, or the ASE through-origin/covariate design, no
-genotype term) on the samples that carry information (v_inf > 0), with the
-exact leverage denominator sum_i w_i(1 - h_i) -- DerSimonian-Laird's form
-for an intercept-only design. tau_mode='zero' asserts the Gibbs variance is the entire error
-variance, which is severely anticonservative on real data; it is retained
-only to reproduce earlier results and warns when used.
+w_i = 1 / Var(e_i), where v_inf_i is the across-draw variance of the
+transformed expression for sample i. Three variance models are selectable
+(``variance_model`` on every mapping function; VARIANCE_MODELS):
+
+  additive        Var(e_i) = v_inf_i + tau                  (the default)
+  two_component   Var(e_i) = c v_inf_i + tau
+  library_scaled  Var(e_i) = d_i (c v_inf_i + tau)
+
+tau is a per-phenotype, per-channel between-sample variance, c a per-gene
+factor by which the draws understate the measurement error, and d_i a
+per-library factor shared by every gene (estimate_library_factors). Under
+'additive' tau is the moment estimate of _estimate_tau, fitted under the
+channel's null model (the total automatic intercept and covariates, or the
+ASE through-origin/covariate design, no genotype term) on the samples that
+carry information (v_inf > 0), with the exact leverage denominator
+sum_i w_i(1 - h_i) -- DerSimonian-Laird's form for an intercept-only design.
+Under the other two models (c, tau) are fitted jointly by _estimate_c_tau,
+a damped iterated weighted least squares of the leverage-corrected squared
+null residuals on [v, 1], clamped at zero by default or, with
+``variance_prior`` (estimate_variance_priors), shrunk toward the gene's
+expression bin by an empirical-Bayes prior in place of the clamp. The models
+govern the ALLELIC channel; the total
+channel keeps v_t + tau_t under every model, because v_t is nearly constant
+across samples so c_t is not identifiable, and d_i was measured on the
+allelic channel. tau_mode='estimate' is the DEFAULT. tau_mode='zero' asserts
+the Gibbs variance is the entire error variance, which is severely
+anticonservative on real data; it is retained only to reproduce earlier
+results, warns when used, and is only accepted with the additive model.
+Measured on BrainVar (estimator_ablation_20260916, estimator_ablation_tiers_20260917):
+the additive model is anticonservative at low expression (type-I 0.068 at
+nominal 0.05) and conservative at high (0.022); the two other models are
+0.029-0.041 in every tier with the same null width and calls; only
+library_scaled leaves whitened residuals with no per-library spread.
 
 Four further things shape what the mapping functions do:
 
@@ -586,11 +609,497 @@ def _min_informative(covariates_t, extra=2, intercept=True):
     return int(intercept) + n_cov + extra
 
 
+VARIANCE_MODELS = ('additive', 'two_component', 'library_scaled')
+
+
+def _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior=None):
+    """Argument validation shared by the mapping functions."""
+    if variance_prior is not None:
+        if variance_model == 'additive':
+            raise ValueError("variance_prior applies to the two-component models only; c is fixed at 1 under 'additive'")
+        if not isinstance(variance_prior, pd.DataFrame) or 'prior_c' not in variance_prior.columns:
+            raise ValueError('variance_prior must be the DataFrame returned by estimate_variance_priors')
+        if bool(variance_prior.attrs.get('library_scaled', False)) != (variance_model == 'library_scaled'):
+            raise ValueError("variance_prior was estimated for a different model: pass library_factor to "
+                             "estimate_variance_priors exactly when the scan uses 'library_scaled'")
+    if variance_model not in VARIANCE_MODELS:
+        raise ValueError(f'variance_model must be one of {VARIANCE_MODELS}, got {variance_model!r}')
+    if variance_model != 'additive' and tau_mode != 'estimate':
+        raise ValueError(f"variance_model={variance_model!r} requires tau_mode='estimate'")
+    if variance_model == 'library_scaled' and library_factor_t is None:
+        raise ValueError(
+            "variance_model='library_scaled' needs library_factor: one positive value per "
+            "sample, estimated across genes with estimate_library_factors(A_df, Va_df, ...)")
+    if variance_model != 'library_scaled' and library_factor_t is not None:
+        raise ValueError("library_factor is only used under variance_model='library_scaled'")
+
+
+def _library_factor_tensor(library_factor, samples, device):
+    """library_factor as a float32 tensor aligned to the phenotype samples, or
+    None. Accepts a Series indexed by sample (reindexed, every sample
+    required) or an array in phenotype column order."""
+    if library_factor is None:
+        return None
+    if isinstance(library_factor, pd.Series):
+        d = library_factor.reindex(samples).values.astype(float)
+    else:
+        d = np.asarray(library_factor, dtype=float)
+        assert d.shape == (len(samples),), 'library_factor must have one value per sample'
+    if not np.all(np.isfinite(d)) or np.any(d <= 0):
+        raise ValueError('library_factor must be finite and positive for every sample')
+    return torch.tensor(d, dtype=torch.float32).to(device)
+
+
+def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
+                    max_iter=500, tol=1e-7, prior=None):
+    """
+    Two-component variance fit for one channel of one gene,
+
+        Var(e_i) = d_i (c v_i + tau),   c >= 0, tau >= 0,
+
+    on the informative samples (the caller drops v <= eps). d_t is the
+    per-library factor (None means 1 for every sample).
+
+    Under weights w_i = 1/(d_i (c v_i + tau)) the leverage-corrected squared
+    null residual e2_i = r_i^2 / (w_i (1 - h_i)) has expectation
+    d_i (c v_i + tau), so e2_i / d_i regressed on [v_i, 1] gives the slope c
+    and intercept tau. A squared Gaussian residual has variance proportional
+    to its variance squared, so the line is fitted with weights
+    1/(c v_i + tau)^2; the weights depend on (c, tau), so the fit iterates,
+    damped by averaging each update with the previous value (the undamped
+    update can cycle between the tau = 0 clamp and an interior point). When
+    a clamp hits, the other parameter is refitted alone. Starts at c = 1 and
+    the DerSimonian-Laird tau of y/sqrt(d). Runs in float64.
+
+    This is the estimator whose calibration was measured on BrainVar (300
+    genes across expression tiers, 40 genotype permutations each: type-I
+    0.029-0.041 at nominal 0.05; estimator_ablation_tiers_20260917/
+    tiered_calibration.py, fit_cvt). With d = 1 it is that prototype exactly;
+    with d != 1 and an empty design it equals fitting y/sqrt(d) against v,
+    which is what the prototype's library-scaled configuration did.
+
+    ``prior`` replaces the clamp with empirical-Bayes shrinkage: a tuple
+    (m_logc, s_logc, m_logtau, s_logtau, kappa) from estimate_variance_priors,
+    independent normal priors on log c and log tau. The fit is then the
+    posterior mode in (log c, log tau) of the Gaussian likelihood of the
+    leverage-corrected squared residuals, tempered by 2/kappa (kappa =
+    Var(z^2) of the standardized residuals; 2 under Gaussian errors, larger
+    with heavy tails), found by Fisher scoring with a backtracking line
+    search on the penalized objective. The unpenalized
+    stationary point of that likelihood is the same weighted regression of
+    e^2 on [v, 1] as the clamped fit (Fisher scoring for a Gaussian variance
+    model is that iteration), so the two estimators agree away from the
+    boundary; on the log scale positivity is automatic and nothing is
+    clamped. Each scoring step is backtracked (halved until the penalized
+    objective, the gamma quasi-log-likelihood plus the log prior, does not
+    decrease): without that, the step overshoots along the direction the
+    gene's data do not identify and the iteration cycles between two points
+    at the step cap. ``floored`` is always False on this path and is kept for
+    the API.
+
+    Returns a dict: c, tau (the values the weights use), converged,
+    c_raw, tau_raw (the unpenalized, unclamped solution at the final
+    weights), floored. A fit that has not met the tolerance after
+    ``max_iter`` iterations returns its last iterate with converged False.
+    """
+    y = y_t.to(torch.float64)
+    v = v_t.to(torch.float64)
+    cov = None if covariates_t is None else covariates_t.to(torch.float64)
+    d = torch.ones_like(v) if d_t is None else d_t.to(torch.float64)
+    c = 1.0
+    tau = float(_estimate_tau(y / torch.sqrt(d), v, cov, device, intercept=intercept)) \
+        if y.shape[0] > 3 else 0.0
+    ones = torch.ones_like(v)
+    converged = False
+    c_raw, tau_raw = float('nan'), float('nan')
+
+    def _moments(c_, tau_):
+        base = (c_ * v + tau_).clamp(min=1e-10)
+        w = 1.0 / (d * base)
+        sw = torch.sqrt(w)
+        res = WeightedResidualizer(cov, sw, intercept=intercept)
+        r = res.transform((y * sw).unsqueeze(0))[0]
+        h = (res.Q_t * res.Q_t).sum(1)
+        e2 = (r * r) / (w * (1.0 - h).clamp(min=1e-3)) / d
+        om = 1.0 / (base * base)
+        X = torch.stack([v, ones], 1)
+        return base, e2, om, X
+
+    if prior is None:
+        for _ in range(max_iter):
+            base, e2, om, X = _moments(c, tau)
+            Am = X.T @ (om[:, None] * X)
+            b = X.T @ (om * e2)
+            try:
+                sol = torch.linalg.solve(Am, b)
+                c_raw, tau_raw = float(sol[0]), float(sol[1])
+            except Exception:
+                c_raw, tau_raw = c, tau
+            cn, tn = c_raw, tau_raw
+            if cn < 0:
+                cn = 0.0
+                tn = float((om * e2).sum() / om.sum())
+            if tn < 0:
+                tn = 0.0
+                cn = float((om * e2 * v).sum() / (om * v * v).sum())
+            if cn <= 0 and tn <= 0:
+                cn, tn = 1e-6, 1e-6
+            cn, tn = 0.5 * (c + cn), 0.5 * (tau + tn)
+            done = abs(cn - c) < tol * (1 + c) and abs(tn - tau) < tol * (1 + tau)
+            c, tau = cn, tn
+            if done:
+                converged = True
+                break
+        return dict(c=c, tau=tau, converged=converged, c_raw=c_raw, tau_raw=tau_raw, floored=False)
+
+    m_logc, s_logc, m_logtau, s_logtau, kappa = [float(x) for x in prior]
+    dev64 = dict(dtype=torch.float64, device=y.device)
+    m = torch.tensor([m_logc, m_logtau], **dev64)
+    P = torch.tensor([[1.0 / s_logc ** 2, 0.0], [0.0, 1.0 / s_logtau ** 2]], **dev64)
+
+    def _merit(th):
+        # The objective whose gradient is the tempered score below: Wedderburn's
+        # quasi-log-likelihood for mean c v + tau and variance function 2 mu^2,
+        # Q = sum(-e2/base - log base), times 2/kappa, plus the log prior. The
+        # factor must match the score's 1/kappa exactly: with a 0.5 here the
+        # line search accepts only moves toward an objective in which the prior
+        # weighs twice as much, and the iteration stalls between the two modes
+        # (measured: 190 of 200 identified genes moved, up to a factor 9).
+        base, e2, om, X = _moments(float(torch.exp(th[0])), float(torch.exp(th[1])))
+        ll = -float((torch.log(base) + e2 / base).sum()) / kappa
+        dth = th - m
+        return ll - 0.5 * float(dth @ (P @ dth)), (base, e2, om, X)
+
+    theta = m.clone()
+    merit, (base, e2, om, X) = _merit(theta)
+    for _ in range(max_iter):
+        Am = X.T @ (om[:, None] * X)
+        b = X.T @ (om * e2)
+        try:
+            sol = torch.linalg.solve(Am, b)
+            c_raw, tau_raw = float(sol[0]), float(sol[1])
+        except Exception:
+            c_raw, tau_raw = float(torch.exp(theta[0])), float(torch.exp(theta[1]))
+        # tempered Gaussian score and Fisher information in (c, tau), then in (log c, log tau)
+        g = (X.T @ (om * (e2 - base))) / kappa
+        J = torch.diag(torch.exp(theta))
+        g_th = J @ g
+        I_th = J @ (Am / kappa) @ J
+        try:
+            step = torch.linalg.solve(I_th + P, g_th - P @ (theta - m))
+        except Exception:
+            break
+        # Cap the step at one unit on the log scale, scaling the whole vector
+        # so its direction is kept: clamping each component separately turns
+        # the ascent direction into one that need not ascend, and the search
+        # below then stalls at a point that is not a maximum (measured with a
+        # near-flat prior: 5 of 22 identified genes stopped up to a factor 67
+        # from the clamped fit; scaled, all agree to within 0.7%).
+        step_max = float(step.abs().max())
+        if step_max > 1.0:
+            step = step / step_max
+        # Backtracking line search. The expected information is nearly zero
+        # along the direction the gene's data do not identify (log c when c v
+        # is negligible against tau, log tau in the opposite case), so the full
+        # step overshoots there and, undamped, the iteration settles into a
+        # two-cycle at the step cap (12.7% of BrainVar genes did). Halving the
+        # step until the penalized objective does not decrease makes every
+        # iteration an ascent and leaves a step that already ascends untouched.
+        # Thirty halvings are needed: with twelve, 58 of 60 such genes still
+        # failed to converge. Along that flat direction the accepted step
+        # shrinks slowly, so convergence is also declared when the objective's
+        # gain is negligible; 1e-10 relative reproduces the step-rule endpoint
+        # to 0.1% and converges every gene (median 20 iterations, at most 350).
+        accepted = False
+        for _k in range(30):
+            cand = theta + step
+            merit_c, mom_c = _merit(cand)
+            if merit_c >= merit:
+                accepted = True
+                break
+            step = 0.5 * step
+        if not accepted:
+            converged = True  # no ascent at any scale: the gradient is numerically zero
+            break
+        gain = merit_c - merit
+        theta, merit, (base, e2, om, X) = cand, merit_c, mom_c
+        if float(step.abs().max()) < tol or gain < 1e-10 * (1.0 + abs(merit)):
+            converged = True
+            break
+    c, tau = float(torch.exp(theta[0])), float(torch.exp(theta[1]))
+    return dict(c=c, tau=tau, converged=converged, c_raw=c_raw, tau_raw=tau_raw, floored=False)
+
+
+def _fit_c_tau_vectorized(a2, v, M, max_iter=400, tol=1e-7):
+    """_estimate_c_tau for many genes at once, through-origin and without
+    covariates (h = 0, so e2 = a^2), in numpy: rows are genes, M marks the
+    informative samples. Same start, weights, clamps, damping and tolerance
+    as the per-gene fit. Returns (c, tau) arrays."""
+    a2 = np.where(M, a2, 0.0)
+    v = np.where(M, v, 1.0)
+    w0 = np.where(M, 1.0 / v, 0.0)
+    n = M.sum(1)
+    tau = np.clip(((a2 * w0).sum(1) - n) / np.maximum(w0.sum(1), 1e-300), 0.0, None)
+    c = np.ones(a2.shape[0])
+    active = np.ones(a2.shape[0], bool)
+    for _ in range(max_iter):
+        base = np.maximum(c[:, None] * v + tau[:, None], 1e-10)
+        om = np.where(M, 1.0 / (base * base), 0.0)
+        Svv, Sv1, S11 = (om * v * v).sum(1), (om * v).sum(1), om.sum(1)
+        Sve, S1e = (om * v * a2).sum(1), (om * a2).sum(1)
+        det = Svv * S11 - Sv1 ** 2
+        ok = det > 1e-300
+        safe = np.where(ok, det, 1.0)
+        cn = np.where(ok, (Sve * S11 - S1e * Sv1) / safe, c)
+        tn = np.where(ok, (Svv * S1e - Sv1 * Sve) / safe, tau)
+        neg_c = cn < 0
+        cn = np.where(neg_c, 0.0, cn)
+        tn = np.where(neg_c, S1e / np.maximum(S11, 1e-300), tn)
+        neg_t = tn < 0
+        tn = np.where(neg_t, 0.0, tn)
+        cn = np.where(neg_t, Sve / np.maximum(Svv, 1e-300), cn)
+        both = (cn <= 0) & (tn <= 0)
+        cn = np.where(both, 1e-6, cn)
+        tn = np.where(both, 1e-6, tn)
+        cn, tn = 0.5 * (c + cn), 0.5 * (tau + tn)
+        done = (np.abs(cn - c) < tol * (1 + c)) & (np.abs(tn - tau) < tol * (1 + tau))
+        c = np.where(active, cn, c)
+        tau = np.where(active, tn, tau)
+        active &= ~done
+        if not active.any():
+            break
+    return c, tau
+
+
+def _raw_c_tau_and_cov(a2, v, M, c, tau, kappa=2.0):
+    """At converged clamped weights, the unclamped weighted-least-squares
+    solution of a^2 on [v, 1] and its sampling covariance kappa (X' Omega X)^-1,
+    kappa = Var(z^2) of the standardized residuals. Returns c_raw, tau_raw,
+    var_c, var_tau (arrays over genes)."""
+    a2 = np.where(M, a2, 0.0)
+    v = np.where(M, v, 1.0)
+    base = np.maximum(c[:, None] * v + tau[:, None], 1e-10)
+    om = np.where(M, 1.0 / (base * base), 0.0)
+    Svv, Sv1, S11 = (om * v * v).sum(1), (om * v).sum(1), om.sum(1)
+    Sve, S1e = (om * v * a2).sum(1), (om * a2).sum(1)
+    det = np.maximum(Svv * S11 - Sv1 ** 2, 1e-300)
+    c_raw = (Sve * S11 - S1e * Sv1) / det
+    tau_raw = (Svv * S1e - Sv1 * Sve) / det
+    var_c = kappa * S11 / det
+    var_tau = kappa * Svv / det
+    return c_raw, tau_raw, var_c, var_tau
+
+
+def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None,
+                             min_informative=40, library_factor=None, floor_frac=0.1,
+                             eps=1e-12, max_iter=400, tol=1e-7):
+    """
+    Empirical-Bayes priors for the allelic (c, tau) of the two-component
+    models, one prior per expression bin, to be passed as ``variance_prior``
+    to the mapping functions in place of the zero clamp.
+
+    Every gene with at least ``min_informative`` informative samples is fitted
+    through the origin (_fit_c_tau_vectorized, clamped, as the scan without a
+    prior would). At each gene's converged weights the unclamped solution
+    (c_raw, tau_raw) and its sampling covariance are taken from the
+    squared-residual regression, with kappa = Var(z^2) of the standardized
+    residuals estimated as the median over genes of E[z^4] - 1 (2 under
+    Gaussian errors; larger with the heavy tails these residuals have).
+    Genes are binned by expression, ``expression`` if supplied (a Series by
+    gene, e.g. median allele-resolved reads) and otherwise the median over
+    informative samples of log Va, which falls as 1/reads. In each bin the
+    natural-scale mean of each parameter is the mean of the raw estimates
+    (unbiased even when some are negative; winsorized at the 1st and 99th
+    percentiles) and its between-gene variance is the variance of the raw
+    estimates minus the median sampling variance, floored at ``floor_frac``
+    of the variance so the prior never collapses to a point:
+    DerSimonian-Laird's step applied across genes. Because c and tau are
+    positive and right-skewed, the prior is the log-normal with those two
+    moments (a normal prior on the natural scale is nearly uninformative
+    about the sign of tau where its mean is small against its spread, and
+    reintroduces the clamp), so the per-gene fit is penalized on the log
+    scale and needs no clamp.
+
+    The prior is for the model the scan will use: pass ``library_factor``
+    when the scan is 'library_scaled' (the raw fits are then on a/sqrt(d));
+    map_cis checks the pairing.
+
+    Returns a DataFrame indexed by every gene of A_df with columns bin,
+    prior_c, prior_tau, prior_sd_c, prior_sd_tau (natural-scale mean and
+    between-gene sd), prior_logc_m, prior_logc_s, prior_logtau_m,
+    prior_logtau_s (the log-normal prior the fit uses), c_raw, tau_raw
+    (NaN for genes outside the estimation set), expression_proxy; attrs
+    carry 'bins' (the per-bin table), 'kappa', 'n_genes', 'library_scaled'.
+    """
+    A = np.asarray(A_df.values, dtype=float)
+    V = np.asarray(Va_df.values, dtype=float)
+    if library_factor is not None:
+        dvec = _library_factor_tensor(library_factor, A_df.columns, 'cpu').numpy().astype(float)
+        A = A / np.sqrt(dvec)[None, :]
+    M = V > eps
+    n_inf = M.sum(1)
+    if expression is not None:
+        proxy = pd.Series(expression).reindex(A_df.index).values.astype(float)
+    else:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lv = np.where(M, np.log(np.where(M, V, 1.0)), np.nan)
+            proxy = -np.nanmedian(lv, axis=1)   # larger = more expressed
+    est = (n_inf >= min_informative) & np.isfinite(proxy)
+    if genes is not None:
+        est &= A_df.index.isin(pd.Index(genes))
+    if est.sum() < 10 * n_bins:
+        raise ValueError(f'only {int(est.sum())} genes are eligible for {n_bins} bins; lower n_bins or min_informative')
+    Ae, Ve, Me = A[est], V[est], M[est]
+    c, tau = _fit_c_tau_vectorized(Ae ** 2, Ve, Me, max_iter=max_iter, tol=tol)
+    z2 = np.where(Me, Ae ** 2 / np.maximum(c[:, None] * Ve + tau[:, None], 1e-300), np.nan)
+    kappa = max(float(np.nanmedian(np.nanmean(z2 * z2, axis=1) - 1.0)), 2.0)
+    c_raw, tau_raw, var_c, var_tau = _raw_c_tau_and_cov(Ae ** 2, Ve, Me, c, tau, kappa)
+    edges = np.quantile(proxy[est], np.linspace(0, 1, n_bins + 1))
+    edges[0], edges[-1] = -np.inf, np.inf
+    b_est = np.clip(np.searchsorted(edges, proxy[est], side='right') - 1, 0, n_bins - 1)
+
+    def _prior(x, var_x):
+        """Natural-scale mean and between-gene variance of a positive parameter
+        from its unbiased (possibly negative) raw estimates, then the
+        log-normal prior with those moments."""
+        lo, hi = np.percentile(x, [1, 99])
+        xw = np.clip(x, lo, hi)
+        mu = float(np.mean(xw))
+        spread = float(np.var(xw))
+        noise = float(np.median(var_x))
+        var_true = max(spread - noise, floor_frac * spread, 1e-24)
+        mu_pos = max(mu, 0.05 * np.sqrt(spread), 1e-12)
+        s2 = float(np.log1p(var_true / mu_pos ** 2))
+        return mu_pos, float(np.sqrt(var_true)), float(np.log(mu_pos) - 0.5 * s2), float(np.sqrt(s2))
+    rows = []
+    for k in range(n_bins):
+        sel = b_est == k
+        mu_c, sd_c, lm_c, ls_c = _prior(c_raw[sel], var_c[sel])
+        mu_t, sd_t, lm_t, ls_t = _prior(tau_raw[sel], var_tau[sel])
+        rows.append(dict(bin=k, genes=int(sel.sum()), proxy_lo=edges[k], proxy_hi=edges[k + 1],
+                         prior_c=mu_c, prior_sd_c=sd_c, prior_tau=mu_t, prior_sd_tau=sd_t,
+                         prior_logc_m=lm_c, prior_logc_s=ls_c, prior_logtau_m=lm_t, prior_logtau_s=ls_t,
+                         median_c_clamped=float(np.median(c[sel])), tau_zero_clamped=float(np.mean(tau[sel] < 1e-6))))
+    bins = pd.DataFrame(rows)
+    proxy_all = np.where(np.isfinite(proxy), proxy, -np.inf)   # genes with no informative sample: lowest bin
+    b_all = np.clip(np.searchsorted(edges, proxy_all, side='right') - 1, 0, n_bins - 1)
+    out = pd.DataFrame({'bin': b_all, 'expression_proxy': proxy}, index=A_df.index)
+    for col in ('prior_c', 'prior_tau', 'prior_sd_c', 'prior_sd_tau',
+                'prior_logc_m', 'prior_logc_s', 'prior_logtau_m', 'prior_logtau_s'):
+        out[col] = bins[col].values[b_all]
+    out['c_raw'] = np.nan
+    out['tau_raw'] = np.nan
+    out.loc[A_df.index[est], 'c_raw'] = c_raw
+    out.loc[A_df.index[est], 'tau_raw'] = tau_raw
+    out.attrs['bins'] = bins
+    out.attrs['kappa'] = kappa
+    out.attrs['n_genes'] = int(est.sum())
+    out.attrs['library_scaled'] = library_factor is not None
+    return out
+
+
+def _prior_tuple(variance_prior, gene):
+    """The (m_logc, s_logc, m_logtau, s_logtau, kappa) prior of one gene from
+    the frame estimate_variance_priors returns, or None when no prior is in use."""
+    if variance_prior is None:
+        return None
+    if gene not in variance_prior.index:
+        raise KeyError(f'no variance prior for {gene}: estimate_variance_priors must be run on the same A_df')
+    r = variance_prior.loc[gene]
+    return (float(r['prior_logc_m']), float(r['prior_logc_s']), float(r['prior_logtau_m']),
+            float(r['prior_logtau_s']), float(variance_prior.attrs.get('kappa', 2.0)))
+
+
+def estimate_library_factors(A_df, Va_df, genes=None, min_informative=40,
+                             n_iter=2, eps=1e-12, max_iter=400, tol=1e-7,
+                             min_genes=20):
+    """
+    The per-library variance factor d_i of variance_model='library_scaled',
+    estimated across genes from the allelic channel.
+
+    For every gene with at least ``min_informative`` informative samples
+    (Va > eps), fit (c_g, tau_g) through the origin with _fit_c_tau_vectorized;
+    keep the genes whose fit is interior (c_g > 0 and tau_g > 0), because a
+    clamped gene puts its whole floor into the other parameter and its
+    residuals are not on a common scale; then d_i is the mean over those genes
+    of a_gi^2 / (c_g v_gi + tau_g), whose expectation is d_i, normalized to
+    mean 1 over samples (d and c share a scale). ``n_iter`` = 2 refits
+    (c_g, tau_g) with the first-pass d in place and recomputes d once.
+
+    ``genes`` restricts the estimation set. Pass the well-expressed genes
+    (at least 100 allele-resolved reads on BrainVar): below that c is not
+    identifiable. On BrainVar the choice moves any one library by at most
+    11% (correlation 0.986 between the >= 100-read set and all interior genes,
+    0.996 against >= 30 reads). Genes to be scanned may stay in the set: each
+    is one of thousands.
+
+    If fewer than ``min_genes`` genes have an interior fit (a data set with
+    no between-sample floor, or a tiny one) every gene whose fit is not
+    degenerate (c > 0 or tau > 0) is used instead, with a warning: the mean
+    standardized squared residual still estimates d_i, on a scale set by the
+    clamped parameter.
+
+    Returns a Series indexed by sample, with attrs['n_genes'] the number of
+    genes that entered the mean and attrs['interior_only'] whether only
+    interior fits did.
+    """
+    import warnings
+    A = np.asarray(A_df.values, dtype=float)
+    V = np.asarray(Va_df.values, dtype=float)
+    if genes is not None:
+        rows = A_df.index.get_indexer(pd.Index(genes))
+        if (rows < 0).any():
+            raise ValueError(f'{int((rows < 0).sum())} of the requested genes are not in A_df')
+        A, V = A[rows], V[rows]
+    M = V > eps
+    ok = M.sum(1) >= min_informative
+    A, V, M = A[ok], V[ok], M[ok]
+    if A.shape[0] == 0:
+        raise ValueError('no gene has enough informative samples to estimate library factors')
+    N = A.shape[1]
+    d = np.ones(N)
+    n_genes = 0
+    for _ in range(max(1, int(n_iter))):
+        c, tau = _fit_c_tau_vectorized(A ** 2 / d, V, M, max_iter=max_iter, tol=tol)
+        interior = (c > 1e-6) & (tau > 1e-6)
+        interior_only = True
+        if interior.sum() < min_genes:
+            interior_only = False
+            interior = (c > 1e-6) | (tau > 1e-6)
+            warnings.warn(
+                f'estimate_library_factors: only {int(((c > 1e-6) & (tau > 1e-6)).sum())} genes have '
+                f'an interior (c > 0, tau > 0) fit; using the {int(interior.sum())} non-degenerate '
+                f'fits instead', RuntimeWarning, stacklevel=2)
+        if not interior.any():
+            raise ValueError('no gene has a non-degenerate fit; cannot estimate library factors')
+        Mi = M[interior]
+        e2 = np.where(Mi, A[interior] ** 2 / (c[interior, None] * V[interior] + tau[interior, None]), 0.0)
+        n = Mi.sum(0)
+        d_new = np.where(n > 0, e2.sum(0) / np.maximum(n, 1), np.nan)
+        if np.isnan(d_new).any():
+            raise ValueError('some samples are informative for none of the estimation genes')
+        d = d_new / d_new.mean()
+        n_genes = int(interior.sum())
+    out = pd.Series(d, index=A_df.columns, name='library_factor')
+    out.attrs['n_genes'] = n_genes
+    out.attrs['interior_only'] = interior_only
+    return out
+
+
 def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12,
-                     tau_extra_t=None, intercept=True):
+                     tau_extra_t=None, intercept=True, variance_model='additive',
+                     d_t=None, prior=None):
     """sqrt weights of one channel, or all zeros when the channel is off, with
-    the tau used (None under tau_mode='zero') and whether tau was estimated
-    with the extra column(s) in its design.
+    the tau used (None under tau_mode='zero'), whether tau was estimated
+    with the extra column(s) in its design, the c used (1 under the
+    additive model, None under tau_mode='zero') and whether the variance fit
+    converged (always True under the additive model).
+
+    variance_model selects the variance function (VARIANCE_MODELS); d_t is
+    the per-sample library factor under 'library_scaled'; prior is the
+    gene's (m_c, m_tau, sd_c, sd_tau, kappa) for the shrinkage fit, or None
+    for the clamped fit. The last return value is the fit dict of
+    _estimate_c_tau (None under the additive model and tau_mode='zero').
 
     The sparse-channel rule: with fewer informative samples (v > eps) than
     the channel's design has columns plus two, neither the regression nor
@@ -606,17 +1115,27 @@ def _channel_weights(y_t, v_t, covariates_t, tau_mode, device, eps=1e-12,
     """
     n_inf = int((v_t > eps).sum())
     if n_inf < _min_informative(covariates_t, intercept=intercept):
-        return torch.zeros_like(v_t), None, False
+        return torch.zeros_like(v_t), None, False, None, True, None
     if tau_mode != 'estimate':
-        return torch.sqrt(1.0 / v_t.clamp(min=1e-8)), None, False
+        return torch.sqrt(1.0 / v_t.clamp(min=1e-8)), None, False, None, True, None
     design, refit = covariates_t, False
     if tau_extra_t is not None:
         cand = tau_extra_t if covariates_t is None else torch.cat([covariates_t, tau_extra_t], dim=1)
         if n_inf >= _min_informative(cand, intercept=intercept):
             design, refit = cand, True
-    tau = _estimate_tau_informative(y_t, v_t, design, device, eps,
-                                    intercept=intercept)
-    return torch.sqrt(1.0 / (v_t.clamp(min=1e-8) + tau)), float(tau), refit
+    if variance_model == 'additive':
+        tau = _estimate_tau_informative(y_t, v_t, design, device, eps,
+                                        intercept=intercept)
+        return torch.sqrt(1.0 / (v_t.clamp(min=1e-8) + tau)), float(tau), refit, 1.0, True, None
+    keep = v_t > eps
+    d_keep = None if d_t is None else d_t[keep]
+    fit = _estimate_c_tau(y_t[keep], v_t[keep],
+                          None if design is None else design[keep],
+                          device, intercept=intercept, d_t=d_keep, prior=prior)
+    c, tau = fit['c'], fit['tau']
+    d_all = torch.ones_like(v_t) if d_t is None else d_t
+    var = d_all * (c * v_t.clamp(min=1e-8) + tau)
+    return torch.sqrt(1.0 / var.clamp(min=1e-30)), float(tau), refit, float(c), fit['converged'], fit
 
 
 SAME_COVARIATES = 'same'
@@ -658,9 +1177,17 @@ def _warn_tau_zero(tau_mode):
 
 def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                       ase_covariates_t=SAME_COVARIATES, eps=1e-12,
-                      tau_extra_a_t=None, tau_extra_t_t=None, return_info=False):
+                      tau_extra_a_t=None, tau_extra_t_t=None, return_info=False,
+                      variance_model='additive', library_factor_t=None, prior=None):
     """
     Per-phenotype whitening shared by every mapping function.
+
+    ``variance_model`` (VARIANCE_MODELS) selects the allelic channel's
+    variance function: 'additive' v + tau, 'two_component' c v + tau, or
+    'library_scaled' d_i (c v + tau) with ``library_factor_t`` the per-sample
+    d_i. ``prior`` is the gene's (m_c, m_tau, sd_c, sd_tau, kappa) from
+    estimate_variance_priors (shrinkage in place of the clamp) or None. The
+    total channel is v_t + tau_t under every model (module docstring).
 
     Estimates tau per channel (unless tau_mode='zero'), builds the sqrt
     weights w_i = 1/(v_inf_i + tau) with zero-coverage ASE samples zeroed
@@ -708,23 +1235,28 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
 
     Returns:
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
-        (+ info dict with tau_a, tau_t, refit_a, refit_t when return_info)
+        (+ info dict with tau_a, tau_t, c_a, converged_a, refit_a, refit_t,
+        variance_model when return_info)
     """
     _warn_tau_zero(tau_mode)
+    _check_variance_model(variance_model, tau_mode, library_factor_t)
     if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
         ase_covariates_t = covariates_t
-    wa, tau_a, refit_a = _channel_weights(
+    wa, tau_a, refit_a, c_a, conv_a, fit_a = _channel_weights(
         a_t, va_t, ase_covariates_t, tau_mode, device, eps, tau_extra_a_t,
-        intercept=False)
+        intercept=False, variance_model=variance_model, d_t=library_factor_t, prior=prior)
     sqrt_wa_t = _zero_degenerate_ase_weights(wa, va_t, eps)
-    sqrt_wt_t, tau_t, refit_t = _channel_weights(
+    sqrt_wt_t, tau_t, refit_t, _, _, _ = _channel_weights(
         t_t, vt_t, covariates_t, tau_mode, device, eps, tau_extra_t_t,
         intercept=True)
     residualizer_a = WeightedResidualizer(ase_covariates_t, sqrt_wa_t, intercept=False)
     residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t, intercept=True)
     if return_info:
         return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t, dict(
-            tau_a=tau_a, tau_t=tau_t, refit_a=refit_a, refit_t=refit_t)
+            tau_a=tau_a, tau_t=tau_t, c_a=c_a, converged_a=conv_a, refit_a=refit_a,
+            refit_t=refit_t, variance_model=variance_model,
+            c_a_raw=(fit_a['c_raw'] if fit_a else c_a), tau_a_raw=(fit_a['tau_raw'] if fit_a else tau_a),
+            floored_a=(fit_a['floored'] if fit_a else False), prior_used=prior is not None)
     return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
 
 
@@ -1067,7 +1599,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 covariates_df=None, maf_threshold=0, window=1000000,
                 tau_mode='estimate', se_mode='model',
                 output_dir='.', logger=None, verbose=True,
-                ase_covariates_df=None):
+                ase_covariates_df=None, variance_model='additive',
+                library_factor=None, variance_prior=None):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
@@ -1146,6 +1679,17 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                           map_cis(tau_refit=True) reports its lead with tau
                           re-estimated under the alternative, so a strong
                           gene's lead pair is larger there than here.
+        variance_model:   'additive' (default; v + tau), 'two_component'
+                          (c v + tau) or 'library_scaled' (d_i (c v + tau)),
+                          the allelic channel's error variance; see the module
+                          docstring. The total channel is v_t + tau_t always.
+        library_factor:   per-sample d_i for 'library_scaled' (Series indexed
+                          by sample, or array in phenotype column order), from
+                          estimate_library_factors; required by that model and
+                          rejected by the others.
+        variance_prior:   frame from estimate_variance_priors, or None: with it
+                          the per-gene (c, tau) fit shrinks toward the gene's
+                          expression bin instead of clamping at zero.
         output_dir:       output directory
         logger:           SimpleLogger instance
         verbose:          print progress
@@ -1207,6 +1751,9 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         ase_covariates_df, covariates_df, samples, device, logger)
     # one t reference for the combined statistic: the larger design's
     dof = N - 2 - max(n_cov, n_cov_a)
+    library_factor_t = _library_factor_tensor(library_factor, samples, device)
+    _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
+    logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -1264,7 +1811,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
             sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
                 a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
-                ase_covariates_t=ase_covariates_t)
+                ase_covariates_t=ase_covariates_t, variance_model=variance_model,
+                library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id))
 
             genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1383,9 +1931,24 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             covariates_df=None, maf_threshold=0, beta_approx=True,
             nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
-            ase_covariates_df=None, tau_refit=False):
+            ase_covariates_df=None, tau_refit=False, variance_model='additive',
+            library_factor=None, variance_prior=None):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
+
+    ``variance_model`` selects the allelic channel's error variance:
+    'additive' (default) v + tau, 'two_component' c v + tau, or
+    'library_scaled' d_i (c v + tau) with ``library_factor`` the per-sample
+    d_i from estimate_library_factors (required by that model, rejected by
+    the others). The total channel is v_t + tau_t under every model. The
+    output carries ``c_a`` (the c of the reported statistic; 1 under
+    'additive'), ``c_a_null`` (the scan's) and ``variance_model``. With
+    ``tau_refit`` the two-component models refit (c, tau) together with the
+    lead in the design, as the additive model refits tau. ``variance_prior``
+    (the frame from estimate_variance_priors) replaces the zero clamp of the
+    per-gene (c, tau) fit with empirical-Bayes shrinkage toward the gene's
+    expression bin; the output then also carries ``c_a_raw``/``tau_a_raw``
+    (the unshrunk solution at the final weights) and ``c_a_floored``.
 
     ``tau_refit``: tau is estimated once per gene under the null model (no
     genotype term) for the scan, so a strong cis effect inflates it and
@@ -1474,6 +2037,9 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         ase_covariates_df, covariates_df, samples, device, logger)
     # one t reference for the combined statistic: the larger design's
     dof = N - 2 - max(n_cov, n_cov_a)
+    library_factor_t = _library_factor_tensor(library_factor, samples, device)
+    _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
+    logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -1509,9 +2075,11 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         va_t = torch.tensor(Va_df.values[pidx], dtype=torch.float32).to(device)
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
+        prior_g = _prior_tuple(variance_prior, phenotype_id)
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc, tau_info = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
-            ase_covariates_t=ase_covariates_t, return_info=True)
+            ase_covariates_t=ase_covariates_t, return_info=True,
+            variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -1565,18 +2133,21 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         s_lead = sign_t[best_local:best_local + 1]
         lead_stat = calculate_hapmixqtl_nominal(
             g_lead, s_lead, a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)
-        tau_used = dict(tau_a=tau_info['tau_a'], tau_t=tau_info['tau_t'], refit=False)
+        tau_used = dict(tau_a=tau_info['tau_a'], tau_t=tau_info['tau_t'], refit=False,
+                        c_a=tau_info['c_a'])
         if tau_refit and tau_mode == 'estimate':
-            # tau with the lead's predictor in the model; the residualizers
-            # still project out the null design only
+            # tau (and c) with the lead's predictor in the model; the
+            # residualizers still project out the null design only
             wa_r, wt_r, res_a_r, res_t_r, info_r = _prepare_channels(
                 a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                 ase_covariates_t=ase_covariates_t, return_info=True,
-                tau_extra_a_t=s_lead.t(), tau_extra_t_t=(g_lead / 2).t())
+                tau_extra_a_t=s_lead.t(), tau_extra_t_t=(g_lead / 2).t(),
+                variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g)
             lead_stat = calculate_hapmixqtl_nominal(
                 g_lead, s_lead, a_t, t_t, wa_r, wt_r, res_a_r, res_t_r)
             tau_used = dict(tau_a=info_r['tau_a'], tau_t=info_r['tau_t'],
-                            refit=bool(info_r['refit_a'] or info_r['refit_t']))
+                            refit=bool(info_r['refit_a'] or info_r['refit_t']),
+                            c_a=info_r['c_a'])
         (lead_tstat, lead_slope, lead_slope_se, lead_a, lead_a_se, lead_t, lead_t_se) = [
             float(x.cpu().numpy()[0]) for x in lead_stat]
         alpha_cis, pval_cis_trans = cis_trans_diagnostic(
@@ -1636,6 +2207,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('tau_a_null', tau_info['tau_a']),
             ('tau_t_null', tau_info['tau_t']),
             ('tau_refit', tau_used['refit']),
+            ('c_a', tau_used['c_a']),
+            ('c_a_null', tau_info['c_a']),
+            ('c_a_converged', bool(tau_info['converged_a'])),
+            ('c_a_raw', tau_info['c_a_raw']),
+            ('tau_a_raw', tau_info['tau_a_raw']),
+            ('c_a_floored', bool(tau_info['floored_a'])),
+            ('variance_prior', bool(tau_info['prior_used'])),
+            ('variance_model', variance_model),
         ]), name=phenotype_id)
 
         if beta_approx:
@@ -1650,6 +2229,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     res_df = pd.concat(res_df, axis=1, sort=False).T
     res_df.index.name = 'phenotype_id'
+    n_floored = int(res_df['c_a_floored'].astype(bool).sum())
+    if n_floored:
+        logger.write(f'  * {n_floored} of {len(res_df)} phenotypes were floored at zero (c_a_floored)')
+    n_unconverged = int((~res_df['c_a_converged'].astype(bool)).sum())
+    if n_unconverged:
+        logger.write(f'  * WARNING: the allelic (c, tau) fit did not converge on '
+                     f'{n_unconverged} of {len(res_df)} phenotypes (c_a_converged False); '
+                     f'their last iterate was used')
     logger.write(f'  Time elapsed: {(time.time() - start_time) / 60:.2f} min')
     logger.write('done.')
     return res_df.astype(output_dtype_dict).infer_objects()
@@ -1704,9 +2291,11 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
               coverage=0.95, min_abs_corr=0.5, maf_threshold=0,
               tau_mode='estimate', max_iter=500, window=1000000, tol=1e-3,
               summary_only=True, logger=None, verbose=True,
-              warn_monomorphic=False, ase_covariates_df=None):
+              warn_monomorphic=False, ase_covariates_df=None,
+              variance_model='additive', library_factor=None, variance_prior=None):
     """
-    hapmixQTL SuSiE fine-mapping.
+    hapmixQTL SuSiE fine-mapping. ``variance_model`` and ``library_factor``
+    select the allelic channel's error variance as in map_cis.
 
     For each phenotype, fine-maps the shared log-aFC effect using the combined
     ASE + total evidence. The two sqrt-weighted, covariate-residualized
@@ -1783,6 +2372,10 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         raise ValueError('No valid phenotypes found.')
     pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
 
+    library_factor_t = _library_factor_tensor(library_factor, A_df.columns, device)
+    _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
+    logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
+
     copy_keys = ['pip', 'sets', 'converged', 'elbo', 'niter', 'lbf_variable']
     susie_summary = []
     susie_res = {} if not summary_only else None
@@ -1803,7 +2396,8 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
-            ase_covariates_t=ase_covariates_t)
+            ase_covariates_t=ase_covariates_t, variance_model=variance_model,
+            library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id))
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -2200,9 +2794,11 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
                  covariates_df=None, window=1000000, tau_mode='estimate',
                  se_mode='model', logger=None, verbose=True,
-                 ase_covariates_df=None):
+                 ase_covariates_df=None, variance_model='additive',
+                 library_factor=None, variance_prior=None):
     """Shared per-phenotype driver: whiten once per gene, call fit_site for
-    every site in the cis window, collect its row dicts."""
+    every site in the cis window, collect its row dicts. ``variance_model``
+    and ``library_factor`` as in map_cis."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if logger is None:
         logger = SimpleLogger()
@@ -2223,6 +2819,9 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
         covariates_t = None; n_cov = 0
     ase_covariates_t, n_cov_a = _resolve_ase_covariates(
         ase_covariates_df, covariates_df, samples, device, logger)
+    library_factor_t = _library_factor_tensor(library_factor, samples, device)
+    _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
+    logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
     n_cov = max(n_cov, n_cov_a)          # one dof rule for both channels
     robust = se_mode == 'robust'
     pos_df = phenotype_pos_df.loc[phenotype_pos_df.index.isin(A_df.index)]
@@ -2242,7 +2841,8 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
         sqrt_wa_t, sqrt_wt_t, res_a, res_t = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
-            ase_covariates_t=ase_covariates_t)
+            ase_covariates_t=ase_covariates_t, variance_model=variance_model,
+            library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, pid))
         ctx = dict(a_t=a_t, t_t=t_t, sqrt_wa_t=sqrt_wa_t, sqrt_wt_t=sqrt_wt_t,
                    res_a=res_a, res_t=res_t, robust=robust, n_cov=n_cov, N=N,
                    device=device, site_ix=site_ix, pid=pid, start=start)
@@ -2280,7 +2880,8 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
                      phenotype_pos_df, hap_phased=None, covariates_df=None,
                      window=1000000, min_hap=10, tau_mode='estimate',
                      se_mode='model', logger=None, verbose=True,
-                     ase_covariates_df=None):
+                     ase_covariates_df=None, variance_model='additive',
+                     library_factor=None, variance_prior=None):
     """
     Categorical (per-allele) cis-QTL test for multiallelic non-repeat sites:
     the K-1 split-biallelic rows of a site fitted jointly.
@@ -2341,7 +2942,9 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
                  site_df['chrom'].values, site_df['pos'].values, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
                  covariates_df, window, tau_mode, se_mode, logger, verbose,
-                 ase_covariates_df=ase_covariates_df)
+                 ase_covariates_df=ase_covariates_df,
+                 variance_model=variance_model, library_factor=library_factor,
+                 variance_prior=variance_prior)
     site_cols = ['phenotype_id', 'site_id', 'start_distance', 'n_alleles', 'n_tested',
                  'ref_allele', 'pooled_other', 'n_missing_hap', 'pval_joint', 'chi2',
                  'dof', 'rank_deficient']
@@ -2354,7 +2957,8 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
 def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_df, Vt_df,
                       phenotype_pos_df, covariates_df=None, window=1000000,
                       winsor=(0.01, 0.99), tau_mode='estimate', se_mode='model',
-                      logger=None, verbose=True, ase_covariates_df=None):
+                      logger=None, verbose=True, ase_covariates_df=None,
+                      variance_model='additive', library_factor=None, variance_prior=None):
     """
     Linear + curvature cis-QTL model for STRs: per haplotype
     f(L) = b1 (L - c) + b2 (L - c)^2 in repeat units, c = cohort mean length.
@@ -2424,7 +3028,9 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
                  str_df['chrom'].values, str_df['pos'].values, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
                  covariates_df, window, tau_mode, se_mode, logger, verbose,
-                 ase_covariates_df=ase_covariates_df)
+                 ase_covariates_df=ase_covariates_df,
+                 variance_model=variance_model, library_factor=library_factor,
+                 variance_prior=variance_prior)
     cols = ['phenotype_id', 'str_id', 'start_distance', 'n_called', 'n_phased',
             'len_center', 'len_lo', 'len_hi', 'slope_lin', 'slope_lin_se', 'pval_lin',
             'slope_l', 'slope_l_se', 'slope_sq', 'slope_sq_se', 'pval_curv',

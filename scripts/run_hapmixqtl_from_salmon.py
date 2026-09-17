@@ -50,7 +50,8 @@ WHAT IT DOES
      the reference allele where each sample's reads land, so the sign it is
      given is orient_haplotypes over each GENE's own feature sites rather than
      one cohort-wide orientation. --force proceeds anyway (not recommended).
-  6. Runs hapmixqtl.map_cis with tau_mode='estimate' (the default; do not
+  6. Runs hapmixqtl.map_cis with tau_mode='estimate' and the --variance-model
+     (additive by default; library-scaled estimates d_i across genes first) (do not
      override -- sec 2, 6, 7d) and tau_refit=True, so the lead's slope, SE and
      nominal p are reported with tau re-estimated at the lead instead of under
      the null model, which is the like-for-like with a method that fits its
@@ -123,12 +124,12 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs,
-                                     reference_bias_diagnostic, orient_haplotypes, map_cis,
+                                     reference_bias_diagnostic, orient_haplotypes, map_cis, estimate_library_factors, estimate_variance_priors,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (compute_summaries_from_gibbs,
-                           reference_bias_diagnostic, orient_haplotypes, map_cis,
+                           reference_bias_diagnostic, orient_haplotypes, map_cis, estimate_library_factors, estimate_variance_priors,
                            map_str_curvature, map_multiallelic)
 
 # mixQTL's shipped filters (R/mixqtl.R)
@@ -988,6 +989,25 @@ def main():
                     default=True,
                     help='per-sample Poisson counting noise in the Gibbs '
                          'variances; see compute_summaries_from_gibbs')
+    ap.add_argument('--variance-model', default='additive',
+                    choices=['additive', 'two-component', 'library-scaled'],
+                    help="allelic-channel error variance: additive v + tau (default, the "
+                         "shipped model); two-component c v + tau, (c, tau) fitted per gene; "
+                         "library-scaled d_i (c v + tau), d_i per library estimated across "
+                         "genes before the scan (written to library_factor.tsv). On BrainVar "
+                         "the additive model is anticonservative at low expression and "
+                         "conservative at high; the other two are calibrated in every tier and "
+                         "library-scaled is the form whose whitened residuals carry no "
+                         "per-library structure (estimator_ablation_tiers_20260917)")
+    ap.add_argument('--variance-prior', action='store_true',
+                    help='with a two-component or library-scaled model, fit each gene\'s (c, tau) '
+                         'with an empirical-Bayes prior toward its expression bin (estimated across '
+                         'all genes before the scan, written to variance_priors.tsv and '
+                         'variance_prior_bins.tsv) instead of clamping at zero')
+    ap.add_argument('--library-factor-min-reads', type=float, default=100,
+                    help='genes with at least this median allele-resolved read count '
+                         '(over samples) estimate the library factors; below about 100 '
+                         'the per-gene c is not identifiable')
     ap.add_argument('--window', type=int, default=1_000_000)
     ap.add_argument('--force', action='store_true',
                     help='proceed despite a reference-bias flag (NOT recommended)')
@@ -1024,7 +1044,7 @@ def main():
     args = ap.parse_args()
 
     if args.selftest:
-        return selftest()
+        return selftest(extra=('--variance-model', args.variance_model) + (('--variance-prior',) if args.variance_prior else ()))
     for r in ('vcf', 'manifest', 'tx2gene'):
         if not getattr(args, r):
             raise SystemExit(f'--{r} is required (or use --selftest)')
@@ -1116,11 +1136,43 @@ def main():
             'from WASP-corrected or variant-aware alignments. A bundle with the '
             'diagnostic was still written so you can bring it back for triage.')
 
+    variance_model = args.variance_model.replace('-', '_')
+    library_factor = None
+    if variance_model == 'library_scaled':
+        reads = np.median(YLm + YRm, axis=1)
+        lf_genes = [g for g, r in zip(genes, reads) if r >= args.library_factor_min_reads]
+        if len(lf_genes) < 20:
+            print(f'WARNING: only {len(lf_genes)} genes reach {args.library_factor_min_reads:g} '
+                  f'median allele-resolved reads; estimating library factors from all {len(genes)} genes')
+            lf_genes = None
+        library_factor = estimate_library_factors(
+            sdf, vadf, genes=lf_genes, min_informative=min(40, max(10, len(order) // 2)))
+        library_factor.rename_axis('sample').reset_index().to_csv(
+            out / 'library_factor.tsv', sep='\t', index=False)
+        print(f'Library factors from {library_factor.attrs["n_genes"]} genes '
+              f'({"interior fits" if library_factor.attrs["interior_only"] else "non-degenerate fits, too few interior"}) '
+              f'among {len(genes) if lf_genes is None else len(lf_genes)} candidates: '
+              f'range {library_factor.min():.2f}-{library_factor.max():.2f}, '
+              f'sd {library_factor.std():.3f}')
+    variance_prior = None
+    if args.variance_prior:
+        if variance_model == 'additive':
+            raise SystemExit('--variance-prior needs --variance-model two-component or library-scaled')
+        reads = np.median(YLm + YRm, axis=1)
+        variance_prior = estimate_variance_priors(
+            sdf, vadf, expression=pd.Series(reads, index=genes), library_factor=library_factor,
+            min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(genes) // 10)))
+        variance_prior.rename_axis('gene').reset_index().to_csv(out / 'variance_priors.tsv', sep='\t', index=False)
+        variance_prior.attrs['bins'].to_csv(out / 'variance_prior_bins.tsv', sep='\t', index=False)
+        print(f"Variance priors from {variance_prior.attrs['n_genes']} genes in "
+              f"{len(variance_prior.attrs['bins'])} expression bins; kappa {variance_prior.attrs['kappa']:.2f}")
     print(f'\nRunning map_cis on {len(common)} genes '
-          f"(tau_mode='estimate', the validated default)")
+          f"(tau_mode='estimate', variance_model={variance_model!r}"
+          f"{', empirical-Bayes prior' if variance_prior is not None else ''})")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window, tau_refit=True,
-                  verbose=True)
+                  verbose=True, variance_model=variance_model,
+                  library_factor=library_factor, variance_prior=variance_prior)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
     res = res.reset_index()
@@ -1132,7 +1184,10 @@ def main():
         'n_samples': len(order), 'n_genes_tested': int(len(common)),
         'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
-        'tau_mode': 'estimate', 'tau_refit': True})
+        'tau_mode': 'estimate', 'tau_refit': True, 'variance_model': variance_model,
+        'variance_prior': variance_prior is not None,
+        'library_factor_genes': (None if library_factor is None
+                                 else int(library_factor.attrs['n_genes']))})
     if vtype is not None:
         print('\nNon-standard second pass')
         cur, site_res, _ = run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos,
@@ -1179,8 +1234,9 @@ def main():
 
 # ---------------------------------------------------------------------------
 
-def selftest():
-    """Fabricate Salmon-shaped inputs and run the whole path."""
+def selftest(extra=()):
+    """Fabricate Salmon-shaped inputs and run the whole path. ``extra`` are
+    command-line options forwarded to the run (the variance model)."""
     import tempfile, os
     print('SELF-TEST: fabricating Salmon + VCF inputs\n')
     td = Path(tempfile.mkdtemp())
@@ -1289,7 +1345,7 @@ def selftest():
         argv += ['--rasqual', rq_bin, '--rasqual-genes', '14',
                  '--allelic-counts', str(td / 'ac_manifest.tsv'),
                  '--rasqual-input', 'both']
-    sys.argv = argv
+    sys.argv = argv + list(extra)
     # gate orientation: the depth-weighted sign over a gene's feature sites,
     # per sample, never row i of the sign matrix
     gt_ = pd.DataFrame({'chr': ['1'], 'start': [100], 'end': [300], 'pos': [100]}, index=['GX'])

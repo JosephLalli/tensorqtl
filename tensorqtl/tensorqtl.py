@@ -68,6 +68,9 @@ def build_parser():
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--tau_mode', default='estimate', type=str, choices=['zero', 'estimate'], help="hapmixqtl modes: overdispersion handling. 'estimate' (default) adds a per-phenotype, per-channel moment-estimated tau to the Gibbs inferential variances; 'zero' asserts the inferential variance is the entire error variance, which is anticonservative on real data (up to 107x nominal type-I error; docs/ase_validation.md) and is kept only to reproduce earlier results")
     parser.add_argument('--tau_refit', action='store_true', help="hapmixqtl mode: re-estimate each channel's tau with the lead variant in the model and report the lead's slope, SE and nominal p on that scale (tau estimated under the null absorbs a strong cis effect and shrinks the nominal scale; pval_perm and pval_beta are unaffected either way)")
+    parser.add_argument('--variance_model', default='additive', type=str, choices=['additive', 'two_component', 'library_scaled'], help="hapmixqtl modes: the allelic channel's error variance. 'additive' (default) v + tau; 'two_component' c v + tau with (c, tau) fitted per gene; 'library_scaled' d_i (c v + tau) with a per-library factor from --library_factor. The total channel is v_t + tau_t under every model (hapmixqtl module docstring)")
+    parser.add_argument('--variance_prior', action='store_true', help="hapmixqtl modes: with --variance_model two_component or library_scaled, fit each phenotype's (c, tau) with an empirical-Bayes prior toward its expression bin, estimated across all phenotypes from the hap inputs before mapping (hapmixqtl.estimate_variance_priors), instead of clamping at zero")
+    parser.add_argument('--library_factor', default=None, type=str, help="hapmixqtl modes: TSV with columns sample and library_factor (one positive value per sample; hapmixqtl.estimate_library_factors), required by --variance_model library_scaled")
     parser.add_argument('--ase_covariates', default='none', type=str, choices=['shared', 'none'], help="hapmixqtl modes: what --covariates are projected out of the allelic channel. 'none' (default) fits ASE through the origin; 'shared' applies the supplied covariates to both channels. No ASE intercept is added; the total channel retains its intercept. Allelic nuisance predictors must have a meaningful orientation under H1/H2 relabeling")
     parser.add_argument('--se_mode', default='model', type=str, choices=['model', 'robust'], help='SE mode: model-based (default) or robust/sandwich')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
@@ -128,6 +131,16 @@ def main():
 
     if args.mode.startswith('hapmixqtl'):
         ase_covariates = hapmixqtl.SAME_COVARIATES if args.ase_covariates == 'shared' else None
+        library_factor = None
+        if args.library_factor is not None:
+            logger.write(f'  * reading library factors ({args.library_factor})')
+            lf_df = pd.read_csv(args.library_factor, sep='\t')
+            library_factor = pd.Series(lf_df['library_factor'].values, index=lf_df['sample'].astype(str).values)
+        logger.write(f'  * variance model: {args.variance_model}')
+        variance_prior = None
+        if args.variance_prior:
+            logger.write('  * estimating empirical-Bayes variance priors across phenotypes')
+            variance_prior = hapmixqtl.estimate_variance_priors(hap_A_df, hap_Va_df, library_factor=library_factor)
         covariates_df = None
         if args.covariates is not None:
             logger.write(f'  * reading covariates ({args.covariates})')
@@ -449,7 +462,7 @@ def main():
             covariates_df=covariates_df, maf_threshold=maf_threshold,
             window=args.window, tau_mode=args.tau_mode, se_mode=args.se_mode,
             output_dir=args.output_dir, logger=logger, verbose=True,
-            ase_covariates_df=ase_covariates,
+            ase_covariates_df=ase_covariates, variance_model=args.variance_model, library_factor=library_factor, variance_prior=variance_prior,
         )
 
     elif args.mode == 'hapmixqtl':
@@ -467,7 +480,7 @@ def main():
             tau_mode=args.tau_mode, se_mode=args.se_mode,
             beta_approx=not args.disable_beta_approx,
             logger=logger, seed=args.seed, verbose=True,
-            ase_covariates_df=ase_covariates, tau_refit=args.tau_refit,
+            ase_covariates_df=ase_covariates, variance_model=args.variance_model, library_factor=library_factor, variance_prior=variance_prior, tau_refit=args.tau_refit,
         )
         logger.write('  * writing output')
         if has_rpy2:
@@ -489,7 +502,7 @@ def main():
             L=args.max_effects, tau_mode=args.tau_mode,
             max_iter=500, window=args.window, summary_only=False,
             logger=logger, verbose=True,
-            ase_covariates_df=ase_covariates,
+            ase_covariates_df=ase_covariates, variance_model=args.variance_model, library_factor=library_factor, variance_prior=variance_prior,
         )
         logger.write('  * writing output')
         summary_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl_SuSiE_summary.parquet'))

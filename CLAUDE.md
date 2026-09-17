@@ -116,6 +116,34 @@ existing state only; it does not imply or start a new experiment.
   none of them included. Keep the absolute floor (known-variance SE, PM
   `tau`), and run a depth-stratified arm before any genome-wide scan.
 
+- **Three variance models and an empirical-Bayes prior (2026-09-17).**
+  `variance_model` on every mapping function and both CLIs: `additive`
+  (default, `v + tau`, unchanged and byte-identical to before: max |d stat|
+  2.3e-6 on the 29-gene outputs), `two_component` (`c_g v + tau_g`, fitted per
+  gene by damped iterated weighted least squares of leverage-corrected squared
+  residuals on [v, 1]) and `library_scaled` (`d_i (c_g v + tau_g)`, `d_i` from
+  `estimate_library_factors`, required by and only accepted by that model).
+  `variance_prior` from `estimate_variance_priors` replaces the zero clamp on
+  (c_g, tau_g) with a log-normal prior per expression decile (means from the
+  raw unclamped estimates, variances less the median sampling variance, kappa
+  = Var(z^2) = 2.38) and fits the posterior mode in (log c, log tau) by
+  damped Fisher scoring; rejected under `additive`. Measured on the 300-gene
+  tiered calibration (`estimator_ablation_tiers_20260917/summary_prior.tsv`):
+  type-I at 5% 0.040/0.036/0.030 with the prior against
+  0.040/0.032/0.030 clamped (s.e. 0.003), no gene at either bound, the same 43
+  calls plus two, 90% of leads identical. The prior removes the clamp but NOT
+  the low-expression non-identifiability: below ~70 allele-resolved reads the
+  prior on c is 0.035 with log-sd 2.4 and the weights stay near-equal. A
+  normal-scale prior floored 41-54% of genes again and was rejected. The
+  `c_a_floored` output column is always False under the log-scale prior.
+  The posterior-mode fit needs its backtracking line search with the merit
+  consistent with the score (no 0.5), a direction-keeping step cap and the
+  objective-gain stop rule: without them 12.7% of fits two-cycle, and with
+  an inconsistent merit the fit converges to a point that is not the mode
+  (tests/test_hapmixqtl_variance_prior.py pins all three).
+  Production form for BrainVar: `library_scaled` with the prior. Report:
+  `estimator_ablation_20260916/REPORT.md`, last section.
+
 - **Gene-level Gibbs shape has bounded real-data evidence.** The completed
   three-library pilot found Gaussian competitive within 0.05 bits/draw for
   98.51% of 4,500 ASE and 99.93% of total summaries; it retained two
