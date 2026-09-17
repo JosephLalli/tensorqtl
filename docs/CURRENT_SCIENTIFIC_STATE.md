@@ -5,12 +5,13 @@ new analysis or an authorization to run one.
 
 ## State at a glance
 
-- **Implemented, uncommitted:** ASE regression, null tau, and lead-refit tau
-  now use no automatic intercept; total expression retains its intercept.
-  `tensorqtl/hapmixqtl.py`, the targeted tests, and the CLI changes are dirty.
+- **Implemented, committed (bea450c, 2026-09-16):** ASE regression, null tau,
+  and lead-refit tau use no automatic intercept; total expression retains its
+  intercept.
   [ASE_IMPLEMENTATION.md](../../../../../brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/ASE_IMPLEMENTATION.md)
-  records the exact scope and targeted validation; broad calibration was not
-  rerun.
+  records the scope and targeted validation. Measured on the 29 calibration
+  genes (`/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`):
+  median |change| in the lead statistic 0.42, one borderline call (TCF4) added.
 - **Current source behavior:** Gibbs summaries use natural logs and add an
   extra Poisson q term when `count_noise=True`; runtime migration to log2 is
   pending. It computes cross-channel Gibbs covariance `Cat` but the scan does
@@ -40,21 +41,22 @@ new analysis or an authorization to run one.
 
 ## Current decision order
 
-**Current gate, 2026-09-16:** from-beginning weighted-OLS theoretical
-recommendation only; no production edit, test, experiment, or new method
-adoption is authorized. The current direction is empirical per-variant
-residual variance with Gibbs-informed precision, without treating SEs as known
-absolute variances; exact preservation of unweighted OLS coefficients is not a
-constraint. The existing
-weighted leverage-corrected tau moment, additive per-channel weights,
-fixed-gene GPU scan, lead refit, half-count/filter/local-linear defaults, and
-separate residual components remain source facts, not an accepted objective
-for this reassessment. Settled directions remain log2, no automatic ASE
-intercept, GPU support, no unconditional q for the tested configuration, and
-minimal targeted testing. See the authoritative compact matrix in
-[IMPLEMENTATION_STATUS_20260916.md](IMPLEMENTATION_STATUS_20260916.md), which
-separates the completed full-M log2/no-q audit prototype and deferred
-M+tau integration map from the current OLS-first question.
+**State on 2026-09-16, after measurement.** The three estimator questions
+reopened on 09-14 to 09-16 were run on the 29 calibration genes
+(`/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`).
+The ASE intercept and the counting term `q` are inert there (median |change| in
+the lead statistic 0.42 and 0.19 chi2). The residual scale is not: with the
+DerSimonian-Laird `tau` the whitened residual mean square on the allelic channel
+is 1.22 (0.93-2.58 per gene), and a Paule-Mandel `tau` that restores 1.00
+lowers the reported statistics by a median 11%, the null 95th percentile from
+21.6 to 18.9 and halves the between-gene spread of the null. That is the
+measured content of the "fitted residual scale" recommendation in
+[IMPLEMENTATION_STATUS_20260916.md](IMPLEMENTATION_STATUS_20260916.md); the
+code still uses DL. The residual shape remains wrong after PM (standardized
+squared residual rises with `log v`, pooled slope +0.21), so `c*v + tau` is the
+next candidate. Settled directions: log2 units, no automatic ASE intercept,
+GPU matrix scan; `count_noise` stays True until zero-read cells in the total
+channel get a coverage-based rule.
 
 **Historical OLS-first alternative:** the earlier fixed-coefficient/RSS
 candidate remains pending validation, not an adopted confirmatory default or a
@@ -120,9 +122,7 @@ Read `/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/REPOR
 remains after each variant's fit, without separating biological variance from
 measurement error. The residual-moment direction is not inherent to haplotype
 testing or GPU scanning, and remains an alternative under reassessment; the
-audit introduced no replacement model. The audit remains closed; no rerun, data
-analysis, simulation, permutation, production code change, or workflow
-integration is authorized.
+audit introduced no replacement model. The audit is closed.
 
 The hard GPU matrix scan remains a requirement. tau_A and tau_T mean biological
 residual variance after the tested cis effect and covariates, in squared log2
@@ -141,9 +141,9 @@ cross-project review at
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md`
 is the current methods/review record.
 
-Worktree: `hapmix-runbook-local`, base `f11d586`; it is dirty in the source,
-tests, runbook, README, methods, and this documentation. No run was started or
-resumed by this reconciliation. Neither completed pilot nor audit implemented
+Worktree: `hapmix-runbook-local`; the through-origin change is commit
+`bea450c` on top of `f11d586`. The estimator ablation
+(`estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
 final TMM normalization, production association mapping, or biological-residual
 calibration. Applying phASER error correction before constructing quantification
 references remains a future option, not an implemented workflow change.

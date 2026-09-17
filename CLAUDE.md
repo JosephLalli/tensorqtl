@@ -43,11 +43,36 @@ existing state only; it does not imply or start a new experiment.
   regression, null tau, and lead-refit tau designs. `ase_covariates_df=None`
   means through-origin with no nuisance columns; the total intercept remains.
   Results recorded before this change used the old design and are historical.
-- **Default Salmon Gibbs includes counting noise.** The completed controlled
-  experiment at `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`
-  contradicts the earlier assignment-only explanation below. The approved
-  intercept correction does not change counting terms or select a new residual
-  variance model; those decisions remain separate.
+- **Default Salmon Gibbs includes counting noise, and `count_noise` is inert on
+  well-expressed genes.** The controlled experiment at
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`
+  (Gibbs-only variance / MSE 0.944, with `q` 1.906) shows `q` double-counts
+  the sampling noise of cells that have reads, and a census of the production
+  draws shows the docstring's other case, reads with unanimous draws, never
+  occurs (0 of 76,286 cells). On the 29 calibration genes removing `q` moves
+  the lead statistic by a median 0.19 chi2 and changes no call. The 52% type-I
+  figure of 2026-09-13 came from zero-count samples entering the total channel
+  at the clamp weight; since the clamp fix (31e0730) a zero-variance cell is
+  excluded instead, so that mechanism cannot recur, and the flag's remaining
+  job is to *keep* those cells: 39.95% of cells in 2,000 random genes have no
+  reads, and without `q` they leave the total channel. The default stays True
+  until that case gets a coverage-based rule; see
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`.
+
+- **The DerSimonian-Laird `tau` understates the allelic residual scale.** With
+  the final weights `1/(v + tau_DL)` the whitened residual mean square at the
+  null design is 1.22 on the allelic channel (0.93-2.58 over the 29 genes) and
+  1.04 on the total channel, so the known-variance SE is too small on the
+  allelic channel by a gene-specific factor. A Paule-Mandel `tau` (iterate the
+  moment update with the final weights until RSS_w = df) restores 1.00 by
+  construction: reported statistics fall by a median 11% (CCNI 38 -> 10, APC
+  25 -> 15, RPL15 22 -> 15), the null 95th percentile from 21.6 to 18.9, and
+  the between-gene spread of null medians halves, after which a pooled
+  threshold and the per-gene null call the same genes. This is measured, not
+  adopted: `_estimate_tau` is still DL. The residual shape is also wrong: after
+  PM whitening the standardized squared residual still rises with `log v`
+  (pooled slope +0.21, s.e. 0.03), so a two-parameter `c*v + tau` form is the
+  next candidate. Same report as above.
 
 - **Gene-level Gibbs shape has bounded real-data evidence.** The completed
   three-library pilot found Gaussian competitive within 0.05 bits/draw for
@@ -69,25 +94,18 @@ existing state only; it does not imply or start a new experiment.
   genotype; it combines measurement, biology, and other residual sources.
   They do not identify biological tau separately, and that identification is
   not required for association. Do not add M unchanged to that residual scale.
-  The existing weighted leverage/M+tau extension is an alternative under
-  reassessment, not the current accepted objective. The current task is a
-  from-beginning recommendation for weighted OLS incorporating empirical
-  Salmon Gibbs precision and per-variant residual variance. Exact preservation
-  of unweighted OLS coefficients is not a constraint. The fixed-OLS candidate
-  remains a historical alternative, not the primary direction. The recommended
-  weighted architecture, its non-adoption boundary, and the deferred extension
-  map are in `docs/IMPLEMENTATION_STATUS_20260916.md`.
-  Recommendations are allowed; no new method is adopted or implemented. See
-  `docs/IMPLEMENTATION_STATUS_20260916.md` for the preserved source/prototype
-  boundary, first proposed OLS candidate, and deferred extension map; no model
-  is selected by it.
+  The 2026-09-16 "fitted residual scale" recommendation in
+  `docs/IMPLEMENTATION_STATUS_20260916.md` is, within the existing framework,
+  a self-consistent `tau` (Paule-Mandel) applied per variant; the measured
+  consequence of the level part is in the bullet above. Do not reopen this
+  from theory: run `estimator_ablation_20260916/ablation29.py` and measure.
 
 - **`tau` is not something the Gibbs draws measure.** The per-sample weight is
-  `1/(v_inf + tau)`. The current code uses Gibbs measurement variance plus an
-  extra Poisson counting term (under review because default Gibbs already
-  includes counting noise); `tau` is the residual variance estimated across samples. On BrainVar's
-  well-expressed genes `v_inf` is about a third of the allelic channel's error and
-  under 1% of the total channel's.
+  `1/(v_inf + tau)`. The current code uses Gibbs measurement variance plus the
+  Poisson counting term `q` (see above); `tau` is the residual variance
+  estimated across samples. On BrainVar's well-expressed genes `v_inf` is
+  about a third of the allelic channel's error and under 1% of the total
+  channel's.
 - **Two scales are reported.** `pval_perm` and `pval_beta` are gene-level and come
   from the scan; `slope`, `slope_se` and `pval_nominal` come from the lead refit when
   `tau_refit=True`. A lead's nominal p is never a gene-level p.
@@ -120,6 +138,16 @@ An eight-angle review retired these. They may survive in older text.
 - mixQTL's scan refits its dispersion at **every** variant, so hapmixQTL's per-gene
   null-model `tau` is the departure and `tau_refit` moves back toward the parent.
 
+Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
+
+- "`count_noise` is load-bearing: without it the total channel's type-I error
+  is 52%." That number was measured before the clamp fix, when zero-count
+  samples entered at weight 1e8; they are now excluded, and the docstring's
+  unanimous-nonzero case never occurs in production output. The flag is inert
+  on the 29 genes; its live effect is on zero-read cells (above).
+- "The pooled 5% threshold calls 8 genes against 5 by the per-gene null" as a
+  property of the data: it was the DL `tau` scale inflation of three genes.
+
 ## Known and unfixed
 
 - The lead refit is biased by selection: appending the window maximum to the `tau`
@@ -129,6 +157,20 @@ An eight-angle review retired these. They may survive in older text.
 - The Beta approximation is conservative in the tail, which costs power at
   transcriptome-scale thresholds.
 - No per-sample allele-specific read floor, where mixQTL used 15 reads.
+- `_estimate_tau` is DerSimonian-Laird, whose allelic scale is 22% low at the
+  median (above); Paule-Mandel is measured, not adopted, and the residual
+  shape (`c*v + tau`) is untested.
+- `count_noise=False` drops zero-read cells from the total channel (40% of
+  cells transcriptome-wide); an informative rule based on coverage rather than
+  `v > eps` is the fix, not the flag.
+
+## Estimator debates go through the ablation
+
+Every estimator question since 2026-09-13 has been answerable in minutes on
+the 29 calibration genes: `estimator_ablation_20260916/ablation29.py`
+reproduces `null_calibration_29b` byte for byte and reruns the hapmixQTL arm
+with the choice toggled, with 40 null draws. Before writing a theory document
+about the variance model, add a configuration there and report the numbers.
 
 ## Self-tests
 
