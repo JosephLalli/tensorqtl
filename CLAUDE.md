@@ -80,8 +80,18 @@ existing state only; it does not imply or start a new experiment.
   threshold and the per-gene null call the same genes. This is measured, not
   adopted: `_estimate_tau` is still DL. The residual shape is also wrong: after
   PM whitening the standardized squared residual still rises with `log v`
-  (pooled slope +0.21, s.e. 0.03), so a two-parameter `c*v + tau` form is the
-  next candidate. Same report as above. PM is not the 2026-09-16 "fitted
+  (pooled slope +0.21, s.e. 0.03). Measured 2026-09-17 (report addendum): the
+  two-parameter `c*v + tau` model (allelic c median 2.6, tau 0.006) fits the
+  shape (slope +0.02), is calibrated (3.9% of true-null gene-draws below 0.05),
+  puts the null on RASQUAL's scale (95th percentile 15.7 vs 14.6), and calls 9
+  genes vs 6; the one gene among the 29 that is an eGene in the independent
+  225-sample total-expression run (CCNI) is caught by it and by RASQUAL and
+  missed by both additive configurations. The pure multiplicative model
+  (weights 1/v, fitted scale, mixQTL's allelic form) is anticonservative here
+  (15.1% at nominal 5%) because its whitened residuals are not exchangeable
+  under a floor; a fitted-scale permutation must re-project permuted residuals
+  onto the design complement, which the known-variance construction does not
+  need. Same report as above. PM is not the 2026-09-16 "fitted
   residual scale" rule: away from the `tau = 0` boundary the two coincide
   (SE_codex = s_v * SE_lib and s_v = 1 at the PM fixed point), but at the
   boundary the fitted-scale rule discards the Gibbs variance floor and halves
