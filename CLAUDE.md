@@ -131,7 +131,7 @@ existing state only; it does not imply or start a new experiment.
   tiered calibration (`estimator_ablation_tiers_20260917/summary_prior.tsv`):
   type-I at 5% 0.040/0.036/0.030 with the prior against
   0.040/0.032/0.030 clamped (s.e. 0.003), no gene at either bound, the same 43
-  calls plus two, 90% of leads identical. The prior removes the clamp but NOT
+  calls plus two (EXOC6B, LOC124903631), 91% of leads identical. The prior removes the clamp but NOT
   the low-expression non-identifiability: below ~70 allele-resolved reads the
   prior on c is 0.035 with log-sd 2.4 and the weights stay near-equal. A
   normal-scale prior floored 41-54% of genes again and was rejected. The
