@@ -1048,7 +1048,7 @@ def main():
     args = ap.parse_args()
 
     if args.selftest:
-        return selftest(extra=('--variance-model', args.variance_model) + (('--variance-prior',) if args.variance_prior else ())
+        return selftest(extra=('--variance-model', args.variance_model) + (('--variance-prior', '--variance-prior-method', args.variance_prior_method) if args.variance_prior else ())
                         + (('--library-factor-min-reads', str(args.library_factor_min_reads))
                            if args.variance_model.replace('-', '_') == 'library_scaled' else ()))
     for r in ('vcf', 'manifest', 'tx2gene'):
@@ -1171,6 +1171,8 @@ def main():
             sdf, vadf, expression=pd.Series(reads, index=common), library_factor=library_factor,
             min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(common) // 10)),
             prior_method=args.variance_prior_method)
+        if args.variance_prior_method == 'trend' and variance_prior.attrs['n_genes'] < 200:
+            print(f"WARNING: the trend prior was fitted from {variance_prior.attrs['n_genes']} genes; its curves are poorly determined below a few hundred")
         variance_prior.rename_axis('gene').reset_index().to_csv(out / 'variance_priors.tsv', sep='\t', index=False)
         variance_prior.attrs['bins'].to_csv(out / 'variance_prior_bins.tsv', sep='\t', index=False)
         print(f"Variance priors ({variance_prior.attrs['method']}) from {variance_prior.attrs['n_genes']} genes, "

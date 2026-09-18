@@ -1174,8 +1174,8 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
         # log10 expression for the curve; the proxy from the draws is already a log scale
         x_est = np.log10(np.maximum(proxy[est], 1e-6)) if expression is not None else proxy[est]
         x_all = np.log10(np.maximum(np.where(np.isfinite(proxy), proxy, 1e-6), 1e-6)) if expression is not None else np.where(np.isfinite(proxy), proxy, np.nanmin(proxy))
-        if est.sum() < 100:
-            raise ValueError(f'only {int(est.sum())} genes are eligible; the trend prior needs at least 100')
+        if est.sum() < 20:
+            raise ValueError(f'only {int(est.sum())} genes are eligible; the trend prior needs at least 20 to run and hundreds to mean anything')
         # Two passes. The raw estimates above use each gene's own clamped fit
         # for the weights, and those weights are correlated with the gene's
         # noise (small residuals give a small fitted variance, large weights
