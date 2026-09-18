@@ -76,6 +76,34 @@ existing state only; it does not imply or start a new experiment.
   low-expression information, and exclusion conditions on the outcome). The
   default stays True until that is done; see
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`.
+  Quantified 2026-09-18 for the allelic channel's `q_a = 1/(mL+kappa) +
+  1/(mR+kappa)` specifically (session computation on the cached per-draw
+  arrays, 34,457 genes x 92 donors x 200 draws; this is a session
+  computation with no report file yet, ask before citing externally): median
+  `q_a`/`v` (the double-counting relative to the Gibbs variance it sits
+  beside) is 0.90 at 1-9 haplotype-informative reads, 0.30 at 10-99, 0.12 at
+  100-999, 0.07 at 1,000+, i.e. `q_a` matters least exactly where reads are
+  plentiful and `v` is trustworthy on its own. Separately, 57.8% of
+  donor-gene datapoints across the full 34,457-gene set have zero
+  haplotype-informative reads (a different base than the 39.95%-with-no-reads
+  figure above, which is 2,000 random genes counting total-channel reads);
+  for those, v=0 exactly and `q_a`=4.0 (`kappa`=0.5 default), so `q_a` is the
+  only thing keeping the allelic weight finite. 87.6% of the
+  zero-informative-read datapoints are under 10 total reads; above 10 total
+  reads essentially none have zero informative reads, so `q_a` is doing two
+  different jobs by read depth, not one: double-counting shot noise where
+  there are reads, and acting as a missing floor where there are none. Its
+  `+kappa` pseudocount is the Haldane-Anscombe correction to the empirical
+  log odds (the standard small-sample fix for a zero-count donor-gene
+  datapoint in a two-way allele split), whose variance under the delta
+  method (the first-order Taylor approximation for the variance of a
+  function of a random variable, given the variable's own variance) on the
+  natural-log scale is exactly `1/(mL+1/2)+1/(mR+1/2)`; edgeR's own binomial
+  pipeline adds the identical half (`y <- y + ceiling(prior.count)/2`,
+  `prior.count=1` default, `R/binQLFtest.R` in edgeR's source) for the same
+  reason. The total channel's counting term (the `1/(0 + 2*kappa) = 1` floor
+  discussed above) is a different, single-count Poisson delta-method
+  correction, not a log-odds correction, and is not this same device.
 
 - **The DerSimonian-Laird `tau` understates the allelic residual scale.** With
   the final weights `1/(v + tau_DL)` the whitened residual mean square at the
@@ -244,6 +272,125 @@ existing state only; it does not imply or start a new experiment.
   a default should fail conservative. It should flip once the refit is charged
   the selection it performs.
 
+## Relationship to limma, edgeR, sleuth, swish (2026-09-18)
+
+Read fresh upstream source (git clones made 2026-09-18, not the older
+installed R packages below) to place hapmixQTL's error model relative to
+differential-expression and quantification-uncertainty tooling. Full framing
+(the three-layer structure these methods share, and the two cases for where
+a per-observation variance can live) is in `docs/CURRENT_SCIENTIFIC_STATE.md`
+under "Structural relationship to limma, edgeR, sleuth, swish" — read that first
+for the why. This section is the checkable reference: which of our
+components already has a published name, which upstream function to reach
+for, and whether it is available in the installed version or is devel-only.
+
+| Our component | Upstream equivalent (what it computes) | Ours | Upstream | Installed here? |
+|---|---|---|---|---|
+| Weight `1/(c_g v_ig + tau_g)` as a gene-by-sample matrix in a linear model | limma `lmFit` + a supplied weights matrix, `Var = sigma_g^2 / w_ig` | `_wls_regression`, `tensorqtl/hapmixqtl.py:483` | limma `lmFit`, R/lmFit.R | Yes (limma 3.64.3) |
+| Building a gene-by-sample weight matrix from a continuous per-observation covariate | limma `vooma`/`voomaLmFit`: `predictor` argument takes a gene-by-sample matrix; trend `lm.fit(cbind(1,sx,sxc), sy)` with `sy` = per-gene residual variance to the fourth root; weight `1/f(mu)^4` | `v_ig` plays the role of `predictor`; no direct port | limma `vooma`/`voomaLmFit`, R/vooma.R | Yes (limma 3.64.3 also has `voomWithQualityWeights`, `arrayWeights`) |
+| Cross-gene moderation of one fitted per-gene scale | limma `squeezeVar`: posterior `(df*var+df.prior*var.prior)/(df+df.prior)` | `estimate_variance_priors`/`_trend_prior` moderate `(c_g, tau_g)` directly, not through `squeezeVar` (see below for why) | limma `squeezeVar`, R/squeezeVar.R; called directly by edgeR's `glmQLFTest` (R/glmQLFTest.R:152), `estimateDisp.R:194`, and the fit in R/binQLFtest.R:88 | Yes (limma 3.64.3) |
+| Robust moderation against hypervariable genes | limma `fitFDistRobustly` (`robust=TRUE`, `winsor.tail.p=c(0.05,0.1)`, returns a per-gene `df2.shrunk`) | not used | limma `fitFDistRobustly`, R/fitFDistRobustly.R | Yes (limma 3.64.3); NOT currently used. Our hypervariable tail (imprinted genes PEG10, PEG3, ZDBF2, MEST, GRB10; multi-copy families RNU1-1, RNVU1-28, 45S rRNA, SNORD3D, EEF1A1, PABPC1, SET) is exactly the case this was built for |
+| Per-gene overdispersion pooled across samples from Gibbs/bootstrap draws | edgeR `catchSalmon` (transcript-level RTA — read-to-transcript-ambiguity overdispersion; moderated with `squeezeVar` at prior df 3; floored at 1; `divide=TRUE` divides counts by it) | not used at gene level (see the RTA finding below) | edgeR `catchSalmon`, R/catchSalmon.R:80-106, man/catchSalmon.Rd (Baldoni et al. 2024a,b) | Yes (installed); gene-level `catchSalmonGene` is DEVEL ONLY |
+| Same pooling idea, different tool | sleuth: `sigma_q_sq <- rowMeans(all_sample_bootstrap)`, one inferential variance per transcript, smoothed across transcripts and added to a biological component | structurally our `c*v+tau` with `c` fixed at 1 and `v` pooled to one number per gene | sleuth 0.30.2, R/sleuth.R:662 (pooling), R/model.R:452 `final_sigma_sq` (smoothing) | Not installed (external tool) |
+| No variance model at all | swish (fishpond): a Wilcoxon rank-sum test (ranks pooled observations across two groups and compares the summed ranks, no distributional assumption) applied across inferential replicates, with permutation for significance | not used | fishpond `swish`, R/swish.R | Not installed |
+| Per-library scale `d_i` | edgeR devel `sampleWeights()`: header states the model as "the quasi-dispersion of each observation is s2_g / w_i"; reference estimator is mean adjusted unit deviance per sample across genes, logged, centred, exponentiated | `estimate_library_factors`, `tensorqtl/hapmixqtl.py:1267` (same construction — mean over genes of `a_gi^2/(c_g v_gi + tau_g)` — but normalized to arithmetic mean 1 over samples, `d = d_new / d_new.mean()` at `hapmixqtl.py:1334`; `sampleWeights`'s normalization is described as log-centred-and-exponentiated, i.e. geometric mean 1 — the two are not guaranteed identical) | edgeR `sampleWeights`, R/sampleWeights.R (created 2024-08-05, last modified 2026-07-16, Lizhong Chen and Gordon Smyth) | DEVEL ONLY, not installed |
+| Paired-count binomial model for the allelic channel | edgeR devel `binQLFit` + `PCList` container (genes x samples, two counts per observation; empirical-Bayes moderated quasi-dispersions; per-observation weights matrix; user-supplied `covariate.trend`; `robust=TRUE` by default) | not used; matches our allelic channel's data shape exactly (edgeR's intended use is methylation) | edgeR `binQLFit`/`PCList`, man/binQLFit.Rd (Lizhong Chen and Gordon Smyth) | DEVEL ONLY |
+
+**Why pooling per gene (catchSalmon, sleuth) or per donor (limma array
+weights) cannot replace our per-gene-per-donor `(c_g, tau_g)` fit.** Measured
+on 2026-09-18 on our own cached per-draw arrays (session computation, no
+report file yet): `v_ig` is a donor-by-gene interaction. Within a gene across donors, log
+`v` has median sd 0.77; depth explains only R^2 = 0.32 of it (at matched
+depth `v` still spans 1.7-fold between donors of the same gene); but the
+per-donor mean of depth-adjusted log `v` has sd only 0.078 across the 92
+donors. So `v_ig` is neither a gene property (pooling across samples into one
+number per gene, as `catchSalmon`/sleuth do, cannot hold it) nor a donor
+property (a per-sample array-weight factor cannot either) — only the full
+gene-by-sample weight matrix can. The allelic channel carries about three
+times as much of its structure at the gene-sample level as the total channel
+does: within-gene/between-gene median sd of log `v` is 0.41/2.12 (ratio 0.19)
+for the total channel, 0.72/1.29 (ratio 0.55) for the allelic channel.
+
+**Why `squeezeVar` cannot be applied to `tau_g` directly.** `squeezeVar`
+requires a positive variance estimate with known degrees of freedom under a
+scaled chi-square sampling distribution. `tau_g` is a signed difference of
+moments and is non-positive for 40-47% of well-expressed genes (already
+documented above as the root of the spike-at-zero problem in the
+`variance_prior` bullet). That is a structural reason, not only an empirical
+one, for why `estimate_variance_priors`/`_trend_prior` run their own
+Fisher-scoring fit in `(log c, log tau)` rather than calling `squeezeVar`.
+
+**RTA overdispersion is at its floor at gene level, which independently
+confirms the shot-noise finding above.** Running edgeR's RTA estimator on our
+own gene-level draws (3,000 genes, session computation): overdispersion
+quartiles 1.00/1.00/1.01, 61.4% exactly at the floor of 1, 95th percentile
+1.13, max 35.6 — at gene level RTA has almost nothing to do, which is
+consistent with `catchSalmonGene` having arrived separately from the
+transcript-level `catchSalmon`. Separately, the across-draw variance of our
+log-total statistic (natural log, current code) is 0.98x (IQR 0.91-1.05)
+what an RTA-inflated Poisson predicts — an independent, differently-derived
+confirmation, from a different direction, of the existing `count_noise`
+bullet's claim above that Salmon's default Gamma draw carries shot noise
+(the counting simulation there already quantified it once: Gibbs-only
+predicted/observed variance 0.944).
+
+**Gibbs draw count is adequate to treat `v` as known.** 200 draws; lag-1
+autocorrelation median 0.081; median effective draws ~170; the relative sd of
+`v` as an estimate is median 0.109, with only 3.2% of datapoints above 0.25.
+Treating `v` as known (rather than itself uncertain) is a good approximation,
+and errors-in-variables attenuation on `c_g` from doing so is small.
+
+**RASQUAL's beta-binomial overdispersion rho is an available external check
+on `tau_a`.** RASQUAL models the allelic count as beta-binomial (a binomial
+whose success probability is itself Beta-distributed across donors, giving
+extra-binomial variance `rho*p(1-p)` beyond the binomial's own `p(1-p)/n`);
+`rho` is that extra-binomial fraction. By the delta method on the log odds
+at p=1/2, `tau_a = 4*rho` (natural-log scale). Our fitted `tau_a` above 1,000 reads (0.0030 clamped,
+0.0049 under the decile prior; natural log) implies `rho` between 0.00075
+and 0.0012. Separately, `sqrt(tau_a)` itself (0.055 to 0.070, natural-log sd
+of the allelic log-ratio) is approximately a 5.5-7% donor-to-donor
+multiplicative spread in the L/R allelic ratio (small-value log
+approximation, `log(1+x) ~ x`). `best_rasqual_row` in
+`scripts/compare_pipelines.py:389-422` currently reads RASQUAL's 1-indexed
+fields 3-6 (chrom/pos/ref/alt), 11 (chi2), 12 (pi), 14 (phi) and 23
+(convergence status), plus field 2 to detect a `SKIPPED` row, and retains
+`gene/stat/log_afc/phi/status/lead` (confirmed on 2026-09-18 against
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/pilotI/observed_rasqual.tsv`).
+RASQUAL's own vendored documentation, `rasqual_src/README.md:64`, lists field
+15 as "Overdispersion" (repo-verified on 2026-09-18, not merely asserted), but that
+has not been cross-checked against parsed RASQUAL stdout in a run here —
+retaining that one more field in the comparison driver would enable the
+check against `tau_a`.
+
+**A gene-by-sample quantification-uncertainty correction for personalized
+transcriptomes already exists in this project's RNA pipeline**, and predates
+`catchSalmonGene`: `calc_expression_stats.R` (dated 2025-05-02, confirmed
+present on 2026-09-18 at both
+`/mnt/ssd/lalli/nf_stage/RNA_reference_comparison_results/reference_comparison_results/bv2/T2T_NCBI110_pseudoalignment/expression_results/` and the `GRCh38_p14_NCBI110_pseudoalignment` sibling), run as a Nextflow process.
+Its `getGeneOverdispersion` function adapts `catchSalmon` for personalized
+transcriptomes where the transcript set differs between samples: it sums
+per-draw transcript counts to gene level within each sample, supports
+`merge_alleles`, and keeps `OverDisp` as a gene-by-sample matrix moderated
+per sample (`colMedians` for the prior, `DFPrior=3`), then divides counts by
+it element-wise (`correct_se_for_overdispersion`/
+`correct_txi_for_overdispersion`). hapmixQTL reaches the same information
+independently, from the raw per-draw arrays. The RTA-vs-Poisson finding above
+(0.98x) says these are the same quantity on different scales, so the two
+implementations are checkable against each other — not yet done.
+
+**R cannot currently run weighted least squares on this machine.**
+`stats::lm.wfit` segfaults: the BLAS is Debian's
+`/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the LAPACK is
+a Homebrew openblas (a mixed-BLAS crash). limma therefore cannot be run here
+as of 2026-09-18; every numerical check in this section was done in numpy instead.
+Installed versions are a release behind the upstream devel source read
+as of 2026-09-18: limma 3.64.3 installed vs 3.99.0 upstream; edgeR 4.6.3 installed vs
+4.99.6 upstream. Available in the installed versions: `vooma`,
+`voomaLmFit`, `voomWithQualityWeights`, `arrayWeights`, `squeezeVar`,
+`fitFDistRobustly`, `fitFDistUnequalDF1`, `catchSalmon`, `glmQLFit`,
+`estimateDisp`. DEVEL ONLY (not installed): `catchSalmonGene`, `binQLFit`,
+`PCList`, `sampleWeights`.
+
 ## Claims withdrawn on 2026-09-13 — do not re-assert
 
 An eight-angle review retired these. They may survive in older text.
@@ -287,8 +434,11 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
   transcriptome-scale thresholds.
 - No per-sample allele-specific read floor, where mixQTL used 15 reads.
 - `_estimate_tau` is DerSimonian-Laird, whose allelic scale is 22% low at the
-  median (above); Paule-Mandel is measured, not adopted, and the residual
-  shape (`c*v + tau`) is untested.
+  median (above); Paule-Mandel is measured, not adopted. The residual shape
+  (`c*v + tau`) is no longer untested: it is implemented and measured as the
+  `two_component`/`library_scaled` variance models (2026-09-17, above, "Three
+  variance models and an empirical-Bayes prior"), just not the default
+  (`additive` is).
 - The total channel has no zero-count guard; `count_noise` is standing in for
   a floor (above). A coverage-based floor for zero-count total samples, then
   no `q` for samples with reads, is the fix, not the flag.
