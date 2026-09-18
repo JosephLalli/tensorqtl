@@ -38,8 +38,12 @@ _RTOL = {'pval_beta': 1e-4, 'pval_true_df': 1e-4, 'beta_shape1': 1e-4,
 _EXACT = ('pval_perm', 'num_var', 'ma_count', 'af')
 
 
+_PERM_COLS = ('pval_perm', 'pval_beta', 'beta_shape1', 'beta_shape2', 'true_df', 'pval_true_df')
+
+
+@pytest.mark.parametrize('scheme', ['residuals', 'records'])
 @pytest.mark.parametrize('refit,golden', [(False, GOLDEN_ADDITIVE), (True, GOLDEN_ADDITIVE_REFIT)])
-def test_additive_reproduces_the_pre_change_numbers(refit, golden):
+def test_additive_reproduces_the_pre_change_numbers(refit, golden, scheme):
     """variance_model='additive' must reproduce the numbers the shipped model
     produced BEFORE the two-component refactor, on both the null-fit and the
     tau_refit lead path.
@@ -51,17 +55,28 @@ def test_additive_reproduces_the_pre_change_numbers(refit, golden):
     _channel_weights' additive branch, _estimate_tau_informative's design, the
     order of the tau/weight computation or the dtype of the whitening ever
     moves the default path.
+
+    The golden values were produced with the whitened-residual permutation
+    (perm_scheme='residuals'), so under that scheme every column is pinned.
+    The donor-record permutation (the default since 2026-09-17) changes the
+    permutation null by design; under it the nominal columns are pinned
+    exactly and the permutation-derived columns only loosely.
     """
     d = _make_dataset(seed=120)
     res = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
                   d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
-                  nperm=500, window=1000000, seed=3, verbose=False, tau_refit=refit)
+                  nperm=500, window=1000000, seed=3, verbose=False, tau_refit=refit,
+                  perm_scheme=scheme)
     assert list(res.index) == list(golden), list(res.index)
     exp = pd.DataFrame(list(golden.values()), index=list(golden), columns=_COLS)
     assert (res['variant_id'] == exp['variant_id']).all()
     for col in _COLS[1:]:
         got = res[col].astype(float).values
         want = exp[col].astype(float).values
+        if scheme == 'records' and col in _PERM_COLS:
+            if col.startswith('pval'):
+                assert np.all(np.abs(got - want) < 0.15), (col, got, want)
+            continue
         if col in _EXACT:
             np.testing.assert_array_equal(got, want, err_msg=col)
         else:

@@ -989,6 +989,8 @@ def main():
                     default=True,
                     help='per-sample Poisson counting noise in the Gibbs '
                          'variances; see compute_summaries_from_gibbs')
+    ap.add_argument('--perm-scheme', default='records', choices=['records', 'residuals'],
+                    help="map_cis permutation null: 'records' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
     ap.add_argument('--variance-model', default='additive',
                     choices=['additive', 'two-component', 'library-scaled'],
                     help="allelic-channel error variance: additive v + tau (default, the "
@@ -1176,7 +1178,8 @@ def main():
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window, tau_refit=True,
                   verbose=True, variance_model=variance_model,
-                  library_factor=library_factor, variance_prior=variance_prior)
+                  library_factor=library_factor, variance_prior=variance_prior,
+                  perm_scheme=args.perm_scheme)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
     res = res.reset_index()

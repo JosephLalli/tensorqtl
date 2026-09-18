@@ -456,6 +456,11 @@ class WeightedResidualizer:
             design = torch.cat(cols, dim=1)
         else:
             design = sqrt_w_t.new_zeros((N, 0))
+        # kept for the donor-record permutation, which rebuilds the whitened
+        # design from permuted weights and covariate rows
+        self.C_t = C_t if (C_t is not None and C_t.numel() > 0 and C_t.shape[1] > 0) else None
+        self.intercept = bool(intercept)
+        self.sqrt_w_t = sqrt_w_t
         if design.shape[1] > 0 and bool((sqrt_w_t != 0).any()):
             self.Q_t, _ = torch.linalg.qr(design)
         else:
@@ -1430,10 +1435,76 @@ def _permute_within_informative(r_t, informative_t, permutation_ix_t):
     return out
 
 
+PERM_SCHEMES = ('records', 'residuals')
+
+
+def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix_t, chunk=None):
+    """One channel's permutation statistics under the donor-record permutation.
+
+    For each row s of ``permutation_ix_t`` [nperm, N], donor i receives donor
+    s[i]'s record: its whitened phenotype value, its weight and its covariate
+    row move together; the predictors ``x_t`` [V, N] (the allelic sign
+    contrast, or dosage/2) stay in place. The whitened design is rebuilt from
+    the permuted weights and covariate rows, the phenotype and the weighted
+    predictors are residualized on it, and the known-variance summaries
+    follow. Relabeling the donors shows this equals the statistic under the
+    permutation of the genotype columns by the inverse of s, so the
+    empirical p is the one FastQTL and tensorQTL compute, with per-donor
+    weights carried along.
+
+    Returns xy [V, nperm], xx [V, nperm] (the denominator changes with the
+    permutation) and yy [nperm]. A through-origin channel with no nuisance
+    columns (the default allelic design) needs no re-residualization and
+    costs two matrix products; the general case is chunked over permutations
+    with a batched QR. A switched-off channel (every weight zero) returns
+    zeros.
+    """
+    nperm, N = permutation_ix_t.shape
+    V = x_t.shape[0]
+    if not bool((sqrt_w_t != 0).any()):
+        z = x_t.new_zeros((V, nperm))
+        return z, z.clone(), x_t.new_zeros(nperm)
+    w = sqrt_w_t * sqrt_w_t
+    y_star = y_t * sqrt_w_t                       # moves as a whole with the record
+    C_t = getattr(residualizer, 'C_t', None)
+    intercept = bool(getattr(residualizer, 'intercept', False))
+    p = (1 if intercept else 0) + (int(C_t.shape[1]) if C_t is not None else 0)
+    if p == 0:
+        wy = w * y_t
+        xy = torch.mm(x_t, wy[permutation_ix_t].t())
+        xx = torch.mm(x_t * x_t, w[permutation_ix_t].t())
+        yy = (y_star * y_star)[permutation_ix_t].sum(1)
+        return xy, xx, yy
+    if chunk is None:
+        chunk = int(max(8, min(256, 2e7 // max(V * N, 1))))
+    xy = x_t.new_empty((V, nperm))
+    xx = x_t.new_empty((V, nperm))
+    yy = x_t.new_empty(nperm)
+    for s0 in range(0, nperm, chunk):
+        ix = permutation_ix_t[s0:s0 + chunk]
+        K = ix.shape[0]
+        sw = sqrt_w_t[ix]                                              # [K, N]
+        cols = []
+        if intercept:
+            cols.append(sw.unsqueeze(2))
+        if C_t is not None:
+            cols.append(sw.unsqueeze(2) * C_t[ix])                     # [K, N, c]
+        design = torch.cat(cols, 2)                                    # [K, N, p]
+        Q, _ = torch.linalg.qr(design)                                 # [K, N, p]
+        ys = y_star[ix]                                                # [K, N]
+        e = ys - torch.bmm(Q, torch.bmm(Q.transpose(1, 2), ys.unsqueeze(2))).squeeze(2)
+        Xs = x_t.unsqueeze(0) * sw.unsqueeze(1)                        # [K, V, N]
+        Xs = Xs - torch.bmm(torch.bmm(Xs, Q), Q.transpose(1, 2))       # residualized, no cancellation in xx
+        xy[:, s0:s0 + K] = torch.bmm(Xs, e.unsqueeze(2)).squeeze(2).t()
+        xx[:, s0:s0 + K] = (Xs * Xs).sum(2).t()
+        yy[s0:s0 + K] = (e * e).sum(1)
+    return xy, xx, yy
+
+
 def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
                                       sqrt_wa_t, sqrt_wt_t,
                                       residualizer_a, residualizer_t,
-                                      permutation_ix_t, dof=None):
+                                      permutation_ix_t, dof=None, perm_scheme='records'):
     """
     Compute nominal and permutation statistics for hapmixQTL.
 
@@ -1444,24 +1515,45 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     dof, which with per-channel covariates is the total channel's (the
     larger design). map_cis passes its own N - 2 - n_cov so both agree.
 
-    The permutation null is Freedman-Lane in whitened space. Under the null
-    the whitened residuals e*_i = sqrt(w_i) (y_i - C b) have unit variance
-    whatever the sample's v_inf, so they are exchangeable and are what a
-    permutation may move between samples; the predictors and the weights
-    stay in sample order, so every permuted statistic is one matrix product.
-    The earlier scheme permuted the RAW phenotype values at fixed weights,
-    handing sample i another sample's value at its own precision; under
-    heteroskedastic v_inf that mis-scales the null (v_inf spanning 0.01-2:
-    a null gene's empirical p averaged 0.94, type-I 0.000 at alpha 0.05).
-    Each channel permutes among its informative samples only (weight > 0),
-    and the two channels share the draw (see _permute_within_informative).
-    The permuted residuals are leverage-standardized first
-    (_leverage_standardized): the null residuals have variance 1 - h_ii, and
-    since the statistic is not pivotal that deficit would carry into the null
-    (mean empirical p 0.44 on the calibration design before this). Because
-    the residualized predictors are orthogonal to the null design,
-    re-residualizing the permuted residuals would leave xy unchanged, and
-    _combined_tstat2 does not use yy, so that step is skipped.
+    The permutation null. ``perm_scheme='records'`` (the default) permutes
+    donor records: for each permutation every donor receives another donor's
+    whitened phenotype value, weight and covariate row together, the
+    genotypes stay in place, and the statistic is recomputed with the
+    permuted weights and design (the denominator xx changes per permutation:
+    a second matrix product on the allelic channel, a chunked batched
+    re-residualization on the total channel; _record_permutation_channel).
+    Relabeling the donors shows this is exactly the distribution of the
+    statistic under a permutation of the genotype columns, the null FastQTL
+    and tensorQTL use, with per-donor weights carried along.
+
+    ``perm_scheme='residuals'`` is the earlier scheme, Freedman-Lane in
+    whitened space: the leverage-standardized whitened residuals are permuted
+    among each channel's informative donors (the two channels share the
+    draw; _permute_within_informative, _leverage_standardized) while the
+    predictors, weights and covariates stay in place, so every permuted
+    statistic is one matrix product. It is exact only if the standardized
+    residuals are exchangeable across donors, and on BrainVar they are not.
+    On the allelic channel the null it builds has the scale of the
+    unweighted mean of the squared standardized residuals, whereas a
+    genotype permutation, or a real null gene, has the scale of their
+    weight-weighted mean, which the (c, tau) fit pins at 1; where the weights
+    span two decades (well-expressed genes) the unweighted mean sits about 3%
+    higher, and the maximum over about 4,500 correlated variants turns that
+    into a third fewer rejections (allelic channel alone, 100 genes x 40
+    genotype permutations: type-I 0.032 at nominal 0.05 on the high tier
+    against 0.048 with records; 0.048 against 0.049 on the low tier, where
+    tau makes the weights nearly equal). On the total channel, whose weights
+    are nearly equal, the residual scheme is short in every tier (0.029 to
+    0.035) because with 18 nuisance columns on 92 donors the residuals have
+    covariance proportional to I - H and the leverage standardization
+    corrects only its diagonal (without it, 0.23; with the whole record
+    permuted, 0.05 to 0.07 on 30 genes). Neither scheme is the one this
+    docstring used to warn against, permuting the raw phenotype values at
+    fixed weights, which hands a donor another donor's value at its own
+    precision and mis-scales the null the other way (type-I 0.000): the
+    record scheme moves the weight with the value. Measured 2026-09-17,
+    estimator_ablation_tiers_20260917/permutation_scheme_experiment.py and
+    total_channel_schemes.py.
 
     Returns:
         r_nominal:  signed correlation-scale statistic for best variant (scalar)
@@ -1530,20 +1622,29 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     std_ratio = torch.where(r_nominal.abs() > 0, slope_nom / r_nominal,
                             torch.zeros_like(slope_nom))
 
-    # --- Permutation statistics: whitened residuals permuted within each
-    # channel's informative samples (see the docstring) ---
-    a_res_perms = _permute_within_informative(
-        _leverage_standardized(a_star_res[0], residualizer_a), sqrt_wa_t > 0, permutation_ix_t)
-    t_res_perms = _permute_within_informative(
-        _leverage_standardized(t_star_res[0], residualizer_t), sqrt_wt_t > 0, permutation_ix_t)
+    # --- Permutation statistics (see the docstring) ---
+    if perm_scheme == 'records':
+        xy_a_perm, xx_a_perm, yy_a_perm = _record_permutation_channel(
+            sign_t, a_t, sqrt_wa_t, residualizer_a, permutation_ix_t)
+        xy_t_perm, xx_t_perm, yy_t_perm = _record_permutation_channel(
+            genotypes_t / 2, t_t, sqrt_wt_t, residualizer_t, permutation_ix_t)
+        tstat2_perm = _combined_tstat2(xy_a_perm, xx_a_perm, yy_a_perm,
+                                        xy_t_perm, xx_t_perm, yy_t_perm, dof)
+    elif perm_scheme == 'residuals':
+        a_res_perms = _permute_within_informative(
+            _leverage_standardized(a_star_res[0], residualizer_a), sqrt_wa_t > 0, permutation_ix_t)
+        t_res_perms = _permute_within_informative(
+            _leverage_standardized(t_star_res[0], residualizer_t), sqrt_wt_t > 0, permutation_ix_t)
 
-    xy_a_perm = torch.mm(s_star_res, a_res_perms.t())
-    yy_a_perm = (a_res_perms * a_res_perms).sum(1)
-    xy_t_perm = torch.mm(g_half_star_res, t_res_perms.t())
-    yy_t_perm = (t_res_perms * t_res_perms).sum(1)
+        xy_a_perm = torch.mm(s_star_res, a_res_perms.t())
+        yy_a_perm = (a_res_perms * a_res_perms).sum(1)
+        xy_t_perm = torch.mm(g_half_star_res, t_res_perms.t())
+        yy_t_perm = (t_res_perms * t_res_perms).sum(1)
 
-    tstat2_perm = _combined_tstat2(xy_a_perm, xx_a, yy_a_perm,
-                                    xy_t_perm, xx_t, yy_t_perm, dof)
+        tstat2_perm = _combined_tstat2(xy_a_perm, xx_a, yy_a_perm,
+                                        xy_t_perm, xx_t, yy_t_perm, dof)
+    else:
+        raise ValueError(f'perm_scheme must be one of {PERM_SCHEMES}, got {perm_scheme!r}')
 
     tstat2_perm[torch.isnan(tstat2_perm)] = 0
     r2_perm = tstat2_perm / (tstat2_perm + dof)
@@ -1572,8 +1673,10 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
     is_perm = xy_a.dim() == 2
 
     if is_perm:
-        xx_a_e = xx_a.unsqueeze(1)
-        xx_t_e = xx_t.unsqueeze(1)
+        # xx is [V] when the predictors are fixed across permutations and
+        # [V, nperm] under the donor-record permutation
+        xx_a_e = xx_a.unsqueeze(1) if xx_a.dim() == 1 else xx_a
+        xx_t_e = xx_t.unsqueeze(1) if xx_t.dim() == 1 else xx_t
     else:
         xx_a_e = xx_a
         xx_t_e = xx_t
@@ -1982,7 +2085,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
             ase_covariates_df=None, tau_refit=False, variance_model='additive',
-            library_factor=None, variance_prior=None):
+            library_factor=None, variance_prior=None,
+            perm_scheme='records'):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
@@ -2090,6 +2194,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     # one t reference for the combined statistic: the larger design's
     dof = N - 2 - max(n_cov, n_cov_a)
     library_factor_t = _library_factor_tensor(library_factor, samples, device)
+    if perm_scheme not in PERM_SCHEMES:
+        raise ValueError(f'perm_scheme must be one of {PERM_SCHEMES}, got {perm_scheme!r}')
     _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
     logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
 
@@ -2174,7 +2280,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             genotypes_t, sign_t, a_t, t_t,
             sqrt_wa_t, sqrt_wt_t,
             residualizer_a, residualizer_tc,
-            permutation_ix_t, dof=dof,
+            permutation_ix_t, dof=dof, perm_scheme=perm_scheme,
         )
         r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
         best_local = int(var_ix)
@@ -2267,6 +2373,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('c_a_floored', bool(tau_info['floored_a'])),
             ('variance_prior', bool(tau_info['prior_used'])),
             ('variance_model', variance_model),
+            ('perm_scheme', perm_scheme),
         ]), name=phenotype_id)
 
         if beta_approx:

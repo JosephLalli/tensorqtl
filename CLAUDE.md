@@ -118,8 +118,9 @@ existing state only; it does not imply or start a new experiment.
 
 - **Three variance models and an empirical-Bayes prior (2026-09-17).**
   `variance_model` on every mapping function and both CLIs: `additive`
-  (default, `v + tau`, unchanged and byte-identical to before: max |d stat|
-  2.3e-6 on the 29-gene outputs), `two_component` (`c_g v + tau_g`, fitted per
+  (default, `v + tau`; its nominal statistics and leads are byte-identical
+  to before, max |d stat| 2.3e-6 on the 29-gene outputs; the permutation p
+  changed by design when the record permutation became the default, below), `two_component` (`c_g v + tau_g`, fitted per
   gene by damped iterated weighted least squares of leverage-corrected squared
   residuals on [v, 1]) and `library_scaled` (`d_i (c_g v + tau_g)`, `d_i` from
   `estimate_library_factors`, required by and only accepted by that model).
@@ -153,6 +154,27 @@ existing state only; it does not imply or start a new experiment.
   lack the new columns and flags.
   Production form for BrainVar: `library_scaled` with the prior. Report:
   `estimator_ablation_20260916/REPORT.md`, last section.
+
+- **The permutation null permutes donor records, not residuals (2026-09-17).**
+  `perm_scheme='records'` (default): each donor's whitened phenotype value,
+  weight and covariate row move together, genotypes stay, the denominator
+  is recomputed per permutation (`_record_permutation_channel`); by
+  relabeling this equals the genotype-permutation null of FastQTL and
+  tensorQTL with per-donor weights, pinned to 1e-9 by
+  tests/test_hapmixqtl_perm_scheme.py. `perm_scheme='residuals'` is the
+  earlier Freedman-Lane scheme (leverage-standardized whitened residuals
+  permuted at fixed weights). Why it changed: on BrainVar the residual
+  scheme was conservative and most so at high expression (two-component
+  type-I 0.040/0.036/0.030 by tier; shipped 0.068/0.045/0.022). Allelic
+  channel: its null has the scale of the UNWEIGHTED mean of z^2, a real null
+  has the w-weighted mean (pinned at 1 by the fit); R = weighted/unweighted
+  predicts per-gene type-I (bins 0.006 -> 0.072), R = 1.00 where weights are
+  equal (low tier) and 0.97 where they span two decades (high tier);
+  allelic-only 0.032 -> 0.048 with records. Total channel: short in every
+  tier (0.029-0.035) from the covariate handling (18 columns / 92 donors;
+  no-leverage 0.23, phenotype-permute 0.00, records ~0.05-0.07). Cost 0.34 s
+  vs 0.10 s per 1,000-permutation scan. Report:
+  `estimator_ablation_20260916/REPORT.md`, two last sections.
 
 - **Gene-level Gibbs shape has bounded real-data evidence.** The completed
   three-library pilot found Gaussian competitive within 0.05 bits/draw for
