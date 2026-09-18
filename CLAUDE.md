@@ -205,7 +205,13 @@ existing state only; it does not imply or start a new experiment.
   type-I 0.057/0.052/0.054, calls 17/16/17 = 50 vs 16/16/18 = 50 (deciles), paired
   discordance 3+3 of 300. Default stays 'deciles'; per-gene
   c_raw_var/tau_raw_var and the pass-2 columns are in the prior frame for
-  such checks. Report: the same file, last section.
+  such checks. Report: the same file, last section. Structural caveat on
+  this whole model family (2026-09-18, "Relationship to limma..." below):
+  fitting `(c_g, tau_g)` from a gene's own residuals and then weighting
+  those residuals by the fit is categorically different from every
+  comparator method, which fixes its per-observation variance in advance,
+  and the clamped fit's weights are provably invariant to the absolute
+  scale of the Gibbs draws — only the within-gene shape of `v` survives.
 
 - **The permutation null permutes donor records, not residuals (2026-09-17).**
   `perm_scheme='records'` (default): each donor's whitened phenotype value,
@@ -353,11 +359,144 @@ near-uniform per-gene `d0` (median 2.64) with no gene below 1, i.e. no
 outlier protection triggers — unsurprising when moderation is already
 contributing only ~3%. CAVEAT: this is the scale under pure `1/v` weights,
 which is the wrong shape for us (above); under the fitted `c_g v + tau_g`
-weights the weighted residual scale is pinned near 1 by construction, and a
-`squeezeVar` `d0` computed there would mean something different (how much
-of `(c_g, tau_g)` itself to shrink, which is what `estimate_variance_priors`
+weights the weighted residual scale is pinned close to 1 by construction
+rather than by evidence — the weights were fit from these same residuals,
+so a scale near 1 mostly confirms the fit converged, not that the weights
+are right (the paragraph below spells out why) — and a `squeezeVar`
+`d0` computed there would mean something different (how much of
+`(c_g, tau_g)` itself to shrink, which is what `estimate_variance_priors`
 already does with its own prior rather than `squeezeVar`, per the paragraph
 above).
+
+**hapmixQTL's layer 1 is the only one in this whole comparison that is not
+fixed before a gene's own residuals are seen, which is categorical, not a
+matter of degree, and it has two measured consequences.** Every other row
+of the reference table above sets its per-observation variance in advance:
+limma at prior weights or `w=1`; `vooma`'s trend fit across all genes before
+being applied to any one of them; edgeR's quasi-likelihood pipeline from the
+fitted mean; `catchSalmon` and sleuth from Gibbs/bootstrap draws pooled
+across samples, not from this gene's residuals. hapmixQTL fits its
+per-observation variance FROM the gene's own squared residuals under every
+`variance_model`: `tau_g` alone via `_estimate_tau_informative`
+(`tensorqtl/hapmixqtl.py:586`, the shipped `additive` default's moment
+estimator, run on the gene's own whitened residuals) with `c` fixed at 1, or
+`(c_g, tau_g)` together (the regression of squared residuals on `[v, 1]`)
+under `two_component`/`library_scaled` — and then uses that fit to weight
+those same residuals. This is the same objection an adversarial review
+raised on 2026-09-18 — and rejected — against a simpler one-parameter
+reparametrization (`sigma_g^2 = tau_g`, `w = 1/(1 + v/tau)`; this note is
+that review's record, there is no separate report file): making the weight depend on the
+scale the model is meant to estimate breaks the premise that makes a
+moderated t-statistic exact (a t-statistic whose denominator variance is
+the `squeezeVar`-style empirical-Bayes posterior above, not the raw
+per-gene estimate — exact only when the weights that produced the residuals
+were fixed independently of them). Worth naming precisely: `1/(1+v/tau) =
+tau/(tau+v)`, which is the shipped `additive` weight `1/(v+tau)` up to a
+gene-constant factor of `tau_g` — same functional form, same one circular
+parameter. `two_component`/`library_scaled` go further, with `c_g` ALSO
+free and ALSO fit from the residuals it then weights — two circular
+parameters where the rejected proposal, and the shipped `additive` default,
+have one. That is the sense in which the objection applies with more force
+to the two-parameter models.
+
+Consequence one, exact algebra, and here `additive` and the free-`c` models
+diverge: under `two_component`/`library_scaled`'s clamped fit, `(c_g,
+tau_g)` are both free per gene, so rescale every `v_ig` in a gene by a
+constant `k` and the fit returns `c_g/k` with `tau_g` unchanged, giving
+`(c_g/k)(k v_ig) + tau_g = c_g v_ig + tau_g` — identical weights. Whatever
+absolute units the Gibbs draws are in is discarded; only the WITHIN-GENE
+SHAPE of `v` across donors survives. This does NOT hold under the shipped
+`additive` default: there `c=1` is fixed, not fitted
+(`_channel_weights`, `tensorqtl/hapmixqtl.py:1383`, literally returns `1.0`
+for `c` on that path), so `1/(kv+tau) != 1/(v+tau)` in general and
+`additive`'s weights DO feel the draws' absolute scale — this is the same
+choice sleuth makes with its fixed `c=1`, and it is why sleuth's choice is
+principled rather than a simplification, and why `additive`, not
+`two_component`/`library_scaled`, is the scale-respecting member of this
+model family. That is not an endorsement of `additive`: trusting the draws'
+scale at a fixed `c=1` means trusting a scale the data say is off (measured
+`c` is 2.6 median on the 29 calibration genes, 1.8 transcriptome-wide,
+below), which is why the fix further below is a global or trend `c`, not
+reverting to `c=1`. The invariance is real, but it is a property of the free-`c`
+models specifically; even there it is only approximate under the production
+`variance_prior` shrinkage, because each gene's posterior-mode `c_g` is
+pulled toward its expression bin's prior mean, and that mean is estimated
+from the OTHER genes in the bin (`estimate_variance_priors`,
+`tensorqtl/hapmixqtl.py:1024`) and does not itself rescale when one
+gene's `v_ig` does — the shrinkage prior is the one place the free-`c`
+models' draws' absolute units still reach the weights. CAVEAT on the
+caveat: `c_g` itself is still identified as a regression slope given the
+observed `v` values (a dimensionless, base-independent quantity — unlike
+`tau`, which is in squared natural-log units in current code), so a
+measured `c_g` of transcriptome-wide, production shrunk fits, above 1,000
+reads/donor (median near 1.8 — the same 2026-09-18 session computation as
+the depth table below, not yet folded into
+`variance_layer_mapping_20260918/`; a different population from the
+29-calibration-gene `c` median 2.6 cited above) remains a real statement
+about the draws under this model. What the algebra makes invariant is the
+INFERENCE (the fitted weights and everything downstream of them) under the
+free-`c` models, not the parameter `c_g` itself.
+
+Consequence two, measured 2026-09-18 as a session computation (not yet
+folded into `variance_layer_mapping_20260918/`; to be added): where in
+read-depth space do the fitted weights actually track the draws at all?
+Using the production `variance_prior`-shrunk per-gene fits over their
+informative set (1,174,211 donor-gene datapoints with `v_ig > eps`, 16,674
+genes — the informative subset, not the full 34,457 x 92 grid the other
+measurements above use), 57.5% of datapoints have `c_g v_ig > tau_g`
+overall. By tier of median reads per donor (share with `c*v > tau`; the
+10th-90th percentile spread of log weight across a gene's donors, median
+over genes; the same spread of `log(1/v)`; the ratio of the two, i.e. how
+much of the draws' own spread the fitted weights retain):
+
+| Median reads/donor | c*v > tau | log-weight spread | log(1/v) spread | Retained |
+|---|---|---|---|---|
+| under 10 | 36% | 0.03 | 0.55 | 6% |
+| 10-30 | 18% | 0.01 | 1.01 | 1% |
+| 30-100 | 34% | 0.28 | 1.51 | 19% |
+| 100-300 | 61% | 1.19 | 1.90 | 63% |
+| 300-1000 | 80% | 1.57 | 2.00 | 79% |
+| 1000+ | 89% | 1.94 | 2.22 | 87% |
+
+So below 100 reads/donor — 7,455 genes, 45% of the transcriptome — the
+quantification uncertainty is almost entirely flattened out by the `tau_g`
+floor and donors are weighed nearly alike regardless of what the draws say;
+above 300 reads/donor the weights track the draws closely. This is how much
+of the draws' WITHIN-GENE SHAPE survives the floor into the weights, which
+is a separate quantity from the approximate-invariance gap above (that gap
+is about the draws' ABSOLUTE scale reaching the weights through the
+shrinkage prior; this table is about how much of their within-gene shape
+gets through at all).
+
+**Both defects point toward one fix, which strengthens the case for the
+pooled trend (the `vooma`/`voomaLmFit` row of the table above, and "Two
+cases..." in `docs/CURRENT_SCIENTIFIC_STATE.md`) from "more stable" to
+"restores the premise every layer-1 method in the comparison depends
+on" — but closing the circularity, specifically, takes more than one
+parameter.** A global or smooth-in-expression `c` alone restores (b), the
+draws' absolute scale reaching the weights, but NOT (a), the circularity:
+with `tau_g` still fit per gene from the residuals it then weights, the
+layer-1 variance `c*v + tau_g` still depends on this gene's own residuals.
+Closing the circularity needs the FULL `vooma` form: both the coefficient
+and the floor fixed in advance from a between-gene trend
+(`lm.fit(cbind(1,sx,sxc), sy)`, where the intercept is the floor and the
+`sx` slope is the coefficient — both estimated across all genes, not from
+this gene's own residual), with whatever per-gene freedom remains moved
+entirely to a layer-2 residual scale estimated GIVEN those fixed weights,
+which `squeezeVar`-style moderation can then legitimately shrink (its
+premise — weights fixed independently of the residuals — is exactly what
+this restores). Both curves this needs already exist in the codebase,
+unused as the layer-1 function: `_trend_prior` (`tensorqtl/hapmixqtl.py:946`)
+fits a smooth curve of `log c` and, separately, `log tau` on `log10` reads
+across ALL genes today, but only as the `variance_prior` shrinkage's prior
+MEAN for a still-per-gene fit, not as the coefficient and floor themselves.
+Using them that way — as the layer-1 function rather than the prior — is
+exactly hapmixQTL's own `vooma`-style pooled-trend route, and it is the one
+restructuring that closes both defects at once. This is an argument for
+prioritizing that measurement, not a substitute for it: the `vooma` caveat
+already recorded in `docs/CURRENT_SCIENTIFIC_STATE.md` (between-gene trend
+coefficients need not agree with within-gene slopes) is untouched by this
+argument and still needs testing.
 
 **RTA overdispersion is at its floor at gene level, which independently
 confirms the shot-noise finding above.** Running edgeR's RTA estimator on our

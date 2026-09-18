@@ -62,7 +62,20 @@ what is implemented, what was measured, and what is open.
   cross-gene trend (fit once, between genes, then applied within every gene)
   should replace or supplement the current per-gene fit (fit separately,
   within each gene) — not measured, not settled by the moderation result
-  above, and not currently runnable here regardless (see below).
+  above, and not currently runnable here regardless (see below). Sharper
+  yet (Joseph's observation, checked 2026-09-18): hapmixQTL's layer 1 is the
+  only one in the whole comparison that is NOT fixed before a gene's own
+  residuals are seen — every other method's per-observation variance is set
+  in advance, and so, in a different way, is the shipped `additive`
+  default's `c=1` — and under `two_component`/`library_scaled`'s clamped
+  fit, where `(c_g, tau_g)` are both free per gene, the weights are provably
+  invariant to the absolute scale of the Gibbs draws, only their within-gene
+  shape survives (NOT true of `additive`, which feels the draws' scale the
+  same way sleuth's fixed `c=1` does). Both are read in full below
+  ("Structural relationship..."), with the measurement of
+  where in read-depth space the weights actually track the draws at all
+  (57.5% of informative donor-gene datapoints have `c_g v_ig > tau_g`
+  overall, falling to 18-36% under 100 reads/donor).
 
 - **Completed bounded shape audit:** three randomly selected libraries
   (566_R1→566_D1, 591_R1→593_D1, 618_R1→618_D1), 9,000 transcript and 4,500
@@ -149,11 +162,27 @@ edgeR's quasi-likelihood pipeline (which literally calls limma's moderation:
 `glmQLFTest` -> `squeezeVar`, edgeR R/glmQLFTest.R:152), sleuth, and hapmixQTL
 factors the same problem into the same three layers:
 
-1. **The per-observation variance treated as known.** limma takes prior
-   weights or a `voom`/`vooma` precision as given; edgeR's `catchSalmon`
-   treats a per-transcript overdispersion, pooled across samples, as given;
-   sleuth pools bootstrap variance to one number per transcript; hapmixQTL
-   treats `v_ig`, the per-donor-gene across-Gibbs-draw variance, as given.
+1. **The per-observation variance treated as known — except by hapmixQTL.**
+   Every published method here fixes layer 1 before looking at a gene's own
+   residuals: limma takes prior weights (or none, `w=1`) as given; `vooma`
+   fits a trend across ALL genes and applies it to this one; edgeR's
+   quasi-likelihood pipeline takes a quasi-dispersion from the fitted mean;
+   `catchSalmon` pools RTA overdispersion from Gibbs draws across samples;
+   sleuth pools bootstrap variance to one number per transcript. hapmixQTL
+   fits `(c_g, tau_g)` FROM the gene's own squared residuals (the regression
+   of squared residuals on `[v, 1]`) and then uses that fit to weight those
+   same residuals. This is a categorical difference, not one of degree
+   (Joseph's observation, checked 2026-09-18):
+
+   | Method | Layer-1 source | Fixed before seeing this gene's residuals? |
+   |---|---|---|
+   | limma | prior weights, or none (`w=1`) | Yes |
+   | `vooma`/`voomaLmFit` | trend fitted across all genes | Yes — a between-gene trend, not this gene's own residuals |
+   | edgeR quasi-likelihood | quasi-dispersion from the fitted mean | Yes |
+   | `catchSalmon` | RTA overdispersion from Gibbs draws, pooled across samples | Yes |
+   | sleuth | bootstrap variance, pooled across samples | Yes |
+   | hapmixQTL | `(c_g, tau_g)` fit from this gene's own squared residuals | **No** |
+
 2. **One positive per-gene scale, estimated from layer 1's residuals.**
    limma/edgeR fit `sigma_g^2` (or a quasi-dispersion); hapmixQTL fits
    `(c_g, tau_g)`.
@@ -163,13 +192,69 @@ factors the same problem into the same three layers:
    hapmixQTL's analog is the `(c_g, tau_g)` prior in
    `estimate_variance_priors`/the continuous trend prior (`_trend_prior`).
 
-hapmixQTL's departure is at layer 1: instead of a single known
-per-observation variance, it fits a two-parameter structure per gene
-(`c_g * v_ig + tau_g` rather than `v_ig` alone). That makes layer 2 nearly
-redundant — the weighted residual scale is close to 1 by construction once
-`(c_g, tau_g)` are fit — and pushes layer 3 onto `(c_g, tau_g)` directly,
-which is exactly what `estimate_variance_priors`/`_trend_prior` already do,
-arrived at independently before this comparison was made on 2026-09-18.
+hapmixQTL's departure is at layer 1: under every `variance_model` it fits
+its per-observation variance FROM the gene's own squared residuals, then
+uses that fit to weight those same residuals (the table above) — `tau_g`
+alone (`c` fixed at 1) under the shipped `additive` default, or the
+two-parameter `c_g * v_ig + tau_g` (rather than `v_ig` alone) under
+`two_component`/`library_scaled`. Every method it is being compared to
+depends on the premise that the layer-1 variance is fixed before the
+residuals are seen; under that premise, a layer-2 weighted residual scale
+that comes out close to 1 is informative — it says the fixed weights were
+right. Once the weights themselves are fit from the residuals, a scale near
+1 is close to guaranteed by construction (the `squeezeVar` diagnostic
+below, and CLAUDE.md's fuller account of it, measure how close) and says
+comparatively little on its own: it is better read as a symptom of the
+circularity than as independent confirmation the weights are correct. This
+is the same objection an adversarial review raised on 2026-09-18, and
+rejected, against a simpler one-parameter reparametrization
+(`sigma_g^2 = tau_g`, `w = 1/(1 + v/tau)`; this note is that review's
+record, there is no separate report file): making the weight depend on the
+scale the model is meant to estimate breaks the premise that makes a
+moderated t-statistic exact. Precisely: `1/(1+v/tau) = tau/(tau+v)`, the shipped `additive`
+weight `1/(v+tau)` up to a gene-constant factor — the SAME one-parameter
+circularity already shipped. `two_component`/`library_scaled` go further,
+with `c_g` also free and also fit from the residuals it then weights — two
+circular parameters where the rejected proposal, and `additive`, have one.
+
+Two measured consequences, both 2026-09-18 and detailed in CLAUDE.md's
+"Relationship to limma..." section, and here `additive` and the free-`c`
+models diverge. Under `two_component`/`library_scaled`'s clamped fit the
+weights are exactly invariant to the absolute scale of the Gibbs draws
+(rescale every `v_ig` in a gene by a constant and `c_g` rescales inversely,
+leaving `c_g v_ig + tau_g` unchanged — only the within-gene SHAPE of `v`
+across donors survives). This does NOT hold under `additive`, which fixes
+`c=1` rather than fitting it — exactly sleuth's choice — so `additive`'s
+weights DO feel the draws' absolute scale; it is the scale-respecting
+member of this model family, and it is `two_component`/`library_scaled`
+that discard that scale. That is not an endorsement of `additive`: trusting
+the scale at a fixed `c=1` means trusting a scale the data say is off
+(measured `c` is 2.6 median on the 29 calibration genes, 1.8
+transcriptome-wide, both in CLAUDE.md), which is why the shared fix below
+is a global or trend `c`, not reverting to `c=1`. Even for those, the invariance is only
+approximate under the production `variance_prior` shrinkage, whose
+bin-level prior mean is estimated from OTHER genes and so does not itself
+rescale. `estimate_variance_priors`/`_trend_prior` already push layer 3
+onto `(c_g, tau_g)` directly, arrived at independently before this
+comparison was made on 2026-09-18.
+
+**Where in read-depth space the fitted weights actually track the draws.**
+Reported by Joseph 2026-09-18 as a session computation not yet folded into
+`variance_layer_mapping_20260918/` (full table and the read-tier breakdown
+in CLAUDE.md's "Relationship to limma..." section): over the production
+`variance_prior`-shrunk fits' informative set (1,174,211 donor-gene
+datapoints with `v_ig > eps`, 16,674 genes — not the full 34,457 x 92 grid
+the other measurements above use), 57.5% have `c_g v_ig > tau_g` overall,
+rising by expression tier from 18-36% under 100 reads/donor to 89% above
+1,000. Below 100 reads/donor (45% of the transcriptome, 7,455 genes) the
+Gibbs-derived signal is almost entirely flattened by the floor and donors
+are weighed nearly alike regardless of what the draws say; above 300
+reads/donor the weights track the draws closely. This is how much of the
+draws' WITHIN-GENE SHAPE survives the floor into the weights, a separate
+quantity from the approximate-invariance gap above (that gap is about the
+draws' ABSOLUTE scale reaching the weights through the shrinkage prior;
+this is about how much of their within-gene shape gets through at all).
+
 `squeezeVar` itself is not used in production, and cannot be applied to
 `tau_g` unmodified: it requires a positive variance with known degrees of
 freedom under a scaled chi-square sampling distribution, and `tau_g` is a
@@ -228,18 +313,35 @@ between-gene median sd of log `v` is 0.41/2.12 (ratio 0.19) for total,
 0.72/1.29 (ratio 0.55) for allelic (same measurement,
 `variance_layer_mapping_20260918/`).
 
-**Open, not measured:** whether hapmixQTL's per-gene fit of `(c_g, tau_g)`
-should instead (or in addition) borrow a cross-gene trend the way `vooma`
-does — i.e., whether the `vooma` caveat above (between-gene trend applied
-within-gene) actually holds on BrainVar, and whether it would help or hurt
-relative to the current per-gene fit. This is a genuinely open question, not
-a known direction. The `squeezeVar` diagnostic above (layer-3 moderation of
-a naive per-gene scale, median 2.7% prior contribution) bears on it without
-closing it: it says classic single-scale cross-gene borrowing has little
-left to add once a gene has ~72 informative donors, but it does not test
-`vooma`'s different mechanism — a between-gene TREND in the scale, applied
-within each gene — which could still help even where moderation of the
-scale's level does not.
+**Open, not measured, though the argument for one side is now stronger.**
+The layer-1 circularity and the (approximately) discarded absolute scale of
+the draws point toward the same fix, though closing the circularity takes
+more than a global coefficient: a global or smooth-in-expression `c` alone
+restores the draws' absolute scale (closing the scale-invariance gap) but
+not the circularity, since a per-gene `tau_g` fit from the residuals it
+then weights keeps `c*v + tau_g` dependent on this gene's own residuals.
+Closing the circularity needs BOTH the coefficient and the floor fixed in
+advance, from a between-gene trend — the full `vooma` form, with whatever
+per-gene freedom remains moved to a layer-2 scale estimated given those
+fixed weights (CLAUDE.md's "Both defects..." paragraph has the mechanism
+and the existing, currently unused, `_trend_prior` curves that could
+supply it). That is exactly hapmixQTL's own `vooma`-style pooled-trend
+route. This is an argument for prioritizing this measurement, not a
+substitute for it: it upgrades the case for the trend route from "more
+stable" to "restores the premise every layer-1 method in the table above
+depends on," but whether hapmixQTL's per-gene fit of `(c_g, tau_g)` should
+instead (or in
+addition) borrow a cross-gene trend the way `vooma` does remains
+unmeasured — i.e., whether the `vooma` caveat above (between-gene trend
+coefficients applied within-gene) actually holds on BrainVar, and whether
+it would help or hurt relative to the current per-gene fit. This is a
+genuinely open empirical question, not a known direction. The `squeezeVar`
+diagnostic above (layer-3 moderation of a naive per-gene scale, median 2.7%
+prior contribution) bears on it without closing it: it says classic
+single-scale cross-gene borrowing has little left to add once a gene has
+~72 informative donors, but it does not test `vooma`'s different
+mechanism — a between-gene TREND in the scale, applied within each gene —
+which could still help even where moderation of the scale's level does not.
 
 ## Routing and run state
 
