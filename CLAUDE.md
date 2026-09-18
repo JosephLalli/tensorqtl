@@ -149,11 +149,28 @@ existing state only; it does not imply or start a new experiment.
   the additive path at 99921fd). The runner's library-scaled mode crashed on
   any cohort with a quantified gene lacking a position row (fixed; self-test
   covers it). Open: the bin prior estimator floors a negative raw mean in the
-  two lowest bins and its moment match manufactures the second mode; kappa
+  two lowest bins and its moment match manufactures the second mode (the
+  continuous prior below removes both, but is not the default); kappa
   is global; run_second_pass ignores the variance model; outputs.md/README
   lack the new columns and flags.
   Production form for BrainVar: `library_scaled` with the prior. Report:
-  `estimator_ablation_20260916/REPORT.md`, last section.
+  `estimator_ablation_20260916/REPORT.md`, the shrinkage and two-start
+  sections.
+  A continuous prior (`prior_method='trend'`, 2026-09-18: curves of log c and
+  log tau on log10 reads fitted by local marginal likelihood over all genes,
+  two passes with curve-based weights, two starts per window) removes the
+  decile edges and the moment-match collapse: c agrees with the deciles
+  within 22% from 68 reads up; tau in the top two deciles is
+  0.018-0.019 where the deciles gave 0.0038-0.0067, and the predictive
+  check settles it against the trend: 40-47% of raw tau estimates there are
+  non-positive, the trend's log-normal predicts 7-13%, the deciles' 31%, so
+  the trend's higher tau is the log-normal buying the heavy right tail with
+  the near-zero bulk (a spike-and-slab on tau is the fix), while for c the
+  trend is the better-behaved prior; mode switching 0.1% vs 1.9% (deciles); record-scheme
+  type-I 0.057/0.052/0.054, calls 17/16/17 = 50 vs 16/16/18 = 50 (deciles), paired
+  discordance 3+3 of 300. Default stays 'deciles'; per-gene
+  c_raw_var/tau_raw_var and the pass-2 columns are in the prior frame for
+  such checks. Report: the same file, last section.
 
 - **The permutation null permutes donor records, not residuals (2026-09-17).**
   `perm_scheme='records'` (default): each donor's whitened phenotype value,

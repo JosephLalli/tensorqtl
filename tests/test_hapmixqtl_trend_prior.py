@@ -57,6 +57,10 @@ def test_trend_prior_recovers_a_smooth_trend_and_its_spread():
     bins = pri.attrs['bins']
     for col in ('trend_logc_m', 'trend_logtau_m', 'c_raw_nonpositive', 'x_median', 'prior_c'):
         assert col in bins.columns, col
+    # the raw estimates the curves were fitted to, with their sampling variances, are in the frame
+    for col in ('c_raw_var', 'tau_raw_var', 'c_raw_pass2', 'tau_raw_pass2', 'c_raw_pass2_var', 'tau_raw_pass2_var'):
+        assert col in pri.columns and np.isfinite(pri[col].values).all(), col
+    assert (pri['tau_raw_pass2_var'].values > 0).all() and (pri['c_raw_var'].values > 0).all()
 
 
 def test_every_gene_gets_a_finite_prior_and_a_flat_truth_matches_the_deciles():

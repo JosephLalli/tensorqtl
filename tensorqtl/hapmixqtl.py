@@ -1080,8 +1080,14 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     in the two lowest bins and made the posterior bimodal; the trend prior
     works on the log scale from the start. The bins table reports the trend
     at each decile's median expression beside the decile prior, and the
-    fraction of genes whose (second-pass) raw estimate is not positive;
-    the per-gene c_raw and tau_raw columns stay the first-pass values.
+    fraction of genes whose (second-pass) raw estimate is not positive.
+    The per-gene c_raw and tau_raw columns stay the first-pass values, with
+    their model-based sampling variances in c_raw_var and tau_raw_var; the
+    trend adds the second-pass estimates and variances as c_raw_pass2,
+    tau_raw_pass2, c_raw_pass2_var and tau_raw_pass2_var, so the prior can
+    be checked against the raw estimates it was fitted to (for instance the
+    fraction of non-positive raw estimates it predicts in a decile against
+    the fraction observed).
 
     The prior is for the model the scan will use: pass ``library_factor``
     when the scan is 'library_scaled' (the raw fits are then on a/sqrt(d));
@@ -1090,8 +1096,9 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     Returns a DataFrame indexed by every gene of A_df with columns bin,
     prior_c, prior_tau, prior_sd_c, prior_sd_tau (natural-scale mean and
     between-gene sd), prior_logc_m, prior_logc_s, prior_logtau_m,
-    prior_logtau_s (the log-normal prior the fit uses), c_raw, tau_raw
-    (NaN for genes outside the estimation set), expression_proxy; attrs
+    prior_logtau_s (the log-normal prior the fit uses), c_raw, tau_raw,
+    c_raw_var, tau_raw_var (NaN for genes outside the estimation set),
+    expression_proxy; attrs
     carry 'bins' (the per-bin table; under 'trend' the decile prior's columns
     stay as a reference and the trend's values at each decile's median
     expression are added as trend_*), 'kappa', 'n_genes', 'library_scaled',
@@ -1169,6 +1176,10 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     out['tau_raw'] = np.nan
     out.loc[A_df.index[est], 'c_raw'] = c_raw
     out.loc[A_df.index[est], 'tau_raw'] = tau_raw
+    out['c_raw_var'] = np.nan
+    out['tau_raw_var'] = np.nan
+    out.loc[A_df.index[est], 'c_raw_var'] = var_c
+    out.loc[A_df.index[est], 'tau_raw_var'] = var_tau
     out.attrs['method'] = prior_method
     if prior_method == 'trend':
         # log10 expression for the curve; the proxy from the draws is already a log scale
@@ -1185,13 +1196,15 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
         # the first-pass curves at the gene's expression, which do not depend
         # on the gene's own residuals (bias 0.08 / -0.05 s.e. in the same
         # simulation; the true weights give 0.03 / -0.02). Their sampling
-        # variance is the larger of the model-based form and the sandwich:
-        # the model-based form is noise-independent but spuriously small for
-        # a gene far from the curve (a few such genes then drag the fit: the
-        # top decile's tau prior went to 0.5 where the fits sit at 0.001),
-        # while the sandwich alone is small for a gene whose residuals happen
-        # to hug its line and brings the noise correlation back (curve bias
-        # 0.15 to 0.19 in the simulation against 0.05 with the maximum).
+        # variance is model-based by default (pass2_variance='model'): it
+        # depends on the curve weights and the design, not on the gene's own
+        # residuals. The sandwich alternative is small for a gene whose
+        # residuals happen to hug its line and brings the noise correlation
+        # back (curve bias 0.15 to 0.19 in the simulation); the larger of the
+        # two (pass2_variance='max') drove the fitted spread to its floor.
+        # The stall this once masked (the top decile's tau prior at 0.5 to
+        # 1.9 with a single warm start) is handled in _trend_prior by the
+        # second start from a grid over the mean.
         curves = {}
         for name, raw, var in (('c', c_raw, var_c), ('tau', tau_raw, var_tau)):
             grid, m, sd = _trend_prior(x_est, raw, var, span=span)
@@ -1201,6 +1214,9 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
         if pass2_variance == 'max':
             _, _, var_c2s, var_tau2s = _raw_c_tau_and_cov(Ae ** 2, Ve, Me, c0, t0, kappa, robust=True)
             var_c2, var_tau2 = np.maximum(var_c2, var_c2s), np.maximum(var_tau2, var_tau2s)
+        for col, val in (('c_raw_pass2', c_raw2), ('tau_raw_pass2', tau_raw2), ('c_raw_pass2_var', var_c2), ('tau_raw_pass2_var', var_tau2)):
+            out[col] = np.nan
+            out.loc[A_df.index[est], col] = val
         curves = {}
         for name, raw, var in (('c', c_raw2, var_c2), ('tau', tau_raw2, var_tau2)):
             pos = raw > 0
