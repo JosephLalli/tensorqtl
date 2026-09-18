@@ -163,10 +163,12 @@ existing state only; it does not imply or start a new experiment.
   within 22% from 68 reads up; tau in the top two deciles is
   0.018-0.019 where the deciles gave 0.0038-0.0067, and the predictive
   check settles it against the trend: 40-47% of raw tau estimates there are
-  non-positive, the trend's log-normal predicts 7-13%, the deciles' 31%, so
-  the trend's higher tau is the log-normal buying the heavy right tail with
-  the near-zero bulk (a spike-and-slab on tau is the fix), while for c the
-  trend is the better-behaved prior; mode switching 0.1% vs 1.9% (deciles); record-scheme
+  non-positive, the trend's log-normal predicts 7-13%, the deciles' 31%; the
+  optimizer is at its optimum and a direct ML of the same log-normal on the
+  same genes gives 0.006-0.007 (predicting 19-28%), so the lift to 0.018 is
+  the 0.5/99.5% winsorization in _trend_prior choosing the narrow of two
+  solutions, and no log-normal holds the near-zero bulk (a spike-and-slab on
+  tau is the fix), while for c the trend is the better-behaved prior; mode switching 0.1% vs 1.9% (deciles); record-scheme
   type-I 0.057/0.052/0.054, calls 17/16/17 = 50 vs 16/16/18 = 50 (deciles), paired
   discordance 3+3 of 300. Default stays 'deciles'; per-gene
   c_raw_var/tau_raw_var and the pass-2 columns are in the prior frame for
