@@ -989,6 +989,8 @@ def main():
                     default=True,
                     help='per-sample Poisson counting noise in the Gibbs '
                          'variances; see compute_summaries_from_gibbs')
+    ap.add_argument('--variance-prior-method', default='deciles', choices=['deciles', 'trend'],
+                    help="how the empirical-Bayes prior is estimated across genes: 'deciles' (ten expression bins) or 'trend' (smooth precision-weighted curves on the log scale, limma's trend=TRUE idea; hapmixqtl.estimate_variance_priors)")
     ap.add_argument('--perm-scheme', default='records', choices=['records', 'residuals'],
                     help="map_cis permutation null: 'records' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
     ap.add_argument('--variance-model', default='additive',
@@ -1167,10 +1169,11 @@ def main():
         reads = np.median((YLm + YRm)[gsel], axis=1)
         variance_prior = estimate_variance_priors(
             sdf, vadf, expression=pd.Series(reads, index=common), library_factor=library_factor,
-            min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(common) // 10)))
+            min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(common) // 10)),
+            prior_method=args.variance_prior_method)
         variance_prior.rename_axis('gene').reset_index().to_csv(out / 'variance_priors.tsv', sep='\t', index=False)
         variance_prior.attrs['bins'].to_csv(out / 'variance_prior_bins.tsv', sep='\t', index=False)
-        print(f"Variance priors from {variance_prior.attrs['n_genes']} genes in "
+        print(f"Variance priors ({variance_prior.attrs['method']}) from {variance_prior.attrs['n_genes']} genes, "
               f"{len(variance_prior.attrs['bins'])} expression bins; kappa {variance_prior.attrs['kappa']:.2f}")
     print(f'\nRunning map_cis on {len(common)} genes '
           f"(tau_mode='estimate', variance_model={variance_model!r}"

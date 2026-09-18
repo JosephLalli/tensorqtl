@@ -69,6 +69,7 @@ def build_parser():
     parser.add_argument('--tau_mode', default='estimate', type=str, choices=['zero', 'estimate'], help="hapmixqtl modes: overdispersion handling. 'estimate' (default) adds a per-phenotype, per-channel moment-estimated tau to the Gibbs inferential variances; 'zero' asserts the inferential variance is the entire error variance, which is anticonservative on real data (up to 107x nominal type-I error; docs/ase_validation.md) and is kept only to reproduce earlier results")
     parser.add_argument('--tau_refit', action='store_true', help="hapmixqtl mode: re-estimate each channel's tau with the lead variant in the model and report the lead's slope, SE and nominal p on that scale (tau estimated under the null absorbs a strong cis effect and shrinks the nominal scale; pval_perm and pval_beta are unaffected either way)")
     parser.add_argument('--variance_model', default='additive', type=str, choices=['additive', 'two_component', 'library_scaled'], help="hapmixqtl modes: the allelic channel's error variance. 'additive' (default) v + tau; 'two_component' c v + tau with (c, tau) fitted per gene; 'library_scaled' d_i (c v + tau) with a per-library factor from --library_factor. The total channel is v_t + tau_t under every model (hapmixqtl module docstring)")
+    parser.add_argument('--variance_prior_method', default='deciles', type=str, choices=['deciles', 'trend'], help="hapmixqtl modes: with --variance_prior, how the prior is estimated across phenotypes: 'deciles' (ten expression bins) or 'trend' (smooth precision-weighted curves on the log scale)")
     parser.add_argument('--perm_scheme', default='records', type=str, choices=['records', 'residuals'], help="hapmixqtl modes: the permutation null of map_cis. 'records' (default) permutes each donor's phenotype value, weight and covariate row together with the genotypes fixed, the FastQTL/tensorQTL null with per-donor weights; 'residuals' permutes leverage-standardized whitened residuals at fixed weights (the scheme before 2026-09-17, conservative where weights vary)")
     parser.add_argument('--variance_prior', action='store_true', help="hapmixqtl modes: with --variance_model two_component or library_scaled, fit each phenotype's (c, tau) with an empirical-Bayes prior toward its expression bin, estimated across all phenotypes from the hap inputs before mapping (hapmixqtl.estimate_variance_priors), instead of clamping at zero")
     parser.add_argument('--library_factor', default=None, type=str, help="hapmixqtl modes: TSV with columns sample and library_factor (one positive value per sample; hapmixqtl.estimate_library_factors), required by --variance_model library_scaled")
@@ -141,7 +142,7 @@ def main():
         variance_prior = None
         if args.variance_prior:
             logger.write('  * estimating empirical-Bayes variance priors across phenotypes')
-            variance_prior = hapmixqtl.estimate_variance_priors(hap_A_df, hap_Va_df, library_factor=library_factor)
+            variance_prior = hapmixqtl.estimate_variance_priors(hap_A_df, hap_Va_df, library_factor=library_factor, prior_method=args.variance_prior_method)
         covariates_df = None
         if args.covariates is not None:
             logger.write(f'  * reading covariates ({args.covariates})')

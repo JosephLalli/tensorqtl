@@ -909,11 +909,18 @@ def _fit_c_tau_vectorized(a2, v, M, max_iter=400, tol=1e-7):
     return c, tau
 
 
-def _raw_c_tau_and_cov(a2, v, M, c, tau, kappa=2.0):
-    """At converged clamped weights, the unclamped weighted-least-squares
-    solution of a^2 on [v, 1] and its sampling covariance kappa (X' Omega X)^-1,
-    kappa = Var(z^2) of the standardized residuals. Returns c_raw, tau_raw,
-    var_c, var_tau (arrays over genes)."""
+def _raw_c_tau_and_cov(a2, v, M, c, tau, kappa=2.0, robust=False):
+    """At the weights implied by (c, tau) per gene, the unclamped
+    weighted-least-squares solution of a^2 on [v, 1] and its sampling
+    covariance. With ``robust=False`` the model-based kappa (X' Omega X)^-1,
+    kappa = Var(z^2) of the standardized residuals, which is right when (c,
+    tau) are the gene's own converged fit. With ``robust=True`` the sandwich
+    (X' Omega X)^-1 X' Omega diag(r^2) Omega X (X' Omega X)^-1 with r the
+    residuals of a^2 about the unclamped line, which stays honest when the
+    weights come from elsewhere (the trend prior's second pass): a gene far
+    from the curve then keeps a large sampling variance instead of the
+    spuriously small model-based one. Returns c_raw, tau_raw, var_c, var_tau
+    (arrays over genes)."""
     a2 = np.where(M, a2, 0.0)
     v = np.where(M, v, 1.0)
     base = np.maximum(c[:, None] * v + tau[:, None], 1e-10)
@@ -923,14 +930,100 @@ def _raw_c_tau_and_cov(a2, v, M, c, tau, kappa=2.0):
     det = np.maximum(Svv * S11 - Sv1 ** 2, 1e-300)
     c_raw = (Sve * S11 - S1e * Sv1) / det
     tau_raw = (Svv * S1e - Sv1 * Sve) / det
-    var_c = kappa * S11 / det
-    var_tau = kappa * Svv / det
-    return c_raw, tau_raw, var_c, var_tau
+    if not robust:
+        return c_raw, tau_raw, kappa * S11 / det, kappa * Svv / det
+    r = np.where(M, a2 - (c_raw[:, None] * v + tau_raw[:, None]), 0.0)
+    w2r2 = om * om * r * r
+    Bvv, Bv1, B11 = (w2r2 * v * v).sum(1), (w2r2 * v).sum(1), w2r2.sum(1)
+    var_c = (S11 * S11 * Bvv - 2 * S11 * Sv1 * Bv1 + Sv1 * Sv1 * B11) / (det * det)
+    var_tau = (Sv1 * Sv1 * Bvv - 2 * Sv1 * Svv * Bv1 + Svv * Svv * B11) / (det * det)
+    return c_raw, tau_raw, np.maximum(var_c, 1e-300), np.maximum(var_tau, 1e-300)
+
+
+PRIOR_METHODS = ('deciles', 'trend')
+
+
+def _trend_prior(x, raw, var, span=0.15, min_width=0.25, floor_abs=0.2, n_grid=40, n_nodes=24):
+    """A smooth empirical-Bayes prior on the log scale for a positive parameter,
+    fitted by local marginal likelihood from the raw, unbiased, possibly
+    negative per-gene estimates: raw_g ~ N(p_g, var_g) and log p_g ~ N(m(x_g),
+    s(x_g)^2) with x the log10 expression. At each of ``n_grid`` grid points
+    (quantiles of x) the kernel-weighted log marginal likelihood, the integral
+    over log p done by Gauss-Hermite quadrature with ``n_nodes`` nodes, is
+    maximized over a local line for the mean and a local constant for the
+    spread (limma's trend=TRUE idea for a variance prior, with the
+    normal-lognormal deconvolution in place of a moment match). Every gene
+    enters, a non-positive raw estimate included: it says the parameter is
+    small relative to its sampling error and pulls the curve down where such
+    genes are common, which a fit restricted to positive estimates would
+    miss (measured on BrainVar: that restriction put the prior for tau above
+    1,000 reads at 0.029 where the clamped fits' median is 0.003).
+
+    Windows are tricube kernels whose half-width at each grid point is the
+    distance to the ``span``-fraction nearest neighbour, never below
+    ``min_width``. The spread is bounded below by ``floor_abs`` (0.2 on the log
+    scale: a prior tighter than about 20% would over-shrink identified
+    genes). Raw estimates are winsorized at the 0.5th and 99.5th percentiles.
+    Returns (grid, m, s), to be read by interpolation, flat beyond the grid.
+    """
+    from scipy.optimize import minimize
+    from scipy.special import logsumexp
+    x = np.asarray(x, float); raw = np.asarray(raw, float); var = np.asarray(var, float)
+    n = len(x)
+    lo, hi = np.percentile(raw, [0.5, 99.5]); raw = np.clip(raw, lo, hi)
+    sig = np.sqrt(np.maximum(var, 1e-12))
+    k = max(int(round(span * n)), 10)
+    grid = np.quantile(x, np.linspace(0.01, 0.99, n_grid))
+    grid = np.unique(np.concatenate([[x.min()], grid, [x.max()]]))
+    xs = np.sort(x)
+    t, wq = np.polynomial.hermite.hermgauss(n_nodes)
+    logw = np.log(wq) - 0.5 * np.log(np.pi)
+    sqrt2 = np.sqrt(2.0)
+    pos = raw > 0
+    m = np.empty(len(grid)); sd = np.empty(len(grid))
+    theta = None
+    for i, x0 in enumerate(grid):
+        d = np.abs(xs - x0)
+        h = max(float(np.partition(d, min(k, n - 1))[min(k, n - 1)]), min_width)
+        u = (x - x0) / h
+        K = np.where(np.abs(u) < 1, (1 - np.abs(u) ** 3) ** 3, 0.0)
+        idx = np.nonzero(K > 0)[0]
+        Kw, xw, rw, sw = K[idx], x[idx] - x0, raw[idx], sig[idx]
+        if theta is None:
+            pw = idx[pos[idx]]
+            m_init = float(np.median(np.log(raw[pw]))) if len(pw) >= 5 else float(np.log(max(np.mean(np.abs(rw)), 1e-6)))
+            theta = np.array([m_init, 0.0, np.log(0.5)])
+
+        def nll(th):
+            m0, b, ls = th
+            s_ = np.exp(ls)
+            mu = m0 + b * xw
+            P = np.exp(mu[:, None] + sqrt2 * s_ * t[None, :])            # [n_w, nodes]
+            z = (rw[:, None] - P) / sw[:, None]
+            lp = -0.5 * z * z - np.log(sw)[:, None] - 0.5 * np.log(2 * np.pi) + logw[None, :]
+            return -float((Kw * logsumexp(lp, axis=1)).sum())
+
+        # two starts per window: the previous window's optimum and the best
+        # of a coarse grid over the mean (the surface is rough where the
+        # sampling variances are small, and a single warm start carried up
+        # the expression range stalled at the top decile on BrainVar)
+        bounds = [(-30, 30), (-20, 20), (np.log(floor_abs), np.log(5.0))]
+        mg = np.linspace(theta[0] - 8, theta[0] + 8, 33)
+        g_best = mg[int(np.argmin([nll([mm, 0.0, theta[2]]) for mm in mg]))]
+        best = None
+        for start in (theta, np.array([g_best, 0.0, theta[2]])):
+            res = minimize(nll, start, method='L-BFGS-B', bounds=bounds)
+            if best is None or res.fun < best.fun:
+                best = res
+        theta = best.x
+        m[i] = theta[0]
+        sd[i] = float(np.exp(theta[2]))
+    return grid, m, sd
 
 
 def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None,
                              min_informative=40, library_factor=None, floor_frac=0.1,
-                             eps=1e-12, max_iter=400, tol=1e-7):
+                             eps=1e-12, max_iter=400, tol=1e-7, prior_method='deciles', span=0.15, pass2_variance='model'):
     """
     Empirical-Bayes priors for the allelic (c, tau) of the two-component
     models, one prior per expression bin, to be passed as ``variance_prior``
@@ -963,6 +1056,33 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     replacement happened (c_mean_floored, tau_mean_floored). A bin left with
     fewer than 10 genes by tied proxies takes the pooled prior (pooled).
 
+    ``prior_method='trend'`` replaces the ten bins by two smooth curves, one
+    per parameter, fitted on the log scale by local marginal likelihood
+    (_trend_prior): each gene's raw unbiased estimate is normal around the
+    true value with its sampling variance, the log of the true value is
+    normal around a locally linear curve in log10 expression with a locally
+    constant spread, and the curve and spread are the kernel-weighted
+    maximum-likelihood fit with the integral over the log value done by
+    Gauss-Hermite quadrature. Every gene enters, negative raw estimates
+    included, so the curve is not biased by dropping the genes whose true
+    value is near zero; the spread is floored at 0.2 on the log scale.
+    Every gene's prior is the curve at its expression, flat beyond the
+    fitted range. The fit is made twice: the raw estimates computed with each
+    gene's own clamped weights are biased low (those weights are correlated
+    with the gene's noise), so the curves from that pass supply weights for a
+    second set of raw estimates, independent of each gene's residuals, from
+    which the final curves are fitted (measured on a simulated smooth truth:
+    curve error median 0.05 on the log scale, against 0.19 in one pass; the
+    between-gene spread is over-estimated by about a quarter because the
+    model-based sampling variances are slightly understated under external
+    weights, which errs toward shrinking less). The decile prior's moment
+    match on the natural scale is what put the prior median of c at 0.0018
+    in the two lowest bins and made the posterior bimodal; the trend prior
+    works on the log scale from the start. The bins table reports the trend
+    at each decile's median expression beside the decile prior, and the
+    fraction of genes whose (second-pass) raw estimate is not positive;
+    the per-gene c_raw and tau_raw columns stay the first-pass values.
+
     The prior is for the model the scan will use: pass ``library_factor``
     when the scan is 'library_scaled' (the raw fits are then on a/sqrt(d));
     map_cis checks the pairing.
@@ -972,8 +1092,14 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     between-gene sd), prior_logc_m, prior_logc_s, prior_logtau_m,
     prior_logtau_s (the log-normal prior the fit uses), c_raw, tau_raw
     (NaN for genes outside the estimation set), expression_proxy; attrs
-    carry 'bins' (the per-bin table), 'kappa', 'n_genes', 'library_scaled'.
+    carry 'bins' (the per-bin table; under 'trend' the decile prior's columns
+    stay as a reference and the trend's values at each decile's median
+    expression are added as trend_*), 'kappa', 'n_genes', 'library_scaled',
+    'method', and under 'trend' also 'span' and 'curve' (a DataFrame of the
+    fitted curves on a fine grid of log10 expression).
     """
+    if prior_method not in PRIOR_METHODS:
+        raise ValueError(f'prior_method must be one of {PRIOR_METHODS}, got {prior_method!r}')
     A = np.asarray(A_df.values, dtype=float)
     V = np.asarray(Va_df.values, dtype=float)
     if library_factor is not None:
@@ -1043,6 +1169,63 @@ def estimate_variance_priors(A_df, Va_df, genes=None, n_bins=10, expression=None
     out['tau_raw'] = np.nan
     out.loc[A_df.index[est], 'c_raw'] = c_raw
     out.loc[A_df.index[est], 'tau_raw'] = tau_raw
+    out.attrs['method'] = prior_method
+    if prior_method == 'trend':
+        # log10 expression for the curve; the proxy from the draws is already a log scale
+        x_est = np.log10(np.maximum(proxy[est], 1e-6)) if expression is not None else proxy[est]
+        x_all = np.log10(np.maximum(np.where(np.isfinite(proxy), proxy, 1e-6), 1e-6)) if expression is not None else np.where(np.isfinite(proxy), proxy, np.nanmin(proxy))
+        if est.sum() < 100:
+            raise ValueError(f'only {int(est.sum())} genes are eligible; the trend prior needs at least 100')
+        # Two passes. The raw estimates above use each gene's own clamped fit
+        # for the weights, and those weights are correlated with the gene's
+        # noise (small residuals give a small fitted variance, large weights
+        # and a low slope): on a simulated smooth truth the raw estimates ran
+        # 0.2 to 0.3 standard errors low and the curve inherited it. The
+        # second pass recomputes every raw estimate with weights taken from
+        # the first-pass curves at the gene's expression, which do not depend
+        # on the gene's own residuals (bias 0.08 / -0.05 s.e. in the same
+        # simulation; the true weights give 0.03 / -0.02). Their sampling
+        # variance is the larger of the model-based form and the sandwich:
+        # the model-based form is noise-independent but spuriously small for
+        # a gene far from the curve (a few such genes then drag the fit: the
+        # top decile's tau prior went to 0.5 where the fits sit at 0.001),
+        # while the sandwich alone is small for a gene whose residuals happen
+        # to hug its line and brings the noise correlation back (curve bias
+        # 0.15 to 0.19 in the simulation against 0.05 with the maximum).
+        curves = {}
+        for name, raw, var in (('c', c_raw, var_c), ('tau', tau_raw, var_tau)):
+            grid, m, sd = _trend_prior(x_est, raw, var, span=span)
+            curves[name] = (grid, m, sd)
+        c0 = np.exp(np.interp(x_est, *curves['c'][:2])); t0 = np.exp(np.interp(x_est, *curves['tau'][:2]))
+        c_raw2, tau_raw2, var_c2, var_tau2 = _raw_c_tau_and_cov(Ae ** 2, Ve, Me, c0, t0, kappa)
+        if pass2_variance == 'max':
+            _, _, var_c2s, var_tau2s = _raw_c_tau_and_cov(Ae ** 2, Ve, Me, c0, t0, kappa, robust=True)
+            var_c2, var_tau2 = np.maximum(var_c2, var_c2s), np.maximum(var_tau2, var_tau2s)
+        curves = {}
+        for name, raw, var in (('c', c_raw2, var_c2), ('tau', tau_raw2, var_tau2)):
+            pos = raw > 0
+            grid, m, sd = _trend_prior(x_est, raw, var, span=span)
+            curves[name] = (grid, m, sd, pos)
+        gc, mc, sc, posc = curves['c']; gt, mt, st, post = curves['tau']
+        out['prior_logc_m'] = np.interp(x_all, gc, mc); out['prior_logc_s'] = np.interp(x_all, gc, sc)
+        out['prior_logtau_m'] = np.interp(x_all, gt, mt); out['prior_logtau_s'] = np.interp(x_all, gt, st)
+        for name in ('c', 'tau'):
+            m_, s_ = out[f'prior_log{name}_m'].values, out[f'prior_log{name}_s'].values
+            out[f'prior_{name}'] = np.exp(m_ + 0.5 * s_ ** 2)
+            out[f'prior_sd_{name}'] = np.sqrt((np.exp(s_ ** 2) - 1.0) * np.exp(2 * m_ + s_ ** 2))
+        # the decile table keeps the decile prior as a reference and gains the trend at each decile's median
+        xmed = np.array([float(np.median(x_est[b_est == k])) if (b_est == k).any() else np.nan for k in range(n_bins)])
+        bins['x_median'] = xmed
+        bins['trend_logc_m'] = np.interp(xmed, gc, mc); bins['trend_logc_s'] = np.interp(xmed, gc, sc)
+        bins['trend_logtau_m'] = np.interp(xmed, gt, mt); bins['trend_logtau_s'] = np.interp(xmed, gt, st)
+        bins['trend_c'] = np.exp(bins['trend_logc_m'] + 0.5 * bins['trend_logc_s'] ** 2)
+        bins['trend_tau'] = np.exp(bins['trend_logtau_m'] + 0.5 * bins['trend_logtau_s'] ** 2)
+        bins['trend_c_median'] = np.exp(bins['trend_logc_m']); bins['trend_tau_median'] = np.exp(bins['trend_logtau_m'])
+        bins['c_raw_nonpositive'] = [float(np.mean(~posc[b_est == k])) if (b_est == k).any() else np.nan for k in range(n_bins)]
+        bins['tau_raw_nonpositive'] = [float(np.mean(~post[b_est == k])) if (b_est == k).any() else np.nan for k in range(n_bins)]
+        out.attrs['span'] = float(span)
+        out.attrs['curve'] = pd.DataFrame({'x_log10': gc, 'logc_m': mc, 'logc_s': sc,
+                                           'logtau_m': np.interp(gc, gt, mt), 'logtau_s': np.interp(gc, gt, st)})
     out.attrs['bins'] = bins
     out.attrs['kappa'] = kappa
     out.attrs['n_genes'] = int(est.sum())
