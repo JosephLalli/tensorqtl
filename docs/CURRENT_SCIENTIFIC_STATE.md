@@ -43,10 +43,17 @@ what is implemented, what was measured, and what is open.
   which is why neither `catchSalmon` (edgeR's per-transcript overdispersion
   from Salmon Gibbs/bootstrap draws, pooled across samples)/sleuth-style
   per-gene pooling nor limma-style per-sample array weights can substitute
-  for the `(c_g, tau_g)` weight matrix. Open: whether a limma-`vooma`-style
-  cross-gene trend (fit once, between genes, then applied within every gene)
-  should replace or supplement the current per-gene fit (fit separately,
-  within each gene) — not measured.
+  for the `(c_g, tau_g)` weight matrix. New 2026-09-18: `squeezeVar` runs
+  fine here (it has no `lm.wfit` call, unlike the rest of limma — see the
+  environment note below) and was run diagnostically on the allelic
+  channel's naive per-gene scale, confirming `tau` is real (the scale's
+  quartiles 0.72/1.34/2.10 exceed the 1.00 the Gibbs draws alone would give)
+  while showing classic empirical-Bayes moderation is nearly inert at
+  BrainVar's depth (median 2.7% of a gene's moderated variance from the
+  prior). Open: whether a limma-`vooma`-style cross-gene trend (fit once,
+  between genes, then applied within every gene) should replace or
+  supplement the current per-gene fit (fit separately, within each gene) —
+  not measured, and not settled by the moderation result above (see below).
 
 - **Completed bounded shape audit:** three randomly selected libraries
   (566_R1→566_D1, 591_R1→593_D1, 618_R1→618_D1), 9,000 transcript and 4,500
@@ -154,11 +161,24 @@ redundant — the weighted residual scale is close to 1 by construction once
 `(c_g, tau_g)` are fit — and pushes layer 3 onto `(c_g, tau_g)` directly,
 which is exactly what `estimate_variance_priors`/`_trend_prior` already do,
 arrived at independently before this comparison was made on 2026-09-18.
-`squeezeVar` itself is not used, and cannot be applied to `tau_g` unmodified:
-it requires a positive variance with known degrees of freedom under a scaled
-chi-square sampling distribution, and `tau_g` is a signed difference of
-moments, non-positive for 40-47% of well-expressed genes (the spike-at-zero
-problem already in CLAUDE.md's "Three variance models" bullet).
+`squeezeVar` itself is not used in production, and cannot be applied to
+`tau_g` unmodified: it requires a positive variance with known degrees of
+freedom under a scaled chi-square sampling distribution, and `tau_g` is a
+signed difference of moments, non-positive for 40-47% of well-expressed
+genes (the spike-at-zero problem already in CLAUDE.md's "Three variance
+models" bullet). `squeezeVar` was nonetheless run diagnostically on the
+naive per-gene scale under pure `1/v` weights (it is unaffected by the
+weighted-least-squares crash below, since it has no `lm.wfit` call): see
+CLAUDE.md's "Relationship to limma, edgeR, sleuth, swish" section for the
+numbers. Two things came of it. First, the per-gene scale's quartiles
+(0.72/1.34/2.10, against 1.00 if the Gibbs draws explained all the scatter)
+confirm that the excess over 1 — `tau` — is demanded by the data, not an
+invented term. Second, moderation itself is nearly inert at BrainVar's
+depth (median 2.7% of a gene's moderated variance from the prior, because
+the median informative-donor count per gene, 72, leaves little for
+cross-gene borrowing to add), which weighs against the case for heavier
+layer-3 borrowing in general, though it does not by itself settle the
+narrower `vooma`-style layer-1 trend question below.
 
 **Two cases for where a per-observation variance can live**, and which one
 we are in:
@@ -166,12 +186,14 @@ we are in:
 1. **One number per gene, pooled across samples.** `catchSalmon` (edgeR) and
    sleuth's `sigma_q_sq` both do this. It is the well-supported, well-trodden
    case upstream, but it is the wrong shape for us: `v_ig` is a
-   donor-by-gene interaction, not a gene property. Measured 2026-09-18
-   (session computation on the cached per-draw arrays, 34,457 genes x 92
-   donors x 200 draws; no report file yet): within a gene, across donors, log
-   `v` has median sd 0.77 while sequencing depth explains only R^2 = 0.32 of
-   it; at matched depth `v` still spans 1.7-fold between donors of the same
-   gene. Pooling across samples into one number per gene, as `catchSalmon`
+   donor-by-gene interaction, not a gene property. Measured 2026-09-18 on
+   the cached per-draw arrays, 34,457 genes x 92 donors x 200 draws, by
+   `/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/variance_layer_measurements.py`
+   (not under git, cite by path): within a gene, across donors, log
+   `v` has median sd 0.77 (residual sd at matched depth 0.557) while
+   sequencing depth explains only R^2 = 0.32 of it; at matched depth `v`
+   still spans 1.7-fold between donors of the same gene. Pooling across
+   samples into one number per gene, as `catchSalmon`
    and sleuth do, would average this donor-specific signal away.
 2. **One number per gene-per-sample, a full weight matrix.** limma's `lmFit`
    accepts a weights matrix directly (`Var = sigma_g^2 / w_ig`), and `vooma`/
@@ -187,20 +209,27 @@ we are in:
 
 The per-donor-gene shape is also why `v_ig` cannot be a donor property
 either, ruling out a limma-style per-sample array-weight factor on its own:
-the per-donor mean of depth-adjusted log `v` has sd only 0.078 across the 92
+the per-donor mean of depth-adjusted log `v` has sd only 0.073 across the 92
 donors, far tighter than the within-gene, across-donor spread above. Only a
 full gene-by-sample matrix — what hapmixQTL already fits — holds this
 structure. The allelic channel carries about three times as much of its
 structure at the gene-sample level as the total channel: within-gene/
 between-gene median sd of log `v` is 0.41/2.12 (ratio 0.19) for total,
-0.72/1.29 (ratio 0.55) for allelic (same session computation).
+0.72/1.29 (ratio 0.55) for allelic (same measurement,
+`variance_layer_mapping_20260918/`).
 
 **Open, not measured:** whether hapmixQTL's per-gene fit of `(c_g, tau_g)`
 should instead (or in addition) borrow a cross-gene trend the way `vooma`
 does — i.e., whether the `vooma` caveat above (between-gene trend applied
 within-gene) actually holds on BrainVar, and whether it would help or hurt
 relative to the current per-gene fit. This is a genuinely open question, not
-a known direction.
+a known direction. The `squeezeVar` diagnostic above (layer-3 moderation of
+a naive per-gene scale, median 2.7% prior contribution) bears on it without
+closing it: it says classic single-scale cross-gene borrowing has little
+left to add once a gene has ~72 informative donors, but it does not test
+`vooma`'s different mechanism — a between-gene TREND in the scale, applied
+within each gene — which could still help even where moderation of the
+scale's level does not.
 
 ## Routing and run state
 

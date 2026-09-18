@@ -65,14 +65,18 @@ Those are not a floor. On 2026-09-13 the hapmixQTL suite
 numpy 1.26.4, scipy 1.16.2, pandas 2.2.3, torch 2.7.0, pandas-plink 2.3.2,
 h5py 3.13.0, qtl 0.1.10, pysam 0.24.0.
 
-**R on this machine cannot run weighted least squares (2026-09-18).**
-`stats::lm.wfit` segfaults: the BLAS is Debian's
+**R on this machine cannot run weighted least squares (2026-09-18), which
+blocks most but not all cross-checks against limma.** `stats::lm.wfit`
+segfaults: the BLAS is Debian's
 `/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the LAPACK is
-a Homebrew openblas (a mixed-BLAS crash). This blocks running limma directly
-here for any cross-check against it (e.g. `vooma`/`voomaLmFit`,
-`squeezeVar`, `fitFDistRobustly` — see CLAUDE.md's "Relationship to limma,
-edgeR, sleuth, swish" section); do numerical checks against limma's
-formulas in numpy instead, as that section does throughout. Installed R
+a Homebrew openblas (a mixed-BLAS crash). This blocks any limma path that
+fits a linear model (e.g. `vooma`/`voomaLmFit`, `fitFDistRobustly` calls
+`lm.wfit` internally) — see CLAUDE.md's "Relationship to limma, edgeR,
+sleuth, swish" section, where those checks were done against limma's
+formulas in numpy instead. `squeezeVar` is unaffected (it is a closed-form
+posterior, no `lm.wfit` call) and was run directly against BrainVar data at
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/`
+(not under git). Installed R
 package versions are also a release behind the upstream devel source read
 2026-09-18: limma 3.64.3 installed vs 3.99.0 upstream; edgeR 4.6.3 installed
 vs 4.99.6 upstream. `catchSalmonGene`, `binQLFit`, `PCList`, and

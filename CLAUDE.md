@@ -77,22 +77,27 @@ existing state only; it does not imply or start a new experiment.
   default stays True until that is done; see
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`.
   Quantified 2026-09-18 for the allelic channel's `q_a = 1/(mL+kappa) +
-  1/(mR+kappa)` specifically (session computation on the cached per-draw
-  arrays, 34,457 genes x 92 donors x 200 draws; this is a session
-  computation with no report file yet, ask before citing externally): median
-  `q_a`/`v` (the double-counting relative to the Gibbs variance it sits
-  beside) is 0.90 at 1-9 haplotype-informative reads, 0.30 at 10-99, 0.12 at
-  100-999, 0.07 at 1,000+, i.e. `q_a` matters least exactly where reads are
-  plentiful and `v` is trustworthy on its own. Separately, 57.8% of
-  donor-gene datapoints across the full 34,457-gene set have zero
-  haplotype-informative reads (a different base than the 39.95%-with-no-reads
-  figure above, which is 2,000 random genes counting total-channel reads);
-  for those, v=0 exactly and `q_a`=4.0 (`kappa`=0.5 default), so `q_a` is the
-  only thing keeping the allelic weight finite. 87.6% of the
-  zero-informative-read datapoints are under 10 total reads; above 10 total
-  reads essentially none have zero informative reads, so `q_a` is doing two
-  different jobs by read depth, not one: double-counting shot noise where
-  there are reads, and acting as a missing floor where there are none. Its
+  1/(mR+kappa)` specifically (recomputed from the cached per-draw arrays,
+  34,457 genes x 92 donors x 200 draws, by
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/variance_layer_measurements.py`,
+  not under git, cite by path): median `q_a`/`v` (the double-counting
+  relative to the Gibbs variance it sits beside) is 0.90 at 1-9
+  haplotype-informative reads, 0.30 at 10-99, 0.12 at 100-999, 0.07 at
+  1,000+, i.e. `q_a` matters least exactly where reads are plentiful and `v`
+  is trustworthy on its own. Separately, 57.8% of donor-gene datapoints
+  across the full 34,457-gene set have zero haplotype-informative reads (a
+  different base than the 39.95%-with-no-reads figure above, which is 2,000
+  random genes counting total-channel reads); for those, v=0 exactly and
+  `q_a`=4.0 (`kappa`=0.5 default), so `q_a` is the only thing keeping the
+  allelic weight finite. ALL of those zero-informative-read datapoints are
+  under 10 total reads (100%, corrected 2026-09-18 from an earlier 87.6%
+  figure, which was the reverse conditional: the share of the under-10-read
+  bin that lacks allelic information, not the share of the
+  zero-informative-read set that is under 10 reads); above 10 total reads
+  essentially none have zero informative reads. So `q_a`'s floor role only
+  ever applies where there is almost nothing to weigh in the first place;
+  `q_a` is otherwise doing one job (double-counting shot noise) where there
+  are reads. Its
   `+kappa` pseudocount is the Haldane-Anscombe correction to the empirical
   log odds (the standard small-sample fix for a zero-count donor-gene
   datapoint in a two-way allele split), whose variance under the delta
@@ -298,12 +303,15 @@ for, and whether it is available in the installed version or is devel-only.
 
 **Why pooling per gene (catchSalmon, sleuth) or per donor (limma array
 weights) cannot replace our per-gene-per-donor `(c_g, tau_g)` fit.** Measured
-on 2026-09-18 on our own cached per-draw arrays (session computation, no
-report file yet): `v_ig` is a donor-by-gene interaction. Within a gene across donors, log
-`v` has median sd 0.77; depth explains only R^2 = 0.32 of it (at matched
-depth `v` still spans 1.7-fold between donors of the same gene); but the
-per-donor mean of depth-adjusted log `v` has sd only 0.078 across the 92
-donors. So `v_ig` is neither a gene property (pooling across samples into one
+2026-09-18 on our own cached per-draw arrays, 34,457 genes x 92 donors x 200
+draws, by
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/variance_layer_measurements.py`
+(not under git, cite by path): `v_ig` is a donor-by-gene interaction. Within
+a gene across donors, log `v` has median sd 0.77 (residual sd at matched
+depth 0.557); depth explains only R^2 = 0.32 of it (at matched depth `v`
+still spans 1.7-fold between donors of the same gene); but the per-donor
+mean of depth-adjusted log `v` has sd only 0.073 across the 92 donors. So
+`v_ig` is neither a gene property (pooling across samples into one
 number per gene, as `catchSalmon`/sleuth do, cannot hold it) nor a donor
 property (a per-sample array-weight factor cannot either) — only the full
 gene-by-sample weight matrix can. The allelic channel carries about three
@@ -320,11 +328,44 @@ documented above as the root of the spike-at-zero problem in the
 one, for why `estimate_variance_priors`/`_trend_prior` run their own
 Fisher-scoring fit in `(log c, log tau)` rather than calling `squeezeVar`.
 
+**`squeezeVar` itself runs fine on this machine (it never touches the
+broken weighted-least-squares path below), and running it measures two
+things: that tau is real, and that its own moderation is nearly inert here
+at N=92.** Measured 2026-09-18
+(`/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/run_squeezevar.R`
+and `s2_for_squeezevar.tsv`, not under git). On the allelic channel under
+pure inferential weights `w = 1/v` (the known-wrong shape, kept deliberately
+simple here: with the through-origin null the residual is `a_i` and `d_g` is
+the number of informative donors), the per-gene scale `s_g^2` has quartiles
+0.72/1.34/2.10 — it would be 1.00 throughout if the Gibbs draws explained
+all the scatter, so the excess over 1.0 and its between-gene spread ARE
+`tau` showing up as scale heterogeneity: the second variance component is
+what the data demand, not an invented one. `d_g` (informative donors per
+gene) runs 40/72/92 (quartiles), and `limma::squeezeVar(s_g^2, df=d_g,
+robust=FALSE)` returns prior degrees of freedom `d0 = 2.00` with
+`s0^2 = 0.688`; the share of a gene's moderated variance coming from the
+prior is `d0/(d0+d_g)`, a median 2.7% here. So classic single-scale
+empirical-Bayes moderation is nearly inert at BrainVar's depth: limma's
+cross-gene borrowing is powerful when `d_g` is 2 to 5 (the microarray/small-
+RNA-seq regime `squeezeVar` was built for) and there is very little left to
+borrow once `d_g` reaches 72. `robust=TRUE` on the same vector gives a
+near-uniform per-gene `d0` (median 2.64) with no gene below 1, i.e. no
+outlier protection triggers — unsurprising when moderation is already
+contributing only ~3%. CAVEAT: this is the scale under pure `1/v` weights,
+which is the wrong shape for us (above); under the fitted `c_g v + tau_g`
+weights the weighted residual scale is pinned near 1 by construction, and a
+`squeezeVar` `d0` computed there would mean something different (how much
+of `(c_g, tau_g)` itself to shrink, which is what `estimate_variance_priors`
+already does with its own prior rather than `squeezeVar`, per the paragraph
+above).
+
 **RTA overdispersion is at its floor at gene level, which independently
 confirms the shot-noise finding above.** Running edgeR's RTA estimator on our
-own gene-level draws (3,000 genes, session computation): overdispersion
-quartiles 1.00/1.00/1.01, 61.4% exactly at the floor of 1, 95th percentile
-1.13, max 35.6 — at gene level RTA has almost nothing to do, which is
+own gene-level draws (3,000 genes sampled from the transcriptome, by
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/rta_vs_c.py`,
+not under git): overdispersion quartiles 1.00/1.00/1.01, 61.4% exactly at
+the floor of 1, 95th percentile 1.13, max 35.6 — at gene level RTA has
+almost nothing to do, which is
 consistent with `catchSalmonGene` having arrived separately from the
 transcript-level `catchSalmon`. Separately, the across-draw variance of our
 log-total statistic (natural log, current code) is 0.98x (IQR 0.91-1.05)
@@ -334,11 +375,14 @@ bullet's claim above that Salmon's default Gamma draw carries shot noise
 (the counting simulation there already quantified it once: Gibbs-only
 predicted/observed variance 0.944).
 
-**Gibbs draw count is adequate to treat `v` as known.** 200 draws; lag-1
-autocorrelation median 0.081; median effective draws ~170; the relative sd of
-`v` as an estimate is median 0.109, with only 3.2% of datapoints above 0.25.
-Treating `v` as known (rather than itself uncertain) is a good approximation,
-and errors-in-variables attenuation on `c_g` from doing so is small.
+**Gibbs draw count is adequate to treat `v` as known.** Measured by the same
+`variance_layer_measurements.py`
+(`/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/`,
+not under git): 200 draws; lag-1 autocorrelation median 0.081; median
+effective draws ~170; the relative sd of `v` as an estimate is median 0.109,
+with only 3.2% of datapoints above 0.25. Treating `v` as known (rather than
+itself uncertain) is a good approximation, and errors-in-variables
+attenuation on `c_g` from doing so is small.
 
 **RASQUAL's beta-binomial overdispersion rho is an available external check
 on `tau_a`.** RASQUAL models the allelic count as beta-binomial (a binomial
@@ -378,12 +422,17 @@ independently, from the raw per-draw arrays. The RTA-vs-Poisson finding above
 (0.98x) says these are the same quantity on different scales, so the two
 implementations are checkable against each other — not yet done.
 
-**R cannot currently run weighted least squares on this machine.**
-`stats::lm.wfit` segfaults: the BLAS is Debian's
+**R cannot currently run weighted least squares on this machine, but
+`squeezeVar` (which never touches that path) does.** `stats::lm.wfit`
+segfaults: the BLAS is Debian's
 `/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the LAPACK is
-a Homebrew openblas (a mixed-BLAS crash). limma therefore cannot be run here
-as of 2026-09-18; every numerical check in this section was done in numpy instead.
-Installed versions are a release behind the upstream devel source read
+a Homebrew openblas (a mixed-BLAS crash). This blocks `vooma`/`voomaLmFit`
+and any other limma path that fits a linear model (they call `lm.wfit`
+internally), so most numerical checks in this section were done in numpy
+instead. `limma::squeezeVar` itself is a closed-form posterior with no
+`lm.wfit` call, so it ran directly (2026-09-18, above) and produced the
+`d0`/`s0^2` numbers cited there. Installed versions are a release behind
+the upstream devel source read
 as of 2026-09-18: limma 3.64.3 installed vs 3.99.0 upstream; edgeR 4.6.3 installed vs
 4.99.6 upstream. Available in the installed versions: `vooma`,
 `voomaLmFit`, `voomWithQualityWeights`, `arrayWeights`, `squeezeVar`,
