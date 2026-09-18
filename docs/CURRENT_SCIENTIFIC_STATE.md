@@ -43,17 +43,26 @@ what is implemented, what was measured, and what is open.
   which is why neither `catchSalmon` (edgeR's per-transcript overdispersion
   from Salmon Gibbs/bootstrap draws, pooled across samples)/sleuth-style
   per-gene pooling nor limma-style per-sample array weights can substitute
-  for the `(c_g, tau_g)` weight matrix. New 2026-09-18: `squeezeVar` runs
-  fine here (it has no `lm.wfit` call, unlike the rest of limma — see the
-  environment note below) and was run diagnostically on the allelic
-  channel's naive per-gene scale, confirming `tau` is real (the scale's
-  quartiles 0.72/1.34/2.10 exceed the 1.00 the Gibbs draws alone would give)
-  while showing classic empirical-Bayes moderation is nearly inert at
-  BrainVar's depth (median 2.7% of a gene's moderated variance from the
-  prior). Open: whether a limma-`vooma`-style cross-gene trend (fit once,
-  between genes, then applied within every gene) should replace or
-  supplement the current per-gene fit (fit separately, within each gene) —
-  not measured, and not settled by the moderation result above (see below).
+  for the `(c_g, tau_g)` weight matrix. New 2026-09-18: the empirical-Bayes
+  moderation family (`squeezeVar`, `fitFDist`, `fitFDistRobustly`,
+  `fitFDistUnequalDF1`) runs fine here, since it is closed-form and never
+  fits a linear model — unlike `lmFit`/`vooma`/`voomaLmFit`/
+  `voomWithQualityWeights`/`arrayWeights`, which all crash on this machine's
+  mixed BLAS/LAPACK install (see the environment note below; every one of
+  these was tested individually on 2026-09-18). `squeezeVar` was run
+  diagnostically on the allelic channel's naive per-gene scale, confirming
+  `tau` is real (the scale's quartiles 0.72/1.34/2.10 exceed the 1.00 the
+  Gibbs draws alone would give) while showing classic empirical-Bayes
+  moderation is nearly inert at BrainVar's depth (median 2.7% of a gene's
+  moderated variance from the prior). Practical consequence: of the two
+  limma-native routes identified here, the pooled-trend route (`vooma` with
+  a Gibbs-derived predictor) cannot be attempted until the BLAS is fixed;
+  the moderation route (`squeezeVar`, and `fitFDistRobustly` for the
+  hypervariable tail) can be run today. Open: whether a limma-`vooma`-style
+  cross-gene trend (fit once, between genes, then applied within every gene)
+  should replace or supplement the current per-gene fit (fit separately,
+  within each gene) — not measured, not settled by the moderation result
+  above, and not currently runnable here regardless (see below).
 
 - **Completed bounded shape audit:** three randomly selected libraries
   (566_R1→566_D1, 591_R1→593_D1, 618_R1→618_D1), 9,000 transcript and 4,500
@@ -168,8 +177,9 @@ signed difference of moments, non-positive for 40-47% of well-expressed
 genes (the spike-at-zero problem already in CLAUDE.md's "Three variance
 models" bullet). `squeezeVar` was nonetheless run diagnostically on the
 naive per-gene scale under pure `1/v` weights (it is unaffected by the
-weighted-least-squares crash below, since it has no `lm.wfit` call): see
-CLAUDE.md's "Relationship to limma, edgeR, sleuth, swish" section for the
+linear-model-fitting crash below, since it is closed-form and never fits a
+model): see CLAUDE.md's "Relationship to limma, edgeR, sleuth, swish" section
+for the
 numbers. Two things came of it. First, the per-gene scale's quartiles
 (0.72/1.34/2.10, against 1.00 if the Gibbs draws explained all the scatter)
 confirm that the excess over 1 — `tau` — is demanded by the data, not an

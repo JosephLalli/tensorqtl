@@ -65,16 +65,22 @@ Those are not a floor. On 2026-09-13 the hapmixQTL suite
 numpy 1.26.4, scipy 1.16.2, pandas 2.2.3, torch 2.7.0, pandas-plink 2.3.2,
 h5py 3.13.0, qtl 0.1.10, pysam 0.24.0.
 
-**R on this machine cannot run weighted least squares (2026-09-18), which
-blocks most but not all cross-checks against limma.** `stats::lm.wfit`
-segfaults: the BLAS is Debian's
-`/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the LAPACK is
-a Homebrew openblas (a mixed-BLAS crash). This blocks any limma path that
-fits a linear model (e.g. `vooma`/`voomaLmFit`, `fitFDistRobustly` calls
-`lm.wfit` internally) — see CLAUDE.md's "Relationship to limma, edgeR,
-sleuth, swish" section, where those checks were done against limma's
-formulas in numpy instead. `squeezeVar` is unaffected (it is a closed-form
-posterior, no `lm.wfit` call) and was run directly against BrainVar data at
+**The mixed-BLAS install on this machine crashes any limma path that fits a
+linear model, tested function by function on 2026-09-18.** The BLAS is
+Debian's `/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the
+LAPACK is a Homebrew openblas. CRASHES: `limma::lmFit` (even unweighted, not
+only with a weight matrix), `limma::arrayWeights`, and therefore `vooma`,
+`voomaLmFit`, `voomWithQualityWeights` (all fit a linear model internally).
+RUNS: the closed-form empirical-Bayes family — `squeezeVar`, `fitFDist`,
+`fitFDistRobustly`, `fitFDistUnequalDF1` — none of which reaches a
+least-squares routine. `fitFDistRobustly` in particular is testable here
+today (it is the published fix for hypervariable genes). Practical
+consequence: a `vooma`-style pooled-trend route needs the BLAS fixed first;
+a `squeezeVar`/`fitFDistRobustly` moderation route does not — see CLAUDE.md's
+"Relationship to limma, edgeR, sleuth, swish" section for the full account,
+where the non-crashing checks above were run directly and the rest were done
+against limma's formulas in numpy instead. `squeezeVar` was run against
+BrainVar data at
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/`
 (not under git). Installed R
 package versions are also a release behind the upstream devel source read

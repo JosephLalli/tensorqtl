@@ -291,10 +291,10 @@ for, and whether it is available in the installed version or is devel-only.
 
 | Our component | Upstream equivalent (what it computes) | Ours | Upstream | Installed here? |
 |---|---|---|---|---|
-| Weight `1/(c_g v_ig + tau_g)` as a gene-by-sample matrix in a linear model | limma `lmFit` + a supplied weights matrix, `Var = sigma_g^2 / w_ig` | `_wls_regression`, `tensorqtl/hapmixqtl.py:483` | limma `lmFit`, R/lmFit.R | Yes (limma 3.64.3) |
-| Building a gene-by-sample weight matrix from a continuous per-observation covariate | limma `vooma`/`voomaLmFit`: `predictor` argument takes a gene-by-sample matrix; trend `lm.fit(cbind(1,sx,sxc), sy)` with `sy` = per-gene residual variance to the fourth root; weight `1/f(mu)^4` | `v_ig` plays the role of `predictor`; no direct port | limma `vooma`/`voomaLmFit`, R/vooma.R | Yes (limma 3.64.3 also has `voomWithQualityWeights`, `arrayWeights`) |
+| Weight `1/(c_g v_ig + tau_g)` as a gene-by-sample matrix in a linear model | limma `lmFit` + a supplied weights matrix, `Var = sigma_g^2 / w_ig` | `_wls_regression`, `tensorqtl/hapmixqtl.py:483` | limma `lmFit`, R/lmFit.R | Installed (limma 3.64.3), but CRASHES on this machine — `lmFit` segfaults even unweighted, not only with a weight matrix (mixed-BLAS environment note below) |
+| Building a gene-by-sample weight matrix from a continuous per-observation covariate | limma `vooma`/`voomaLmFit`: `predictor` argument takes a gene-by-sample matrix; trend `lm.fit(cbind(1,sx,sxc), sy)` with `sy` = per-gene residual variance to the fourth root; weight `1/f(mu)^4` | `v_ig` plays the role of `predictor`; no direct port | limma `vooma`/`voomaLmFit`, R/vooma.R | Installed (limma 3.64.3 also has `voomWithQualityWeights`, `arrayWeights`), but CRASHES here — all fit a linear model internally, same mixed-BLAS crash as `lmFit` |
 | Cross-gene moderation of one fitted per-gene scale | limma `squeezeVar`: posterior `(df*var+df.prior*var.prior)/(df+df.prior)` | `estimate_variance_priors`/`_trend_prior` moderate `(c_g, tau_g)` directly, not through `squeezeVar` (see below for why) | limma `squeezeVar`, R/squeezeVar.R; called directly by edgeR's `glmQLFTest` (R/glmQLFTest.R:152), `estimateDisp.R:194`, and the fit in R/binQLFtest.R:88 | Yes (limma 3.64.3) |
-| Robust moderation against hypervariable genes | limma `fitFDistRobustly` (`robust=TRUE`, `winsor.tail.p=c(0.05,0.1)`, returns a per-gene `df2.shrunk`) | not used | limma `fitFDistRobustly`, R/fitFDistRobustly.R | Yes (limma 3.64.3); NOT currently used. Our hypervariable tail (imprinted genes PEG10, PEG3, ZDBF2, MEST, GRB10; multi-copy families RNU1-1, RNVU1-28, 45S rRNA, SNORD3D, EEF1A1, PABPC1, SET) is exactly the case this was built for |
+| Robust moderation against hypervariable genes | limma `fitFDistRobustly` (`robust=TRUE`, `winsor.tail.p=c(0.05,0.1)`, returns a per-gene `df2.shrunk`) | not used in production, but testable today | limma `fitFDistRobustly`, R/fitFDistRobustly.R | Yes (limma 3.64.3); RUNS on this machine despite the mixed-BLAS crash (it has no least-squares call — see "Relationship to limma..." environment note below). Our hypervariable tail (imprinted genes PEG10, PEG3, ZDBF2, MEST, GRB10; multi-copy families RNU1-1, RNVU1-28, 45S rRNA, SNORD3D, EEF1A1, PABPC1, SET) is exactly the case this was built for — this is the one remedy of the table most immediately worth trying |
 | Per-gene overdispersion pooled across samples from Gibbs/bootstrap draws | edgeR `catchSalmon` (transcript-level RTA — read-to-transcript-ambiguity overdispersion; moderated with `squeezeVar` at prior df 3; floored at 1; `divide=TRUE` divides counts by it) | not used at gene level (see the RTA finding below) | edgeR `catchSalmon`, R/catchSalmon.R:80-106, man/catchSalmon.Rd (Baldoni et al. 2024a,b) | Yes (installed); gene-level `catchSalmonGene` is DEVEL ONLY |
 | Same pooling idea, different tool | sleuth: `sigma_q_sq <- rowMeans(all_sample_bootstrap)`, one inferential variance per transcript, smoothed across transcripts and added to a biological component | structurally our `c*v+tau` with `c` fixed at 1 and `v` pooled to one number per gene | sleuth 0.30.2, R/sleuth.R:662 (pooling), R/model.R:452 `final_sigma_sq` (smoothing) | Not installed (external tool) |
 | No variance model at all | swish (fishpond): a Wilcoxon rank-sum test (ranks pooled observations across two groups and compares the summed ranks, no distributional assumption) applied across inferential replicates, with permutation for significance | not used | fishpond `swish`, R/swish.R | Not installed |
@@ -422,23 +422,44 @@ independently, from the raw per-draw arrays. The RTA-vs-Poisson finding above
 (0.98x) says these are the same quantity on different scales, so the two
 implementations are checkable against each other — not yet done.
 
-**R cannot currently run weighted least squares on this machine, but
-`squeezeVar` (which never touches that path) does.** `stats::lm.wfit`
-segfaults: the BLAS is Debian's
+**The mixed-BLAS crash on this machine blocks any limma path that fits a
+linear model, not just a weighted one — tested function by function,
+2026-09-18.** The BLAS is Debian's
 `/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the LAPACK is
-a Homebrew openblas (a mixed-BLAS crash). This blocks `vooma`/`voomaLmFit`
-and any other limma path that fits a linear model (they call `lm.wfit`
-internally), so most numerical checks in this section were done in numpy
-instead. `limma::squeezeVar` itself is a closed-form posterior with no
-`lm.wfit` call, so it ran directly (2026-09-18, above) and produced the
-`d0`/`s0^2` numbers cited there. Installed versions are a release behind
-the upstream devel source read
-as of 2026-09-18: limma 3.64.3 installed vs 3.99.0 upstream; edgeR 4.6.3 installed vs
-4.99.6 upstream. Available in the installed versions: `vooma`,
+a Homebrew openblas (a mixed-BLAS crash). Each candidate function was run in
+its own R process, so a crash in one could not hide the others. CRASHES:
+`limma::lmFit` (segfaults even UNWEIGHTED, not only with a weight matrix
+supplied — `lm.wfit` was simply the first crash hit, not the boundary
+itself), `limma::arrayWeights`, and therefore `vooma`, `voomaLmFit` and
+`voomWithQualityWeights`, all of which fit a linear model internally. RUNS:
+the entire empirical-Bayes moderation family, which is closed-form and never
+reaches a least-squares routine — `limma::squeezeVar` (equal or unequal df,
+`robust=TRUE` or `FALSE`), `limma::fitFDist`, `limma::fitFDistRobustly`, and
+`limma::fitFDistUnequalDF1` all ran without incident. In particular
+`fitFDistRobustly` — the published fix for hypervariable genes, our
+imprinted/multi-copy tail's target case (table above) — is testable on this
+machine today, not blocked.
+
+**Practical consequence for what to try next.** Of the two limma-native
+routes this comparison identified, the pooled-trend route (`vooma` with a
+Gibbs-derived predictor, fit BETWEEN genes then applied WITHIN each gene)
+cannot be attempted on this machine until the BLAS is fixed, because it
+needs `lmFit`/`voomaLmFit` underneath. The moderation route (`squeezeVar` on
+one vector of per-gene variances — already run diagnostically above — with
+`fitFDistRobustly` or `fitFDistUnequalDF1` for the hypervariable tail) can be
+run today. That asymmetry should shape whatever is tried next: the
+moderation route is immediately actionable, the trend route is not.
+
+Installed versions are a release behind the upstream devel source read as of
+2026-09-18: limma 3.64.3 installed vs 3.99.0 upstream; edgeR 4.6.3 installed
+vs 4.99.6 upstream. Available in the installed versions: `vooma`,
 `voomaLmFit`, `voomWithQualityWeights`, `arrayWeights`, `squeezeVar`,
 `fitFDistRobustly`, `fitFDistUnequalDF1`, `catchSalmon`, `glmQLFit`,
 `estimateDisp`. DEVEL ONLY (not installed): `catchSalmonGene`, `binQLFit`,
-`PCList`, `sampleWeights`.
+`PCList`, `sampleWeights`. "Installed" and "runs without the BLAS crash" are
+different properties — `vooma`/`voomaLmFit`/`voomWithQualityWeights`/
+`arrayWeights` are installed but currently crash here; the CRASHES/RUNS
+lists above are the operative ones for what can actually be tried.
 
 ## Claims withdrawn on 2026-09-13 — do not re-assert
 
