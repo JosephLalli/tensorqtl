@@ -17,6 +17,19 @@ what is implemented, what was measured, and what is open.
   pending. It computes cross-channel Gibbs covariance `Cat` but the scan does
   not use it. See `tensorqtl/hapmixqtl.py:325` and the method map in
   `docs/hapmixqtl_methods.md`.
+- **Why 57.8% of donor-gene pairs carry zero allele-specific information
+  (established 2026-09-18):** a Salmon-indexing and pipeline-ingest fact,
+  not a low-expression one. `salmon index` runs without `--keepDuplicates`
+  against the personalized diploid transcriptome, so a homozygous donor's
+  duplicate `_L`/`_R` transcript collapses to one row; the ingest script
+  then credits reads to the allelic channel only from PAIRED `_L`/`_R`
+  transcripts, so an unpaired (homozygous) transcript's reads reach the
+  total channel but not the allelic one. 22.7% of these pairs (416,207,
+  13.1% of all 3,170,044 donor-gene pairs) are genuinely expressed with zero
+  allelic information, not merely low-expression. The code's `no_cov` guard
+  (`tensorqtl/hapmixqtl.py:417-420`) already handles this correctly; see
+  CLAUDE.md's "Why 57.8%..." bullet for the full mechanism, code citations,
+  and two open items.
 - **Validated, bounded evidence:** the closed controlled Salmon experiment
   supports counting default Gibbs uncertainty once for its singleton,
   fixed-depth ASE configuration: Gibbs-only predicted/observed variance was
@@ -39,7 +52,8 @@ what is implemented, what was measured, and what is open.
   here: the spike at `tau_g <= 0` (40-47% of well-expressed genes, "Three
   variance models" bullet in CLAUDE.md) is why `squeezeVar` cannot be
   applied to `tau_g` directly, and `v_ig` is a donor-by-gene interaction
-  (median within-gene across-donor sd of log `v` 0.77, depth R^2 only 0.32),
+  (median within-gene across-donor sd of log `v` 0.77, allele-resolved-reads
+  R^2 only 0.32 — RELABELED 2026-09-18 from "depth"; see CLAUDE.md),
   which is why neither `catchSalmon` (edgeR's per-transcript overdispersion
   from Salmon Gibbs/bootstrap draws, pooled across samples)/sleuth-style
   per-gene pooling nor limma-style per-sample array weights can substitute
@@ -73,9 +87,9 @@ what is implemented, what was measured, and what is open.
   shape survives (NOT true of `additive`, which feels the draws' scale the
   same way sleuth's fixed `c=1` does). Both are read in full below
   ("Structural relationship..."), with the measurement of
-  where in read-depth space the weights actually track the draws at all
-  (57.5% of informative donor-gene datapoints have `c_g v_ig > tau_g`
-  overall, falling to 18-36% under 100 reads/donor).
+  where in allele-resolved-read space the weights actually track the draws
+  at all (57.5% of informative donor-gene datapoints have `c_g v_ig > tau_g`
+  overall, falling to 18-36% under 100 allele-resolved reads/donor).
 
 - **Completed bounded shape audit:** three randomly selected libraries
   (566_R1→566_D1, 591_R1→593_D1, 618_R1→618_D1), 9,000 transcript and 4,500
@@ -238,18 +252,22 @@ rescale. `estimate_variance_priors`/`_trend_prior` already push layer 3
 onto `(c_g, tau_g)` directly, arrived at independently before this
 comparison was made on 2026-09-18.
 
-**Where in read-depth space the fitted weights actually track the draws.**
-Reported by Joseph 2026-09-18 as a session computation not yet folded into
+**Where in allele-resolved-read space the fitted weights actually track the
+draws.** (RELABELED 2026-09-18 from "read-depth space"/"reads per donor":
+the tier variable is allele-resolved reads `mL+mR` per donor, not total
+expression or sequencing depth — see CLAUDE.md's 57.8% bullet.) Reported by
+Joseph 2026-09-18 as a session computation not yet folded into
 `variance_layer_mapping_20260918/` (full table and the read-tier breakdown
 in CLAUDE.md's "Relationship to limma..." section): over the production
 `variance_prior`-shrunk fits' informative set (1,174,211 donor-gene
 datapoints with `v_ig > eps`, 16,674 genes — not the full 34,457 x 92 grid
 the other measurements above use), 57.5% have `c_g v_ig > tau_g` overall,
-rising by expression tier from 18-36% under 100 reads/donor to 89% above
-1,000. Below 100 reads/donor (45% of the transcriptome, 7,455 genes) the
-Gibbs-derived signal is almost entirely flattened by the floor and donors
-are weighed nearly alike regardless of what the draws say; above 300
-reads/donor the weights track the draws closely. This is how much of the
+rising by expression tier from 18-36% under 100 allele-resolved reads/donor
+to 89% above 1,000. Below 100 allele-resolved reads/donor (45% of the
+transcriptome, 7,455 genes) the Gibbs-derived signal is almost entirely
+flattened by the floor and donors are weighed nearly alike regardless of
+what the draws say; above 300 allele-resolved reads/donor the weights track
+the draws closely. This is how much of the
 draws' WITHIN-GENE SHAPE survives the floor into the weights, a separate
 quantity from the approximate-invariance gap above (that gap is about the
 draws' ABSOLUTE scale reaching the weights through the shrinkage prior;
@@ -285,10 +303,12 @@ we are in:
    the cached per-draw arrays, 34,457 genes x 92 donors x 200 draws, by
    `/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/variance_layer_measurements.py`
    (not under git, cite by path): within a gene, across donors, log
-   `v` has median sd 0.77 (residual sd at matched depth 0.557) while
-   sequencing depth explains only R^2 = 0.32 of it; at matched depth `v`
-   still spans 1.7-fold between donors of the same gene. Pooling across
-   samples into one number per gene, as `catchSalmon`
+   `v` has median sd 0.77 (residual sd at matched allele-resolved read count
+   0.557) while allele-resolved read count (RELABELED 2026-09-18 from
+   "sequencing depth"; see CLAUDE.md) explains only R^2 = 0.32 of it; at
+   matched read count `v` still spans 1.7-fold between donors of the same
+   gene — what remains once read count is held fixed is heterozygosity.
+   Pooling across samples into one number per gene, as `catchSalmon`
    and sleuth do, would average this donor-specific signal away.
 2. **One number per gene-per-sample, a full weight matrix.** limma's `lmFit`
    accepts a weights matrix directly (`Var = sigma_g^2 / w_ig`), and `vooma`/
@@ -304,8 +324,8 @@ we are in:
 
 The per-donor-gene shape is also why `v_ig` cannot be a donor property
 either, ruling out a limma-style per-sample array-weight factor on its own:
-the per-donor mean of depth-adjusted log `v` has sd only 0.073 across the 92
-donors, far tighter than the within-gene, across-donor spread above. Only a
+the per-donor mean of read-count-adjusted log `v` has sd only 0.073 across
+the 92 donors, far tighter than the within-gene, across-donor spread above. Only a
 full gene-by-sample matrix — what hapmixQTL already fits — holds this
 structure. The allelic channel carries about three times as much of its
 structure at the gene-sample level as the total channel: within-gene/

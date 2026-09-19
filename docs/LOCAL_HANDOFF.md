@@ -125,6 +125,12 @@ the phASER run and the phase overlay, the comparison invocation, and the
 prerequisite that governs whether the comparison is possible at all: Salmon
 must have been run against a personalized **diploid** transcriptome with
 `--numGibbsSamples 200`, or hapmixQTL has no allelic information to read.
+The index is also normally built WITHOUT `--keepDuplicates`, so a donor's
+homozygous transcripts collapse to one haplotype copy and reach the total
+channel only, not the allelic one — established 2026-09-18, this is why
+57.8% of donor-gene pairs carry no allelic information (see CLAUDE.md); it
+is expected pipeline behavior that hapmixQTL's `no_cov` guard already
+handles, not a data-quality defect to chase.
 
 ## 4. Before you do this: a data-governance check
 

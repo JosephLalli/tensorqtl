@@ -87,17 +87,31 @@ existing state only; it does not imply or start a new experiment.
   is trustworthy on its own. Separately, 57.8% of donor-gene datapoints
   across the full 34,457-gene set have zero haplotype-informative reads (a
   different base than the 39.95%-with-no-reads figure above, which is 2,000
-  random genes counting total-channel reads); for those, v=0 exactly and
-  `q_a`=4.0 (`kappa`=0.5 default), so `q_a` is the only thing keeping the
-  allelic weight finite. ALL of those zero-informative-read datapoints are
-  under 10 total reads (100%, corrected 2026-09-18 from an earlier 87.6%
-  figure, which was the reverse conditional: the share of the under-10-read
-  bin that lacks allelic information, not the share of the
-  zero-informative-read set that is under 10 reads); above 10 total reads
-  essentially none have zero informative reads. So `q_a`'s floor role only
-  ever applies where there is almost nothing to weigh in the first place;
-  `q_a` is otherwise doing one job (double-counting shot noise) where there
-  are reads. Its
+  random genes counting total-channel reads); for those, `v`=0 exactly. The
+  pseudocount formula would give `q_a`=4.0 (`kappa`=0.5 default) if it were
+  applied here, but it is not: `compute_summaries_from_gibbs`'s `no_cov`
+  guard (`tensorqtl/hapmixqtl.py:417-420`, `no_cov = (mL+mR)<=0`) forces `Va`
+  to exactly `0.0` instead of `Va + q_a` on this branch, so
+  `_zero_degenerate_ase_weights` (`hapmixqtl.py:181-200`, `keep = va_t >
+  eps`) zeroes the allelic weight entirely rather than handing the pair a
+  finite, ordinary weight of `1/(4.0+tau)` built on a fabricated `a=0`
+  (perfect allelic balance the degenerate draws did not actually measure).
+  TWO CORRECTIONS, both 2026-09-18: this passage previously read "so `q_a`
+  is the only thing keeping the allelic weight finite" and "`q_a`'s floor
+  role only ever applies where there is almost nothing to weigh" —
+  backwards; the guard exists BECAUSE `q_a` would otherwise apply here, and
+  it keeps these pairs OUT of the fit, not in it at a floored weight.
+  Separately, an earlier "87.6% of zero-informative-read datapoints are
+  under 10 total reads," later "corrected" to 100%, is withdrawn outright,
+  not merely re-corrected: both figures were tautological (the analysis
+  script's `R` is `mL+mR` itself — same quantity that defines
+  "zero-informative" — so conditioning one on the other was conditioning a
+  quantity on itself; verified directly against the cache this pass,
+  max|`R`-(`mL`+`mR`)|=2.3e-10 over all 3,170,044 datapoints). Why 57.8% of
+  pairs land here at all is a Salmon-indexing and pipeline-ingest fact, not
+  a low-expression one — see the next bullet. `q_a` is otherwise doing one
+  job (double-counting shot noise) where there are reads with any coverage.
+  Its
   `+kappa` pseudocount is the Haldane-Anscombe correction to the empirical
   log odds (the standard small-sample fix for a zero-count donor-gene
   datapoint in a two-way allele split), whose variance under the delta
@@ -109,6 +123,113 @@ existing state only; it does not imply or start a new experiment.
   reason. The total channel's counting term (the `1/(0 + 2*kappa) = 1` floor
   discussed above) is a different, single-count Poisson delta-method
   correction, not a log-odds correction, and is not this same device.
+
+- **Why 57.8% of donor-gene pairs have no allele-specific information: a
+  Salmon-indexing and pipeline-ingest fact, not a low-expression one.**
+  Established 2026-09-18 from pipeline code, run metadata, and the cached
+  summaries; re-verified in this documentation pass, not merely transcribed.
+  The personalized diploid transcriptome is built by g2gtools, which emits
+  TWO haplotype copies of every transcript, suffixed `_L`/`_R`; on sex
+  chromosomes only the PAR regions get these suffixes
+  (`bin/append_suffixes_to_sex_chroms.py` in
+  `/mnt/ssd/lalli/nf_stage/rnaseq_JLL`, keyed to the X/Y `seqid` — read this
+  pass — because PAR alone is genuinely diploid; consistent, not an anomaly).
+  `salmon index` is run WITHOUT `--keepDuplicates` against that
+  transcriptome: where a donor is homozygous across a transcript its `_L`
+  and `_R` sequences are byte-identical, so Salmon's indexer keeps one copy
+  and the `_R` row never appears in `quant.sf` at all — not a zero row, no
+  row. Confirmed directly this pass: every `aux_info/meta_info.json` checked
+  (3 of 229 quant directories under
+  `/mnt/ssd/lalli/nf_stage/RNA_reference_comparison_results/reference_comparison_results/bv2/personalized_T2T_NCBI110_pseudoalignment/expression_results/salmon_pseudocounts/`,
+  samples 546_R1/482_R1/914_R2) records `"keep_duplicates": false`; `_L`
+  transcript counts there are 176,395/176,222/176,226 (near-constant, within
+  the cited 176,209-176,409 cohort-wide range) against `_R` counts
+  111,472/92,348/107,377 (within the cited 88,239-116,913 range, spread
+  28,674 across the 92 donors — the signature of collapsed duplicates, not
+  lost reads), and TPM sums to exactly 1,000,000 in all three. CAVEAT found
+  this pass: `conf/modules.config` in that pipeline conditionally sets
+  `ext.args = params.use_personalized_references ? "--keepDuplicates" :
+  ""` for the process named `SALMON_INDEX`, and this run's own captured
+  params (`pipeline_info/params_2025-05-08_17-22-59.json`) record
+  `use_personalized_references: true` — so the config text alone suggests
+  dedup should have been OFF for this run. It was not; `meta_info.json`
+  above is the runtime ground truth and is what this bullet relies on. Why
+  the conditional did not fire is unresolved (traced one level: a
+  differently-scoped `SALMON_INDEX` selector in `conf/deepthought.config`
+  targets a `PREPARE_PERSONALIZED_TRANSCRIPTOME` subworkflow name that does
+  not exist anywhere in the current `rnaseq_JLL` checkout — the real
+  subworkflow is `subworkflows/local/personalize_reference_genome.nf` — but
+  that only explains why THAT selector's resource settings are dead, not why
+  the separate, later-loaded `modules.config` conditional didn't apply). A
+  `rnaseq_JLL`-repo question, not a hapmixQTL one; trust the runtime record
+  over the config file here.
+
+  Losing the `_R` row does not by itself zero a pair's allelic information —
+  reads on a surviving unpaired `_L` row would still be real counts. What
+  makes `mL` ALSO exactly 0 is the ingest step, not the index:
+  `scripts/run_hapmixqtl_from_salmon.py`'s `pair_haplotypes` (line 217-228)
+  pairs a base transcript id only when BOTH suffix rows exist, and
+  `load_counts` (line 943-948) accumulates `YL`/`YR` ONLY over paired
+  transcripts — an unpaired (homozygous, deduplicated) transcript
+  contributes to NEITHER, no matter how many reads its surviving row
+  carries. `YT`, by contrast, sums EVERY transcript unconditionally (line
+  958-969), paired or not. This is exactly why `compute_summaries_from_gibbs`
+  already insists on a `yT` summed over ALL transcripts rather than `yL+yR`
+  (`tensorqtl/hapmixqtl.py:357-366`, pre-existing text, still correct):
+  `yL+yR` IS that same paired-only subtotal, so using it as the total would
+  silently zero these same pairs there too. A gene-donor pair has
+  `mL=mR=0` (not merely `mR=0`) exactly when NONE of that gene's transcripts
+  have a surviving heterozygous pair in that donor.
+
+  Measured consequence, verified this pass against the cache
+  (`/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/verifiers/per_donor_dispersion/allgene_summaries.npz`
+  + `allgene_ambiguity.npz`, not under git): `R` equals `mL+mR` to
+  max|diff|=2.3e-10 over all 3,170,044 datapoints (34,457 genes x 92
+  donors); `R<=0` (equivalently `R==0`, no partial cases) for
+  1,831,718/3,170,044 = 57.8%; `Va==0.0` exactly in literally 100% of those
+  1,831,718 and in 0 of the remaining 1,338,326 — an exact match to the
+  `no_cov` guard below. Of the 1,831,718 zero-informative pairs, 68.0% have
+  zero total expression too (genuinely unexpressed) but 22.7% — 416,207
+  pairs, 13.1% of ALL 3,170,044 pairs — are expressed with no allelic
+  information whatsoever, including 89,639 pairs at 1,000+ total reads
+  (session computation against the same cache; the 68.0/22.7 split needs the
+  separate `YT` per-draw array, not present in `allgene_summaries.npz`, so
+  it was not independently re-run in this pass). These are
+  homozygous-but-expressed pairs: real expression, zero allelic information,
+  by construction, not a depth artifact.
+
+  DESIGN NOTE worth recording: the intended behavior of Salmon's Gibbs
+  resampling was self-downweighting — if two haplotypes were
+  indistinguishable, the Gibbs draws should disagree about the split, `v`
+  should blow up, and `1/(c*v+tau)` should collapse on its own. That
+  mechanism cannot fire here, because deduplication and the pairing rule
+  above mean there is no second copy to be uncertain between; every draw has
+  `yL=yR=0` by construction, not by chance.
+
+  THE CODE ALREADY HANDLES THIS CORRECTLY; the guard's real purpose was
+  previously undocumented. `compute_summaries_from_gibbs`
+  (`tensorqtl/hapmixqtl.py:417-420`, inside `if count_noise:`): `no_cov =
+  (mL+mR)<=0` forces `Va = np.where(no_cov, 0.0, Va + 1/(mL+kappa) +
+  1/(mR+kappa))` — the counting term `q_a` is added ONLY where there is
+  coverage; where both haplotypes are empty, `Va` is forced to exactly
+  `0.0`. `_zero_degenerate_ase_weights` (`hapmixqtl.py:181-200`, `keep =
+  va_t > eps`) then zeroes the allelic weight for exactly these pairs. No
+  fabricated observation of perfect allelic balance enters the allelic
+  channel. This guard reads, and is commented, as a generic
+  degenerate-coverage guard; nowhere is it documented as excluding unphased
+  (homozygous) donor-gene pairs specifically, which — per the mechanism
+  above — is what it actually spends most of its time doing.
+
+  Two open items, recorded as open, not as findings: (a) `no_cov` sits
+  inside `if count_noise:`; with `count_noise=False` the same protection
+  would have to come from `Va` already being exactly `0.0` from constant
+  (`yL=yR=0`) draws rather than from the explicit guard — not verified
+  empirically in this pass. (b) The total channel correctly retains these
+  pairs (`YT` sums unconditionally, above), so the 13.1%-of-all-pairs figure
+  is total-channel-only BY CONSTRUCTION, not a data-quality problem — easy
+  to misread as loss. Relatedly, an expression-based gene filter and the
+  allelic channel's informativeness filter are NOT nested — see the
+  `squeezeVar` robustness check below.
 
 - **The DerSimonian-Laird `tau` understates the allelic residual scale.** With
   the final weights `1/(v + tau_DL)` the whitened residual mean square at the
@@ -314,9 +435,17 @@ draws, by
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/variance_layer_mapping_20260918/variance_layer_measurements.py`
 (not under git, cite by path): `v_ig` is a donor-by-gene interaction. Within
 a gene across donors, log `v` has median sd 0.77 (residual sd at matched
-depth 0.557); depth explains only R^2 = 0.32 of it (at matched depth `v`
-still spans 1.7-fold between donors of the same gene); but the per-donor
-mean of depth-adjusted log `v` has sd only 0.073 across the 92 donors. So
+allele-resolved read count 0.557). CORRECTED 2026-09-18: the covariate
+regressed against is allele-resolved reads `mL+mR`, not sequencing depth —
+the script's own variable names (`residual_sd_at_matched_depth`, `r2_depth`)
+used "depth" loosely for `log(mL+mR)` (`variance_layer_measurements.py:33`
+`tot = mL + mR`, `:82` `ld = np.log(tot[ig][m])`, regressed against `lv =
+np.log(Va[ig][m])`). Allele-resolved read count explains only R^2 = 0.32 of
+it (at matched read count `v` still spans 1.7-fold between donors of the
+same gene) — the conclusion survives this correction and is arguably
+stronger for it: what remains once read COUNT is held fixed is how
+INFORMATIVE those reads are, i.e. heterozygosity, not depth. The per-donor
+mean of read-count-adjusted log `v` has sd only 0.073 across the 92 donors. So
 `v_ig` is neither a gene property (pooling across samples into one
 number per gene, as `catchSalmon`/sleuth do, cannot hold it) nor a donor
 property (a per-sample array-weight factor cannot either) — only the full
@@ -324,6 +453,31 @@ gene-by-sample weight matrix can. The allelic channel carries about three
 times as much of its structure at the gene-sample level as the total channel
 does: within-gene/between-gene median sd of log `v` is 0.41/2.12 (ratio 0.19)
 for the total channel, 0.72/1.29 (ratio 0.55) for the allelic channel.
+
+**`library_scaled`'s per-library factor `d_i` tracks library size, not
+heterozygosity — re-established 2026-09-18.** An earlier same-day claim
+reported two correlations as independent confirmation that `d_i` tracks
+library size when they were, in fact, the same array (both effectively
+`mL+mR`-derived); that claim is superseded by this one, run with a properly
+independent library-size covariate. Spearman correlation (a rank
+correlation: the Pearson correlation of the two variables' ranks, robust to
+nonlinearity) between `estimate_library_factors`'s fitted `d_i` and library
+size computed from the separate `YT` per-draw total-expression array: +0.64.
+Spearman(`d_i`, allele-resolved reads `mL+mR`): +0.63. Spearman(`d_i`,
+heterozygosity share — the fraction of a donor's genes with `mL+mR>0`):
+-0.06. Partial Spearman (the correlation between two variables after
+linearly removing a third variable's contribution from both) of `d_i` with
+library size controlling for heterozygosity: +0.63; of `d_i` with
+heterozygosity controlling for library size: +0.02. Library size and
+allele-resolved reads are 0.96 collinear, so the original two-correlation
+test could not have separated them; the new evidence, not the old, is what
+this conclusion rests on. This is a different, independently-valid
+measurement from `docs/hapmixqtl_methods.md`'s `d_i`-vs-log-mapped-fragments
+Spearman 0.66 (real BrainVar sequencing metadata, not a cached-array
+covariate) — the two agree in direction and are not in tension; leave that
+file's number as-is. Net: `d_i` is doing its intended job (absorbing true
+per-library scale) and is not accidentally a proxy for how much allelic
+information a library happens to carry.
 
 **Why `squeezeVar` cannot be applied to `tau_g` directly.** `squeezeVar`
 requires a positive variance estimate with known degrees of freedom under a
@@ -367,6 +521,23 @@ are right (the paragraph below spells out why) — and a `squeezeVar`
 `(c_g, tau_g)` itself to shrink, which is what `estimate_variance_priors`
 already does with its own prior rather than `squeezeVar`, per the paragraph
 above).
+
+**Robustness check on the `squeezeVar` diagnostic: a gene set chosen by
+expression, not heterozygosity, gives the same numbers.** The `d_g`
+quartiles 40/72/92 above come from the >=40-informative-donors filter
+(16,674 genes, the allelic channel's own heterozygosity-driven admission
+rule). Applying the standard expression filter instead — drop a gene if
+more than 20% of samples have zero total expression — gives 15,499 genes,
+a different set by a different criterion, and does NOT change the headline
+result: `d0` = 2.00 either way, moderation share 2.7% vs 2.6%, `d_g` median
+72 vs 74. The per-gene scale median moves 0.99 -> 1.09. The two filters are
+NOT nested: 2,799 genes pass the expression filter but fail the
+>=40-informative-donors rule, because a gene can be well expressed in every
+donor and still heterozygous in few of them. That asymmetry is the same one
+the 57.8% bullet above describes at the level of individual donor-gene
+pairs: expression filtering governs admission to the TOTAL channel;
+heterozygosity governs admission to the ALLELIC channel; passing one says
+nothing about passing the other.
 
 **hapmixQTL's layer 1 is the only one in this whole comparison that is not
 fixed before a gene's own residuals are seen, which is categorical, not a
@@ -429,8 +600,8 @@ caveat: `c_g` itself is still identified as a regression slope given the
 observed `v` values (a dimensionless, base-independent quantity — unlike
 `tau`, which is in squared natural-log units in current code), so a
 measured `c_g` of transcriptome-wide, production shrunk fits, above 1,000
-reads/donor (median near 1.8 — the same 2026-09-18 session computation as
-the depth table below, not yet folded into
+allele-resolved reads/donor (median near 1.8 — the same 2026-09-18 session
+computation as the allele-resolved-reads table below, not yet folded into
 `variance_layer_mapping_20260918/`; a different population from the
 29-calibration-gene `c` median 2.6 cited above) remains a real statement
 about the draws under this model. What the algebra makes invariant is the
@@ -439,17 +610,20 @@ free-`c` models, not the parameter `c_g` itself.
 
 Consequence two, measured 2026-09-18 as a session computation (not yet
 folded into `variance_layer_mapping_20260918/`; to be added): where in
-read-depth space do the fitted weights actually track the draws at all?
-Using the production `variance_prior`-shrunk per-gene fits over their
-informative set (1,174,211 donor-gene datapoints with `v_ig > eps`, 16,674
-genes — the informative subset, not the full 34,457 x 92 grid the other
-measurements above use), 57.5% of datapoints have `c_g v_ig > tau_g`
-overall. By tier of median reads per donor (share with `c*v > tau`; the
+allele-resolved-read space do the fitted weights actually track the draws
+at all? (RELABELED 2026-09-18: this tier variable is allele-resolved reads
+`mL+mR` per donor, the same quantity as `R` above, not total expression or
+sequencing depth — see the 57.8% bullet earlier in this file.) Using the
+production `variance_prior`-shrunk per-gene fits over their informative set
+(1,174,211 donor-gene datapoints with `v_ig > eps`, 16,674 genes — the
+informative subset, not the full 34,457 x 92 grid the other measurements
+above use), 57.5% of datapoints have `c_g v_ig > tau_g` overall. By tier of
+median allele-resolved reads per donor (share with `c*v > tau`; the
 10th-90th percentile spread of log weight across a gene's donors, median
 over genes; the same spread of `log(1/v)`; the ratio of the two, i.e. how
 much of the draws' own spread the fitted weights retain):
 
-| Median reads/donor | c*v > tau | log-weight spread | log(1/v) spread | Retained |
+| Median allele-resolved reads/donor | c*v > tau | log-weight spread | log(1/v) spread | Retained |
 |---|---|---|---|---|
 | under 10 | 36% | 0.03 | 0.55 | 6% |
 | 10-30 | 18% | 0.01 | 1.01 | 1% |
@@ -458,10 +632,11 @@ much of the draws' own spread the fitted weights retain):
 | 300-1000 | 80% | 1.57 | 2.00 | 79% |
 | 1000+ | 89% | 1.94 | 2.22 | 87% |
 
-So below 100 reads/donor — 7,455 genes, 45% of the transcriptome — the
-quantification uncertainty is almost entirely flattened out by the `tau_g`
-floor and donors are weighed nearly alike regardless of what the draws say;
-above 300 reads/donor the weights track the draws closely. This is how much
+So below 100 allele-resolved reads/donor — 7,455 genes, 45% of the
+transcriptome — the quantification uncertainty is almost entirely flattened
+out by the `tau_g` floor and donors are weighed nearly alike regardless of
+what the draws say; above 300 allele-resolved reads/donor the weights track
+the draws closely. This is how much
 of the draws' WITHIN-GENE SHAPE survives the floor into the weights, which
 is a separate quantity from the approximate-invariance gap above (that gap
 is about the draws' ABSOLUTE scale reaching the weights through the
