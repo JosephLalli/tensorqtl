@@ -146,7 +146,9 @@ existing state only; it does not imply or start a new experiment.
   the cited 176,209-176,409 cohort-wide range) against `_R` counts
   111,472/92,348/107,377 (within the cited 88,239-116,913 range, spread
   28,674 across the 92 donors — the signature of collapsed duplicates, not
-  lost reads), and TPM sums to exactly 1,000,000 in all three. CAVEAT found
+  lost reads), and TPM sums to 1,000,000 within floating-point rounding
+  (1,000,000.00006-1,000,000.00008 at full `awk` precision, not the exactly
+  1e6 a lower-precision print would suggest) in all three. CAVEAT found
   this pass: `conf/modules.config` in that pipeline conditionally sets
   `ext.args = params.use_personalized_references ? "--keepDuplicates" :
   ""` for the process named `SALMON_INDEX`, and this run's own captured
@@ -191,12 +193,20 @@ existing state only; it does not imply or start a new experiment.
   `no_cov` guard below. Of the 1,831,718 zero-informative pairs, 68.0% have
   zero total expression too (genuinely unexpressed) but 22.7% — 416,207
   pairs, 13.1% of ALL 3,170,044 pairs — are expressed with no allelic
-  information whatsoever, including 89,639 pairs at 1,000+ total reads
-  (session computation against the same cache; the 68.0/22.7 split needs the
-  separate `YT` per-draw array, not present in `allgene_summaries.npz`, so
-  it was not independently re-run in this pass). These are
-  homozygous-but-expressed pairs: real expression, zero allelic information,
-  by construction, not a depth artifact.
+  information whatsoever, including 89,639 pairs at 1,000+ total reads. Both
+  figures independently reproduced this pass against the separate `YT`
+  per-draw array (`/mnt/ssd/lalli/brainvar_hapmix_deploy/cache/gibbs_56b63c3b37ed5df8/YT.npy`,
+  mean total expression per draw for the zero-`R` subset): 67.9% exactly
+  zero, 22.7% at or above a 10-total-read threshold — matching to two
+  decimal places and pinning "expressed" here to mean >=10 total reads, not
+  >0. That threshold leaves a third, unlabeled band the two headline figures
+  don't cover: ~9.3% of the 1,831,718 pairs have TRACE total expression (0
+  to 10 reads) — neither "genuinely unexpressed" nor "expressed" by this
+  cut, and not a gap in the accounting. The 68.0/22.7% figures are the
+  brief's; this pass's own numbers (67.9%/22.7%) agree to within the
+  threshold choice. These are homozygous-but-expressed pairs (the 22.7%
+  tier): real expression, zero allelic information, by construction, not a
+  depth artifact.
 
   DESIGN NOTE worth recording: the intended behavior of Salmon's Gibbs
   resampling was self-downweighting — if two haplotypes were
@@ -220,11 +230,19 @@ existing state only; it does not imply or start a new experiment.
   (homozygous) donor-gene pairs specifically, which — per the mechanism
   above — is what it actually spends most of its time doing.
 
-  Two open items, recorded as open, not as findings: (a) `no_cov` sits
-  inside `if count_noise:`; with `count_noise=False` the same protection
-  would have to come from `Va` already being exactly `0.0` from constant
-  (`yL=yR=0`) draws rather than from the explicit guard — not verified
-  empirically in this pass. (b) The total channel correctly retains these
+  One item closed, one open, both recorded precisely rather than as
+  findings only: (a) `no_cov` sits inside `if count_noise:`; with
+  `count_noise=False` the same protection would have to come from `Va`
+  already being exactly `0.0` from constant (`yL=yR=0`) draws rather than
+  from the explicit guard. VERIFIED this pass, incidentally: the cache above
+  IS a `count_noise=False` computation (`summarize_all_genes.py`'s own
+  docstring: "Same formula as `compute_summaries_from_gibbs(count_noise=
+  False)`"; it computes `Va` as `lr.var(2, ddof=0)` directly, the identical
+  formula and `kappa` to `hapmixqtl.py`'s own pre-`count_noise` `Va =
+  a_draws.var(axis=2, ddof=0)`), and its `Va==0.0` in literally 100% of the
+  1,831,718 zero-coverage pairs (above) confirms the protection holds
+  without the explicit guard too, from the mathematical fact that constant
+  draws have exactly zero variance under `np.var`. (b) The total channel correctly retains these
   pairs (`YT` sums unconditionally, above), so the 13.1%-of-all-pairs figure
   is total-channel-only BY CONSTRUCTION, not a data-quality problem — easy
   to misread as loss. Relatedly, an expression-based gene filter and the

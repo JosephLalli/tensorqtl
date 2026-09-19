@@ -15,8 +15,9 @@ what is implemented, what was measured, and what is open.
 - **Current source behavior:** Gibbs summaries use natural logs and add an
   extra Poisson q term when `count_noise=True`; runtime migration to log2 is
   pending. It computes cross-channel Gibbs covariance `Cat` but the scan does
-  not use it. See `tensorqtl/hapmixqtl.py:325` and the method map in
-  `docs/hapmixqtl_methods.md`.
+  not use it. See `tensorqtl/hapmixqtl.py:349` (`compute_summaries_from_gibbs`;
+  CORRECTED 2026-09-18 from a stale `:325`, which is inside
+  `orient_haplotypes`) and the method map in `docs/hapmixqtl_methods.md`.
 - **Why 57.8% of donor-gene pairs carry zero allele-specific information
   (established 2026-09-18):** a Salmon-indexing and pipeline-ingest fact,
   not a low-expression one. `salmon index` runs without `--keepDuplicates`
