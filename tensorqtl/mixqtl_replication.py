@@ -30,13 +30,24 @@ Relative to ``hapmixqtl.py``, and keyed to the divergence table in
   2. weights 1/(c*v + tau)           -> harmonic sum of counts, capped
   3. per-gene null-model tau         -> no tau; dispersion is the residual scale
   4. known-variance SE 1/sqrt(xx)    -> fitted sigma_hat from the residuals
-  5. log2 with pseudocount kappa=0.5 -> natural log, no pseudocount on the
-                                        allelic channel (mixQTL gates instead)
+  5. pseudocount kappa=0.5, and the
+     mean over draws of the log    -> no pseudocount, and the log of the
+                                        mean (mixQTL gates instead). NOTE
+                                        both arms are in NATURAL log:
+                                        hapmixqtl.py:406 uses np.log and
+                                        log2 appears nowhere in it, the
+                                        migration being pending. An earlier
+                                        version of this list said log2 and
+                                        was wrong; the betas are directly
+                                        comparable.
   6. no library-size offset          -> log(YT / 2 / lib_size)
   7. joint WLS covariate adjustment  -> two-step selected-covariate offset
   8. combined Z^2 statistic          -> inverse-variance meta of (beta, se)
   9. common t reference              -> normal reference (n > 15)
- 10. no count gates                  -> trc >= 20; 5 <= asc <= 5000
+ 10. no count gates                  -> trc >= 100; 50 <= asc <= 1000, the
+                                        PUBLISHED gates. These are NOT the R
+                                        signature's defaults; see the Gate
+                                        presets block below.
  11. permuted whitened residuals     -> permuted phenotype bundle (y, w, mask)
 
 Items already aligned before this module (do not re-remove): the allelic
@@ -82,12 +93,46 @@ __all__ = [
     'harmonic_weights', 'apply_weight_cap', 'covariate_offset',
     'trc_channel', 'asc_channel', 'meta_analyze', 'mixqtl_scan',
     'mixqtl_permutation_scan', 'summaries_from_gibbs_posterior_mean',
+    'PUBLISHED_GATES', 'PACKAGE_DEFAULT_GATES',
 ]
 
-TRC_CUTOFF = 20.0
-ASC_CUTOFF = 5.0
-ASC_CAP = 5000.0
-WEIGHT_CAP = 100.0
+# ---------------------------------------------------------------------------
+#  Gate presets
+# ---------------------------------------------------------------------------
+# mixQTL's R function signature and the settings its authors actually
+# published with are different, and the signature is the outlier: both the
+# roxygen examples and the GTEx v8 production driver
+# (mixqtl-pipeline/code/gtex_v8_mixqtl.R:77) use the stricter values. This
+# module defaults to the PUBLISHED settings, because the point of the arm is
+# to reproduce what mixQTL did rather than an unused default.
+#
+#                    trc_cutoff  asc_cutoff  weight_cap  asc_cap
+#   R signature              20           5         100     5000
+#   roxygen examples        100          50         100     1000
+#   GTEx v8 driver          100          50          10     1000   <- default
+#
+# No rationale for any of these appears in the source, the update notes, the
+# supplement or the driver; the supplement states the lower thresholds as
+# gene-inclusion criteria and never mentions an upper bound.
+#
+# CONSEQUENCE, measured on the 29 high-coverage calibration genes: the
+# published gates keep 499 of 2,193 informative donor-gene pairs against
+# 1,558 under the R signature, with 1,656 lost to the upper cap. Median
+# allelic donors per gene falls from 60 to 7, and 17 of 29 genes drop below
+# META_N_CUTOFF so the allelic channel stops contributing at all. On
+# Salmon posterior-mean abundances the upper cap behaves as a coverage
+# ceiling rather than the outlier guard it presumably was for observed read
+# counts. Pass PACKAGE_DEFAULT_GATES explicitly to get the other behaviour.
+
+PUBLISHED_GATES = dict(trc_cutoff=100.0, asc_cutoff=50.0,
+                       weight_cap=10.0, asc_cap=1000.0)
+PACKAGE_DEFAULT_GATES = dict(trc_cutoff=20.0, asc_cutoff=5.0,
+                             weight_cap=100.0, asc_cap=5000.0)
+
+TRC_CUTOFF = PUBLISHED_GATES['trc_cutoff']
+ASC_CUTOFF = PUBLISHED_GATES['asc_cutoff']
+ASC_CAP = PUBLISHED_GATES['asc_cap']
+WEIGHT_CAP = PUBLISHED_GATES['weight_cap']
 META_N_CUTOFF = 15
 
 

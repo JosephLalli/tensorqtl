@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from tensorqtl.mixqtl_replication import (
+    PUBLISHED_GATES, PACKAGE_DEFAULT_GATES,
     harmonic_weights, apply_weight_cap, covariate_offset,
     trc_channel, asc_channel, meta_analyze, mixqtl_scan,
     mixqtl_permutation_scan, summaries_from_gibbs_posterior_mean,
@@ -111,12 +112,14 @@ def test_asc_gate_excludes_both_tails_on_both_haplotypes():
     """5 <= y1,y2 <= 5000, on BOTH haplotypes  [matrix_ls.R:80]"""
     rng = np.random.default_rng(3)
     n = 60
-    y1 = rng.uniform(50, 200, n); y2 = rng.uniform(50, 200, n)
-    y1[0] = 4.0        # below cutoff
+    y1 = rng.uniform(100, 900, n); y2 = rng.uniform(100, 900, n)
+    y1[0] = 4.9        # below cutoff
     y2[1] = 4.9        # below cutoff, other haplotype
     y1[2] = 5001.0     # above cap
     X = rng.normal(size=(n, 3))
-    out = asc_channel(y1, y2, X)
+    # thresholds stated explicitly: this test is ABOUT the gate, so it must
+    # not silently inherit whichever preset the module defaults to.
+    out = asc_channel(y1, y2, X, asc_cutoff=5.0, asc_cap=5000.0)
     assert out['sample_size'] == n - 3
 
 
@@ -128,21 +131,24 @@ def test_trc_gate_is_on_the_raw_count_not_the_response():
     ytotal[:4] = 19.0                      # below the raw-count cutoff
     lib = np.full(n, 1e6)
     X = rng.normal(size=(n, 3))
-    out = trc_channel(ytotal, lib, X)
+    out = trc_channel(ytotal, lib, X, trc_cutoff=20.0)
     assert out['sample_size'] == n - 4
 
 
 def test_zero_count_donors_are_excluded_by_the_asc_gate():
     """Salmon emits YL=YR=0 for donors with no allele-informative reads.
 
-    mixQTL's >=5 gate removes them without any extra sentinel, which is why
-    this arm needs no equivalent of hapmixQTL's _zero_degenerate_ase_weights.
+    mixQTL's lower cutoff removes them without any extra sentinel, under
+    either preset, which is why this arm needs no equivalent of hapmixQTL's
+    _zero_degenerate_ase_weights.
     """
     rng = np.random.default_rng(5)
     n = 40
-    y1 = rng.uniform(40, 90, n); y2 = rng.uniform(40, 90, n)
+    y1 = rng.uniform(200, 800, n); y2 = rng.uniform(200, 800, n)
     y1[:12] = 0.0; y2[:12] = 0.0
     X = rng.normal(size=(n, 2))
+    # counts placed well inside BOTH presets, so the only exclusions are the
+    # zero-count donors this test is about.
     out = asc_channel(y1, y2, X)
     assert out['sample_size'] == n - 12
     assert np.isfinite(out['beta']).all()
@@ -154,7 +160,7 @@ def test_monomorphic_variants_dropped_after_sample_filtering():
     A variant can be polymorphic overall yet constant among gated-in donors.
     """
     n = 40
-    y1 = np.full(n, 60.0); y2 = np.full(n, 60.0)
+    y1 = np.full(n, 600.0); y2 = np.full(n, 600.0)
     y1[:20] = 1.0                       # first 20 donors fail the gate
     x = np.zeros((n, 1))
     x[:20, 0] = 1.0                     # varies only among the FAILING donors
@@ -172,13 +178,13 @@ def test_asc_uses_natural_log_with_no_pseudocount():
     """
     n = 40
     x = np.ones((n, 1)); x[::2] = -1.0
-    y1 = np.where(x[:, 0] > 0, 100.0, 50.0)
-    y2 = np.where(x[:, 0] > 0, 50.0, 100.0)     # ratio 2 at x=+1, 1/2 at x=-1
+    y1 = np.where(x[:, 0] > 0, 800.0, 400.0)
+    y2 = np.where(x[:, 0] > 0, 400.0, 800.0)    # ratio 2 at x=+1, 1/2 at x=-1
     out = asc_channel(y1, y2, x)
     assert out['beta'][0] == pytest.approx(np.log(2.0), rel=1e-12)
 
     # a kappa=0.5 pseudocount would give log(100.5/50.5) != log(2)
-    shrunk = np.log(100.5 / 50.5)
+    shrunk = np.log(800.5 / 400.5)
     assert abs(out['beta'][0] - shrunk) > 1e-4
 
 
@@ -244,7 +250,7 @@ def test_na_genotypes_impute_to_half():
     """h1[is.na(h1)] = 0.5  [mixqtl.R:50-53]"""
     rng = np.random.default_rng(8)
     n = 40
-    y1 = rng.uniform(40, 90, n); y2 = rng.uniform(40, 90, n)
+    y1 = rng.uniform(200, 800, n); y2 = rng.uniform(200, 800, n)
     yt = y1 + y2; lib = np.full(n, 1e6)
     h1 = rng.integers(0, 2, (n, 2)).astype(float)
     h2 = rng.integers(0, 2, (n, 2)).astype(float)
@@ -326,7 +332,7 @@ def test_cap_of_one_makes_the_channel_unweighted():
 def test_permutation_scan_is_usable_by_default_and_degenerate_under_strict():
     rng = np.random.default_rng(10)
     n, P = 60, 4
-    y1 = rng.uniform(40, 200, n); y2 = rng.uniform(40, 200, n)
+    y1 = rng.uniform(200, 800, n); y2 = rng.uniform(200, 800, n)
     y1[:6] = 0.0; y2[:6] = 0.0                  # realistic gate failures
     yt = y1 + y2 + 500.0
     lib = np.full(n, 1e6)
@@ -355,7 +361,7 @@ def test_permutation_moves_response_weights_and_mask_together():
     """
     rng = np.random.default_rng(11)
     n, P = 50, 3
-    y1 = rng.uniform(40, 200, n); y2 = rng.uniform(40, 200, n)
+    y1 = rng.uniform(200, 800, n); y2 = rng.uniform(200, 800, n)
     yt = y1 + y2 + 400.0
     lib = np.full(n, 1e6)
     h1 = rng.integers(0, 2, (n, P)).astype(float)
@@ -366,3 +372,44 @@ def test_permutation_moves_response_weights_and_mask_together():
     perm = mixqtl_permutation_scan(y1, y2, yt, lib, h1, h2, identity)
     assert perm[0] == pytest.approx(np.nanmax(np.abs(obs['meta']['stat'])),
                                     rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+#  gate presets
+# ---------------------------------------------------------------------------
+
+def test_module_defaults_are_the_published_gates_not_the_r_signature():
+    """mixQTL's R signature is trc=20, asc=5, weight_cap=100, asc_cap=5000,
+    but both its roxygen examples and the authors' GTEx v8 driver
+    (mixqtl-pipeline/code/gtex_v8_mixqtl.R:77) use 100/50/10/1000. This arm
+    defaults to what was published, since it exists to reproduce what mixQTL
+    did rather than a default nothing was run with.
+    """
+    import tensorqtl.mixqtl_replication as MX
+    assert PUBLISHED_GATES == dict(trc_cutoff=100.0, asc_cutoff=50.0,
+                                   weight_cap=10.0, asc_cap=1000.0)
+    assert PACKAGE_DEFAULT_GATES == dict(trc_cutoff=20.0, asc_cutoff=5.0,
+                                         weight_cap=100.0, asc_cap=5000.0)
+    assert (MX.TRC_CUTOFF, MX.ASC_CUTOFF, MX.WEIGHT_CAP, MX.ASC_CAP) == (
+        100.0, 50.0, 10.0, 1000.0)
+    assert PUBLISHED_GATES != PACKAGE_DEFAULT_GATES
+
+
+def test_the_two_presets_admit_different_donors():
+    """The presets are not cosmetic: the published upper cap is 5x stricter,
+    and on posterior-mean abundances that is what excludes donors.
+    """
+    rng = np.random.default_rng(42)
+    n = 200
+    y1 = rng.uniform(60, 4000, n)
+    y2 = rng.uniform(60, 4000, n)
+    X = rng.normal(size=(n, 2))
+    pub = asc_channel(y1, y2, X, asc_cutoff=PUBLISHED_GATES['asc_cutoff'],
+                      asc_cap=PUBLISHED_GATES['asc_cap'],
+                      weight_cap=PUBLISHED_GATES['weight_cap'])
+    pkg = asc_channel(y1, y2, X, asc_cutoff=PACKAGE_DEFAULT_GATES['asc_cutoff'],
+                      asc_cap=PACKAGE_DEFAULT_GATES['asc_cap'],
+                      weight_cap=PACKAGE_DEFAULT_GATES['weight_cap'])
+    assert pub['sample_size'] < pkg['sample_size']
+    # and the default path agrees with the published preset
+    assert asc_channel(y1, y2, X)['sample_size'] == pub['sample_size']
