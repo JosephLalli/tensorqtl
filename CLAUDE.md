@@ -938,6 +938,15 @@ hapmixQTL-vs-RASQUAL.
   escapes); and `floor(n/10)` makes the cap 0 for 3-9 passing samples (past
   the `sample_size > 2` guard) and 1 for 10-19, where the channel becomes
   plain OLS.
+- **Gene-level calibration**: hapmixQTL's within-gene permutation p rejects
+  at 5% in 0.0267 of 1,160 gene-draw pairs (se 0.0047; vs nominal p=1.1e-4,
+  median p 0.655) -- conservative, the documented consequence of permuting
+  residuals while leaving each donor's weight in place. The mixQTL port
+  through the CORRECTED permutation path rejects in 0.0448 of 290 (se
+  0.0122; vs nominal p=0.79, median p 0.495), indistinguishable from
+  uniform. Their DIFFERENCE is 0.0181 +/- 0.0130, z=1.39: it does not clear
+  its own floor at these permutation counts, so compare the median p-values
+  rather than the 5% rates. The published path yields no number at all here.
 - End-to-end on the 29 genes is the weak half: only 6 are called, lead
   agreement among those is 1/6 with median lead LD r^2 0.744, Spearman of
   the per-gene statistic 0.517. A signal-bearing gene set is needed to
