@@ -883,3 +883,65 @@ python3 scripts/run_hapmixqtl_from_salmon.py --selftest
 
 The comparison driver's self-test covers the RASQUAL arm, the matched-variant effect
 comparison, and that a rerun reuses its null-round checkpoints byte-identically.
+
+## The mixQTL replication arm, and what the draws buy (2026-09-19)
+
+`tensorqtl/mixqtl_replication.py` is a NumPy port of the published mixQTL
+estimator (`hakyimlab/mixqtl` @ `624ae44`) with all eleven divergences from
+the 2026-09-14 review removed. It consumes Salmon posterior-mean counts and
+never touches the draws, so it doubles as the **no-draws comparator**. Driver
+`scripts/compare_mixqtl_replication.py`, analysis
+`scripts/analyze_mixqtl_comparison.py`, report
+`brainvar_hapmix_deploy/mixqtl_replication_20260919/REPORT.md`.
+Before this, mixQTL had never been run: `compare_pipelines.py` is
+hapmixQTL-vs-RASQUAL.
+
+- **No cross-language check exists and none is possible here.** `libR.so`
+  links `libblas.so.3` and `libopenblas.so.0` together; `lm()`, `%*%` and
+  `crossprod()` all segfault, `tensorA`/`glmnet` are absent, no sudo. The
+  port's algebra is validated per variant against `numpy.linalg.lstsq` to
+  1e-10 and every gate/cap/dof rule is pinned to the R source line it
+  encodes (21 tests). Exact reproduction of the published code is NOT
+  claimed.
+- **THE DRAWS DO IMPROVE THE POINT ESTIMATE.** Holding response, donor set,
+  variants and design fixed and varying only the weights, `1/v` weighting
+  cuts `var(beta_hat)` across 40 null permutations to **0.333** of unweighted
+  (25/29 genes, sign p=1.0e-4) — 1.73x in SE. It beats mixQTL's published
+  capped harmonic weights (ratio 0.511, 23/29) and uncapped harmonic
+  (0.752, 21/29). Kish effective n falls 77 -> 45 while variance drops 3x,
+  which is why this is not a concentration artifact.
+- **The anticonservatism is in the SE formula, not the weights.** With a
+  fitted residual scale the Gibbs arm calibrates at 1.032; with the shipped
+  known-variance `1/sqrt(xx)` it reads 3.247, i.e. the reported SE
+  understates realized error by 1.80x. 3.247 is an UPPER bound: 6 of the 29
+  genes carry signal, which permutation turns into spread.
+- **The excess is multiplicative, not additive.** Profiling `1/(v + tau)`
+  over a tau grid (selected by realized spread, not fitted from the
+  residuals it weights): flat 0-0.25x v_med, then monotone worse (1.079 at
+  1x, 1.392 at 8x). A floor of the size 3.247 would imply if additive is
+  excluded — tau=2x is 17% WORSE than tau=0. Per gene it is not identifiable
+  (40 perms give ~23% noise on a variance). This is the `c*v` form with free
+  per-gene `c`, which is exactly limma's `fit$sigma`, and it cancels from a
+  within-gene permutation p.
+- **`count_noise`'s q is inert for weighting**: q-on vs q-off efficiency
+  0.3330 vs 0.3329, sign test null (19/29, p=0.14). It moves absolute scale
+  (3.247 -> 3.796) only. Second, independent confirmation of the 2026-09-15
+  double-count finding.
+- **mixQTL's fold cap costs two thirds of the gain** (0.333 -> 0.756) and is
+  a workaround for a known-variance SE that a fitted sigma already makes
+  unnecessary.
+- Two defects in the distributed reference, both reproduced under
+  `strict_reference_cap=True` and both documented in the module docstring:
+  `matrix_ls_asc_permutation` zeroes gate-failing weights before taking the
+  min for the fold cap, so ANY gate failure zeroes every weight and all
+  permuted betas are 0/0 (the non-permutation path subsets first and
+  escapes); and `floor(n/10)` makes the cap 0 for 3-9 passing samples (past
+  the `sample_size > 2` guard) and 1 for 10-19, where the channel becomes
+  plain OLS.
+- End-to-end on the 29 genes is the weak half: only 6 are called, lead
+  agreement among those is 1/6 with median lead LD r^2 0.744, Spearman of
+  the per-gene statistic 0.517. A signal-bearing gene set is needed to
+  sharpen it. Scope limit: these are high-coverage genes, 17.8% uninformative
+  donor-gene pairs against 57.8% transcriptome-wide, so the 3x is not shown
+  to transfer to low-count genes where the Gibbs and Poisson weights
+  converge.
