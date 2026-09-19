@@ -905,29 +905,39 @@ hapmixQTL-vs-RASQUAL.
   claimed.
 - **THE DRAWS DO IMPROVE THE POINT ESTIMATE.** Holding response, donor set,
   variants and design fixed and varying only the weights, `1/v` weighting
-  cuts `var(beta_hat)` across 40 null permutations to **0.333** of unweighted
-  (25/29 genes, sign p=1.0e-4) — 1.73x in SE. It beats mixQTL's published
-  capped harmonic weights (ratio 0.511, 23/29) and uncapped harmonic
-  (0.752, 21/29). Kish effective n falls 77 -> 45 while variance drops 3x,
-  which is why this is not a concentration artifact.
+  cuts `var(beta_hat)` across 40 null permutations to **0.340** of unweighted
+  (25/29 genes, sign p=1.0e-4) — 1.71x in SE, 2.9x in variance. It beats
+  mixQTL's published capped harmonic weights (ratio 0.499, 23/29) and
+  uncapped harmonic (0.763, 21/29). Kish effective n falls 77 -> 45 while
+  variance drops 2.9x, which is why this is not a concentration artifact.
+- **It replicates across seeds.** Re-running the whole ablation at an
+  independent master seed moves every arm by <= 0.024 in the ratio and the
+  per-gene Gibbs/OLS ratio correlates at r=0.997 over 29 genes. The gaps
+  that carry the conclusion (0.18, 0.26) are 7-11x that. The ONE pair that
+  does not separate is capped Gibbs 0.780 vs capped harmonic 0.826 (gap
+  0.046, ~2x the shift): read those as close, not ordered. `compare_seeds.py`.
 - **The anticonservatism is in the SE formula, not the weights.** With a
-  fitted residual scale the Gibbs arm calibrates at 1.032; with the shipped
-  known-variance `1/sqrt(xx)` it reads 3.247, i.e. the reported SE
-  understates realized error by 1.80x. 3.247 is an UPPER bound: 6 of the 29
+  fitted residual scale the Gibbs arm calibrates at 1.033; with the shipped
+  known-variance `1/sqrt(xx)` it reads 3.313, i.e. the reported SE
+  understates realized error by 1.82x. 3.313 is an UPPER bound: 6 of the 29
   genes carry signal, which permutation turns into spread.
 - **The excess is multiplicative, not additive.** Profiling `1/(v + tau)`
   over a tau grid (selected by realized spread, not fitted from the
-  residuals it weights): flat 0-0.25x v_med, then monotone worse (1.079 at
-  1x, 1.392 at 8x). A floor of the size 3.247 would imply if additive is
-  excluded — tau=2x is 17% WORSE than tau=0. Per gene it is not identifiable
-  (40 perms give ~23% noise on a variance). This is the `c*v` form with free
-  per-gene `c`, which is exactly limma's `fit$sigma`, and it cancels from a
-  within-gene permutation p.
+  residuals it weights): flat 0-0.25x v_med, then monotone worse (1.090 at
+  1x, 1.430 at 8x). A floor of the size 3.313 would imply if additive is
+  excluded — tau=2x is 18% WORSE than tau=0. Per gene it is not identifiable
+  (40 perms give ~23% noise on a variance; 9/29 genes gain >5% at some
+  tau>0 at BOTH seeds, about what chance gives against 8 alternatives).
+  This is the `c*v` form with free per-gene `c`, which is exactly limma's
+  `fit$sigma`, and it cancels from a within-gene permutation p.
 - **`count_noise`'s q is inert for weighting**: q-on vs q-off efficiency
-  0.3330 vs 0.3329, sign test null (19/29, p=0.14). It moves absolute scale
-  (3.247 -> 3.796) only. Second, independent confirmation of the 2026-09-15
-  double-count finding.
-- **mixQTL's fold cap costs two thirds of the gain** (0.333 -> 0.756) and is
+  0.3402 vs 0.3410, a 0.2% difference. CAUTION on the sign test here: it
+  reads 21/29 (p=0.024) at seed 42 and 19/29 (p=0.14) at the other seed. A
+  sign test responds to DIRECTION regardless of magnitude, so a p that
+  crosses 0.05 between seeds while the effect stays at 0.2% means inert, not
+  real. q moves absolute scale (3.313 -> 3.732) only. Second, independent
+  confirmation of the 2026-09-15 double-count finding.
+- **mixQTL's fold cap costs two thirds of the gain** (0.340 -> 0.780) and is
   a workaround for a known-variance SE that a fitted sigma already makes
   unnecessary.
 - Two defects in the distributed reference, both reproduced under
@@ -942,11 +952,15 @@ hapmixQTL-vs-RASQUAL.
   at 5% in 0.0267 of 1,160 gene-draw pairs (se 0.0047; vs nominal p=1.1e-4,
   median p 0.655) -- conservative, the documented consequence of permuting
   residuals while leaving each donor's weight in place. The mixQTL port
-  through the CORRECTED permutation path rejects in 0.0448 of 290 (se
-  0.0122; vs nominal p=0.79, median p 0.495), indistinguishable from
-  uniform. Their DIFFERENCE is 0.0181 +/- 0.0130, z=1.39: it does not clear
+  through the CORRECTED permutation path rejects in 0.0483 of 290 (se
+  0.0126; vs nominal p=1.0, median p 0.4925), indistinguishable from
+  uniform, and replicating across seeds (0.0448 / median 0.4950 at the
+  other). Their DIFFERENCE is 0.0216 +/- 0.0134, z=1.60: it does not clear
   its own floor at these permutation counts, so compare the median p-values
   rather than the 5% rates. The published path yields no number at all here.
+  Note the hapmixQTL side is read from the existing ablation at that
+  harness's seed, not re-run at 42 -- legitimate only because the arms are
+  compared as marginal distributions, never draw by draw.
 - End-to-end on the 29 genes is the weak half: only 6 are called, lead
   agreement among those is 1/6 with median lead LD r^2 0.744, Spearman of
   the per-gene statistic 0.517. A signal-bearing gene set is needed to
