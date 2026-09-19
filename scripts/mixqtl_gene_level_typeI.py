@@ -36,7 +36,7 @@ sys.path.insert(0, REPO)
 
 NPERM = int(os.environ.get('NPERM', '200'))
 NULL_DRAWS = int(os.environ.get('NULL_DRAWS', '10'))
-SEED = 0
+SEED = 42          # master seed; child streams derived as SEED + offset + index
 
 log = lambda *a: print(time.strftime('%H:%M:%S'), *a, flush=True)
 

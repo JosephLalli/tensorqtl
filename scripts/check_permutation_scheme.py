@@ -7,7 +7,7 @@ permutation BIAS, comparing variance alone would be incomplete. This measures
 |mean(beta_hat)| against sd(beta_hat) per arm.
 
 CHECK 2 -- seed sharing. The ablation draws its permutation as
-RandomState(10007 + i).permutation(n_inf), so two genes with the same
+RandomState(SEED + 10007 + i).permutation(n_inf), so two genes with the same
 informative-donor count receive the SAME donor permutation. Their data are
 otherwise unrelated, so the induced dependence should be negligible, but the
 sign test across 29 genes assumes independence. This re-runs the ablation
@@ -27,6 +27,7 @@ import tensorqtl.hapmixqtl as HM                                        # noqa: 
 from tensorqtl import mixqtl_replication as MX                          # noqa: E402
 
 NP_NULL = 40
+SEED = 42          # master seed, matching compare_mixqtl_replication.py
 
 
 def main():
@@ -66,7 +67,8 @@ def main():
             arms = {'gibbs': wg, 'harm_cap': wh, 'equal': np.ones(n)}
             bb = {k: np.empty((NP_NULL, X.shape[1])) for k in arms}
             for pi in range(NP_NULL):
-                seed = 10007 + pi if shared else 10007 + pi + 9973 * j
+                seed = (SEED + 10007 + pi if shared
+                        else SEED + 10007 + pi + 9973 * j)
                 prm = np.random.RandomState(seed).permutation(n)
                 for k, w in arms.items():
                     b, _ = MX._simple_regression_through_origin(a[prm], X, w[prm])

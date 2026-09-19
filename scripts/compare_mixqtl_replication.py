@@ -79,7 +79,13 @@ REPO = os.path.dirname(HERE)
 D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
 OUT = f'{D}/mixqtl_replication_20260919'
 NP_NULL = int(os.environ.get('NP', '40'))
-WIN, MAF, NPERM, SEED = 1_000_000, 0.05, 1000, 0
+WIN, MAF, NPERM = 1_000_000, 0.05, 1000
+# Master seed for every random draw here. Child streams are derived as
+# SEED + <fixed offset> + <index>, because a bare RandomState(SEED) reused per
+# draw would hand back the same permutation every time. Changing SEED changes
+# every null draw; it does not change which arms share a permutation, since
+# all arms within a gene use the same one.
+SEED = 42
 
 # REPO must precede REPO/tensorqtl, or the inner directory shadows the
 # package and `import tensorqtl.hapmixqtl` fails.
