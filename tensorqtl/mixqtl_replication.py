@@ -111,9 +111,26 @@ __all__ = [
 #   roxygen examples        100          50         100     1000
 #   GTEx v8 driver          100          50          10     1000   <- default
 #
-# No rationale for any of these appears in the source, the update notes, the
-# supplement or the driver; the supplement states the lower thresholds as
-# gene-inclusion criteria and never mentions an upper bound.
+# RATIONALE, from the paper's Methods (Liang et al. 2021, "Softwares"
+# section preamble). It is NOT in the R source, the update notes, the
+# supplement or the driver, only in the main text:
+#
+#   "We considered very large allele-specific counts to be likely alignment
+#    artifacts and removed individuals with allele-specific read counts
+#    greater than 1000. To further limit the influence of large count
+#    outliers on the estimated log fold change, beta_asc, we set the largest
+#    weight 1/y1 + 1/y2 to be at most K fold to the smallest"
+#
+# So both the upper cap and the fold cap are outlier guards against
+# ALIGNMENT ARTIFACTS in observed read counts. The lower thresholds are
+# stated in the main text as gene-inclusion criteria: at least 15 samples
+# with at least 50 allele-specific counts per haplotype, and at least 500
+# samples with total count at least 100; 4,734 genes (28%) passed.
+#
+# That rationale is the reason the cap does not transfer here. A Salmon
+# posterior-mean abundance above 1000 is not an alignment artifact, it is a
+# well-expressed gene, so a threshold whose stated purpose is to exclude
+# artifactual pileups becomes a coverage ceiling instead.
 #
 # CONSEQUENCE, measured on the 29 high-coverage calibration genes: the
 # published gates keep 499 of 2,193 informative donor-gene pairs against
