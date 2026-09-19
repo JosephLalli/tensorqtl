@@ -1,0 +1,352 @@
+"""hapmixQTL vs the mixQTL replication arm, on the 29 null-calibration genes.
+
+Two experiments, deliberately separate because they answer different questions
+and only one of them permits comparing numbers on a common scale.
+
+EXPERIMENT A -- end-to-end (does hapmixQTL agree with its parent?)
+    hapmixQTL at its shipped defaults against mixqtl_replication, same genes,
+    same variant window, same 40 null genotype permutations. The two arms use
+    different response transforms (log2 with kappa=0.5 vs natural log with no
+    pseudocount), different donor gates, and therefore different variant sets
+    after the post-filter var(x)==0 drop. So this experiment compares only
+    scale-free quantities: lead-variant agreement, Spearman correlation of the
+    per-gene statistic, and type-I error at 5% from each arm's own null.
+    Raw betas and SEs are NOT compared across arms; that would be a units
+    error dressed up as a result.
+
+EXPERIMENT B -- weighting ablation (do the Gibbs draws buy anything?)
+    This is the measurement that bears on whether propagating the draws
+    improves the effect estimate. Everything is held fixed -- hapmixQTL's
+    response A, its informative-donor set (va > 0), the same variants, the
+    same through-origin design -- and ONLY the weight vector varies:
+
+        1/v        the Gibbs across-draw variance, as shipped
+        harmonic   1/(1/YL_bar + 1/YR_bar), mixQTL's Poisson precision, capped
+        equal      no weighting at all
+
+    Under a null permutation the true slope is zero, so the spread of
+    beta_hat across permutations IS the estimation error of the estimator --
+    no simulated ground truth is required. Gauss-Markov says the weighted fit
+    beats the unweighted one exactly when the weights are inversely
+    proportional to the true error variance AND that variance varies across
+    donors. So:
+
+        1/v lowest      -> the draw variance is the better error model
+        harmonic lowest -> the Poisson approximation is closer to the truth
+        all three tied  -> the error is effectively constant across donors
+                           within a gene, which is the regime in which a
+                           per-gene scale cancels from the permutation
+                           p-value and no weighting can change an answer
+
+    We also record mean(se^2) per arm. The ratio var(beta_hat)/mean(se^2) is
+    the arm's calibration: 1 means the reported uncertainty matches the
+    realized spread, below 1 means the arm understates its own error. That
+    converts "does it reduce the SE" into "does it reduce the SE honestly",
+    which is the only version of the question that bears on a call.
+
+Data loading follows estimator_ablation_20260916/ablation29.py lines 32-58,
+copied rather than imported so this script has no dependency on a path
+outside the repository.
+"""
+
+import contextlib
+import io
+import json
+import os
+import sys
+import time
+
+import numpy as np
+import pandas as pd
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
+OUT = f'{D}/mixqtl_replication_20260919'
+NP_NULL = int(os.environ.get('NP', '40'))
+WIN, MAF, NPERM, SEED = 1_000_000, 0.05, 1000, 0
+
+# REPO must precede REPO/tensorqtl, or the inner directory shadows the
+# package and `import tensorqtl.hapmixqtl` fails.
+sys.path.insert(0, f'{REPO}/scripts')
+sys.path.insert(0, REPO)
+sys.path.append(f'{REPO}/tensorqtl')
+
+import tensorqtl.hapmixqtl as HM                      # noqa: E402
+from tensorqtl import mixqtl_replication as MX        # noqa: E402
+
+log = lambda *a: print(time.strftime('%H:%M:%S'), *a, flush=True)
+
+
+# ---------------------------------------------------------------------------
+#  inputs (ablation29.py:32-58)
+# ---------------------------------------------------------------------------
+
+def load_inputs():
+    import run_hapmixqtl_from_salmon as H
+    cache = f'{D}/cache/gibbs_56b63c3b37ed5df8'
+    genes_all = open(f'{cache}/genes.txt').read().split()
+    samples = open(f'{cache}/samples.txt').read().split()
+    genes = [l.strip() for l in open(f'{D}/pilot29_hc.txt') if l.strip()]
+    gi = {g: i for i, g in enumerate(genes_all)}
+    rows = [gi[g] for g in genes]
+    mm = {k: np.load(f'{cache}/{k}.npy', mmap_mode='r') for k in ('YL', 'YR', 'YT')}
+    YL, YR, YT = (np.asarray(mm[k][rows]) for k in ('YL', 'YR', 'YT'))
+
+    gp = pd.read_csv(f'{D}/annot/genes.tsv', sep='\t', header=None, dtype={1: str})
+    gp.columns = ['gene', 'chr', 'start', 'end', 'pos']
+    gp = gp.set_index('gene')
+    gp['chr'] = gp['chr'].astype(str).str.strip()
+    with contextlib.redirect_stdout(io.StringIO()):
+        vdf, dos, xL, xR, order = H.read_phased_vcf(
+            f'{D}/prepped/analysis.snps.maf01.vcf.gz', set(samples),
+            regions=f'{D}/null_calibration_29b/regions.bed')
+    keep = [samples.index(s) for s in order]
+    order = list(order)
+    vdf['chrom'] = vdf['chrom'].astype(str)
+    pos, ch = vdf['pos'].values, vdf['chrom'].values
+    in_body = np.zeros(len(vdf), bool)
+    in_win = np.zeros(len(vdf), bool)
+    for g in genes:
+        r = gp.loc[g]
+        same = ch == str(r['chr'])
+        in_body |= same & (pos >= int(r['start'])) & (pos <= int(r['end']))
+        in_win |= same & (np.abs(pos - int(r['pos'])) <= WIN)
+    af = dos.mean(1) / 2.0
+    tested = in_win & ~in_body & (np.minimum(af, 1 - af) >= MAF)
+    idx = np.where(tested)[0]
+
+    cov_df = pd.read_csv(f'{D}/cov/covariates.tsv', sep='\t', index_col=0).loc[order]
+
+    # library size: mapped fragments, bound by sample key (never by position)
+    meta = json.load(open(f'{D}/gibbs_influence_audit_20260915/input_source_metadata.json'))
+    mf = {e['sample']: float(e['mapped_fragments']) for e in meta}
+    missing = [s for s in order if s not in mf]
+    if missing:
+        raise SystemExit(f'no mapped_fragments for {len(missing)} samples, e.g. {missing[:3]}')
+    lib_size = np.array([mf[s] for s in order])
+
+    return dict(genes=genes, order=order, keep=keep, YL=YL, YR=YR, YT=YT,
+                vdf=vdf, dos=dos, xL=xL, xR=xR, idx=idx, gp=gp,
+                cov_df=cov_df, lib_size=lib_size)
+
+
+def gene_variant_index(I, g):
+    """Variant rows within I['idx'] that fall in gene g's cis window."""
+    r = I['gp'].loc[g]
+    v = I['vdf'].iloc[I['idx']]
+    same = v['chrom'].values == str(r['chr'])
+    return np.where(same & (np.abs(v['pos'].values - int(r['pos'])) <= WIN))[0]
+
+
+# ---------------------------------------------------------------------------
+#  EXPERIMENT B: weighting ablation
+# ---------------------------------------------------------------------------
+
+def experiment_b(I):
+    """Vary only the allelic weights; measure var(beta_hat) under the null."""
+    genes, order, keep = I['genes'], I['order'], I['keep']
+    A, _T, Va, _Vt, _C = HM.compute_summaries_from_gibbs(
+        I['YL'], I['YR'], yT=I['YT'], count_noise=True)
+    A, Va = A[:, keep], Va[:, keep]
+    mL = I['YL'].mean(2)[:, keep]
+    mR = I['YR'].mean(2)[:, keep]
+
+    s_all = (I['xL'] - I['xR'])[I['idx']][:, keep]      # [V, N] allelic design
+    rows = []
+    for j, g in enumerate(genes):
+        vsel = gene_variant_index(I, g)
+        if vsel.size == 0:
+            continue
+        inf = Va[j] > 1e-12                              # informative donors
+        n_inf = int(inf.sum())
+        if n_inf <= 2:
+            continue
+        a = A[j][inf]
+        S = s_all[vsel][:, inf]                          # [P, n_inf]
+
+        # variants that still vary within the informative donor set
+        varying = S.var(axis=1) > 0
+        S = S[varying]
+        if S.shape[0] == 0:
+            continue
+        X = S.T                                          # [n_inf, P]
+
+        # 2x2 on {weight source} x {mixQTL fold cap}, plus unweighted.
+        # Without both cap levels the comparison confounds "Gibbs vs Poisson"
+        # with "uncapped vs capped", since mixQTL caps and hapmixQTL does not.
+        w_gibbs = 1.0 / np.maximum(Va[j][inf], 1e-12)
+        w_harm = MX.harmonic_weights(np.maximum(mL[j][inf], 1e-12),
+                                     np.maximum(mR[j][inf], 1e-12))
+        w_gibbs_cap, cap, _ = MX.apply_weight_cap(w_gibbs, n_inf, MX.WEIGHT_CAP)
+        w_harm_cap, _, _ = MX.apply_weight_cap(w_harm, n_inf, MX.WEIGHT_CAP)
+
+        arms = {
+            'gibbs_1_over_v': w_gibbs,            # hapmixQTL, uncapped
+            'gibbs_capped': w_gibbs_cap,
+            'harmonic_uncapped': w_harm,
+            'harmonic_poisson_capped': w_harm_cap,  # mixQTL as published
+            'equal_ols': np.ones(n_inf),
+        }
+        betas = {k: np.empty((NP_NULL, X.shape[1])) for k in arms}
+        se2 = {k: np.empty((NP_NULL, X.shape[1])) for k in arms}
+        # hapmixQTL's SHIPPED standard error is the known-variance form
+        # 1/sqrt(xx), with no fitted residual scale multiplying it. Track it
+        # separately: the two forms calibrate differently, and the shipped
+        # anticonservatism is a property of this one, not of the weights.
+        se2_known = {k: np.empty((NP_NULL, X.shape[1])) for k in arms}
+
+        # Null: permute the donors of the PHENOTYPE bundle, so response and
+        # weight move together and each donor keeps its own measurement
+        # precision. Permuting within the informative subset is what breaks
+        # the genotype-phenotype pairing; the design X never moves.
+        for pi in range(NP_NULL):
+            prm = np.random.RandomState(SEED + 10007 + pi).permutation(n_inf)
+            a_p = a[prm]
+            for k, w in arms.items():
+                wp = w[prm]
+                b, s = MX._simple_regression_through_origin(a_p, X, wp)
+                betas[k][pi] = b
+                se2[k][pi] = s ** 2
+                xx = (X * X * wp[:, None]).sum(0)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    se2_known[k][pi] = np.where(xx > 0, 1.0 / xx, np.nan)
+
+        n_used = 0
+        for k in arms:
+            vb = np.var(betas[k], axis=0, ddof=1)        # across permutations
+            ms = np.nanmean(se2[k], axis=0)
+            mk = np.nanmean(se2_known[k], axis=0)
+            ok = np.isfinite(vb) & np.isfinite(ms) & (ms > 0)
+            if ok.sum() == 0:
+                continue
+            n_used = int(ok.sum())
+            okk = ok & np.isfinite(mk) & (mk > 0)
+            rows.append(dict(
+                gene=g, arm=k, n_inf=n_inf, n_var=n_used, cap=float(cap),
+                median_var_beta=float(np.median(vb[ok])),
+                median_mean_se2=float(np.median(ms[ok])),
+                median_calibration=float(np.median(vb[ok] / ms[ok])),
+                median_calibration_known_var=(
+                    float(np.median(vb[okk] / mk[okk])) if okk.sum() else np.nan),
+                weight_fold_spread=float(arms[k].max() / arms[k].min()),
+                eff_n=float(arms[k].sum() ** 2 / (arms[k] ** 2).sum()),
+            ))
+        log(f'  B {g}: n_inf={n_inf} variants={n_used}')
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+#  EXPERIMENT A: end-to-end
+# ---------------------------------------------------------------------------
+
+def mixqtl_gene(I, g, j, y1, y2, yt, perm=None):
+    """Run the mixQTL replication arm on one gene."""
+    vsel = gene_variant_index(I, g)
+    if vsel.size == 0:
+        return None
+    keep = I['keep']
+    h1 = I['xL'][I['idx']][:, keep][vsel].T.astype(float)   # [N, P]
+    h2 = I['xR'][I['idx']][:, keep][vsel].T.astype(float)
+    cov = I['cov_df'].values
+    lib = I['lib_size']
+    a1, a2, at = y1[j], y2[j], yt[j]
+    if perm is not None:
+        a1, a2, at = a1[perm], a2[perm], at[perm]
+        cov = cov[perm]
+        lib = lib[perm]
+    out = MX.mixqtl_scan(a1, a2, at, lib, h1, h2, covariates=cov)
+    stat = np.abs(out['meta']['stat'])
+    if not np.isfinite(stat).any():
+        return None
+    k = int(np.nanargmax(stat))
+    v = I['vdf'].iloc[I['idx']].iloc[vsel]
+    return dict(gene=g, stat=float(stat[k] ** 2),
+                variant_id=str(v.index[k]),
+                beta=float(out['meta']['beta'][k]),
+                se=float(out['meta']['se'][k]),
+                method=str(out['meta']['method'][k]),
+                n_trc=int(out['trc']['sample_size']),
+                n_asc=int(out['asc']['sample_size']),
+                n_cov_selected=int(out['cov_selected'].sum())
+                if out['cov_selected'] is not None else 0,
+                num_var=int(np.isfinite(stat).sum()))
+
+
+def experiment_a(I):
+    genes, order = I['genes'], I['order']
+    y1, y2, yt = MX.summaries_from_gibbs_posterior_mean(I['YL'], I['YR'], I['YT'])
+    keep = I['keep']
+    y1, y2, yt = y1[:, keep], y2[:, keep], yt[:, keep]
+    n_donor = len(order)
+
+    obs = [r for j, g in enumerate(genes)
+           if (r := mixqtl_gene(I, g, j, y1, y2, yt)) is not None]
+    obs = pd.DataFrame(obs)
+    log(f'  A observed: {len(obs)} genes, median stat {obs.stat.median():.2f}')
+
+    nulls = []
+    for p in range(NP_NULL):
+        prm = np.random.RandomState(SEED + 10007 + p).permutation(n_donor)
+        rs = [r for j, g in enumerate(genes)
+              if (r := mixqtl_gene(I, g, j, y1, y2, yt, perm=prm)) is not None]
+        d = pd.DataFrame(rs)
+        d['draw'] = p
+        nulls.append(d)
+        if p % 10 == 9:
+            log(f'  A null draw {p + 1}/{NP_NULL}')
+    return obs, pd.concat(nulls, ignore_index=True)
+
+
+# ---------------------------------------------------------------------------
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    log('loading inputs')
+    I = load_inputs()
+    log(f"{len(I['genes'])} genes, {len(I['order'])} donors, "
+        f"{len(I['idx'])} tested variants, {I['cov_df'].shape[1]} covariates")
+
+    log('EXPERIMENT B: weighting ablation')
+    b = experiment_b(I)
+    b.to_csv(f'{OUT}/experiment_b_weighting.tsv', sep='\t', index=False)
+    agg = b.groupby('arm').agg(
+        genes=('gene', 'nunique'),
+        median_var_beta=('median_var_beta', 'median'),
+        median_calibration=('median_calibration', 'median'),
+        median_calib_knownvar=('median_calibration_known_var', 'median'),
+        median_weight_fold=('weight_fold_spread', 'median'),
+        median_eff_n=('eff_n', 'median')).reset_index()
+    # Relative efficiency against unweighted OLS, per gene then median, so
+    # each gene contributes its own paired ratio rather than a ratio of
+    # medians across genes with different scales.
+    piv = b.pivot(index='gene', columns='arm', values='median_var_beta')
+    rel = (piv.div(piv['equal_ols'], axis=0)).median().rename(
+        'median_var_ratio_vs_ols')
+    agg = agg.merge(rel, left_on='arm', right_index=True)
+    log('\n' + agg.to_string(index=False))
+
+    log('EXPERIMENT A: end-to-end')
+    obs, nulls = experiment_a(I)
+    obs.to_csv(f'{OUT}/experiment_a_mixqtl_observed.tsv', sep='\t', index=False)
+    nulls.to_csv(f'{OUT}/experiment_a_mixqtl_nulls.tsv', sep='\t', index=False)
+
+    summary = dict(
+        n_genes=len(I['genes']), n_donors=len(I['order']),
+        n_tested_variants=int(len(I['idx'])), n_null_draws=NP_NULL,
+        experiment_b=agg.to_dict('records'),
+        mixqtl_observed_median_stat=float(obs.stat.median()),
+        mixqtl_null_median_stat=float(nulls.stat.median()),
+        mixqtl_null_p95_stat=float(nulls.stat.quantile(0.95)),
+        mixqtl_median_n_asc=float(obs.n_asc.median()),
+        mixqtl_median_n_trc=float(obs.n_trc.median()),
+        mixqtl_median_n_cov_selected=float(obs.n_cov_selected.median()),
+        mixqtl_method_counts={k: int(v) for k, v in
+                              obs.method.value_counts().items()},
+    )
+    json.dump(summary, open(f'{OUT}/summary.json', 'w'), indent=1)
+    log('wrote ' + f'{OUT}/summary.json')
+
+
+if __name__ == '__main__':
+    main()
