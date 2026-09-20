@@ -901,7 +901,7 @@ hapmixQTL-vs-RASQUAL.
   `crossprod()` all segfault, `tensorA`/`glmnet` are absent, no sudo. The
   port's algebra is validated per variant against `numpy.linalg.lstsq` to
   1e-10 and every gate/cap/dof rule is pinned to the R source line it
-  encodes (21 tests). Exact reproduction of the published code is NOT
+  encodes (23 tests). Exact reproduction of the published code is NOT
   claimed.
 - **THE DRAWS DO IMPROVE THE POINT ESTIMATE.** Holding response, donor set,
   variants and design fixed and varying only the weights, `1/v` weighting
