@@ -36,6 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
 OUT = f'{D}/mixqtl_replication_20260919'
+TAG = '_hwe' if os.environ.get('HWE', '0') == '1' else ''
 
 sys.path.insert(0, HERE)
 sys.path.insert(0, REPO)
@@ -77,6 +78,13 @@ def main():
     from compare_mixqtl_replication import load_inputs, WIN
 
     I = load_inputs()
+    if os.environ.get('HWE', '0') == '1':
+        from make_hwe_filtered_variants import apply_hwe_filter
+        I = apply_hwe_filter(I)
+        print(f"[HWE-filtered variant set: dropped "
+              f"{I['n_dropped_by_hwe']:,} variants]")
+    else:
+        print('[unfiltered variant set]')
     genes, order, keep = I['genes'], I['order'], I['keep']
     A, T, Va, Vt, _ = HM.compute_summaries_from_gibbs(
         I['YL'], I['YR'], yT=I['YT'], count_noise=True)
@@ -89,7 +97,7 @@ def main():
     mk = lambda M: pd.DataFrame(M, index=genes, columns=order)
     fr = lambda M: pd.DataFrame(M[idx], index=v.index, columns=order)
 
-    tmp = f'{OUT}/_nominal_tmp'
+    tmp = f'{OUT}/_nominal_tmp{TAG}'
     os.makedirs(tmp, exist_ok=True)
     with contextlib.redirect_stdout(io.StringIO()):
         HM.map_nominal(fr(I['dos']), v[['chrom', 'pos']], mk(A), mk(T),
@@ -113,7 +121,7 @@ def main():
         mx, on=['gene', 'variant_id'], how='inner')
     m = m[np.isfinite(m.hm_beta) & np.isfinite(m.mx_beta)
           & np.isfinite(m.hm_se) & np.isfinite(m.mx_se)]
-    m.to_parquet(f'{OUT}/observed_matched_variants.parquet')
+    m.to_parquet(f'{OUT}/observed_matched_variants{TAG}.parquet')
 
     # aggregate agreement
     r_p = pearsonr(m.hm_beta, m.mx_beta)
@@ -133,7 +141,7 @@ def main():
             'mx_n_asc': d.mx_n_asc.iloc[0],
         }), include_groups=False).reset_index()
     per_gene['lead_same'] = per_gene.hm_lead == per_gene.mx_lead
-    per_gene.to_csv(f'{OUT}/observed_per_gene.tsv', sep='\t', index=False)
+    per_gene.to_csv(f'{OUT}/observed_per_gene{TAG}.tsv', sep='\t', index=False)
 
     res = dict(
         n_matched_variants=int(len(m)), n_genes=int(m.gene.nunique()),
@@ -155,7 +163,7 @@ def main():
         mixqtl_median_n_asc=float(m.mx_n_asc.median()),
         mixqtl_median_n_trc=float(m.mx_n_trc.median()),
     )
-    json.dump(res, open(f'{OUT}/observed_comparison.json', 'w'), indent=1)
+    json.dump(res, open(f'{OUT}/observed_comparison{TAG}.json', 'w'), indent=1)
     for k, val in res.items():
         print(f'{k:36s} {val}')
 
