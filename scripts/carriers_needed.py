@@ -19,6 +19,7 @@ Deterministic given the seed; master seed 42.
 """
 
 import json
+import os
 import sys
 
 import numpy as np
@@ -40,6 +41,13 @@ def main():
     from se_forms_calibration import fit_all_se
 
     I = load_inputs()
+    if os.environ.get('HWE', '0') == '1':
+        from make_hwe_filtered_variants import apply_hwe_filter
+        I = apply_hwe_filter(I)
+        print(f"[HWE-filtered variant set: dropped "
+              f"{I['n_dropped_by_hwe']:,} variants]\n")
+    else:
+        print('[unfiltered variant set]\n')
     genes, keep = I['genes'], I['keep']
     A, _T, Va, _Vt, _C = HM.compute_summaries_from_gibbs(
         I['YL'], I['YR'], yT=I['YT'], count_noise=True)
