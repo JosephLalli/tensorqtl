@@ -26,9 +26,18 @@ hapmixQTL and mixQTL, run on the same 29 genes and the same donors, agree on
 the effect estimate only moderately: Pearson correlation of beta is 0.562 at
 mixQTL's published gates and 0.697 at the R signature's more permissive
 defaults. The non-weighting ladder attributed most of the allelic-channel gap
-to the **donor set** — specifically mixQTL's upper cap `y <= 1000`, which
-discards well-expressed donors that Salmon posterior means place above the
-threshold. What that ladder cannot explain is any disagreement that survives
+to the **donor set** — specifically mixQTL's upper cap on allele-specific
+counts, which discards well-expressed donors that Salmon posterior means
+place above the threshold.
+
+Note the ladder's own scope before reusing its numbers: it was run **once,
+under the permissive gates**, where the upper cap is `y <= 5000` and removed
+635 of 2,193 informative donor-gene pairs, and it has **not** been re-run
+under the published gates, where the cap is `y <= 1000` and removes 1,656.
+The mechanism is the same and is larger at the published gates, but the
+ladder's specific rung-by-rung figures belong to the permissive setting.
+
+What that ladder cannot explain is any disagreement that survives
 in the **combined** estimate while both per-channel comparisons already agree
 well. Mechanism 4 is the candidate for that residue, and it is the only one of
 the six that is a pure inference-layer difference: no difference in which

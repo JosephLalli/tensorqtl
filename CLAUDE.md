@@ -967,7 +967,7 @@ hapmixQTL-vs-RASQUAL.
   PUBLISHED gates (`100/50/10/1000`, the GTEx v8 driver that produced the
   paper): lead agreement among the 6 called genes 0/6, median lead LD r^2
   0.160, Spearman of the per-gene statistic 0.183 (p = 0.34), beta Pearson r
-  0.563. Under the permissive R-signature gates (`20/5/100/5000`), kept as a
+  0.562. Under the permissive R-signature gates (`20/5/100/5000`), kept as a
   sensitivity arm: 1/6, r^2 0.744, Spearman 0.517 (p = 0.004), r 0.697. The
   collapse has an identified cause rather than being noise: mixQTL's upper cap
   `y <= 1000`, stated in its Methods as an alignment-artifact guard, removes
