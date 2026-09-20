@@ -15,7 +15,7 @@ The rungs, in order:
   hapmix          hapmixQTL's response (mean over draws of the log ratio,
                   pseudocount 0.5), its informative-donor set (v > 0), and
                   1/v weights
-  + mx_donors     same response and weights, but mixQTL's donor gate
+  + mx_donors     same response and weights, but mixQTL's donor cutoff
                   (5 <= y <= 5000)
   + mx_weights    same response and donors, but capped harmonic weights
   + mx_response   mixQTL's response too: log of the ratio of posterior-mean

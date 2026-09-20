@@ -12,7 +12,7 @@ empirical floor: the same quantity computed under an independent master
 seed. If per-gene calibration is real, the two seeds should agree per gene.
 
 The gibbs_1_over_v arm uses uncapped 1/v weights, so it is untouched by the
-weight-cap change that accompanied the gate-preset switch, and the seed-0
+weight-cap change that accompanied the cutoff-preset switch, and the seed-0
 and seed-42 runs are directly comparable for it.
 
 Deterministic given the stored runs; no new permutation.

@@ -9,7 +9,7 @@ crossprod all segfault; tensorA and glmnet are absent; no sudo):
               errors in the tensor-contraction algebra, which is where a
               vectorized port actually goes wrong.
 
-  SEMANTICS -- each gate, cap, degrees-of-freedom choice and fallback rule is
+  SEMANTICS -- each cutoff, cap, degrees-of-freedom choice and fallback rule is
               pinned by a test that cites the R source line it encodes. These
               are transcription checks, not derivations.
 
@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from tensorqtl.mixqtl_replication import (
-    PUBLISHED_GATES, PACKAGE_DEFAULT_GATES,
+    PUBLISHED_CUTOFFS, PACKAGE_DEFAULT_CUTOFFS,
     harmonic_weights, apply_weight_cap, covariate_offset,
     trc_channel, asc_channel, meta_analyze, mixqtl_scan,
     mixqtl_permutation_scan, summaries_from_gibbs_posterior_mean,
@@ -84,7 +84,7 @@ def test_through_origin_recovers_a_planted_slope():
 
 
 # ---------------------------------------------------------------------------
-#  SEMANTICS: gates, weights, dof, fallbacks
+#  SEMANTICS: cutoffs, weights, dof, fallbacks
 # ---------------------------------------------------------------------------
 
 def test_harmonic_weights_are_inverse_poisson_variance():
@@ -117,7 +117,7 @@ def test_asc_gate_excludes_both_tails_on_both_haplotypes():
     y2[1] = 4.9        # below cutoff, other haplotype
     y1[2] = 5001.0     # above cap
     X = rng.normal(size=(n, 3))
-    # thresholds stated explicitly: this test is ABOUT the gate, so it must
+    # thresholds stated explicitly: this test is ABOUT the cutoff, so it must
     # not silently inherit whichever preset the module defaults to.
     out = asc_channel(y1, y2, X, asc_cutoff=5.0, asc_cap=5000.0)
     assert out['sample_size'] == n - 3
@@ -157,11 +157,11 @@ def test_zero_count_donors_are_excluded_by_the_asc_gate():
 def test_monomorphic_variants_dropped_after_sample_filtering():
     """mono_ind is computed on the FILTERED x  [matrix_ls.R:35-36]
 
-    A variant can be polymorphic overall yet constant among gated-in donors.
+    A variant can be polymorphic overall yet constant among admitted donors.
     """
     n = 40
     y1 = np.full(n, 600.0); y2 = np.full(n, 600.0)
-    y1[:20] = 1.0                       # first 20 donors fail the gate
+    y1[:20] = 1.0                       # first 20 donors fail the cutoff
     x = np.zeros((n, 1))
     x[:20, 0] = 1.0                     # varies only among the FAILING donors
     out = asc_channel(y1, y2, x)
@@ -280,7 +280,7 @@ def test_strict_reference_cap_reproduces_the_all_weights_zeroed_defect():
     [rlib_matrix_ls_with_mask.R:93-97]
 
     Demonstrates the defect rather than hiding it: with the reference rule and
-    at least one gate-failing sample, every permuted statistic is undefined.
+    at least one cutoff-failing sample, every permuted statistic is undefined.
     """
     # n = 40 passing, so the cap itself is a healthy 4-fold; the only thing
     # that breaks the strict path is the zero from the one failing sample.
@@ -303,7 +303,7 @@ def test_strict_reference_cap_reproduces_the_all_weights_zeroed_defect():
 
 def test_cap_is_zero_below_ten_passing_samples():
     """floor(n/10) = 0 for n <= 9, so every weight is zeroed even with no
-    gate failures. The reference guard is only `sample_size > 2`.
+    cutoff failures. The reference guard is only `sample_size > 2`.
     [rlib_matrix_ls.R:88-90]"""
     w = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
     capped, cap, cutoff = apply_weight_cap(w, sample_size=9, weight_cap=100.0)
@@ -333,7 +333,7 @@ def test_permutation_scan_is_usable_by_default_and_degenerate_under_strict():
     rng = np.random.default_rng(10)
     n, P = 60, 4
     y1 = rng.uniform(200, 800, n); y2 = rng.uniform(200, 800, n)
-    y1[:6] = 0.0; y2[:6] = 0.0                  # realistic gate failures
+    y1[:6] = 0.0; y2[:6] = 0.0                  # realistic cutoff failures
     yt = y1 + y2 + 500.0
     lib = np.full(n, 1e6)
     h1 = rng.integers(0, 2, (n, P)).astype(float)
@@ -375,7 +375,7 @@ def test_permutation_moves_response_weights_and_mask_together():
 
 
 # ---------------------------------------------------------------------------
-#  gate presets
+#  cutoff presets
 # ---------------------------------------------------------------------------
 
 def test_module_defaults_are_the_published_gates_not_the_r_signature():
@@ -386,13 +386,13 @@ def test_module_defaults_are_the_published_gates_not_the_r_signature():
     did rather than a default nothing was run with.
     """
     import tensorqtl.mixqtl_replication as MX
-    assert PUBLISHED_GATES == dict(trc_cutoff=100.0, asc_cutoff=50.0,
+    assert PUBLISHED_CUTOFFS == dict(trc_cutoff=100.0, asc_cutoff=50.0,
                                    weight_cap=10.0, asc_cap=1000.0)
-    assert PACKAGE_DEFAULT_GATES == dict(trc_cutoff=20.0, asc_cutoff=5.0,
+    assert PACKAGE_DEFAULT_CUTOFFS == dict(trc_cutoff=20.0, asc_cutoff=5.0,
                                          weight_cap=100.0, asc_cap=5000.0)
     assert (MX.TRC_CUTOFF, MX.ASC_CUTOFF, MX.WEIGHT_CAP, MX.ASC_CAP) == (
         100.0, 50.0, 10.0, 1000.0)
-    assert PUBLISHED_GATES != PACKAGE_DEFAULT_GATES
+    assert PUBLISHED_CUTOFFS != PACKAGE_DEFAULT_CUTOFFS
 
 
 def test_the_two_presets_admit_different_donors():
@@ -404,12 +404,12 @@ def test_the_two_presets_admit_different_donors():
     y1 = rng.uniform(60, 4000, n)
     y2 = rng.uniform(60, 4000, n)
     X = rng.normal(size=(n, 2))
-    pub = asc_channel(y1, y2, X, asc_cutoff=PUBLISHED_GATES['asc_cutoff'],
-                      asc_cap=PUBLISHED_GATES['asc_cap'],
-                      weight_cap=PUBLISHED_GATES['weight_cap'])
-    pkg = asc_channel(y1, y2, X, asc_cutoff=PACKAGE_DEFAULT_GATES['asc_cutoff'],
-                      asc_cap=PACKAGE_DEFAULT_GATES['asc_cap'],
-                      weight_cap=PACKAGE_DEFAULT_GATES['weight_cap'])
+    pub = asc_channel(y1, y2, X, asc_cutoff=PUBLISHED_CUTOFFS['asc_cutoff'],
+                      asc_cap=PUBLISHED_CUTOFFS['asc_cap'],
+                      weight_cap=PUBLISHED_CUTOFFS['weight_cap'])
+    pkg = asc_channel(y1, y2, X, asc_cutoff=PACKAGE_DEFAULT_CUTOFFS['asc_cutoff'],
+                      asc_cap=PACKAGE_DEFAULT_CUTOFFS['asc_cap'],
+                      weight_cap=PACKAGE_DEFAULT_CUTOFFS['weight_cap'])
     assert pub['sample_size'] < pkg['sample_size']
     # and the default path agrees with the published preset
     assert asc_channel(y1, y2, X)['sample_size'] == pub['sample_size']

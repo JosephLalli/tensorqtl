@@ -13,7 +13,7 @@ below 0.05 estimates type-I at the 5% level.
 IMPORTANT SCOPE: this uses the CORRECTED permutation path
 (strict_reference_cap=False). The published path cannot produce this number
 at all -- its weight cap zeroes every allelic weight whenever any sample
-fails the ASE gate, which happens for every gene here. So this is the
+fails the ASE cutoff, which happens for every gene here. So this is the
 calibration of a repaired port, not of mixQTL as distributed. It is also not
 the published pipeline's Beta approximation, which is a separate layer.
 """

@@ -7,7 +7,7 @@ END-TO-END COMPARISON (does hapmixQTL agree with its parent?)
     hapmixQTL at its shipped defaults against mixqtl_replication, same genes,
     same variant window, same 40 null genotype permutations. The two arms use
     different response transforms (log2 with kappa=0.5 vs natural log with no
-    pseudocount), different donor gates, and therefore different variant sets
+    pseudocount), different donor cutoffs, and therefore different variant sets
     after the post-filter var(x)==0 drop. So this experiment compares only
     scale-free quantities: lead-variant agreement, Spearman correlation of the
     per-gene statistic, and type-I error at 5% from each arm's own null.

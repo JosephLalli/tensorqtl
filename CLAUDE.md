@@ -900,7 +900,7 @@ hapmixQTL-vs-RASQUAL.
   links `libblas.so.3` and `libopenblas.so.0` together; `lm()`, `%*%` and
   `crossprod()` all segfault, `tensorA`/`glmnet` are absent, no sudo. The
   port's algebra is validated per variant against `numpy.linalg.lstsq` to
-  1e-10 and every gate/cap/dof rule is pinned to the R source line it
+  1e-10 and every cutoff/cap/dof rule is pinned to the R source line it
   encodes (23 tests). Exact reproduction of the published code is NOT
   claimed.
 - **THE DRAWS DO IMPROVE THE POINT ESTIMATE.** Holding response, donor set,
@@ -942,8 +942,8 @@ hapmixQTL-vs-RASQUAL.
   unnecessary.
 - Two defects in the distributed reference, both reproduced under
   `strict_reference_cap=True` and both documented in the module docstring:
-  `matrix_ls_asc_permutation` zeroes gate-failing weights before taking the
-  min for the fold cap, so ANY gate failure zeroes every weight and all
+  `matrix_ls_asc_permutation` zeroes cutoff-failing weights before taking the
+  min for the fold cap, so ANY cutoff failure zeroes every weight and all
   permuted betas are 0/0 (the non-permutation path subsets first and
   escapes); and `floor(n/10)` makes the cap 0 for 3-9 passing samples (past
   the `sample_size > 2` guard) and 1 for 10-19, where the channel becomes
@@ -962,18 +962,18 @@ hapmixQTL-vs-RASQUAL.
   harness's seed, not re-run at 42 -- legitimate only because the arms are
   compared as marginal distributions, never draw by draw.
 - End-to-end on the 29 genes is the weak half, and HOW weak depends on the
-  gate setting, which is why the two are now reported separately (REPORT.md
-  regenerated 2026-09-20 with mixQTL's published gates primary). Under the
-  PUBLISHED gates (`100/50/10/1000`, the GTEx v8 driver that produced the
+  cutoff setting, which is why the two are now reported separately (REPORT.md
+  regenerated 2026-09-20 with mixQTL's published cutoffs primary). Under the
+  PUBLISHED cutoffs (`100/50/10/1000`, the GTEx v8 driver that produced the
   paper): lead agreement among the 6 called genes 0/6, median lead LD r^2
   0.160, Spearman of the per-gene statistic 0.183 (p = 0.34), beta Pearson r
-  0.562. Under the permissive R-signature gates (`20/5/100/5000`), kept as a
+  0.562. Under the permissive R-signature cutoffs (`20/5/100/5000`), kept as a
   sensitivity arm: 1/6, r^2 0.744, Spearman 0.517 (p = 0.004), r 0.697. The
   collapse has an identified cause rather than being noise: mixQTL's upper cap
   `y <= 1000`, stated in its Methods as an alignment-artifact guard, removes
   1,656 of 2,193 informative donor-gene pairs when applied to Salmon
-  posterior means (the lower `y >= 50` gate removes only 38), leaving 18 of 29
-  genes total-counts-only and 7 with no allelic donors at all. At these gates
+  posterior means (the lower `y >= 50` cutoff removes only 38), leaving 18 of 29
+  genes total-counts-only and 7 with no allelic donors at all. At these cutoffs
   the two arms are largely not measuring the same thing, so the permissive
   column is the better comparison of the two METHODS and the published column
   the better comparison against mixQTL AS RUN. A signal-bearing gene set is
@@ -982,14 +982,14 @@ hapmixQTL-vs-RASQUAL.
   the 3x is not shown to transfer to low-count genes where the Gibbs and
   Poisson weights converge.
 - The weighting ablation, the residual-floor profile and the SE calibration
-  are BYTE-IDENTICAL under the two gate settings, verified by re-running and
+  are BYTE-IDENTICAL under the two cutoff settings, verified by re-running and
   diffing on 2026-09-20, not merely argued. They run on hapmixQTL's
-  informative-donor set (40-92 donors/gene), which mixQTL's count gates never
-  reach, and the only gate parameter they touch is `weight_cap` through
+  informative-donor set (40-92 donors/gene), which mixQTL's count cutoffs never
+  reach, and the only cutoff parameter they touch is `weight_cap` through
   `cap = min(weight_cap, floor(n/10))`; at <= 92 donors `floor(n/10) <= 9`,
   strictly below both candidate values (10 and 100), so the realized caps are
   4-9 and `weight_cap` can never bind below 100 donors. Every headline
   efficiency number (0.340, the 3.313 calibration, the tau profile) is
-  therefore simultaneously a published-gates and a permissive-gates result.
+  therefore simultaneously a published-cutoffs and a permissive-cutoffs result.
   `weight_cap` is set to the driver's 10 (user decision, 2026-09-20); the
   roxygen examples' 100 would change nothing here.

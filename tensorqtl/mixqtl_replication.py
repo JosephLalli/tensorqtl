@@ -32,7 +32,7 @@ Relative to ``hapmixqtl.py``, and keyed to the divergence table in
   4. known-variance SE 1/sqrt(xx)    -> fitted sigma_hat from the residuals
   5. pseudocount kappa=0.5, and the
      mean over draws of the log    -> no pseudocount, and the log of the
-                                        mean (mixQTL gates instead). NOTE
+                                        mean (mixQTL cutoffs instead). NOTE
                                         both arms are in NATURAL log:
                                         hapmixqtl.py:406 uses np.log and
                                         log2 appears nowhere in it, the
@@ -44,9 +44,9 @@ Relative to ``hapmixqtl.py``, and keyed to the divergence table in
   7. joint WLS covariate adjustment  -> two-step selected-covariate offset
   8. combined Z^2 statistic          -> inverse-variance meta of (beta, se)
   9. common t reference              -> normal reference (n > 15)
- 10. no count gates                  -> trc >= 100; 50 <= asc <= 1000, the
-                                        PUBLISHED gates. These are NOT the R
-                                        signature's defaults; see the Gate
+ 10. no count cutoffs                  -> trc >= 100; 50 <= asc <= 1000, the
+                                        PUBLISHED cutoffs. These are NOT the R
+                                        signature's defaults; see the cutoff
                                         presets block below.
  11. permuted whitened residuals     -> permuted phenotype bundle (y, w, mask)
 
@@ -69,21 +69,21 @@ is pinned by a unit test that cites the R source line it encodes. See
 A DEFECT IN THE REFERENCE PERMUTATION PATH
 ------------------------------------------
 ``matrix_ls_asc_permutation`` (rlib_matrix_ls_with_mask.R:87-117) sets the
-weights of gate-failing samples to zero *before* computing the cap:
+weights of cutoff-failing samples to zero *before* computing the cap:
 
     weights[!passed_ind] = 0
     weight_cap    = min(weight_cap, floor(sample_size / 10))
     weight_cutoff = min(weights) * weight_cap        # <- min() is now 0
     weights[weights > weight_cutoff] = weight_cutoff # <- zeroes everything
 
-Whenever at least one sample fails the ASE gate, ``min(weights)`` is 0, so the
+Whenever at least one sample fails the ASE cutoff, ``min(weights)`` is 0, so the
 cutoff is 0 and every surviving weight is set to 0. ``XtX`` is then 0 and every
 permuted beta is 0/0. The non-permutation ``matrix_ls_asc`` escapes this only
 because it subsets the vectors before taking the min.
 
 This is reproduced verbatim under ``strict_reference_cap=True`` so the defect
 can be demonstrated. The default is ``False``, which takes the min over
-gate-passing samples only -- the behaviour the non-permutation path already
+cutoff-passing samples only -- the behaviour the non-permutation path already
 has, and the minimal change that makes a gene-level p-value obtainable.
 """
 
@@ -93,11 +93,11 @@ __all__ = [
     'harmonic_weights', 'apply_weight_cap', 'covariate_offset',
     'trc_channel', 'asc_channel', 'meta_analyze', 'mixqtl_scan',
     'mixqtl_permutation_scan', 'summaries_from_gibbs_posterior_mean',
-    'PUBLISHED_GATES', 'PACKAGE_DEFAULT_GATES',
+    'PUBLISHED_CUTOFFS', 'PACKAGE_DEFAULT_CUTOFFS',
 ]
 
 # ---------------------------------------------------------------------------
-#  Gate presets
+#  Cutoff presets
 # ---------------------------------------------------------------------------
 # mixQTL's R function signature and the settings its authors actually
 # published with are different, and the signature is the outlier: both the
@@ -133,23 +133,30 @@ __all__ = [
 # artifactual pileups becomes a coverage ceiling instead.
 #
 # CONSEQUENCE, measured on the 29 high-coverage calibration genes: the
-# published gates keep 499 of 2,193 informative donor-gene pairs against
+# published cutoffs keep 499 of 2,193 informative donor-gene pairs against
 # 1,558 under the R signature, with 1,656 lost to the upper cap. Median
 # allelic donors per gene falls from 60 to 7, and 17 of 29 genes drop below
 # META_N_CUTOFF so the allelic channel stops contributing at all. On
 # Salmon posterior-mean abundances the upper cap behaves as a coverage
 # ceiling rather than the outlier guard it presumably was for observed read
-# counts. Pass PACKAGE_DEFAULT_GATES explicitly to get the other behaviour.
+# counts. Pass PACKAGE_DEFAULT_CUTOFFS explicitly to get the other behaviour.
 
-PUBLISHED_GATES = dict(trc_cutoff=100.0, asc_cutoff=50.0,
-                       weight_cap=10.0, asc_cap=1000.0)
-PACKAGE_DEFAULT_GATES = dict(trc_cutoff=20.0, asc_cutoff=5.0,
-                             weight_cap=100.0, asc_cap=5000.0)
+PUBLISHED_CUTOFFS = dict(trc_cutoff=100.0, asc_cutoff=50.0,
+                         weight_cap=10.0, asc_cap=1000.0)
+PACKAGE_DEFAULT_CUTOFFS = dict(trc_cutoff=20.0, asc_cutoff=5.0,
+                               weight_cap=100.0, asc_cap=5000.0)
 
-TRC_CUTOFF = PUBLISHED_GATES['trc_cutoff']
-ASC_CUTOFF = PUBLISHED_GATES['asc_cutoff']
-ASC_CAP = PUBLISHED_GATES['asc_cap']
-WEIGHT_CAP = PUBLISHED_GATES['weight_cap']
+# These were named *_GATES until 2026-09-20. "Cutoff" is the project's term
+# for a count threshold; "gate" is reserved for the reference-bias and phase
+# checks elsewhere in the repo, which are a different thing. Aliases kept so
+# older callers and notebooks do not break.
+PUBLISHED_GATES = PUBLISHED_CUTOFFS
+PACKAGE_DEFAULT_GATES = PACKAGE_DEFAULT_CUTOFFS
+
+TRC_CUTOFF = PUBLISHED_CUTOFFS['trc_cutoff']
+ASC_CUTOFF = PUBLISHED_CUTOFFS['asc_cutoff']
+ASC_CAP = PUBLISHED_CUTOFFS['asc_cap']
+WEIGHT_CAP = PUBLISHED_CUTOFFS['weight_cap']
 META_N_CUTOFF = 15
 
 
@@ -219,7 +226,7 @@ def apply_weight_cap(weights, sample_size, weight_cap=WEIGHT_CAP, passed=None,
     applying uniformly. At this cohort's n = 92 the cap is 9-fold.
 
     Args:
-        passed: boolean mask of gate-passing samples. When given, the min is
+        passed: boolean mask of cutoff-passing samples. When given, the min is
             taken over passing samples only. Required whenever `weights`
             contains zeroed-out failing samples.
         strict_reference_cap: reproduce the reference permutation path's
@@ -359,7 +366,7 @@ def trc_channel(ytotal, lib_size, X, cov_offset=None, trc_cutoff=TRC_CUTOFF):
     """mixQTL's trcQTL  [rlib_matrix_ls.R:26-46].
 
     response  log(ytotal / 2 / lib_size) - cov_offset      (natural log)
-    gate      ytotal >= trc_cutoff, and finite response
+    cutoff      ytotal >= trc_cutoff, and finite response
     design    x = (h1 + h2)/2 plus an intercept, UNWEIGHTED OLS
     Variants with zero genotype variance AFTER sample filtering are dropped.
 
@@ -394,7 +401,7 @@ def asc_channel(y1, y2, X, asc_cutoff=ASC_CUTOFF, weight_cap=WEIGHT_CAP,
                 asc_cap=ASC_CAP):
     """mixQTL's ascQTL  [rlib_matrix_ls.R:77-104].
 
-    gate      asc_cutoff <= y1, y2 <= asc_cap   (BOTH haplotypes)
+    cutoff      asc_cutoff <= y1, y2 <= asc_cap   (BOTH haplotypes)
     response  log(y1 / y2)                      (natural log, NO pseudocount)
     weights   harmonic sum, fold-capped
     design    x = h1 - h2, fitted THROUGH THE ORIGIN, no covariates

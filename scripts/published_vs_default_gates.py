@@ -40,16 +40,16 @@ def main():
 
     for label, lo, hi in [('package defaults', 5, 5000),
                           ('published / GTEx v8', 50, 1000)]:
-        gate = (mL >= lo) & (mR >= lo) & (mL <= hi) & (mR <= hi)
+        passes = (mL >= lo) & (mR >= lo) & (mL <= hi) & (mR <= hi)
         lost_lo = int((inf & ~((mL >= lo) & (mR >= lo))).sum())
         lost_hi = int((inf & ((mL >= lo) & (mR >= lo)) & ~((mL <= hi) & (mR <= hi))).sum())
-        kept = int((inf & gate).sum())
+        kept = int((inf & passes).sum())
         print(f'{label}  (asc_cutoff={lo}, asc_cap={hi})')
         print(f'   kept {kept:5d} of {int(inf.sum())} informative '
               f'({100 * kept / inf.sum():.1f}%)')
         print(f'   lost to the LOWER cutoff: {lost_lo:5d}')
         print(f'   lost to the UPPER cap   : {lost_hi:5d}')
-        per_gene = (inf & gate).sum(1)
+        per_gene = (inf & passes).sum(1)
         print(f'   donors per gene: median {int(np.median(per_gene))}, '
               f'min {int(per_gene.min())}, '
               f'genes under 15 donors: {int((per_gene < 15).sum())}/{len(per_gene)}')

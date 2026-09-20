@@ -20,7 +20,7 @@ both betas are a natural-log allelic fold change per haplotype-dosage unit.
 Reported per matched (gene, variant): the two betas, their standard errors,
 and the resulting statistics. Aggregated: correlation, regression slope of
 one on the other, sign concordance, and the ratio of standard errors. Also
-the gate arithmetic -- how many donors each arm admits, and which channel
+the cutoff arithmetic -- how many donors each arm admits, and which channel
 mixQTL's meta-analysis actually used.
 """
 

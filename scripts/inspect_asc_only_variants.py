@@ -6,7 +6,7 @@ they belong to worth pursuing".
 
 In the port, meta_analyze labels a variant 'asc' when the total-channel beta
 is NaN while the allelic one is not. The total beta is NaN when the variant
-is monomorphic AFTER the total gate, i.e. dosage is constant among the
+is monomorphic AFTER the total cutoff, i.e. dosage is constant among the
 donors that passed. A variant can have constant dosage -- every donor
 heterozygous -- while the phased contrast h1 - h2 still varies, because
 1|0 and 0|1 donors differ. That is one of the catalogued divergences: the

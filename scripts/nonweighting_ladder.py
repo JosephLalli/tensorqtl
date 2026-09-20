@@ -13,7 +13,7 @@ relative to that set.
 
   rung 1  hapmixQTL donors, hapmixQTL response (mean over draws of the log
           ratio, kappa = 0.5)
-  rung 2  mixQTL donors (the 5 <= y <= 5000 gate), same response
+  rung 2  mixQTL donors (the 5 <= y <= 5000 cutoff), same response
   rung 3  mixQTL donors, kappa dropped to 0 -- isolates the pseudocount
   rung 4  mixQTL donors, log of the ratio of means -- isolates the Jensen
           gap, and IS mixQTL's allelic channel
@@ -106,7 +106,7 @@ def main():
         G = dos[vsel] / 2.0
 
         inf = Va[j] > 1e-12
-        gate = ((mL[j] >= MX.ASC_CUTOFF) & (mR[j] >= MX.ASC_CUTOFF)
+        cutoff = ((mL[j] >= MX.ASC_CUTOFF) & (mR[j] >= MX.ASC_CUTOFF)
                 & (mL[j] <= MX.ASC_CAP) & (mR[j] <= MX.ASC_CAP))
 
         def allelic(mask, resp):
@@ -134,9 +134,9 @@ def main():
         arows.append(pd.DataFrame(dict(
             gene=g, variant_id=vids,
             r1_hm_donors=allelic(inf, A[j]),
-            r2_mx_donors=allelic(gate, A[j]),
-            r3_no_kappa=allelic(gate, a_k0_meanlog),
-            r4_logmean=allelic(gate, a_logmean),
+            r2_mx_donors=allelic(cutoff, A[j]),
+            r3_no_kappa=allelic(cutoff, a_k0_meanlog),
+            r4_logmean=allelic(cutoff, a_logmean),
         )))
 
         # ---- total channel, unweighted throughout

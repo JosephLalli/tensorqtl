@@ -374,7 +374,7 @@ cross-project review at
 is the current methods/review record. The mixQTL replication arm's own report,
 including the weighting ablation that answers what the Gibbs draws buy, is
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_replication_20260919/REPORT.md`
-(regenerated 2026-09-20 under mixQTL's published gates; the permissive
+(regenerated 2026-09-20 under mixQTL's published cutoffs; the permissive
 configuration is preserved beside it as a sensitivity arm).
 
 Work that is **proposed and not yet run** is kept out of this document and out
