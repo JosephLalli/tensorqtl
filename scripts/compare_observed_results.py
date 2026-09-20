@@ -37,14 +37,53 @@ REPO = os.path.dirname(HERE)
 D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
 OUT = f'{D}/mixqtl_replication_20260919'
 MATCH_CUTOFFS = os.environ.get('MATCH_CUTOFFS', '0') == '1'
+# WIDE_CUTOFFS: the opposite match. Instead of restricting hapmixQTL DOWN to
+# mixQTL's 499 admitted pairs, open mixQTL's cutoffs so they exclude nobody
+# and let both arms use the full informative set. Measured on this cohort:
+# all 2,193 informative pairs have BOTH haplotypes above zero (the smallest
+# min(y1, y2) is 7.29), so mixQTL's pseudocount-free log(y1/y2) is finite on
+# every one of them and the two arms' maximal donor sets are identical. That
+# is why asc_cutoff = 0 is safe here; it is not a claim that zero counts
+# would be handled.
+WIDE_CUTOFFS = os.environ.get('WIDE_CUTOFFS', '0') == '1'
 TAG = ('_hwe' if os.environ.get('HWE', '0') == '1' else '') \
-      + ('_matched' if MATCH_CUTOFFS else '')
+      + ('_matched' if MATCH_CUTOFFS else '') \
+      + ('_wide' if WIDE_CUTOFFS else '')
 
 sys.path.insert(0, HERE)
 sys.path.insert(0, REPO)
 
 
-def mixqtl_all_variants(I, g, j, y1, y2, yt, MX):
+def asc_uncapped(y1, y2, X, asc_cutoff, asc_cap, MX):
+    """mixQTL's allelic channel with apply_weight_cap SKIPPED.
+
+    Replicates ``MX.asc_channel`` line for line except for the fold cap, so
+    the difference between this and the capped arm is the cap alone. Lives
+    here rather than as a flag on the module because the module is a
+    faithful port and the reference has no such switch. The cap cannot be
+    lifted by passing a large weight_cap: it is
+    ``min(weight_cap, floor(n / 10))``, so at n around 75 it is 7 whatever
+    the parameter says.
+    """
+    y1, y2, X = np.asarray(y1, float), np.asarray(y2, float), np.asarray(X, float)
+    P = X.shape[1]
+    beta, se = np.full(P, np.nan), np.full(P, np.nan)
+    passed = (y1 >= asc_cutoff) & (y2 >= asc_cutoff) & (y1 <= asc_cap) & (y2 <= asc_cap)
+    n = int(passed.sum())
+    if n <= 2:
+        return beta, se
+    Xk = X[passed]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        resp = np.log(y1[passed] / y2[passed])
+    w = MX.harmonic_weights(y1[passed], y2[passed])
+    mono = Xk.var(axis=0) == 0
+    if (~mono).any():
+        b, s = MX._simple_regression_through_origin(resp, Xk[:, ~mono], w)
+        beta[~mono], se[~mono] = b, s
+    return beta, se
+
+
+def mixqtl_all_variants(I, g, j, y1, y2, yt, MX, cutoffs=None):
     """mixQTL observed pass for one gene, every variant (not just the lead)."""
     from compare_mixqtl_replication import gene_variant_index
     vsel = gene_variant_index(I, g)
@@ -53,10 +92,11 @@ def mixqtl_all_variants(I, g, j, y1, y2, yt, MX):
     keep = I['keep']
     h1 = I['xL'][I['idx']][:, keep][vsel].T.astype(float)
     h2 = I['xR'][I['idx']][:, keep][vsel].T.astype(float)
+    kw = {} if cutoffs is None else dict(cutoffs)
     out = MX.mixqtl_scan(y1[j], y2[j], yt[j], I['lib_size'], h1, h2,
-                         covariates=I['cov_df'].values)
+                         covariates=I['cov_df'].values, **kw)
     v = I['vdf'].iloc[I['idx']].iloc[vsel]
-    return pd.DataFrame({
+    df = pd.DataFrame({
         'gene': g,
         'variant_id': v.index.astype(str),
         'mx_beta': out['meta']['beta'],
@@ -70,6 +110,13 @@ def mixqtl_all_variants(I, g, j, y1, y2, yt, MX):
         'mx_n_asc': out['asc']['sample_size'],
         'mx_n_trc': out['trc']['sample_size'],
     })
+    if cutoffs is not None:
+        # the same allelic channel without the fold cap, so the cap's own
+        # contribution is the difference between these two columns
+        b, s = asc_uncapped(y1[j], y2[j], (h1 - h2),
+                            cutoffs['asc_cutoff'], cutoffs['asc_cap'], MX)
+        df['mx_beta_asc_nocap'], df['mx_se_asc_nocap'] = b, s
+    return df
 
 
 def main():
@@ -102,6 +149,20 @@ def main():
     # MATCHED DONOR SET. mixQTL's count cutoffs applied to the hapmixQTL arm
     # too, from the SAME posterior means the mixQTL arm consumes, so the two
     # donor sets are identical by construction rather than approximately.
+    wide = None
+    if WIDE_CUTOFFS:
+        # Exclude nobody who HAS allelic data. The floor is a positive
+        # epsilon, not 0, and the distinction is not cosmetic: 475 of the
+        # 2,668 pairs have BOTH haplotypes at exactly 0, where mixQTL's
+        # pseudocount-free log(y1 / y2) is 0/0. Admitting them would feed the
+        # channel NaNs. Any threshold in (0, 7.29] selects exactly the 2,193
+        # informative pairs, since 7.29 is the smallest min(y1, y2) among
+        # them -- so this is the full informative set, not an approximation
+        # of it. The identity check below enforces that.
+        wide = dict(trc_cutoff=0.0, asc_cutoff=1e-6, asc_cap=np.inf)
+        print('[wide cutoffs: both arms on the FULL informative set; '
+              'mixQTL asc_cutoff=0, asc_cap=inf, trc_cutoff=0]')
+
     keep_a_df = keep_t_df = None
     if MATCH_CUTOFFS:
         ka, kt = HM.count_cutoff_masks(y1, y2, yt, asc_cutoff=MX.ASC_CUTOFF,
@@ -137,7 +198,8 @@ def main():
     hm['hm_stat'] = (hm.hm_beta / hm.hm_se) ** 2
 
     mx = pd.concat([d for j, g in enumerate(genes)
-                    if (d := mixqtl_all_variants(I, g, j, y1, y2, yt, MX)) is not None],
+                    if (d := mixqtl_all_variants(I, g, j, y1, y2, yt, MX,
+                                                 cutoffs=wide)) is not None],
                    ignore_index=True)
 
     m = hm[['gene', 'variant_id', 'hm_beta', 'hm_se', 'hm_stat']].merge(
@@ -171,6 +233,27 @@ def main():
     # n_asc. If they differ the arms are not on the same donor set and every
     # number below is void, so this raises rather than warns.
     strat = {}
+    if WIDE_CUTOFFS:
+        # the identity check for this direction: mixQTL must now admit
+        # exactly hapmixQTL's informative set, every donor of it
+        inf_per_gene = pd.Series(((y1 + y2) > 0).sum(axis=1), index=genes)
+        got = per_gene.set_index('gene').mx_n_asc
+        bad = {g: (int(inf_per_gene[g]), int(got[g])) for g in got.index
+               if int(inf_per_gene[g]) != int(got[g])}
+        if bad:
+            raise SystemExit(f'wide cutoffs did not admit the full informative '
+                             f'set for {len(bad)} genes: {dict(list(bad.items())[:5])}')
+        print(f'full-informative-set identity check passed on {len(got)} genes '
+              f'(median {got.median():.0f} allelic donors per gene)')
+        ok = np.isfinite(m.mx_beta_asc_nocap) & np.isfinite(m.mx_beta_asc)
+        strat['uncapped_allelic'] = dict(
+            n_variants=int(ok.sum()),
+            r_capped_vs_uncapped=float(pearsonr(m.mx_beta_asc[ok],
+                                                m.mx_beta_asc_nocap[ok])[0]),
+            median_abs_beta_ratio_nocap_over_capped=float(
+                (m.mx_beta_asc_nocap[ok].abs()
+                 / m.mx_beta_asc[ok].abs().replace(0, np.nan)).median()),
+        )
     if MATCH_CUTOFFS:
         admitted = pd.Series(keep_a_df.sum(axis=1), index=genes)
         got = per_gene.set_index('gene').mx_n_asc
