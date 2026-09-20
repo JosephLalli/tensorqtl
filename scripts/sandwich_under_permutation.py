@@ -158,6 +158,7 @@ def main():
             if r is not None:
                 nrows.append(dict(draw=dnum, gene=g,
                                   p_model=r[0], p_sand=r[1],
+                                  perm_model=r[2], perm_sand=r[3],
                                   ks_model=r[4], ks_sand=r[5]))
     nd = pd.DataFrame(nrows)
     t_m = float((nd.p_model <= 0.05).mean())
@@ -170,6 +171,21 @@ def main():
           f'sandwich {nd.p_sand.median():.3f}')
     print(f'  Beta fit KS under the null: model {nd.ks_model.median():.4f}   '
           f'sandwich {nd.ks_sand.median():.4f}')
+    print(f'  Beta fit returned NaN: model {int(nd.p_model.isna().sum())}, '
+          f'sandwich {int(nd.p_sand.isna().sum())} of {len(nd)}')
+    print()
+    print('  DECOMPOSITION -- is it the permutation or the Beta fit?')
+    pm = float((nd.perm_model <= 0.05).mean())
+    ps = float((nd.perm_sand <= 0.05).mean())
+    print(f'  type-I from the EMPIRICAL permutation rank (no Beta):')
+    print(f'    model {pm:.4f} +/- {se(pm):.4f}   '
+          f'sandwich {ps:.4f} +/- {se(ps):.4f}')
+    print(f'  type-I from the BETA FIT:')
+    print(f'    model {t_m:.4f} +/- {se(t_m):.4f}   '
+          f'sandwich {t_s:.4f} +/- {se(t_s):.4f}')
+    print('  if the rank is near 0.05 and the Beta fit is not, the')
+    print('  permutation absorbs the collapse and the Beta approximation '
+          'is what breaks.')
 
     d.to_csv(f'{OUT}/sandwich_observed_pvals.tsv', sep='\t', index=False)
     nd.to_csv(f'{OUT}/sandwich_null_pvals.tsv', sep='\t', index=False)
@@ -181,6 +197,12 @@ def main():
         typeI_n=len(nd),
         median_null_p_model=float(nd.p_model.median()),
         median_null_p_sandwich=float(nd.p_sand.median()),
+        typeI_rank_model=float((nd.perm_model <= 0.05).mean()),
+        typeI_rank_sandwich=float((nd.perm_sand <= 0.05).mean()),
+        ks_model=float(nd.ks_model.median()),
+        ks_sandwich=float(nd.ks_sand.median()),
+        beta_nan_model=int(nd.p_model.isna().sum()),
+        beta_nan_sandwich=int(nd.p_sand.isna().sum()),
     ), open(f'{OUT}/sandwich_under_permutation.json', 'w'), indent=1)
 
 
