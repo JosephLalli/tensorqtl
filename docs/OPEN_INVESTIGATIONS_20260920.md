@@ -14,11 +14,23 @@ a correctness cleanup with no open question attached.
 
 ## 1. Per-channel residual sigma: the last untested mechanism of the six
 
-**Status.** Proposed, not started. The sole survivor of the six candidate
-mechanisms in
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_replication_20260919/DISAGREEMENT_TEST_PLAN.md`;
-mechanisms 2, 3, 5 and 6 were settled by `scripts/nonweighting_ladder.py` and
-the two pre-checks, and mechanism 1 is a router rather than a hypothesis.
+**Status.** Proposed, not started, and **demoted on 2026-09-20** — still the
+sole untested mechanism, but no longer the leading explanation for anything.
+Mechanisms 2, 3, 5 and 6 were settled by `scripts/nonweighting_ladder.py` and
+the two pre-checks, and mechanism 1 is a router rather than a hypothesis
+(`/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_replication_20260919/DISAGREEMENT_TEST_PLAN.md`).
+
+Why demoted: the matched-donor run
+(`mixqtl_replication_20260919/MATCHED_CUTOFFS.md`) split the comparison by
+channel and found the residual disagreement sitting in the **total** channel
+(r = 0.769) rather than the allelic one (0.947). Mechanism 4's signature is
+disagreement surviving in the *combined* estimate while *both* channels agree
+well; that is not what the data show, and the combined value sits between the
+two channels rather than below both. Both per-channel residuals are already
+accounted for by the ladder — the allelic one by the weighting, the total one
+by the library-size offset and covariate handling, which the ladder took from
+0.769 to 0.894 to 1.000. Run this to close the catalogue, not because
+something unexplained points to it.
 
 ### The question
 

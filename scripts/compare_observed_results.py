@@ -36,7 +36,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
 OUT = f'{D}/mixqtl_replication_20260919'
-TAG = '_hwe' if os.environ.get('HWE', '0') == '1' else ''
+MATCH_CUTOFFS = os.environ.get('MATCH_CUTOFFS', '0') == '1'
+TAG = ('_hwe' if os.environ.get('HWE', '0') == '1' else '') \
+      + ('_matched' if MATCH_CUTOFFS else '')
 
 sys.path.insert(0, HERE)
 sys.path.insert(0, REPO)
@@ -97,14 +99,35 @@ def main():
     mk = lambda M: pd.DataFrame(M, index=genes, columns=order)
     fr = lambda M: pd.DataFrame(M[idx], index=v.index, columns=order)
 
+    # MATCHED DONOR SET. mixQTL's count cutoffs applied to the hapmixQTL arm
+    # too, from the SAME posterior means the mixQTL arm consumes, so the two
+    # donor sets are identical by construction rather than approximately.
+    keep_a_df = keep_t_df = None
+    if MATCH_CUTOFFS:
+        ka, kt = HM.count_cutoff_masks(y1, y2, yt, asc_cutoff=MX.ASC_CUTOFF,
+                                       asc_cap=MX.ASC_CAP,
+                                       trc_cutoff=MX.TRC_CUTOFF)
+        keep_a_df, keep_t_df = mk(ka), mk(kt)
+        print(f'[matched cutoffs: asc {MX.ASC_CUTOFF:g}-{MX.ASC_CAP:g}, '
+              f'trc >= {MX.TRC_CUTOFF:g}] allelic admits '
+              f'{ka.sum():,}/{ka.size:,} donor-gene pairs '
+              f'({ka.sum() / ka.size:.1%}), total admits '
+              f'{kt.sum():,}/{kt.size:,} ({kt.sum() / kt.size:.1%})')
+    else:
+        print('[hapmixQTL arm unrestricted: its own informative-donor set]')
+
     tmp = f'{OUT}/_nominal_tmp{TAG}'
     os.makedirs(tmp, exist_ok=True)
+    for f in os.listdir(tmp):            # never mix runs in one glob
+        if f.endswith('.parquet'):
+            os.remove(f'{tmp}/{f}')
     with contextlib.redirect_stdout(io.StringIO()):
         HM.map_nominal(fr(I['dos']), v[['chrom', 'pos']], mk(A), mk(T),
                        mk(Va), mk(Vt), I['gp'].loc[genes][['chr', 'pos']],
                        xL_df=fr(I['xL']), xR_df=fr(I['xR']), prefix='hm',
                        covariates_df=I['cov_df'], ase_covariates_df=None,
-                       window=WIN, output_dir=tmp, verbose=False)
+                       window=WIN, output_dir=tmp, verbose=False,
+                       keep_a_df=keep_a_df, keep_t_df=keep_t_df)
     hm = pd.concat([pd.read_parquet(f'{tmp}/{f}') for f in os.listdir(tmp)
                     if f.endswith('.parquet')], ignore_index=True)
     gcol = 'phenotype_id' if 'phenotype_id' in hm.columns else 'gene_id'
@@ -143,6 +166,41 @@ def main():
     per_gene['lead_same'] = per_gene.hm_lead == per_gene.mx_lead
     per_gene.to_csv(f'{OUT}/observed_per_gene{TAG}.tsv', sep='\t', index=False)
 
+    # IDENTITY CHECK. Matched means matched: the donors hapmixQTL's allelic
+    # mask admits per gene must be exactly the donors mixQTL counted in
+    # n_asc. If they differ the arms are not on the same donor set and every
+    # number below is void, so this raises rather than warns.
+    strat = {}
+    if MATCH_CUTOFFS:
+        admitted = pd.Series(keep_a_df.sum(axis=1), index=genes)
+        got = per_gene.set_index('gene').mx_n_asc
+        bad = {g: (int(admitted[g]), int(got[g])) for g in got.index
+               if int(admitted[g]) != int(got[g])}
+        if bad:
+            raise SystemExit(f'donor sets not matched for {len(bad)} genes '
+                             f'(mask vs mixQTL n_asc): {dict(list(bad.items())[:5])}')
+        print(f'donor-set identity check passed on {len(got)} genes')
+
+    # mixQTL falls back to total-counts-only below META_N_CUTOFF donors while
+    # hapmixQTL keeps its allelic channel, so the cutoffs cannot match that.
+    # Report the two strata apart: the 'meta' genes are the apples-to-apples.
+    for method, d in m.groupby('mx_method'):
+        if len(d) < 4:
+            continue
+        strat[method] = dict(
+            n_variants=int(len(d)), n_genes=int(d.gene.nunique()),
+            beta_pearson_r=float(pearsonr(d.hm_beta, d.mx_beta)[0]),
+            beta_sign_concordance=float((np.sign(d.hm_beta) == np.sign(d.mx_beta)).mean()),
+            median_se_ratio_mx_over_hm=float((d.mx_se / d.hm_se).median()),
+            median_abs_beta_ratio_mx_over_hm=float(
+                (d.mx_beta.abs() / d.hm_beta.abs().replace(0, np.nan)).median()),
+        )
+    pg_meta = per_gene[per_gene.gene.isin(
+        m[m.mx_method == 'meta'].gene.unique())]
+    if len(pg_meta):
+        strat.setdefault('meta', {})['lead_agreement'] = float(pg_meta.lead_same.mean())
+        strat['meta']['median_per_gene_beta_r'] = float(pg_meta.beta_r.median())
+
     res = dict(
         n_matched_variants=int(len(m)), n_genes=int(m.gene.nunique()),
         beta_pearson_r=float(r_p[0]), beta_spearman_r=float(r_s[0]),
@@ -162,6 +220,8 @@ def main():
         mixqtl_method_counts=m.mx_method.value_counts().to_dict(),
         mixqtl_median_n_asc=float(m.mx_n_asc.median()),
         mixqtl_median_n_trc=float(m.mx_n_trc.median()),
+        matched_cutoffs=bool(MATCH_CUTOFFS),
+        by_mixqtl_channel=strat,
     )
     json.dump(res, open(f'{OUT}/observed_comparison{TAG}.json', 'w'), indent=1)
     for k, val in res.items():
