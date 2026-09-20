@@ -101,13 +101,19 @@ def main():
               & (m.slope_a_se_full > 0) & (m.slope_a_se_x > 0)
               & (m.slope_a_full != 0) & (m.slope_a_x != 0))
         m = m[on]
-        per_gene = []
+        per_gene, mag = [], []
         for g, dd in m.groupby('gene'):
             if len(dd) < 20:
                 continue
             x, yv = dd.slope_a_full.values, dd.slope_a_x.values
             per_gene.append(float((x @ yv) / (x @ x)))
-        per_gene = np.array(per_gene)
+            # A through-origin slope confounds SCALE with CORRELATION, so a
+            # value below 1 is not by itself attenuation. This separates
+            # them: the ratio of median |slope_a| is pure scale. If the
+            # regression slope falls but this does not, the mask has
+            # displaced the estimate rather than shrunk it.
+            mag.append(float(np.median(np.abs(yv)) / np.median(np.abs(x))))
+        per_gene, mag = np.array(per_gene), np.array(mag)
         out[label] = dict(
             n_variants=int(len(m)), n_genes_channel_on=int(len(per_gene)),
             slope_a_pearson_r=float(pearsonr(m.slope_a_full, m.slope_a_x)[0])
@@ -115,6 +121,9 @@ def main():
             per_gene_slope_median=float(np.median(per_gene)) if len(per_gene) else float('nan'),
             per_gene_slope_iqr=[float(np.percentile(per_gene, 25)),
                                 float(np.percentile(per_gene, 75))] if len(per_gene) else None,
+            per_gene_abs_magnitude_ratio_median=float(np.median(mag)) if len(mag) else float('nan'),
+            per_gene_abs_magnitude_ratio_iqr=[float(np.percentile(mag, 25)),
+                                              float(np.percentile(mag, 75))] if len(mag) else None,
             median_se_ratio=float(np.median(m.slope_a_se_x / m.slope_a_se_full))
             if len(m) else float('nan'),
         )
