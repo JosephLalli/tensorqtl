@@ -371,7 +371,17 @@ Start with `docs/hapmixqtl_methods.md` for implementation and
 `docs/brainvar_deploy_runbook.md` for the BrainVar comparison state. The
 cross-project review at
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md`
-is the current methods/review record.
+is the current methods/review record. The mixQTL replication arm's own report,
+including the weighting ablation that answers what the Gibbs draws buy, is
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_replication_20260919/REPORT.md`
+(regenerated 2026-09-20 under mixQTL's published gates; the permissive
+configuration is preserved beside it as a sensitivity arm).
+
+Work that is **proposed and not yet run** is kept out of this document and out
+of `CLAUDE.md`, both of which record what is established. It lives in
+[OPEN_INVESTIGATIONS_20260920.md](OPEN_INVESTIGATIONS_20260920.md): currently
+the per-channel residual sigma test (the last untested of the six mixQTL
+disagreement mechanisms) and the pending log2 unit migration.
 
 Worktree: `hapmix-runbook-local`; the through-origin change is commit
 `bea450c` on top of `f11d586`. The estimator ablation
