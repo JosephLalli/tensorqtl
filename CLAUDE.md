@@ -993,3 +993,51 @@ hapmixQTL-vs-RASQUAL.
   therefore simultaneously a published-cutoffs and a permissive-cutoffs result.
   `weight_cap` is set to the driver's 10 (user decision, 2026-09-20); the
   roxygen examples' 100 would change nothing here.
+
+## hapmixQTL can now apply mixQTL's count cutoffs (2026-09-20)
+
+`count_cutoff_masks(yL, yR, yT, asc_cutoff, asc_cap, trc_cutoff)`
+(`tensorqtl/hapmixqtl.py`) builds per-channel boolean admission masks from
+posterior-mean counts; `map_nominal`, `map_cis` and `map_susie` take them as
+`keep_a_df` / `keep_t_df`, and the runner exposes `--asc-cutoff --asc-cap
+--trc-cutoff` plus `--mixqtl-cutoffs` (the published 50/1000/100). The point
+is a MATCHED-DONOR comparison: the non-weighting ladder found the donor set,
+not the response or the weights, to be the dominant non-weighting difference
+between the two estimators, and until now hapmixQTL had no way to adopt
+mixQTL's donor set. `--mixqtl-cutoffs` is the shorthand.
+
+- **Default is off and must stay off.** All four parameters default to None
+  and the mapping functions default `keep_*_df=None`; an all-True mask
+  reproduces the unmasked run bit for bit (pinned by
+  `TestCountCutoffsEndToEnd`). Turning the published cutoffs on discards
+  1,656 of 2,193 informative donor-gene pairs on the calibration genes, for
+  the alignment-artifact reason above, so this is a comparison instrument,
+  not a production setting.
+- **The mask is applied by zeroing the WORKING inferential variance** in
+  `_prepare_channels`, which puts an excluded donor in exactly the state a
+  zero-coverage donor is already in. Every informative-set test downstream is
+  `v > eps` -- the sparse-channel rule, `_estimate_tau_informative` and
+  `_estimate_c_tau` -- so one assignment keeps tau estimation consistent with
+  the weights. `Va_df`/`Vt_df` as the caller passed them are untouched. The
+  allelic weight is then zeroed by the existing
+  `_zero_degenerate_ase_weights`; the total channel, which has no such guard,
+  is zeroed explicitly and only for cutoff-excluded samples (this does NOT
+  introduce the zero-count floor that is still open, above).
+- **`trc_cutoff` reads `yT`, never `yL + yR`, and this is a real trap.**
+  `yL + yR` is the paired-transcript subtotal, which is exactly 0 for a
+  homozygous-but-expressed donor (the 57.8% bullet above). Measured on the
+  29 calibration genes: thresholding `yL + yR` at 100 excludes 502
+  donor-gene pairs that `yT >= 100` admits, 18.8% of the cohort, all of them
+  good total-channel data. `count_cutoff_masks` takes `yT` separately and
+  the docstring says so; a test pins it.
+- **Measured retention on the 29 calibration genes** (2,668 donor-gene
+  pairs, 2,193 informative): the published allelic band `[50, 1000]` on both
+  haplotypes keeps 499, reproducing the replication arm's own figure
+  exactly; `trc_cutoff = 100` on `yT` excludes nobody, so the total-channel
+  mask is inert on this high-coverage set.
+- Misaligned mask frames raise rather than silently masking the wrong
+  donors (`_assert_keep_frames`, same defect class as the phase-column bug),
+  and a run that sets any cutoff prints the admitted fraction per channel.
+- Not wired: `weight_cap`. hapmixQTL is not given mixQTL's fold cap, because
+  the ablation shows capping costs two thirds of the efficiency gain and the
+  cap is a workaround for a known-variance SE. 17 tests cover the cutoffs.

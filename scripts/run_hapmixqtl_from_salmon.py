@@ -123,12 +123,12 @@ import pandas as pd
 warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
-    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs,
+    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, count_cutoff_masks,
                                      reference_bias_diagnostic, orient_haplotypes, map_cis, estimate_library_factors, estimate_variance_priors,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
-    from hapmixqtl import (compute_summaries_from_gibbs,
+    from hapmixqtl import (compute_summaries_from_gibbs, count_cutoff_masks,
                            reference_bias_diagnostic, orient_haplotypes, map_cis, estimate_library_factors, estimate_variance_priors,
                            map_str_curvature, map_multiallelic)
 
@@ -993,6 +993,27 @@ def main():
                     help="how the empirical-Bayes prior is estimated across genes: 'deciles' (ten expression bins) or 'trend' (smooth precision-weighted curves on the log scale, limma's trend=TRUE idea; hapmixqtl.estimate_variance_priors)")
     ap.add_argument('--perm-scheme', default='records', choices=['records', 'residuals'],
                     help="map_cis permutation null: 'records' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
+    ap.add_argument('--asc-cutoff', type=float, default=None,
+                    help='allele-specific count FLOOR: both haplotypes must have at '
+                         'least this many posterior-mean counts for a donor to enter '
+                         "the allelic channel. mixQTL's published value is 50. Off by "
+                         'default; hapmixQTL has no count cutoffs of its own')
+    ap.add_argument('--asc-cap', type=float, default=None,
+                    help='allele-specific count CEILING: both haplotypes must have at '
+                         "most this many counts. mixQTL's published value is 1000, "
+                         'justified there as an alignment-artifact guard. NOT recommended '
+                         'on Salmon posterior means, where exceeding 1000 means a '
+                         'well-expressed gene: on the 29 calibration genes it discards '
+                         '1,656 of 2,193 informative donor-gene pairs. Provided so the '
+                         'two estimators can be run on a matched donor set')
+    ap.add_argument('--trc-cutoff', type=float, default=None,
+                    help='total count floor for the total channel, applied to yT summed '
+                         "over every transcript (mixQTL's published value is 100, which "
+                         'excludes no donor on the calibration genes)')
+    ap.add_argument('--mixqtl-cutoffs', action='store_true',
+                    help="shorthand for --asc-cutoff 50 --asc-cap 1000 --trc-cutoff 100, "
+                         "mixQTL's published (GTEx v8) values, for a matched-donor "
+                         'comparison. Read --asc-cap before using it')
     ap.add_argument('--variance-model', default='additive',
                     choices=['additive', 'two-component', 'library-scaled'],
                     help="allelic-channel error variance: additive v + tau (default, the "
@@ -1177,14 +1198,41 @@ def main():
         variance_prior.attrs['bins'].to_csv(out / 'variance_prior_bins.tsv', sep='\t', index=False)
         print(f"Variance priors ({variance_prior.attrs['method']}) from {variance_prior.attrs['n_genes']} genes, "
               f"{len(variance_prior.attrs['bins'])} expression bins; kappa {variance_prior.attrs['kappa']:.2f}")
+    # mixQTL-style count cutoffs, off unless asked for. The masks are built
+    # over EVERY gene so they align with sdf, which map_cis restricts by
+    # map_pos rather than by row.
+    asc_cutoff, asc_cap, trc_cutoff = args.asc_cutoff, args.asc_cap, args.trc_cutoff
+    if args.mixqtl_cutoffs:
+        asc_cutoff = 50.0 if asc_cutoff is None else asc_cutoff
+        asc_cap = 1000.0 if asc_cap is None else asc_cap
+        trc_cutoff = 100.0 if trc_cutoff is None else trc_cutoff
+    keep_a_df = keep_t_df = None
+    if any(c is not None for c in (asc_cutoff, asc_cap, trc_cutoff)):
+        # the total cutoff reads yT over ALL transcripts, never yL + yR
+        ka, kt = count_cutoff_masks(YLm, YRm, YT[:, keep, :].mean(2),
+                                    asc_cutoff=asc_cutoff, asc_cap=asc_cap,
+                                    trc_cutoff=trc_cutoff)
+        keep_a_df = pd.DataFrame(ka, index=sdf.index, columns=sdf.columns)
+        keep_t_df = pd.DataFrame(kt, index=sdf.index, columns=sdf.columns)
+        sub_a = keep_a_df.loc[common].values
+        sub_t = keep_t_df.loc[common].values
+        print(f'\nCount cutoffs applied (asc {asc_cutoff} to {asc_cap}, '
+              f'trc >= {trc_cutoff}), over the {len(common)} mapped genes:')
+        print(f'  allelic channel admits {sub_a.sum():,}/{sub_a.size:,} '
+              f'donor-gene pairs ({sub_a.sum() / sub_a.size:.1%})')
+        print(f'  total channel   admits {sub_t.sum():,}/{sub_t.size:,} '
+              f'donor-gene pairs ({sub_t.sum() / sub_t.size:.1%})')
+
     print(f'\nRunning map_cis on {len(common)} genes '
           f"(tau_mode='estimate', variance_model={variance_model!r}"
-          f"{', empirical-Bayes prior' if variance_prior is not None else ''})")
+          f"{', empirical-Bayes prior' if variance_prior is not None else ''}"
+          f"{', count cutoffs' if keep_a_df is not None else ''})")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window, tau_refit=True,
                   verbose=True, variance_model=variance_model,
                   library_factor=library_factor, variance_prior=variance_prior,
-                  perm_scheme=args.perm_scheme)
+                  perm_scheme=args.perm_scheme,
+                  keep_a_df=keep_a_df, keep_t_df=keep_t_df)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
     res = res.reset_index()

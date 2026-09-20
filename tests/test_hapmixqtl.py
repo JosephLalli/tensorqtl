@@ -46,6 +46,8 @@ from tensorqtl.hapmixqtl import (
     SAME_COVARIATES,
     orient_haplotypes,
     reference_bias_diagnostic,
+    count_cutoff_masks,
+    _assert_keep_frames,
 )
 
 
@@ -1751,3 +1753,219 @@ class TestVarianceModels:
             map_cis(*args, variance_model='two_component', tau_mode='zero', **kw)
         with pytest.raises(ValueError, match='positive'):
             map_cis(*args, variance_model='library_scaled', library_factor=ones * 0, **kw)
+
+
+# ---------------------------------------------------------------------------
+#  Count cutoffs (mixQTL-style donor admission)
+# ---------------------------------------------------------------------------
+
+class TestCountCutoffMasks:
+    """count_cutoff_masks: which donors each cutoff admits.
+
+    The cutoffs exist so hapmixQTL can be run on the SAME donor set mixQTL
+    admits, for a matched comparison. They are never applied by default.
+    """
+
+    def test_no_cutoffs_admits_everyone(self):
+        yL = np.array([[0.0, 5.0, 3000.0]])
+        yR = np.array([[0.0, 7.0, 2000.0]])
+        keep_a, keep_t = count_cutoff_masks(yL, yR)
+        assert keep_a.all() and keep_t.all()
+        assert keep_a.shape == yL.shape and keep_a.dtype == bool
+
+    def test_floor_and_ceiling_are_independent(self):
+        """Each cutoff is skipped when None, so a floor can be used alone."""
+        yL = np.array([[10.0, 60.0, 2000.0]])
+        yR = np.array([[10.0, 80.0, 900.0]])
+        floor_only, _ = count_cutoff_masks(yL, yR, asc_cutoff=50)
+        ceil_only, _ = count_cutoff_masks(yL, yR, asc_cap=1000)
+        both, _ = count_cutoff_masks(yL, yR, asc_cutoff=50, asc_cap=1000)
+        assert list(floor_only[0]) == [False, True, True]
+        assert list(ceil_only[0]) == [True, True, False]
+        assert list(both[0]) == [False, True, False]
+
+    def test_both_haplotypes_must_pass(self):
+        """mixQTL's asc gate is on y1 AND y2, not on their sum."""
+        yL = np.array([[100.0, 100.0]])
+        yR = np.array([[100.0, 1.0]])
+        keep_a, _ = count_cutoff_masks(yL, yR, asc_cutoff=50)
+        assert list(keep_a[0]) == [True, False]
+
+    def test_total_cutoff_reads_yT_not_yL_plus_yR(self):
+        """The homozygous-but-expressed case, which is the whole reason yT
+        is a separate argument.
+
+        A donor homozygous across the gene has no surviving _R transcript
+        after Salmon's deduplicated index, so the ingest credits NEITHER
+        haplotype and yL + yR is 0 -- while the gene is well expressed and
+        yT is large. Thresholding the wrong quantity silently drops it from
+        the TOTAL channel, where it is perfectly good data.
+        """
+        yL = np.array([[0.0]])
+        yR = np.array([[0.0]])
+        yT = np.array([[5000.0]])
+        _, keep_t = count_cutoff_masks(yL, yR, yT, trc_cutoff=100)
+        assert keep_t[0, 0], 'a well-expressed homozygous donor must stay in'
+        # and the documented failure mode, if yT is not supplied
+        _, keep_wrong = count_cutoff_masks(yL, yR, trc_cutoff=100)
+        assert not keep_wrong[0, 0]
+
+    def test_gibbs_draws_are_averaged(self):
+        """Draws [features, samples, draws] collapse to posterior means."""
+        draws = np.stack([np.full((1, 2), 40.0), np.full((1, 2), 80.0)], axis=2)
+        keep_a, _ = count_cutoff_masks(draws, draws, asc_cutoff=50)
+        assert keep_a.all(), 'mean of 40 and 80 is 60, which clears 50'
+
+
+class TestCountCutoffsInChannels:
+    """The masks reaching _prepare_channels, and what they must guarantee."""
+
+    def _fixture(self, device, n=60, seed=771):
+        rng = _make_gaussian_seed(seed)
+        g = rng.choice([0.0, 1.0, 2.0], n)
+        s = rng.choice([-1.0, 0.0, 1.0], n)
+        t = 1.1 + 0.5 * (g / 2) + rng.normal(0, 0.2, n)
+        a = 0.4 * s + rng.normal(0, 0.2, n)
+        va = rng.uniform(0.05, 0.4, n)
+        vt = rng.uniform(0.05, 0.4, n)
+        return g, s, a, t, va, vt
+
+    def _prep(self, device, a, t, va, vt, keep_a=None, keep_t=None):
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        B = lambda x: None if x is None else torch.tensor(x, dtype=torch.bool,
+                                                          device=device)
+        return _prepare_channels(T(a), T(t), T(va), T(vt), None, 'estimate',
+                                 device, ase_covariates_t=None,
+                                 keep_a_t=B(keep_a), keep_t_t=B(keep_t))
+
+    def test_all_true_masks_match_no_masks(self, device):
+        """Passing masks that exclude nobody must change nothing at all."""
+        g, s, a, t, va, vt = self._fixture(device)
+        base = self._prep(device, a, t, va, vt)
+        allt = self._prep(device, a, t, va, vt,
+                          keep_a=np.ones(len(a), bool), keep_t=np.ones(len(a), bool))
+        assert torch.allclose(base[0], allt[0], atol=0, rtol=0)
+        assert torch.allclose(base[1], allt[1], atol=0, rtol=0)
+
+    def test_excluding_only_uninformative_samples_changes_nothing(self, device):
+        """A mask that removes exactly the zero-coverage donors is a no-op,
+        because the degenerate-weight guard already removed them. This pins
+        that the mask COMPOSES with that guard rather than double-counting."""
+        g, s, a, t, va, vt = self._fixture(device)
+        va = va.copy()
+        va[:8] = 0.0                      # no allele-specific coverage
+        a = a.copy()
+        a[:8] = 0.0
+        base = self._prep(device, a, t, va, vt)
+        masked = self._prep(device, a, t, va, vt, keep_a=(va > 1e-12))
+        assert torch.allclose(base[0], masked[0], atol=0, rtol=0)
+
+    def test_excluded_donor_gets_exactly_zero_weight_in_both_channels(self, device):
+        """The operative guarantee: an excluded donor contributes nothing.
+
+        The total channel is the one worth pinning -- it has no zero-count
+        guard of its own, so without explicit zeroing an excluded donor would
+        keep the finite weight 1/(1e-8 + tau_t).
+        """
+        g, s, a, t, va, vt = self._fixture(device)
+        ka = np.ones(len(a), bool); ka[3] = False
+        kt = np.ones(len(a), bool); kt[5] = False
+        wa, wt, _, _ = self._prep(device, a, t, va, vt, keep_a=ka, keep_t=kt)
+        assert float(wa[3]) == 0.0
+        assert float(wt[5]) == 0.0
+        assert float(wa[4]) > 0.0 and float(wt[4]) > 0.0
+
+    def test_excluding_an_informative_donor_moves_the_fit(self, device):
+        """Sanity: the mask is not silently inert on real data."""
+        g, s, a, t, va, vt = self._fixture(device)
+        base = self._prep(device, a, t, va, vt)
+        ka = np.ones(len(a), bool); ka[:10] = False
+        masked = self._prep(device, a, t, va, vt, keep_a=ka)
+        assert not torch.allclose(base[0], masked[0])
+
+    def test_tau_is_estimated_without_the_excluded_donors(self, device):
+        """tau must never be fitted on donors the weights then exclude.
+
+        Excluding a donor must give the same tau as deleting it outright.
+        """
+        g, s, a, t, va, vt = self._fixture(device, n=70, seed=904)
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        ka = np.ones(len(a), bool); ka[:12] = False
+        _, _, _, _, info_mask = _prepare_channels(
+            T(a), T(t), T(va), T(vt), None, 'estimate', device,
+            ase_covariates_t=None, return_info=True,
+            keep_a_t=torch.tensor(ka, dtype=torch.bool, device=device))
+        _, _, _, _, info_del = _prepare_channels(
+            T(a[12:]), T(t[12:]), T(va[12:]), T(vt[12:]), None, 'estimate',
+            device, ase_covariates_t=None, return_info=True)
+        assert np.isclose(info_mask['tau_a'], info_del['tau_a'], rtol=1e-10)
+
+
+class TestKeepFrameValidation:
+    """Misaligned admission masks must raise, not silently mask the wrong
+    donors -- the same defect class as the phase-column bug."""
+
+    def _frames(self):
+        A = pd.DataFrame(np.zeros((3, 4)), index=['g1', 'g2', 'g3'],
+                         columns=['s1', 's2', 's3', 's4'])
+        return A, pd.DataFrame(np.ones((3, 4), bool), index=A.index,
+                               columns=A.columns)
+
+    def test_aligned_frames_pass(self):
+        A, keep = self._frames()
+        _assert_keep_frames(keep, keep, A)
+        _assert_keep_frames(None, None, A)
+
+    def test_wrong_shape_raises(self):
+        A, keep = self._frames()
+        with pytest.raises(ValueError, match='shape'):
+            _assert_keep_frames(keep.iloc[:, :3], None, A)
+
+    def test_reordered_samples_raise(self):
+        A, keep = self._frames()
+        with pytest.raises(ValueError, match='columns'):
+            _assert_keep_frames(keep[['s2', 's1', 's3', 's4']], None, A)
+
+    def test_reordered_phenotypes_raise(self):
+        A, keep = self._frames()
+        with pytest.raises(ValueError, match='rows'):
+            _assert_keep_frames(keep.loc[['g2', 'g1', 'g3']], None, A)
+
+
+class TestCountCutoffsEndToEnd:
+    """The masks through map_cis, which is how a matched-donor run uses them."""
+
+    def _run(self, d, keep_a=None, keep_t=None):
+        return map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                       d['Va_df'], d['Vt_df'], d['pos_df'],
+                       xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=100,
+                       verbose=False, seed=42,
+                       keep_a_df=keep_a, keep_t_df=keep_t)
+
+    def test_all_true_masks_reproduce_the_unmasked_run(self):
+        """The default path must be untouched: masks admitting everyone give
+        bit-for-bit the same slopes as passing no masks at all."""
+        d = _make_dataset(seed=100)
+        A = d['A_df']
+        full = pd.DataFrame(np.ones(A.shape, bool), index=A.index, columns=A.columns)
+        base = self._run(d)
+        allt = self._run(d, keep_a=full, keep_t=full)
+        assert np.allclose(base.slope.values, allt.slope.values, atol=0, rtol=0)
+        assert np.allclose(base.slope_se.values, allt.slope_se.values, atol=0, rtol=0)
+
+    def test_a_real_cutoff_changes_the_result(self):
+        d = _make_dataset(seed=100)
+        A = d['A_df']
+        rng = np.random.RandomState(42)
+        part = pd.DataFrame(rng.rand(*A.shape) > 0.25, index=A.index, columns=A.columns)
+        base = self._run(d)
+        cut = self._run(d, keep_a=part, keep_t=part)
+        assert not np.allclose(base.slope.values, cut.slope.values)
+
+    def test_misaligned_mask_raises_rather_than_masking_the_wrong_donors(self):
+        d = _make_dataset(seed=100)
+        A = d['A_df']
+        bad = pd.DataFrame(np.ones(A.shape, bool), index=A.index,
+                           columns=A.columns[::-1])
+        with pytest.raises(ValueError, match='columns'):
+            self._run(d, keep_a=bad)

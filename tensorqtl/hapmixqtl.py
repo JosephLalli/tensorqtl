@@ -423,6 +423,123 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=True):
     return A, T, Va, Vt, Cat
 
 
+def count_cutoff_masks(yL, yR, yT=None, asc_cutoff=None, asc_cap=None,
+                       trc_cutoff=None):
+    """Per-channel admission masks from mixQTL-style count cutoffs.
+
+    hapmixQTL has no count cutoffs of its own: every donor with allelic
+    information enters the allelic channel and every donor enters the total
+    channel. This builds the masks that reproduce mixQTL's count thresholds,
+    so the two estimators can be run on a MATCHED donor set. It is the caller's
+    job to pass the masks on; nothing here is applied by default.
+
+    The cutoffs (mixQTL's names, and its GTEx v8 published values):
+
+        asc_cutoff  50    BOTH haplotype counts must be >= this
+        asc_cap   1000    BOTH haplotype counts must be <= this
+        trc_cutoff 100    total counts must be >= this
+
+    Each is optional and skipped when None, so a caller can apply the floor
+    without the ceiling.
+
+    WHICH COUNT EACH CUTOFF READS matters and is easy to get wrong.
+    ``trc_cutoff`` reads the TOTAL count ``yT``, summed over every transcript,
+    exactly as mixQTL's trcQTL does (``mixqtl_replication.trc_channel``
+    thresholds ``ytotal``). It must NOT be applied to ``yL + yR``, which is a
+    paired-transcript subtotal: where a donor is homozygous across a gene,
+    Salmon's deduplicated index leaves no ``_R`` row, the ingest credits
+    neither haplotype, and ``yL + yR`` is 0 while ``yT`` is whatever the gene
+    actually expressed. On the 29 calibration genes, thresholding ``yL + yR``
+    at 100 excludes 502 donor-gene pairs that ``yT >= 100`` admits -- 18.8% of
+    the cohort, silently, and exactly the homozygous-but-expressed pairs.
+    ``yT`` defaults to ``yL + yR`` only to match
+    ``compute_summaries_from_gibbs``; pass the real total whenever a total
+    cutoff is used.
+
+    THESE CUTOFFS ARE NOT RECOMMENDED AS A DEFAULT on Salmon posterior means.
+    mixQTL's Methods justify the ``asc_cap`` as an alignment-artifact guard
+    ("very large allele-specific counts to be likely alignment artifacts"),
+    which does not transfer: a posterior-mean abundance above 1000 is a
+    well-expressed gene, not a pileup. Measured on the 29 calibration genes,
+    the published band keeps 499 of 2,193 informative donor-gene pairs, losing
+    1,656 to the ceiling against 38 to the floor, while ``trc_cutoff=100``
+    excludes nobody. See
+    ``/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_replication_20260919/REPORT.md``.
+
+    Args:
+        yL, yR: haplotype counts, either [features, samples] posterior means
+                or [features, samples, draws] Gibbs draws (averaged here)
+        yT:     total counts, same shape; defaults to yL + yR
+        asc_cutoff, asc_cap, trc_cutoff: thresholds, or None to skip
+
+    Returns:
+        (keep_a, keep_t), each a boolean [features, samples] array. A False
+        entry means that donor contributes nothing to that channel for that
+        gene; the weight is set to zero and the donor is excluded from the
+        channel's tau and variance fits, exactly as a zero-coverage donor is.
+    """
+    yL = np.asarray(yL, dtype=float)
+    yR = np.asarray(yR, dtype=float)
+    mL = yL.mean(axis=2) if yL.ndim == 3 else yL
+    mR = yR.mean(axis=2) if yR.ndim == 3 else yR
+    if yT is None:
+        mT = mL + mR
+    else:
+        yT = np.asarray(yT, dtype=float)
+        mT = yT.mean(axis=2) if yT.ndim == 3 else yT
+
+    keep_a = np.ones(mL.shape, dtype=bool)
+    if asc_cutoff is not None:
+        keep_a &= (mL >= asc_cutoff) & (mR >= asc_cutoff)
+    if asc_cap is not None:
+        keep_a &= (mL <= asc_cap) & (mR <= asc_cap)
+
+    keep_t = np.ones(mT.shape, dtype=bool)
+    if trc_cutoff is not None:
+        keep_t &= mT >= trc_cutoff
+    return keep_a, keep_t
+
+
+def _keep_row(keep_df, pidx, device):
+    """One phenotype's admission mask as a bool tensor, or None if unmasked."""
+    if keep_df is None:
+        return None
+    return torch.tensor(np.asarray(keep_df.values[pidx], dtype=bool)).to(device)
+
+
+def _log_keep_frames(keep_a_df, keep_t_df, logger):
+    """Say what the cutoffs admit, so a filtered run is never silent."""
+    if logger is None:
+        return
+    for label, df in (('allelic', keep_a_df), ('total', keep_t_df)):
+        if df is None:
+            continue
+        n_keep, n = int(df.values.sum()), int(df.values.size)
+        logger.write(f'  * count cutoffs on the {label} channel: '
+                     f'{n_keep:,}/{n:,} donor-gene pairs admitted '
+                     f'({n_keep / n:.1%})')
+
+
+def _assert_keep_frames(keep_a_df, keep_t_df, A_df):
+    """Admission masks must be indexed exactly like the phenotype frames.
+
+    Positional misalignment here is the same defect class as the phase-column
+    bug ``_assert_phase_columns`` guards: it silently excludes the wrong
+    donors and the run still completes, so it is checked rather than trusted.
+    """
+    for name, df in (('keep_a_df', keep_a_df), ('keep_t_df', keep_t_df)):
+        if df is None:
+            continue
+        if df.shape != A_df.shape:
+            raise ValueError(
+                f'{name} has shape {df.shape}, expected {A_df.shape} to match '
+                'the phenotype frames')
+        if not df.index.equals(A_df.index):
+            raise ValueError(f'{name} rows are not the phenotype index of A_df')
+        if not df.columns.equals(A_df.columns):
+            raise ValueError(f'{name} columns are not the samples of A_df')
+
+
 # ---------------------------------------------------------------------------
 #  WeightedResidualizer
 # ---------------------------------------------------------------------------
@@ -1432,7 +1549,8 @@ def _warn_tau_zero(tau_mode):
 def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                       ase_covariates_t=SAME_COVARIATES, eps=1e-12,
                       tau_extra_a_t=None, tau_extra_t_t=None, return_info=False,
-                      variance_model='additive', library_factor_t=None, prior=None):
+                      variance_model='additive', library_factor_t=None, prior=None,
+                      keep_a_t=None, keep_t_t=None):
     """
     Per-phenotype whitening shared by every mapping function.
 
@@ -1496,6 +1614,22 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
     _check_variance_model(variance_model, tau_mode, library_factor_t)
     if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
         ase_covariates_t = covariates_t
+
+    # Count cutoffs (count_cutoff_masks), when the caller supplies them. A
+    # sample the cutoffs exclude carries nothing usable for that channel,
+    # which is the situation a zero-coverage sample is already in, so it is
+    # put in exactly that state: its WORKING inferential variance is zeroed.
+    # Every informative-set test downstream is `v > eps` -- the
+    # sparse-channel rule, _estimate_tau_informative, and _estimate_c_tau --
+    # so one assignment keeps all three consistent with the weights, which
+    # is the property that matters: tau must never be estimated on samples
+    # the fit then excludes. Only the local tensors change; the caller's
+    # Va_df and Vt_df are untouched and still report what the draws measured.
+    if keep_a_t is not None:
+        va_t = torch.where(keep_a_t, va_t, torch.zeros_like(va_t))
+    if keep_t_t is not None:
+        vt_t = torch.where(keep_t_t, vt_t, torch.zeros_like(vt_t))
+
     wa, tau_a, refit_a, c_a, conv_a, fit_a = _channel_weights(
         a_t, va_t, ase_covariates_t, tau_mode, device, eps, tau_extra_a_t,
         intercept=False, variance_model=variance_model, d_t=library_factor_t, prior=prior)
@@ -1503,6 +1637,15 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
     sqrt_wt_t, tau_t, refit_t, _, _, _ = _channel_weights(
         t_t, vt_t, covariates_t, tau_mode, device, eps, tau_extra_t_t,
         intercept=True)
+    # The allelic channel's zeroing is already done by
+    # _zero_degenerate_ase_weights above, since va_t is now 0 there. The
+    # total channel has no such guard (CLAUDE.md, "The total channel has no
+    # zero-count guard"), so an excluded sample would otherwise keep the
+    # finite weight 1/(1e-8 + tau_t). Zero it explicitly. This is scoped to
+    # samples the caller's cutoffs excluded and introduces no zero-count rule
+    # of its own.
+    if keep_t_t is not None:
+        sqrt_wt_t = torch.where(keep_t_t, sqrt_wt_t, torch.zeros_like(sqrt_wt_t))
     residualizer_a = WeightedResidualizer(ase_covariates_t, sqrt_wa_t, intercept=False)
     residualizer_t = WeightedResidualizer(covariates_t, sqrt_wt_t, intercept=True)
     if return_info:
@@ -1952,7 +2095,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 tau_mode='estimate', se_mode='model',
                 output_dir='.', logger=None, verbose=True,
                 ase_covariates_df=None, variance_model='additive',
-                library_factor=None, variance_prior=None):
+                library_factor=None, variance_prior=None,
+                keep_a_df=None, keep_t_df=None):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
@@ -2092,6 +2236,9 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
+    _assert_keep_frames(keep_a_df, keep_t_df, A_df)
+    _log_keep_frames(keep_a_df, keep_t_df, logger)
+
     logger.write(f'  * {variant_df.shape[0]} variants')
     logger.write(f'  * tau mode: {tau_mode}')
     logger.write(f'  * SE mode: {se_mode}')
@@ -2164,7 +2311,9 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
                 a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                 ase_covariates_t=ase_covariates_t, variance_model=variance_model,
-                library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id))
+                library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id),
+                keep_a_t=_keep_row(keep_a_df, pidx, device),
+                keep_t_t=_keep_row(keep_t_df, pidx, device))
 
             genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -2285,7 +2434,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
             ase_covariates_df=None, tau_refit=False, variance_model='additive',
             library_factor=None, variance_prior=None,
-            perm_scheme='records'):
+            perm_scheme='records', keep_a_df=None, keep_t_df=None):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
@@ -2383,6 +2532,9 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
+    _assert_keep_frames(keep_a_df, keep_t_df, A_df)
+    _log_keep_frames(keep_a_df, keep_t_df, logger)
+
     logger.write(f'  * {variant_df.shape[0]} variants')
     if maf_threshold > 0:
         logger.write(f'  * applying in-sample {maf_threshold} MAF filter')
@@ -2433,10 +2585,13 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         vt_t = torch.tensor(Vt_df.values[pidx], dtype=torch.float32).to(device)
 
         prior_g = _prior_tuple(variance_prior, phenotype_id)
+        keep_a_t = _keep_row(keep_a_df, pidx, device)
+        keep_t_t = _keep_row(keep_t_df, pidx, device)
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc, tau_info = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
             ase_covariates_t=ase_covariates_t, return_info=True,
-            variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g)
+            variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g,
+            keep_a_t=keep_a_t, keep_t_t=keep_t_t)
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -2499,7 +2654,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                 ase_covariates_t=ase_covariates_t, return_info=True,
                 tau_extra_a_t=s_lead.t(), tau_extra_t_t=(g_lead / 2).t(),
-                variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g)
+                variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g,
+                keep_a_t=keep_a_t, keep_t_t=keep_t_t)
             lead_stat = calculate_hapmixqtl_nominal(
                 g_lead, s_lead, a_t, t_t, wa_r, wt_r, res_a_r, res_t_r)
             tau_used = dict(tau_a=info_r['tau_a'], tau_t=info_r['tau_t'],
@@ -2650,7 +2806,8 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
               tau_mode='estimate', max_iter=500, window=1000000, tol=1e-3,
               summary_only=True, logger=None, verbose=True,
               warn_monomorphic=False, ase_covariates_df=None,
-              variance_model='additive', library_factor=None, variance_prior=None):
+              variance_model='additive', library_factor=None, variance_prior=None,
+              keep_a_df=None, keep_t_df=None):
     """
     hapmixQTL SuSiE fine-mapping. ``variance_model`` and ``library_factor``
     select the allelic channel's error variance as in map_cis.
@@ -2714,6 +2871,9 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
+    _assert_keep_frames(keep_a_df, keep_t_df, A_df)
+    _log_keep_frames(keep_a_df, keep_t_df, logger)
+
     logger.write(f'  * {variant_df.shape[0]} variants')
     if maf_threshold > 0:
         logger.write(f'  * applying in-sample MAF >= {maf_threshold} filter')
@@ -2755,7 +2915,9 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc = _prepare_channels(
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
             ase_covariates_t=ase_covariates_t, variance_model=variance_model,
-            library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id))
+            library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id),
+            keep_a_t=_keep_row(keep_a_df, pidx, device),
+            keep_t_t=_keep_row(keep_t_df, pidx, device))
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
