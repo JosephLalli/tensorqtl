@@ -1012,8 +1012,13 @@ def main():
                          'excludes no donor on the calibration genes)')
     ap.add_argument('--mixqtl-cutoffs', action='store_true',
                     help="shorthand for --asc-cutoff 50 --asc-cap 1000 --trc-cutoff 100, "
-                         "mixQTL's published (GTEx v8) values, for a matched-donor "
-                         'comparison. Read --asc-cap before using it')
+                         "mixQTL's published (GTEx v8) COUNT cutoffs, for a matched-donor "
+                         'comparison. Read --asc-cap before using it. This matches the '
+                         "donor SET only: mixQTL's fourth published parameter, the "
+                         'weight_cap fold limit on the allelic weights, is deliberately '
+                         'not applied to hapmixQTL, because capping costs two thirds of '
+                         'the efficiency the Gibbs weights buy and exists to protect a '
+                         'known-variance standard error hapmixQTL handles differently')
     ap.add_argument('--variance-model', default='additive',
                     choices=['additive', 'two-component', 'library-scaled'],
                     help="allelic-channel error variance: additive v + tau (default, the "

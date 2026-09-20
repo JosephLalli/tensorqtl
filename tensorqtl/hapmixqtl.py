@@ -452,9 +452,11 @@ def count_cutoff_masks(yL, yR, yT=None, asc_cutoff=None, asc_cap=None,
     actually expressed. On the 29 calibration genes, thresholding ``yL + yR``
     at 100 excludes 502 donor-gene pairs that ``yT >= 100`` admits -- 18.8% of
     the cohort, silently, and exactly the homozygous-but-expressed pairs.
-    ``yT`` defaults to ``yL + yR`` only to match
-    ``compute_summaries_from_gibbs``; pass the real total whenever a total
-    cutoff is used.
+    ``yT`` defaults to ``yL + yR`` for signature consistency with
+    ``compute_summaries_from_gibbs``, and that default is a HAZARD rather
+    than a convenience here: it is the wrong quantity for ``trc_cutoff``.
+    Always pass the real total when using a total cutoff. The runner does;
+    the default is only reachable by calling this directly.
 
     THESE CUTOFFS ARE NOT RECOMMENDED AS A DEFAULT on Salmon posterior means.
     mixQTL's Methods justify the ``asc_cap`` as an alignment-artifact guard
