@@ -1557,18 +1557,34 @@ def _resolve_ase_covariates(ase_covariates_df, covariates_df, samples, device, l
     return t, ase_covariates_df.shape[1]
 
 
-def _warn_tau_zero(tau_mode):
-    """tau_mode='zero' is anticonservative on real data (see docs/ase_validation.md)."""
-    if tau_mode == 'zero':
+def _warn_tau_zero(tau_mode, fitted_scale=False):
+    """tau_mode='zero' is anticonservative ONLY under a known-variance SE.
+
+    The evidence behind this warning -- 107x nominal type-I at alpha=1e-3,
+    ~100% false positives on count-level simulations, 64.5% coverage -- was
+    all measured with the known-variance standard error, where the weights
+    are absolute precisions and tau=0 asserts that the Gibbs variance IS the
+    entire error variance. That assertion is what fails.
+
+    With a fitted residual scale (se_mode='fitted') no such assertion is
+    made: sigma^2 absorbs whatever the draws got wrong about the absolute
+    scale, and the weights are only a shape. Measured 2026-09-20 on the
+    combined statistic over 40 null permutations: tau_mode='zero' with the
+    known-variance SE calibrates at 23.3, and with a fitted scale at 1.068.
+    So the warning is scoped, and firing it for the fitted pairing would be
+    a warning about a different configuration than the one being run.
+    """
+    if tau_mode == 'zero' and not fitted_scale:
         import warnings
         warnings.warn(
-            "hapmixQTL: tau_mode='zero' asserts that Gibbs inferential variance is the "
-            "ENTIRE error variance, which real quantifier posteriors never satisfy. "
-            "Measured consequences: up to 107x nominal type-I error at alpha=1e-3, ~100% "
-            "false positives on count-level simulations, 64.5% coverage of nominal 95% "
-            "CIs, and -- at matched empirical type-I error -- no more power than using "
-            "total counts alone. Use tau_mode='estimate' unless reproducing prior "
-            "results. See docs/ase_validation.md.",
+            "hapmixQTL: tau_mode='zero' with a known-variance standard error asserts "
+            "that Gibbs inferential variance is the ENTIRE error variance, which real "
+            "quantifier posteriors never satisfy. Measured consequences: up to 107x "
+            "nominal type-I error at alpha=1e-3, ~100% false positives on count-level "
+            "simulations, 64.5% coverage of nominal 95% CIs, and a combined-statistic "
+            "calibration of 23.3. Either use tau_mode='estimate', or pair tau_mode='zero' "
+            "with se_mode='fitted' (calibration 1.068), which is the Var(eps)=sigma^2*v "
+            "model and the shipped default. See docs/ase_validation.md.",
             RuntimeWarning, stacklevel=3)
 
 
@@ -1576,7 +1592,8 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                       ase_covariates_t=SAME_COVARIATES, eps=1e-12,
                       tau_extra_a_t=None, tau_extra_t_t=None, return_info=False,
                       variance_model='additive', library_factor_t=None, prior=None,
-                      keep_a_t=None, keep_t_t=None):
+                      keep_a_t=None, keep_t_t=None, total_variance_model='additive',
+                      fitted_scale=False):
     """
     Per-phenotype whitening shared by every mapping function.
 
@@ -1636,7 +1653,7 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
         (+ info dict with tau_a, tau_t, c_a, converged_a, refit_a, refit_t,
         variance_model when return_info)
     """
-    _warn_tau_zero(tau_mode)
+    _warn_tau_zero(tau_mode, fitted_scale=fitted_scale)
     _check_variance_model(variance_model, tau_mode, library_factor_t)
     if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
         ase_covariates_t = covariates_t
@@ -1660,9 +1677,29 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
         a_t, va_t, ase_covariates_t, tau_mode, device, eps, tau_extra_a_t,
         intercept=False, variance_model=variance_model, d_t=library_factor_t, prior=prior)
     sqrt_wa_t = _zero_degenerate_ase_weights(wa, va_t, eps)
-    sqrt_wt_t, tau_t, refit_t, _, _, _ = _channel_weights(
+    # The total channel's variance function. It was v_t + tau_t under every
+    # allelic variance_model until 2026-09-20, and still is by default, so
+    # total_variance_model='additive' reproduces every prior result exactly.
+    #
+    # Why the option exists. The draws DO carry per-donor information about
+    # total expression -- Vt spans 2 to 3.5-fold across donors within every
+    # one of the 29 calibration genes -- but with c fixed at 1, tau_t swamps
+    # it about 19 to 1, so the weights come out nearly equal (10-90 spread
+    # 1.04, Kish 92 of 92 donors). Fitting c_t per gene is the lever that
+    # changes that: measured median c_t 8.7, which lifts the draws' share of
+    # the weight denominator from 0.04 to 0.38 and the weight spread to 1.51.
+    # 'library_scaled' is deliberately NOT offered here: d_i is estimated
+    # from the ALLELIC channel's residuals by estimate_library_factors and
+    # has no meaning for this one.
+    if total_variance_model not in ('additive', 'two_component'):
+        raise ValueError("total_variance_model must be 'additive' or "
+                         f"'two_component', got {total_variance_model!r}")
+    if total_variance_model != 'additive' and tau_mode != 'estimate':
+        raise ValueError("total_variance_model='two_component' requires "
+                         "tau_mode='estimate'")
+    sqrt_wt_t, tau_t, refit_t, c_t, conv_t, _ = _channel_weights(
         t_t, vt_t, covariates_t, tau_mode, device, eps, tau_extra_t_t,
-        intercept=True)
+        intercept=True, variance_model=total_variance_model)
     # The allelic channel's zeroing is already done by
     # _zero_degenerate_ase_weights above, since va_t is now 0 there. The
     # total channel has no such guard (CLAUDE.md, "The total channel has no
@@ -1678,6 +1715,7 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
         return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t, dict(
             tau_a=tau_a, tau_t=tau_t, c_a=c_a, converged_a=conv_a, refit_a=refit_a,
             refit_t=refit_t, variance_model=variance_model,
+            c_t=c_t, converged_t=conv_t, total_variance_model=total_variance_model,
             c_a_raw=(fit_a['c_raw'] if fit_a else c_a), tau_a_raw=(fit_a['tau_raw'] if fit_a else tau_a),
             floored_a=(fit_a['floored'] if fit_a else False), prior_used=prior is not None)
     return sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_t
@@ -1875,7 +1913,8 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
 def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
                                       sqrt_wa_t, sqrt_wt_t,
                                       residualizer_a, residualizer_t,
-                                      permutation_ix_t, dof=None, perm_scheme='records'):
+                                      permutation_ix_t, dof=None, perm_scheme='records',
+                                      fitted=False):
     """
     Compute nominal and permutation statistics for hapmixQTL.
 
@@ -1936,6 +1975,15 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     """
     if dof is None:
         dof = min(residualizer_a.dof, residualizer_t.dof)
+    # Per-channel degrees of freedom for the fitted residual scale. Counts
+    # INFORMATIVE donors, not rows: a zero-weight donor contributes nothing
+    # to the residual sum of squares, so charging it dof would shrink the
+    # scale and inflate the statistic (same rule as _wls_regression).
+    dof_a = max(int((residualizer_a.sqrt_w_t != 0).sum())
+                - 1 - residualizer_a.Q_t.shape[1], 1)
+    dof_t = max(int((residualizer_t.sqrt_w_t != 0).sum())
+                - 1 - residualizer_t.Q_t.shape[1], 1)
+    _fit = dict(fitted=fitted, dof_a=dof_a, dof_t=dof_t)
 
     # --- Pre-transform and residualize fixed predictors ---
     # ASE
@@ -1960,18 +2008,20 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     yy_t_nom = (t_star_res * t_star_res).sum()
 
     tstat2_nom = _combined_tstat2(xy_a_nom, xx_a, yy_a_nom,
-                                  xy_t_nom, xx_t, yy_t_nom, dof)
+                                  xy_t_nom, xx_t, yy_t_nom, dof, **_fit)
 
     tstat2_nom_clean = tstat2_nom.clone()
     tstat2_nom_clean[torch.isnan(tstat2_nom_clean)] = -1
     best_ix = tstat2_nom_clean.argmax()
 
-    # Known-variance combine for the best variant (inverse variances are xx).
-    iva = torch.where(xx_a[best_ix] > 1e-30, xx_a[best_ix], torch.zeros_like(xx_a[best_ix]))
-    ivt = torch.where(xx_t[best_ix] > 1e-30, xx_t[best_ix], torch.zeros_like(xx_t[best_ix]))
-    xy_a_b = torch.where(xx_a[best_ix] > 1e-30, xy_a_nom[best_ix], torch.zeros_like(xy_a_nom[best_ix]))
-    xy_t_b = torch.where(xx_t[best_ix] > 1e-30, xy_t_nom[best_ix], torch.zeros_like(xy_t_nom[best_ix]))
-    slope_nom = (xy_a_b + xy_t_b) / (iva + ivt + 1e-30)
+    # Combined slope for the best variant, taken from the SAME routine that
+    # produced the statistic. This was previously a second, hand-inlined
+    # known-variance copy, which silently disagreed with map_nominal the
+    # moment a fitted residual scale was allowed; a test caught it.
+    _, slope_all = _combined_tstat2(xy_a_nom, xx_a, yy_a_nom,
+                                    xy_t_nom, xx_t, yy_t_nom, dof,
+                                    return_slope=True, **_fit)
+    slope_nom = slope_all[best_ix]
 
     # Map the combined statistic to a correlation-like r for the empirical
     # p-value. tstat2 already equals slope_nom^2 * total_inv; convert with the
@@ -2000,7 +2050,8 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
         xy_t_perm, xx_t_perm, yy_t_perm = _record_permutation_channel(
             genotypes_t / 2, t_t, sqrt_wt_t, residualizer_t, permutation_ix_t)
         tstat2_perm = _combined_tstat2(xy_a_perm, xx_a_perm, yy_a_perm,
-                                        xy_t_perm, xx_t_perm, yy_t_perm, dof)
+                                        xy_t_perm, xx_t_perm, yy_t_perm, dof,
+                                        **_fit)
     elif perm_scheme == 'residuals':
         a_res_perms = _permute_within_informative(
             _leverage_standardized(a_star_res[0], residualizer_a), sqrt_wa_t > 0, permutation_ix_t)
@@ -2013,7 +2064,8 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
         yy_t_perm = (t_res_perms * t_res_perms).sum(1)
 
         tstat2_perm = _combined_tstat2(xy_a_perm, xx_a, yy_a_perm,
-                                        xy_t_perm, xx_t, yy_t_perm, dof)
+                                        xy_t_perm, xx_t, yy_t_perm, dof,
+                                        **_fit)
     else:
         raise ValueError(f'perm_scheme must be one of {PERM_SCHEMES}, got {perm_scheme!r}')
 
@@ -2024,7 +2076,9 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     return r_nominal, std_ratio, best_ix, max_r2_perm, genotypes_t[best_ix]
 
 
-def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
+def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
+                     fitted=False, dof_a=None, dof_t=None,
+                     return_slope=False):
     """
     Compute combined (known-variance) statistic squared from dot-product
     summaries, matching the inverse-variance meta-analysis in
@@ -2036,10 +2090,22 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
         beta_c   = (xy_a + xy_t) / (xx_a + xx_t)          [both channels valid]
         stat^2   = beta_c^2 * (xx_a + xx_t)
 
-    ``yy_a``/``yy_t`` are unused for the SE here (kept in the signature for
-    symmetry with an estimated-dispersion variant and for callers that also
-    want residual sums of squares). Works for both scalar (nominal) and 2D
-    (permutation) ``xy`` by broadcasting.
+    With ``fitted=True`` that estimated-dispersion variant is taken instead,
+    which is what ``yy_a``/``yy_t`` were always carried for. Each channel gets
+    its own residual scale, refit at every permutation exactly as mixQTL's
+    ``mixqtl_permutation_scan`` does:
+
+        rss     = yy - xy^2 / xx          (through-origin residual SS)
+        s2      = rss / dof_channel
+        inv_var = xx / s2                 (instead of xx)
+
+    The two forms then share one algebra, since known-variance is s2 = 1:
+    ``inv_var = xx/s2`` and the meta numerator is ``xy/s2``, which collapses
+    to ``xy_a + xy_t`` when both scales are 1. ``dof_a``/``dof_t`` must count
+    INFORMATIVE donors per channel, for the reason given in _wls_regression.
+
+    Works for both scalar (nominal) and 2D (permutation) ``xy`` by
+    broadcasting.
     """
     is_perm = xy_a.dim() == 2
 
@@ -2060,9 +2126,37 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
     xy_a_eff = torch.where(xx_a_e > 1e-30, xy_a, torch.zeros_like(xy_a))
     xy_t_eff = torch.where(xx_t_e > 1e-30, xy_t, torch.zeros_like(xy_t))
 
+    if fitted:
+        # Per-channel fitted residual scale, refit here (and so, under
+        # permutation, at every permutation) as mixQTL does.
+        # rss = yy - xy^2/xx is catastrophic cancellation when the fit is
+        # good (rss << yy), which is exactly the regime a strong cis effect
+        # puts us in, so the subtraction is done in float64 and cast back.
+        # The summary form is kept rather than forming residuals explicitly
+        # because the permutation path would otherwise materialise a
+        # [variants x permutations x samples] residual array.
+        _d = torch.float64
+        rss_a = (yy_a.to(_d) - xy_a_eff.to(_d) ** 2
+                 / (inv_var_a.to(_d) + 1e-300)).clamp(min=0)
+        rss_t = (yy_t.to(_d) - xy_t_eff.to(_d) ** 2
+                 / (inv_var_t.to(_d) + 1e-300)).clamp(min=0)
+        s2_a = (rss_a / max(int(dof_a) if dof_a else 1, 1)).to(xy_a.dtype)
+        s2_t = (rss_t / max(int(dof_t) if dof_t else 1, 1)).to(xy_t.dtype)
+        good_a = (inv_var_a > 1e-30) & (s2_a > 0)
+        good_t = (inv_var_t > 1e-30) & (s2_t > 0)
+        inv_var_a = torch.where(good_a, inv_var_a / s2_a.clamp(min=1e-300),
+                                torch.zeros_like(inv_var_a))
+        inv_var_t = torch.where(good_t, inv_var_t / s2_t.clamp(min=1e-300),
+                                torch.zeros_like(inv_var_t))
+        xy_a_eff = torch.where(good_a, xy_a_eff / s2_a.clamp(min=1e-300),
+                               torch.zeros_like(xy_a_eff))
+        xy_t_eff = torch.where(good_t, xy_t_eff / s2_t.clamp(min=1e-300),
+                               torch.zeros_like(xy_t_eff))
+
     total_inv = inv_var_a + inv_var_t
     # beta_c * total_inv = slope_a*inv_var_a + slope_t*inv_var_t
-    #                    = xy_a + xy_t (since slope = xy/xx and inv_var = xx)
+    #                    = xy_a/s2_a + xy_t/s2_t, which is xy_a + xy_t in the
+    #                    known-variance case where both scales are 1
     numer = xy_a_eff + xy_t_eff
     slope_comb = torch.where(
         total_inv > 0,
@@ -2070,6 +2164,8 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof):
         torch.zeros_like(numer),
     )
     tstat2 = slope_comb * slope_comb * total_inv
+    if return_slope:
+        return tstat2, slope_comb
     return tstat2
 
 
@@ -2121,11 +2217,12 @@ def cis_trans_diagnostic(slope_a, se_a, slope_t, se_t, dof):
 def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 phenotype_pos_df, xL_df=None, xR_df=None, prefix='',
                 covariates_df=None, maf_threshold=0, window=1000000,
-                tau_mode='estimate', se_mode='model',
+                tau_mode='zero', se_mode='fitted',
                 output_dir='.', logger=None, verbose=True,
                 ase_covariates_df=None, variance_model='additive',
                 library_factor=None, variance_prior=None,
-                keep_a_df=None, keep_t_df=None):
+                keep_a_df=None, keep_t_df=None,
+                total_variance_model='additive'):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
@@ -2208,6 +2305,12 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                           map_cis(tau_refit=True) reports its lead with tau
                           re-estimated under the alternative, so a strong
                           gene's lead pair is larger there than here.
+        total_variance_model: the TOTAL channel's variance function,
+                          'additive' (default, v_t + tau_t -- what every
+                          earlier result used) or 'two_component'
+                          (c_t v_t + tau_t, c_t fitted per gene). Independent
+                          of ``variance_model``, which governs the allelic
+                          channel only.
         variance_model:   'additive' (default; v + tau), 'two_component'
                           (c v + tau) or 'library_scaled' (d_i (c v + tau)),
                           the allelic channel's error variance; see the module
@@ -2347,7 +2450,9 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 ase_covariates_t=ase_covariates_t, variance_model=variance_model,
                 library_factor_t=library_factor_t, prior=_prior_tuple(variance_prior, phenotype_id),
                 keep_a_t=_keep_row(keep_a_df, pidx, device),
-                keep_t_t=_keep_row(keep_t_df, pidx, device))
+                keep_t_t=_keep_row(keep_t_df, pidx, device),
+                total_variance_model=total_variance_model,
+                fitted_scale=fitted)
 
             genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
             genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -2464,7 +2569,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             phenotype_pos_df, xL_df=None, xR_df=None,
             covariates_df=None, maf_threshold=0, beta_approx=True,
-            nperm=10000, window=1000000, tau_mode='estimate', se_mode='model',
+            nperm=10000, window=1000000, tau_mode='zero', se_mode='fitted',
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
             ase_covariates_df=None, tau_refit=False, variance_model='additive',
             library_factor=None, variance_prior=None,
@@ -2542,12 +2647,13 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     logger.write(f'  * {N} samples')
     logger.write(f'  * {A_df.shape[0]} phenotypes')
 
-    if se_mode != 'model':
+    if se_mode not in ('model', 'fitted'):
         raise ValueError(
-            f"map_cis: se_mode={se_mode!r} is not available. The permutation "
-            "statistic is the known-variance GLS statistic, and sandwich "
-            "standard errors have no permutation counterpart here; use "
-            "map_nominal for se_mode='robust'")
+            f"map_cis: se_mode={se_mode!r} is not available. 'model' and "
+            "'fitted' both have permutation counterparts -- 'fitted' refits a "
+            "per-channel residual scale at every permutation, exactly as "
+            "mixQTL's mixqtl_permutation_scan does. The HC1 sandwich does "
+            "not; use map_nominal for se_mode='robust'.")
 
     if covariates_df is not None:
         assert covariates_df.index.equals(A_df.columns), \
@@ -2625,7 +2731,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
             ase_covariates_t=ase_covariates_t, return_info=True,
             variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g,
-            keep_a_t=keep_a_t, keep_t_t=keep_t_t)
+            keep_a_t=keep_a_t, keep_t_t=keep_t_t,
+            fitted_scale=(se_mode == 'fitted'))
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -2669,6 +2776,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             sqrt_wa_t, sqrt_wt_t,
             residualizer_a, residualizer_tc,
             permutation_ix_t, dof=dof, perm_scheme=perm_scheme,
+            fitted=(se_mode == 'fitted'),
         )
         r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
         best_local = int(var_ix)
@@ -3346,8 +3454,8 @@ def _cis_sites(site_chrom, site_pos, phenotype_pos_df, window):
 
 def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
                  A_df, T_df, Va_df, Vt_df, phenotype_pos_df, fit_site,
-                 covariates_df=None, window=1000000, tau_mode='estimate',
-                 se_mode='model', logger=None, verbose=True,
+                 covariates_df=None, window=1000000, tau_mode='zero',
+                 se_mode='fitted', logger=None, verbose=True,
                  ase_covariates_df=None, variance_model='additive',
                  library_factor=None, variance_prior=None):
     """Shared per-phenotype driver: whiten once per gene, call fit_site for
@@ -3432,8 +3540,8 @@ def _pvals(fit, N, n_cov):
 
 def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_df,
                      phenotype_pos_df, hap_phased=None, covariates_df=None,
-                     window=1000000, min_hap=10, tau_mode='estimate',
-                     se_mode='model', logger=None, verbose=True,
+                     window=1000000, min_hap=10, tau_mode='zero',
+                     se_mode='fitted', logger=None, verbose=True,
                      ase_covariates_df=None, variance_model='additive',
                      library_factor=None, variance_prior=None):
     """
@@ -3510,7 +3618,7 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
 
 def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_df, Vt_df,
                       phenotype_pos_df, covariates_df=None, window=1000000,
-                      winsor=(0.01, 0.99), tau_mode='estimate', se_mode='model',
+                      winsor=(0.01, 0.99), tau_mode='zero', se_mode='fitted',
                       logger=None, verbose=True, ase_covariates_df=None,
                       variance_model='additive', library_factor=None, variance_prior=None):
     """

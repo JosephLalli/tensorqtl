@@ -15,6 +15,7 @@ These tests validate the core mathematical properties of Method A:
   - Sample-ordering, dtype and device consistency
 """
 
+import warnings
 import pytest
 import numpy as np
 import pandas as pd
@@ -1422,12 +1423,22 @@ def _heteroskedastic_dataset(seed, n_samples=80, beta=0.6, tau=0.05):
 
 
 class TestLeadRefit:
+    """The lead refit is a KNOWN-VARIANCE feature, so these pin se_mode='model'.
+
+    It exists because appending the window maximum to the tau design removes
+    more residual sum of squares than the one degree of freedom it is
+    charged, so the null-design tau comes back low and the reported
+    statistic is inflated. Under se_mode='fitted' (the default since
+    2026-09-21) that inflation is largely absorbed by sigma_hat instead, so
+    the refit moves the reported p-value far less -- which is a real
+    consequence of the default change, not a regression.
+    """
 
     def _run(self, d, refit, cov_df=None):
         return map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'], d['Va_df'],
                        d['Vt_df'], d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=300,
                        seed=5, covariates_df=cov_df, ase_covariates_df=None, verbose=False,
-                       tau_refit=refit)
+                       tau_refit=refit, tau_mode='estimate', se_mode='model')
 
     def test_refit_changes_only_the_reported_scale(self):
         """Same lead, same pval_perm and pval_beta to the bit (the scan is
@@ -1594,7 +1605,7 @@ class TestVarianceModels:
         exactly and reports c_a = 1."""
         d = _make_dataset(seed=120)
         kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=500, window=1000000,
-                  seed=3, verbose=False)
+                  seed=3, verbose=False, tau_mode='estimate')
         base = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
                        d['Va_df'], d['Vt_df'], d['pos_df'], **kw)
         add = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
@@ -1606,7 +1617,7 @@ class TestVarianceModels:
     def test_library_scaled_with_unit_factor_equals_two_component(self):
         d = _make_dataset(seed=121)
         kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=500, window=1000000,
-                  seed=5, verbose=False)
+                  seed=5, verbose=False, tau_mode='estimate')
         two = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
                       d['Va_df'], d['Vt_df'], d['pos_df'], variance_model='two_component', **kw)
         ones = pd.Series(1.0, index=d['A_df'].columns)
@@ -1630,7 +1641,8 @@ class TestVarianceModels:
             res = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
                           d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
                           nperm=500, window=1000000, seed=8, verbose=False,
-                          variance_model=model, library_factor=factor, tau_refit=True)
+                          variance_model=model, library_factor=factor, tau_refit=True,
+                          tau_mode='estimate')
             row = res.loc[d['causal_pheno']]
             assert row['variant_id'] == d['causal_variant'], model
             assert row['pval_perm'] < 0.05, model
@@ -1720,7 +1732,7 @@ class TestVarianceModels:
         a = rng.normal(0, np.sqrt(1.5 * v + 0.02))
         A_big = pd.concat([d['A_df'], pd.DataFrame(a, index=[f'x{i}' for i in range(extra)], columns=samples)])
         Va_big = pd.concat([d['Va_df'], pd.DataFrame(v, index=[f'x{i}' for i in range(extra)], columns=samples)])
-        kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=500, window=1000000, seed=9, verbose=False)
+        kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=500, window=1000000, seed=9, verbose=False, tau_mode='estimate')
         args = (d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'], d['pos_df'])
         priors = hapmixqtl.estimate_variance_priors(A_big, Va_big, n_bins=2, min_informative=30)
         res = map_cis(*args, variance_model='two_component', variance_prior=priors, **kw)
@@ -1740,7 +1752,7 @@ class TestVarianceModels:
 
     def test_variance_model_argument_errors(self):
         d = _make_dataset(seed=123)
-        kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=100, window=1000000, verbose=False)
+        kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=100, window=1000000, verbose=False, tau_mode='estimate')
         args = (d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'], d['pos_df'])
         ones = pd.Series(1.0, index=d['A_df'].columns)
         with pytest.raises(ValueError, match='library_factor'):
@@ -1749,8 +1761,10 @@ class TestVarianceModels:
             map_cis(*args, variance_model='additive', library_factor=ones, **kw)
         with pytest.raises(ValueError, match='variance_model'):
             map_cis(*args, variance_model='multiplicative', **kw)
+        kw_no_tau = {k: v for k, v in kw.items() if k != 'tau_mode'}
         with pytest.raises(ValueError, match="tau_mode='estimate'"):
-            map_cis(*args, variance_model='two_component', tau_mode='zero', **kw)
+            map_cis(*args, variance_model='two_component', tau_mode='zero',
+                    **kw_no_tau)
         with pytest.raises(ValueError, match='positive'):
             map_cis(*args, variance_model='library_scaled', library_factor=ones * 0, **kw)
 
@@ -2091,3 +2105,93 @@ class TestFittedSE:
         # other. That difference IS mechanism 4 of the disagreement plan.
         assert not np.allclose(mg.slope_m, mg.slope_f)
         assert not np.allclose(mg.slope_se_m, mg.slope_se_f)
+
+
+class TestTotalVarianceModel:
+    """The TOTAL channel's variance function.
+
+    It was v_t + tau_t under every allelic variance_model until 2026-09-20.
+    The draws do carry per-donor information there -- Vt spans 2 to 3.5-fold
+    across donors within a gene -- but with c fixed at 1, tau_t swamps it
+    roughly 19 to 1 and the weights come out nearly equal. Fitting c_t is
+    the lever.
+    """
+
+    def _fix(self, device, n=70, seed=321):
+        rng = _make_gaussian_seed(seed)
+        g = rng.choice([0.0, 1.0, 2.0], n)
+        s = rng.choice([-1.0, 0.0, 1.0], n)
+        t = 1.2 + 0.4 * (g / 2) + rng.normal(0, 0.2, n)
+        a = 0.3 * s + rng.normal(0, 0.2, n)
+        va = rng.uniform(0.05, 0.4, n)
+        # heterogeneous total draw variance, the thing c_t can act on
+        vt = rng.uniform(0.001, 0.02, n)
+        return g, s, a, t, va, vt
+
+    def _prep(self, device, a, t, va, vt, **kw):
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        return _prepare_channels(T(a), T(t), T(va), T(vt), None, 'estimate',
+                                 device, ase_covariates_t=None,
+                                 return_info=True, **kw)
+
+    def test_default_is_the_shipped_additive_total_channel(self, device):
+        g, s, a, t, va, vt = self._fix(device)
+        base = self._prep(device, a, t, va, vt)
+        expl = self._prep(device, a, t, va, vt, total_variance_model='additive')
+        assert torch.allclose(base[1], expl[1], atol=0, rtol=0)
+        assert base[4]['c_t'] == 1.0, 'additive pins c_t at 1'
+
+    def test_two_component_fits_c_t_and_changes_only_the_total_weights(self, device):
+        g, s, a, t, va, vt = self._fix(device)
+        add = self._prep(device, a, t, va, vt, total_variance_model='additive')
+        two = self._prep(device, a, t, va, vt, total_variance_model='two_component')
+        # allelic channel untouched
+        assert torch.allclose(add[0], two[0], atol=0, rtol=0)
+        # total channel moved, and c_t was actually fitted
+        assert not torch.allclose(add[1], two[1])
+        assert two[4]['c_t'] != 1.0
+        assert two[4]['total_variance_model'] == 'two_component'
+
+    def test_it_is_independent_of_the_allelic_variance_model(self, device):
+        """The two channels' variance functions must not be entangled."""
+        g, s, a, t, va, vt = self._fix(device, seed=654)
+        x = self._prep(device, a, t, va, vt, total_variance_model='two_component')
+        y = self._prep(device, a, t, va, vt, variance_model='two_component',
+                       total_variance_model='two_component')
+        # changing the ALLELIC model must leave the TOTAL weights alone
+        assert torch.allclose(x[1], y[1], atol=0, rtol=0)
+
+    def test_rejects_unknown_model_and_tau_mode_zero(self, device):
+        g, s, a, t, va, vt = self._fix(device)
+        with pytest.raises(ValueError, match='total_variance_model'):
+            self._prep(device, a, t, va, vt, total_variance_model='library_scaled')
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        with pytest.raises(ValueError, match='requires'):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _prepare_channels(T(a), T(t), T(va), T(vt), None, 'zero', device,
+                                  ase_covariates_t=None,
+                                  total_variance_model='two_component')
+
+    def test_map_nominal_accepts_it(self, tmp_path):
+        d = _make_dataset(seed=100)
+        common = dict(genotype_df=d['genotype_df'], variant_df=d['variant_df'],
+                      A_df=d['A_df'], T_df=d['T_df'], Va_df=d['Va_df'],
+                      Vt_df=d['Vt_df'], phenotype_pos_df=d['pos_df'],
+                      xL_df=d['xL_df'], xR_df=d['xR_df'], verbose=False, tau_mode='estimate')
+        read = lambda p: pd.concat([pd.read_parquet(f) for f in
+                                    sorted(Path(p).glob('*.parquet'))],
+                                   ignore_index=True)
+        da, db = tmp_path / 'a', tmp_path / 'b'
+        da.mkdir(); db.mkdir()
+        map_nominal(prefix='a', output_dir=str(da), **common)
+        map_nominal(prefix='b', output_dir=str(db),
+                    total_variance_model='two_component', **common)
+        A, B = read(da), read(db)
+        key = ['phenotype_id', 'variant_id']
+        mg = A[key + ['slope_a', 'slope_t']].merge(
+            B[key + ['slope_a', 'slope_t']], on=key, suffixes=('_a', '_b'))
+        assert np.allclose(mg.slope_a_a, mg.slope_a_b, atol=0, rtol=0), \
+            'the allelic channel must not move'
+        assert not np.allclose(mg.slope_t_a, mg.slope_t_b), \
+            'the total channel must move'
