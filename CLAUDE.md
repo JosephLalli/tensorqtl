@@ -1075,6 +1075,13 @@ port's independently written through-origin WLS to a relative 1e-12.
   as mixQTL's fold cap does. Removing tau while keeping the known-variance
   SE (`tau_mode='zero'`, `se_mode='model'`) measures **23.3** on the
   combined statistic — the configuration the module's warning is about.
+  23.3 against 3.313 is NOT the same quantity measured twice; the gap is
+  the TOTAL channel. Median `tau_t`/`v_t` is 19.0 against `tau_a`/`v_a` 3.5,
+  so deleting tau understates the total channel's SE 5.2-fold against the
+  allelic channel's 1.9-fold (measured reported-SE ratios 0.194 and 0.516),
+  i.e. 27-fold against 4-fold in variance. The combination is
+  inverse-variance, so the channel whose precision is most overstated
+  dominates, and 23.3 is the total channel's failure showing through it.
 - **`Var(eps) = sigma^2 v` is calibrated (1.068) but buys nothing here.**
   Its `var(beta_hat)` is 1.025x the shipped arm's, i.e. 2.5% worse. That
   reconciles with the mixQTL side rather than contradicting it: the 35% SE
@@ -1082,7 +1089,11 @@ port's independently written through-origin WLS to a relative 1e-12.
   has never had a cap, so it already runs at that efficiency and a fitted
   scale has nothing to recover. Adopting it on these genes would be a
   lateral move that gives up the absolute propagation of inferential
-  variance the known-variance SE exists for.
+  variance the known-variance SE exists for. Expected to hold HERE
+  specifically: the residual-floor profile already put `tau = 0` at the
+  optimum on these same genes, so dropping tau costs little to begin with.
+  On genes with a real additive floor it could cost more, and on genes whose
+  draws are under-dispersed it could gain; neither is in this gene set.
 - **Why the combined point estimate moves with the SE form at all**, which
   reads as a bug and is not: `calculate_hapmixqtl_nominal` combines the two
   channels by inverse-variance meta-analysis ON THEIR SEs. Under the
