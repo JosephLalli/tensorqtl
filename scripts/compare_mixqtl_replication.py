@@ -179,6 +179,22 @@ def weighting_ablation(I):
     mL = I['YL'].mean(2)[:, keep]
     mR = I['YR'].mean(2)[:, keep]
 
+    # Per-haplotype draw variances, for the third candidate weight. Va_noq is
+    # already Var_draws(log(yL+k) - log(yR+k)), the DIRECT variance of the
+    # regressed quantity; vL + vR is what you get if you instead sum the two
+    # marginal variances, which equals it only when the haplotypes' draws are
+    # uncorrelated. They are strongly anti-correlated (median -0.841; Gibbs
+    # reassigns ambiguous reads between the two copies, so one gains what the
+    # other loses), and vL + vR understates the ratio's variance by a median
+    # 1.81-fold in 100% of informative pairs -- see
+    # scripts/gibbs_variance_target.py. The arm is here to measure what that
+    # costs, which is not obvious: the shortfall is nearly a gene CONSTANT
+    # (within-gene log-weight correlation 0.998), and a constant weight factor
+    # cancels from beta_hat entirely.
+    KAPPA = 0.5
+    vL = np.log(I['YL'] + KAPPA).var(2)[:, keep]
+    vR = np.log(I['YR'] + KAPPA).var(2)[:, keep]
+
     s_all = (I['xL'] - I['xR'])[I['idx']][:, keep]      # [V, N] allelic design
     rows = []
     for j, g in enumerate(genes):
@@ -211,13 +227,17 @@ def weighting_ablation(I):
         w_gibbs_noq = 1.0 / np.maximum(Va_noq[j][inf], 1e-12)
         w_harm = MX.harmonic_weights(np.maximum(mL[j][inf], 1e-12),
                                      np.maximum(mR[j][inf], 1e-12))
+        w_sumvar = 1.0 / np.maximum(vL[j][inf] + vR[j][inf], 1e-12)
         w_gibbs_cap, cap, _ = MX.apply_weight_cap(w_gibbs, n_inf, MX.WEIGHT_CAP)
         w_harm_cap, _, _ = MX.apply_weight_cap(w_harm, n_inf, MX.WEIGHT_CAP)
+        w_sumvar_cap, _, _ = MX.apply_weight_cap(w_sumvar, n_inf, MX.WEIGHT_CAP)
 
         arms = {
             'gibbs_1_over_v': w_gibbs,            # hapmixQTL as shipped (q on)
-            'gibbs_draws_only': w_gibbs_noq,      # draw variance alone, no q
+            'gibbs_draws_only': w_gibbs_noq,      # 1/v_ratio, the direct variance
+            'gibbs_sumvar': w_sumvar,             # 1/(vL + vR), assumes independence
             'gibbs_capped': w_gibbs_cap,
+            'gibbs_sumvar_capped': w_sumvar_cap,
             'harmonic_uncapped': w_harm,
             'harmonic_poisson_capped': w_harm_cap,  # mixQTL as published
             'equal_ols': np.ones(n_inf),
