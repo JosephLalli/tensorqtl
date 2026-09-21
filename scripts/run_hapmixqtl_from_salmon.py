@@ -50,7 +50,8 @@ WHAT IT DOES
      the reference allele where each sample's reads land, so the sign it is
      given is orient_haplotypes over each GENE's own feature sites rather than
      one cohort-wide orientation. --force proceeds anyway (not recommended).
-  6. Runs hapmixqtl.map_cis with tau_mode='estimate' and the --variance-model
+  6. Runs hapmixqtl.map_cis with --tau-mode/--se-mode (default 'zero'/'fitted',
+     i.e. Var(eps) = sigma^2 * v) and the --variance-model
      (additive by default; library-scaled estimates d_i across genes first) (do not
      override -- sec 2, 6, 7d) and tau_refit=True, so the lead's slope, SE and
      nominal p are reported with tau re-estimated at the lead instead of under
@@ -993,6 +994,17 @@ def main():
                     help="how the empirical-Bayes prior is estimated across genes: 'deciles' (ten expression bins) or 'trend' (smooth precision-weighted curves on the log scale, limma's trend=TRUE idea; hapmixqtl.estimate_variance_priors)")
     ap.add_argument('--perm-scheme', default='records', choices=['records', 'residuals'],
                     help="map_cis permutation null: 'records' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
+    ap.add_argument('--tau-mode', default='zero', choices=['zero', 'estimate'],
+                    help="allelic/total residual scale: 'zero' (default) weights by 1/v "
+                         "with no additive floor, which with --se-mode fitted is the "
+                         "Var(eps)=sigma^2*v model; 'estimate' adds the per-gene tau "
+                         "floor and is required by the two-component variance models")
+    ap.add_argument('--se-mode', default='fitted', choices=['fitted', 'model'],
+                    help="standard error: 'fitted' (default) is the estimated-dispersion "
+                         "sigma_hat/sqrt(xx), so the weights are a shape and their "
+                         "absolute scale cancels; 'model' is the known-variance "
+                         "1/sqrt(xx), which propagates the draws' absolute scale but "
+                         "requires --tau-mode estimate to stay calibrated")
     ap.add_argument('--asc-cutoff', type=float, default=None,
                     help='allele-specific count FLOOR: both haplotypes must have at '
                          'least this many posterior-mean counts for a donor to enter '
@@ -1228,8 +1240,12 @@ def main():
         print(f'  total channel   admits {sub_t.sum():,}/{sub_t.size:,} '
               f'donor-gene pairs ({sub_t.sum() / sub_t.size:.1%})')
 
+    if variance_model != 'additive' and args.tau_mode != 'estimate':
+        raise SystemExit(f"--variance-model {variance_model} needs --tau-mode estimate "
+                         "(it fits a tau, which --tau-mode zero removes)")
     print(f'\nRunning map_cis on {len(common)} genes '
-          f"(tau_mode='estimate', variance_model={variance_model!r}"
+          f"(tau_mode={args.tau_mode!r}, se_mode={args.se_mode!r}, "
+          f"variance_model={variance_model!r}"
           f"{', empirical-Bayes prior' if variance_prior is not None else ''}"
           f"{', count cutoffs' if keep_a_df is not None else ''})")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
@@ -1237,6 +1253,7 @@ def main():
                   verbose=True, variance_model=variance_model,
                   library_factor=library_factor, variance_prior=variance_prior,
                   perm_scheme=args.perm_scheme,
+                  tau_mode=args.tau_mode, se_mode=args.se_mode,
                   keep_a_df=keep_a_df, keep_t_df=keep_t_df)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
@@ -1249,7 +1266,8 @@ def main():
         'n_samples': len(order), 'n_genes_tested': int(len(common)),
         'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
-        'tau_mode': 'estimate', 'tau_refit': True, 'variance_model': variance_model,
+        'tau_mode': args.tau_mode, 'se_mode': args.se_mode,
+        'tau_refit': True, 'variance_model': variance_model,
         'variance_prior': variance_prior is not None,
         'library_factor_genes': (None if library_factor is None
                                  else int(library_factor.attrs['n_genes']))})
