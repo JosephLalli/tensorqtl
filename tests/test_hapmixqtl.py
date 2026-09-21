@@ -1969,3 +1969,125 @@ class TestCountCutoffsEndToEnd:
                            columns=A.columns[::-1])
         with pytest.raises(ValueError, match='columns'):
             self._run(d, keep_a=bad)
+
+
+# ---------------------------------------------------------------------------
+#  se_mode='fitted': the estimated-dispersion standard error
+# ---------------------------------------------------------------------------
+
+class TestFittedSE:
+    """Var(eps_i) = sigma^2 * v_i, i.e. weights as a SHAPE with a fitted scale.
+
+    This is mixQTL's Eq 11 treatment. It is the one configuration in which
+    the absolute scale of the Gibbs draws does not have to be right, and
+    hapmixQTL had no way to express it before: se_mode was 'model'
+    (known-variance) or 'robust' (HC1 sandwich), neither of which is
+    sigma_hat/sqrt(xx).
+    """
+
+    def _pieces(self, device, n=50, seed=515, n_zero=0):
+        rng = _make_gaussian_seed(seed)
+        s = rng.choice([-1.0, 0.0, 1.0], n)
+        a = 0.35 * s + rng.normal(0, 0.25, n)
+        w = rng.uniform(0.5, 40.0, n)
+        if n_zero:                       # donors with no allelic information
+            w[:n_zero] = 0.0
+            a[:n_zero] = 0.0
+        return s, a, w
+
+    def _hapmix(self, device, s, a, w, **kw):
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        sqrt_w = T(np.sqrt(w))
+        res = WeightedResidualizer(None, sqrt_w, intercept=False)
+        y_star = (T(a) * sqrt_w).reshape(1, -1)
+        x_star = (T(s) * sqrt_w).reshape(1, -1)
+        b, se = _wls_regression(y_star, x_star, res, **kw)
+        return float(b[0]), float(se[0])
+
+    def test_matches_mixqtl_independent_implementation(self, device):
+        """Cross-check against the mixQTL port's own through-origin WLS.
+
+        Two independently written routines, same model: agreement to 1e-12
+        is a real check on the formula and the degrees of freedom, not a
+        restatement.
+        """
+        from tensorqtl.mixqtl_replication import _simple_regression_through_origin
+        s, a, w = self._pieces(device)
+        b_h, se_h = self._hapmix(device, s, a, w, fitted=True)
+        b_m, se_m = _simple_regression_through_origin(a, s[:, None], w)
+        assert np.isclose(b_h, b_m[0], rtol=1e-12)
+        assert np.isclose(se_h, se_m[0], rtol=1e-12)
+
+    def test_is_invariant_to_the_absolute_scale_of_the_weights(self, device):
+        """The defining property: sigma_hat absorbs any constant on w.
+
+        This is exactly what the known-variance SE does NOT do, and the whole
+        reason the configuration exists.
+        """
+        s, a, w = self._pieces(device, seed=616)
+        b1, se1 = self._hapmix(device, s, a, w, fitted=True)
+        b2, se2 = self._hapmix(device, s, a, w * 1e6, fitted=True)
+        assert np.isclose(b1, b2, rtol=1e-10)
+        assert np.isclose(se1, se2, rtol=1e-10)
+        # the known-variance SE, by contrast, must move by sqrt(1e6)
+        _, k1 = self._hapmix(device, s, a, w)
+        _, k2 = self._hapmix(device, s, a, w * 1e6)
+        assert np.isclose(k1 / k2, 1e3, rtol=1e-6)
+
+    def test_degrees_of_freedom_count_informative_donors_only(self, device):
+        """Zero-weight donors contribute no residual, so they must not be
+        charged degrees of freedom -- that would shrink sigma_hat and
+        understate the SE."""
+        from tensorqtl.mixqtl_replication import _simple_regression_through_origin
+        s, a, w = self._pieces(device, n=60, seed=717, n_zero=18)
+        b_h, se_h = self._hapmix(device, s, a, w, fitted=True)
+        b_m, se_m = _simple_regression_through_origin(a, s[:, None], w)
+        assert np.isclose(se_h, se_m[0], rtol=1e-12), 'dof must use n_eff, not N'
+
+    def test_fitted_takes_precedence_over_robust(self, device):
+        s, a, w = self._pieces(device, seed=818)
+        _, se_f = self._hapmix(device, s, a, w, fitted=True)
+        _, se_fr = self._hapmix(device, s, a, w, fitted=True, robust=True)
+        assert np.isclose(se_f, se_fr, rtol=1e-12)
+
+    def test_default_path_is_untouched(self, device):
+        """se_mode='model' must be bit-for-bit what it always was."""
+        s, a, w = self._pieces(device, seed=919)
+        b0, se0 = self._hapmix(device, s, a, w)
+        b1, se1 = self._hapmix(device, s, a, w, fitted=False, robust=False)
+        assert b0 == b1 and se0 == se1
+
+    def test_map_nominal_accepts_se_mode_fitted(self, tmp_path):
+        """End to end, and the fitted SE must differ from the known-variance
+        one on real-shaped data while the slope stays identical."""
+        d = _make_dataset(seed=100)
+        common = dict(genotype_df=d['genotype_df'], variant_df=d['variant_df'],
+                      A_df=d['A_df'], T_df=d['T_df'], Va_df=d['Va_df'],
+                      Vt_df=d['Vt_df'], phenotype_pos_df=d['pos_df'],
+                      xL_df=d['xL_df'], xR_df=d['xR_df'], verbose=False)
+        read = lambda p: pd.concat([pd.read_parquet(f) for f in
+                                    sorted(Path(p).glob('*.parquet'))],
+                                   ignore_index=True)
+        dm, df_ = tmp_path / 'mod', tmp_path / 'fit'
+        dm.mkdir(); df_.mkdir()
+        map_nominal(prefix='m', output_dir=str(dm), se_mode='model', **common)
+        map_nominal(prefix='f', output_dir=str(df_), se_mode='fitted', **common)
+        mod, fit = read(dm), read(df_)
+        key = ['phenotype_id', 'variant_id']
+        cols = ['slope', 'slope_se', 'slope_a', 'slope_t']
+        mg = mod[key + cols].merge(fit[key + cols], on=key, suffixes=('_m', '_f'))
+        assert len(mg) == 90, len(mg)   # 3 phenotypes x 30 variants
+
+        # Each CHANNEL's point estimate is xy/xx and cannot depend on how its
+        # uncertainty is reported.
+        assert np.allclose(mg.slope_a_m, mg.slope_a_f, atol=0, rtol=0)
+        assert np.allclose(mg.slope_t_m, mg.slope_t_f, atol=0, rtol=0)
+        # ...but the COMBINED estimate does move, and that is not a defect.
+        # calculate_hapmixqtl_nominal combines by inverse-variance
+        # meta-analysis on the two channels' SEs. Under the known-variance
+        # form 1/se^2 = xx, so it collapses to the pooled score
+        # (xy_a + xy_t)/(xx_a + xx_t); under a fitted sigma each channel
+        # carries its own scale and the channels get reweighted against each
+        # other. That difference IS mechanism 4 of the disagreement plan.
+        assert not np.allclose(mg.slope_m, mg.slope_f)
+        assert not np.allclose(mg.slope_se_m, mg.slope_se_f)

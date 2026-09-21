@@ -599,7 +599,7 @@ class WeightedResidualizer:
 #  Core regression
 # ---------------------------------------------------------------------------
 
-def _wls_regression(y_star_t, x_star_t, residualizer, robust=False):
+def _wls_regression(y_star_t, x_star_t, residualizer, robust=False, fitted=False):
     """
     Known-variance GLS on sqrt-weight-transformed data.
 
@@ -625,6 +625,11 @@ def _wls_regression(y_star_t, x_star_t, residualizer, robust=False):
         residualizer: WeightedResidualizer
         robust: if True use sandwich (HC1) standard errors instead, which are
             robust to misspecification of the known variance scale
+        fitted: if True use the estimated-dispersion SE sigma_hat/sqrt(xx)
+            instead, which makes the weights a shape only. Takes precedence
+            over ``robust``. This is mixQTL's Eq 11 treatment; it gives up the
+            absolute propagation of inferential variance described above in
+            exchange for immunity to getting that absolute scale wrong.
 
     Returns:
         slope_t: [V] estimated slopes
@@ -647,7 +652,26 @@ def _wls_regression(y_star_t, x_star_t, residualizer, robust=False):
 
     if valid.any():
         slope[valid] = xy[valid] / xx[valid]
-        if not robust:
+        if fitted:
+            # Estimated-dispersion WLS: Var(beta_hat) = sigma2_hat / xx, with
+            # sigma2_hat the weighted residual mean square. The weights are
+            # then only a SHAPE -- rescaling them all by any constant leaves
+            # beta_hat and this SE exactly unchanged, because sigma2_hat
+            # absorbs the factor. That is mixQTL's Eq 11 model, and it is the
+            # one configuration in which the draws' absolute scale does not
+            # have to be right; see docs and the mixQTL comparison reports.
+            #
+            # dof counts INFORMATIVE donors, not rows. Zero-weight samples
+            # contribute nothing to rss (y* and x* are both 0 there), so
+            # charging them degrees of freedom would shrink sigma2_hat and
+            # understate the SE. residualizer.dof is N-1-ncol over all rows,
+            # which is wrong here for exactly that reason.
+            e = y_res - slope.unsqueeze(1) * x_res
+            rss = (e * e).sum(1)
+            n_eff = int((residualizer.sqrt_w_t != 0).sum())
+            dof_f = max(n_eff - 1 - residualizer.Q_t.shape[1], 1)
+            slope_se[valid] = torch.sqrt(rss[valid] / dof_f / xx[valid])
+        elif not robust:
             # Known-variance GLS: Var(beta_hat) = 1 / xx (weights are absolute
             # precisions, so no residual-based dispersion is estimated).
             slope_se[valid] = torch.sqrt(1.0 / xx[valid])
@@ -1662,7 +1686,7 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
 def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
                                  sqrt_wa_t, sqrt_wt_t,
                                  residualizer_a, residualizer_t,
-                                 robust=False):
+                                 robust=False, fitted=False):
     """
     hapmixQTL association test for all variants in a cis window (Method A).
 
@@ -1690,6 +1714,7 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
         residualizer_a: WeightedResidualizer for ASE channel
         residualizer_t: WeightedResidualizer for total channel
         robust: if True use sandwich SEs
+        fitted: if True use estimated-dispersion SEs (takes precedence)
 
     Returns:
         tstat_t:      [V] combined t-statistic
@@ -1703,12 +1728,14 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
     # ASE channel: a = beta * s + covariates + error
     a_star = (a_t * sqrt_wa_t).unsqueeze(0)
     s_star = sign_t * sqrt_wa_t.unsqueeze(0)
-    slope_a, se_a = _wls_regression(a_star, s_star, residualizer_a, robust=robust)
+    slope_a, se_a = _wls_regression(a_star, s_star, residualizer_a, robust=robust,
+                                    fitted=fitted)
 
     # Total channel: t = beta * (g/2) + covariates + error
     t_star = (t_t * sqrt_wt_t).unsqueeze(0)
     g_half_star = (genotypes_t / 2) * sqrt_wt_t.unsqueeze(0)
-    slope_tc, se_tc = _wls_regression(t_star, g_half_star, residualizer_t, robust=robust)
+    slope_tc, se_tc = _wls_regression(t_star, g_half_star, residualizer_t, robust=robust,
+                                      fitted=fitted)
 
     # Inverse-variance meta-analysis
     inv_var_a = torch.where(
@@ -2171,7 +2198,11 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
             'zero' is retained only for reproducing prior results and emits a
             warning.
-        se_mode:          'model' (default) or 'robust' (sandwich)
+        se_mode:          'model' (default; known-variance 1/sqrt(xx)),
+                          'robust' (HC1 sandwich), or 'fitted'
+                          (estimated dispersion sigma_hat/sqrt(xx), which
+                          makes the weights a shape only -- Var(eps) =
+                          sigma^2 * v under tau_mode='zero')
                           Statistics are on the null-model tau scale (tau
                           estimated once per gene without a genotype term);
                           map_cis(tau_refit=True) reports its lead with tau
@@ -2216,6 +2247,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     logger.write(f'  * {A_df.shape[0]} phenotypes')
 
     robust = se_mode == 'robust'
+    fitted = se_mode == 'fitted'
 
     if covariates_df is not None:
         assert np.all(samples == covariates_df.index), \
@@ -2359,7 +2391,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 genotypes_t, sign_t, a_t, t_t,
                 sqrt_wa_t, sqrt_wt_t,
                 residualizer_a, residualizer_tc,
-                robust=robust,
+                robust=robust, fitted=fitted,
             )
             (tstat, slope, slope_se, slope_a, se_a,
              slope_tc, se_tc) = [r.cpu().numpy() for r in res]

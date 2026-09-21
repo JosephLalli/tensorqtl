@@ -1041,3 +1041,57 @@ mixQTL's donor set. `--mixqtl-cutoffs` is the shorthand.
 - Not wired: `weight_cap`. hapmixQTL is not given mixQTL's fold cap, because
   the ablation shows capping costs two thirds of the efficiency gain and the
   cap is a workaround for a known-variance SE. 17 tests cover the cutoffs.
+
+## se_mode='fitted', and mechanism 4 refuted (2026-09-20)
+
+`se_mode='fitted'` on `map_nominal` adds the estimated-dispersion standard
+error `sigma_hat/sqrt(xx)`, so hapmixQTL can express `Var(eps) = sigma^2 v`
+— mixQTL's Eq 11 treatment, in which the weights are a SHAPE only and their
+absolute scale cancels. Before this the choices were `'model'`
+(known-variance `1/sqrt(xx)`) and `'robust'` (HC1 sandwich), neither of
+which is a fitted scale. Additive: `_wls_regression` and
+`calculate_hapmixqtl_nominal` gained a `fitted` keyword beside `robust`, the
+default path is pinned byte-identical, and `map_cis` still refuses any
+non-`'model'` mode. Six tests, including a cross-check against the mixQTL
+port's independently written through-origin WLS to a relative 1e-12.
+
+- **Its degrees of freedom count informative donors, not rows.**
+  Zero-weight samples contribute nothing to the residual sum of squares, so
+  charging them dof would shrink `sigma_hat` and understate the SE;
+  `residualizer.dof` is `N-1-ncol` over all rows and is wrong here. A test
+  pins it against mixQTL's `n = sum(w > 0)` rule.
+- **MECHANISM 4 IS REFUTED**, on its own written criterion ("refuted if
+  replacing known-variance SEs with per-channel fitted sigmas leaves the
+  combined beta essentially unchanged"). Holding weights fixed at
+  `1/(v+tau)` and changing ONLY the SE form, the combined beta correlates
+  with the shipped arm at **0.9978** with a median |beta| ratio of 1.011.
+  This closes the six-mechanism catalogue in `DISAGREEMENT_TEST_PLAN.md`:
+  2, 3, 5, 6 settled by the non-weighting ladder, 1 a router, 4 refuted.
+  The hapmixQTL/mixQTL disagreement needs no inference-layer explanation.
+- **The shipped combined statistic is well calibrated, 1.023**, reproducing
+  the closed 2026-09-17 result. This does NOT contradict the 3.313 quoted
+  for the ablation: that is the ALLELIC channel alone under pure `1/v` with
+  NO tau. `tau` is what fixes it, by bounding the weights from above exactly
+  as mixQTL's fold cap does. Removing tau while keeping the known-variance
+  SE (`tau_mode='zero'`, `se_mode='model'`) measures **23.3** on the
+  combined statistic — the configuration the module's warning is about.
+- **`Var(eps) = sigma^2 v` is calibrated (1.068) but buys nothing here.**
+  Its `var(beta_hat)` is 1.025x the shipped arm's, i.e. 2.5% worse. That
+  reconciles with the mixQTL side rather than contradicting it: the 35% SE
+  reduction measured there came from removing the FOLD CAP, and hapmixQTL
+  has never had a cap, so it already runs at that efficiency and a fitted
+  scale has nothing to recover. Adopting it on these genes would be a
+  lateral move that gives up the absolute propagation of inferential
+  variance the known-variance SE exists for.
+- **Why the combined point estimate moves with the SE form at all**, which
+  reads as a bug and is not: `calculate_hapmixqtl_nominal` combines the two
+  channels by inverse-variance meta-analysis ON THEIR SEs. Under the
+  known-variance form `1/se^2 = xx`, so it collapses exactly to the pooled
+  score `(xy_a+xy_t)/(xx_a+xx_t)` — the reason that rule and mixQTL's were
+  found identical to 1.7e-16. Under a fitted sigma each channel carries its
+  own scale and the channels get reweighted. A single channel's slope is
+  `xy/xx` and never moves. A test pins both halves.
+- Open and deliberately not fixed: `tau_mode='zero'` still warns under
+  `se_mode='fitted'`, where the warning is misleading, since it is about
+  asserting `Var(eps) = v` exactly and a fitted sigma does not. Report:
+  `mixqtl_replication_20260919/HAPMIXQTL_FITTED_SE.md`.
