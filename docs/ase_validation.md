@@ -477,15 +477,31 @@ p-values are not uniform here is miscalibrated on real data, whatever simulation
 
 **Findings.**
 
-1. **The defect is confirmed on real data, at full severity.** On real GTEx haplotype
-   counts, `tau_mode='zero'` makes **every single null test significant**.
-   This is no longer an inference from simulation. *(Corrected 2026-09-23: λ_GC = 3020
-   here is the **censoring ceiling** of `calib()`, not a magnitude — see §7k. It is the
-   value returned whenever the median null p-value underflows the 1e-300 clip, so this
-   table and the simulation table above agree at "3020" because both saturated, not
-   because they measured the same inflation. Read it as "over half the null p-values
-   underflowed", a floor on the severity. The direction and the "every test significant"
-   conclusion stand; only the number is censored.)*
+1. ~~**The defect is confirmed on real data, at full severity.**~~ **WITHDRAWN
+   2026-09-23 as independent real-data corroboration — see §7k.** Two separate problems,
+   found together:
+   *(a) the number is censored.* λ_GC = 3020 is the **ceiling** of `calib()`, not a
+   magnitude: p is clipped to 1e-300 first, and
+   `chi2.isf(1e-300,1)/chi2.ppf(0.5,1) = 3019.92`. It means "over half the null p-values
+   underflowed", a floor on the severity. That is also why this table and the simulation
+   table in §7 both read "3020" — one ceiling reached twice, not two agreeing
+   measurements.
+   *(b) this run's total channel is fabricated in exactly the way that manufactures the
+   artifact, so it is not an independent confirmation at all.*
+   `tests/ase_gtex_real_data.py:79` builds draws as `YL = Binomial(n_i, frac)`,
+   `YR = n_i - YL`, so `YL+YR` is **exactly constant across draws**; line 124 calls
+   `compute_summaries_from_gibbs(YLd, YRd)` **without `yT`**, so the total channel is
+   derived from that constant subtotal and its across-draw variance is zero by
+   construction. The phenotype on line 126 is the real total expression, but the variance
+   attached to it is not a measurement of anything. `tau_mode='zero'` then weights every
+   sample by `1/v_t` on a `v_t` that is numerically zero — which is the §7k mechanism,
+   reproduced on real allele counts rather than corroborated by them.
+   **What §7d does still establish:** the *allelic* channel here carries genuine GTEx
+   overdispersion, depth and zero-inflation structure, and `tau_mode='estimate'`
+   (0.0533, λ = 0.98) is calibrated on it. What it does **not** establish is the
+   known-variance `tau_mode='zero'` failure on real data, because the quantity that
+   fails was fabricated. The failure is real and is measured properly in §7k
+   (type-I 0.516, λ = 9.04, uncensored); it simply was never shown *here*.
 2. **The fix works on real data.** `tau_mode='estimate'` gives 1.07× nominal type-I error
    and λ_GC = 0.98 — properly calibrated on genuine GTEx expression variance.
 3. **Calibration is the same with and without WASP correction** (1.17×, λ = 0.90 on the
@@ -914,11 +930,23 @@ Power is at each arm's **own** empirical 95th percentile under the null (matched
 Monte Carlo standard error on a proportion at 500 replicates is 0.0097 near 0.05 and
 0.0194 near 0.25.
 
-1. **The default is calibrated and matches the generating model's own joint likelihood.**
-   Type-I 0.0640 is 1.4 standard errors above nominal. Matched power differs from TReCASE
-   by −0.026, −0.016 and +0.002 against paired standard errors of 0.028, 0.027 and 0.002,
-   i.e. |z| ≤ 1.0 at every effect size. TReCASE is the joint likelihood **of the model
-   that generated the data**, so this is parity with the ceiling, not with a peer.
+1. **The default is calibrated at 0.05 and matches the generating model's own joint
+   likelihood in power.** Type-I 0.0640 is 1.4 standard errors above nominal. Matched
+   power differs from TReCASE by −0.026, −0.016 and +0.002 against paired standard errors
+   of 0.028, 0.027 and 0.002, i.e. |z| ≤ 1.0 at every effect size. TReCASE is the joint
+   likelihood **of the model that generated the data**, so this is parity with the
+   ceiling, not with a peer.
+   **Bound, and it is in the tail:** the mild inflation grows as the threshold tightens.
+   At nominal 0.01 the default reads **0.0200**, i.e. 2.0× nominal and 2.2 Monte Carlo
+   standard errors above it (se 0.0045 at 500 replicates), against TReCASE's 0.0120;
+   λ_GC 1.24 against 1.18 says the same. `tau+fitted` behaves identically (0.0200), so
+   this is a property of the fitted scale at N = 200, not of dropping `tau`. The three
+   independent runs at 0.05 (0.064 at 500 replicates, 0.073 and 0.067 at 150) are all
+   near 1.3×, so the inflation is a consistent pattern rather than noise. **Nothing below
+   nominal 0.01 was tested**, and transcriptome-scale eQTL thresholds are far below it,
+   so the tail behaviour at genome-wide significance is unmeasured. Note this runs
+   *opposite* to the known-unfixed "Beta approximation is conservative in the tail",
+   which concerns the gene-level permutation p rather than the nominal p.
 2. **The fitted scale, not the weights, is what makes `tau=0` usable.** Holding the
    weights at `1/v` and the data fixed and changing only the standard-error form, the
    known-variance pairing reads 0.516 and loses 0.100 / 0.414 / 0.214 in matched power
@@ -957,6 +985,13 @@ Monte Carlo standard error on a proportion at 500 replicates is 0.0097 near 0.05
    are three readings of one phenomenon at three fabricated scales for `v`**: a
    known-variance standard error inherits any error in the absolute scale of the
    inferential variance, and a fitted σ² absorbs it by construction.
+   **Scope of that last claim, precisely:** the correction rescales every sample's
+   variance by roughly the same factor (Poisson on 195 reads against 48), so what is
+   demonstrated is robustness to a **uniform** scale error, which is exactly what a
+   single fitted σ² can absorb. It does **not** test a **shape** error — a few samples
+   mis-weighted relative to the rest, which is what the still-open "total channel has no
+   zero-count guard" defect produces, and which no global σ² can repair. Do not read
+   this as "the fitted standard error is robust to errors in `v`" in general.
 
 **What this does not establish.** The harness's allelic residualizer keeps an intercept
 where production has been through-origin since 2026-09-15, so the allelic channel here is

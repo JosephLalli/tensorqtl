@@ -817,6 +817,15 @@ an HTML version with figures, raw JSON, diagnostic scripts).
   OF THE GENERATING MODEL, so this is parity with a ceiling, not with a peer.
   Both dominate the single-channel arms (TReC-only 0.104/0.204/0.486; ASE-only
   0.160/0.558/0.994, the latter genuinely anticonservative at type-I 0.158).
+  **The inflation grows in the tail and this is the default's real bound:** at
+  nominal 0.01 the default reads 0.0200 (2.0x nominal, 2.2 Monte Carlo se above
+  it, se 0.0045) against TReCASE's 0.0120; `tau+fitted` reads 0.0200 too, so it
+  is a property of the fitted scale at N=200, not of dropping tau. Three
+  independent runs at 0.05 (0.064 at 500 reps; 0.073 and 0.067 at 150) all sit
+  near 1.3x, so this is a pattern, not noise. NOTHING below nominal 0.01 was
+  tested, and transcriptome-scale thresholds are far below it. This runs
+  OPPOSITE to the known-unfixed "Beta approximation is conservative in the
+  tail", which is about the gene-level permutation p, not the nominal p.
 - **The fitted scale, not the weights, is what makes `tau=0` usable.** Holding
   weights at `1/v` and data fixed and changing ONLY the SE form, the
   known-variance pairing reads type-I 0.516 (lambda 9.04) and matched power
@@ -826,6 +835,21 @@ an HTML version with figures, raw JSON, diagnostic scripts).
   from inside: the additive floor was compensating for an SE form that cannot
   tolerate a mis-scaled `v`. `tau='estimate'` known-variance is conservative
   here (0.030, lambda 0.89) at power 0.280/0.744/0.998.
+- **The GTEx real-data corroboration of the known-variance defect does not
+  exist; WITHDRAWN 2026-09-23.** `docs/ase_validation.md` §7d finding 1 read
+  "the defect is confirmed on real data, at full severity" on real GTEx phASER
+  counts. `tests/ase_gtex_real_data.py` has the IDENTICAL defect as the external
+  benchmark: line 79 sets `YR = n_i - YL`, so `YL+YR` is exactly constant across
+  draws, and line 124 calls `compute_summaries_from_gibbs(YLd, YRd)` WITHOUT
+  `yT`, so the total channel's across-draw variance is zero by construction. Its
+  phenotype (line 126) is the real total expression but the variance attached to
+  it measures nothing, so `tau_mode='zero'` was weighting by `1/v_t` on a
+  numerically-zero `v_t`. That is the mechanism below reproduced on real allele
+  counts, not corroborated by them. What §7d DOES still establish: the ALLELIC
+  channel carries genuine GTEx overdispersion/depth/zero-inflation structure and
+  `tau_mode='estimate'` is calibrated on it (0.0533, lambda 0.98). The
+  known-variance failure is real and is measured properly, uncensored, in §7k
+  (0.516, lambda 9.04) — it was simply never shown there.
 - **`lambda_GC = 3020` was never a magnitude; it is the censoring ceiling of
   the harness's `calib()`.** `calib()` clips p to 1e-300 before converting to
   chi2(1), and `chi2.isf(1e-300,1)/chi2.ppf(0.5,1)` = 3019.92 — the archived
@@ -865,7 +889,13 @@ an HTML version with figures, raw JSON, diagnostic scripts).
   internal control, since it never sees `v`. So 1.0000/3020, 0.516/9.04 and
   0.800/36.5 are THREE READINGS OF ONE PHENOMENON at three fabricated scales for
   `v`: a known-variance SE inherits any error in `v`'s absolute scale; a fitted
-  sigma^2 absorbs it by construction. This is also the cleanest available
+  sigma^2 absorbs it by construction. SCOPE, precisely: the correction rescales
+  every sample's variance by about the same factor, so this demonstrates
+  robustness to a UNIFORM scale error, which is what one fitted sigma^2 can
+  absorb. It does NOT test a SHAPE error — a few samples mis-weighted against
+  the rest, which is what the still-open total-channel zero-count defect
+  produces and which no global sigma^2 can repair. Do not generalise this to
+  "the fitted SE is robust to errors in `v`". This is also the cleanest available
   demonstration that fitting the scale from the residuals it weights did NOT
   produce the anticonservatism the limma/edgeR circularity objection predicts,
   at this N and depth.
@@ -948,6 +978,10 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
   (0.520 -> 0.800). Fix is to pass a `yT` built from the simulated totals.
   Its allelic residualizer also still keeps an intercept, where production has
   been through-origin since 2026-09-15.
+- `tests/ase_gtex_real_data.py` has the same fabricated total channel
+  (`YR = n_i - YL` at line 79, no `yT` at line 124), which is why
+  `docs/ase_validation.md` §7d finding 1 is now withdrawn. Same fix: pass a
+  `yT` built from the real totals.
 - `calib()` in that harness reports a censored `lambda_GC`: p is clipped to
   1e-300, so lambda saturates at 3019.92 and any "3020" is a floor, not an
   estimate. Reporting a censoring flag alongside it would stop the number being
