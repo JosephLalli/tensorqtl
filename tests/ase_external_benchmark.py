@@ -41,7 +41,13 @@ COMPARATORS (implemented here directly, no R or C dependency)
   ASE-only    beta-binomial on allele-specific counts, LRT vs pi = 0.5
   TReCASE     joint likelihood sharing one kappa across both channels, LRT
   hapmixQTL   counts -> emulated Gibbs posterior -> the real production path,
-              run under both tau_mode='zero' (current default) and 'estimate'
+              run under the shipped Var(eps)=sigma^2*v default
+              (tau_mode='zero' + se_mode='fitted') and, as controls,
+              the known-variance pairings of tau='zero' and 'estimate'.
+              CAVEAT: this harness's allelic residualizer keeps an
+              intercept, where production has been through-origin
+              since 2026-09-15 -- a known fidelity gap, left as-is so
+              the new arm stays comparable to the recorded run.
 
 RASQUAL's additions over TReCASE (genotype uncertainty, reference mapping bias
 phi, sequencing error delta) are nuisance-parameter refinements on the same joint
@@ -285,7 +291,8 @@ def trecase_lrt(d):
 #  hapmixQTL on the same data
 # ---------------------------------------------------------------------------
 
-def hapmix_pval(d, rng, tau_mode='estimate', n_draws=80, kappa_pseudo=0.5):
+def hapmix_pval(d, rng, tau_mode='estimate', n_draws=80, kappa_pseudo=0.5,
+                fitted=False):
     """counts -> emulated Gibbs posterior -> production hapmixQTL statistic."""
     N = len(d['g'])
     tot_as = d['yL'] + d['yR']
@@ -322,7 +329,8 @@ def hapmix_pval(d, rng, tau_mode='estimate', n_draws=80, kappa_pseudo=0.5):
     res_a = WeightedResidualizer(None, sqrt_wa)
     res_t = WeightedResidualizer(None, sqrt_wt)
     ts, *_ = calculate_hapmixqtl_nominal(g_t, s_t, a_t, t_t,
-                                         sqrt_wa, sqrt_wt, res_a, res_t)
+                                         sqrt_wa, sqrt_wt, res_a, res_t,
+                                         fitted=fitted)
     tstat = float(ts.numpy()[0])
     if not np.isfinite(tstat):
         return 1.0, 0.0
@@ -334,8 +342,16 @@ METHODS = {
     'TReC-only': lambda d, rng: trec_lrt(d),
     'ASE-only': lambda d, rng: ase_lrt(d),
     'TReCASE (joint)': lambda d, rng: trecase_lrt(d),
+    # The SHIPPED DEFAULT since 2026-09-21: Var(eps) = sigma^2 * v, i.e.
+    # tau_mode='zero' paired with se_mode='fitted'. The two arms below it are
+    # the KNOWN-VARIANCE pairings, kept as controls: the recorded 2026-09-1x
+    # run of this harness had only those, and tau='zero' there reads type-I
+    # 1.000 with lambda_GC 3020 -- which is a verdict on that PAIRING, not on
+    # tau='zero', because se_mode='fitted' did not exist when it was written.
+    "hapmixQTL sigma^2*v (DEFAULT)": lambda d, rng: hapmix_pval(d, rng, 'zero', fitted=True),
     "hapmixQTL tau='zero'": lambda d, rng: hapmix_pval(d, rng, 'zero'),
     "hapmixQTL tau='estimate'": lambda d, rng: hapmix_pval(d, rng, 'estimate'),
+    "hapmixQTL tau+fitted": lambda d, rng: hapmix_pval(d, rng, 'estimate', fitted=True),
 }
 
 
