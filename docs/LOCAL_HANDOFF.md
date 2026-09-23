@@ -9,6 +9,9 @@ the cloud container is load-bearing except the git history, and that is pushed.
 Everything. The working tree is clean and pushed to
 `claude/hapmixqtl-gibbs-uncertainty-IQ6Za`. That includes:
 
+- SUPERSEDED 2026-09-21: the defaults are now `tau_mode='zero'` + `se_mode='fitted'`,
+  i.e. `Var(eps) = sigma^2 v`. The text below describes the earlier
+  `tau_mode='estimate'` default and is kept as the historical record.
 - the library changes: the `tau_mode='estimate'` default and its exact
   DerSimonian-Laird denominator, tau estimated on each channel's informative
   samples, the zero-information ASE weight guard, the sparse-channel rule,

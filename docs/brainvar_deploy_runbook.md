@@ -630,7 +630,9 @@ calibration design). With the standardized permutation 400 null genes on
 that design give mean 0.503, 5.2% below 0.05 and 49.7% below 0.5
 (`test_pval_perm_is_calibrated_under_heteroskedasticity`;
 `test_permuted_null_matches_the_known_variance`). `map_cis` refuses
-`se_mode='robust'`: the permutation statistic is the known-variance GLS
+`se_mode='robust'` (note `se_mode='fitted'` IS accepted by `map_cis` since
+2026-09-21, and is the default; only the sandwich is refused): the
+permutation statistic for `robust` would be the known-variance GLS
 statistic and a sandwich SE has no counterpart in it; `map_nominal` still
 offers it.
 

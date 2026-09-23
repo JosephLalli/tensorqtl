@@ -215,7 +215,7 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 
 | Property | Measurement |
 |---|---|
-| Known variance without $\tau$ (`tau_mode='zero'`) | Type-I error up to 107x nominal at $\alpha = 10^{-3}$ on simulations with unmodelled variance; 64.5% coverage of nominal 95% intervals |
+| Known variance without $\tau$ (`tau_mode='zero'` **with** `se_mode='model'`) | Type-I error up to 107x nominal at $\alpha = 10^{-3}$ on simulations with unmodelled variance; 64.5% coverage of nominal 95% intervals; combined-statistic calibration 23.3. SCOPE: this is the known-variance PAIRING. `tau_mode='zero'` with the default `se_mode='fitted'` makes no such assertion and calibrates at 1.068 |
 | With $\tau$ from (13) | Type-I 0.97-1.02x nominal at $\alpha = 0.05$ and 0.89-1.02x at $\alpha = 0.01$ once unmodelled variance is present, but 0.53-0.63x at $\alpha = 10^{-3}$, i.e. conservative in the tail; $\lambda_{\mathrm{GC}}$ 0.94-1.01. Interval coverage 0.95-0.99 **at a prespecified variant**, which is not the lead (Section 6.1) |
 | Channel estimators | Correlation of $\hat\beta_a$, $\hat\beta_t$ indistinguishable from 0 at inferential correlation 0.9 |
 | What the draws measure (30 BrainVar genes, medians, per sample) | Allelic channel: Gibbs variance 0.013, counting term 0.001, $\hat\tau_a$ 0.029 (intercept-only design, which is the deployed allelic design). Total channel: Gibbs 0.0002, counting 0.0002, $\hat\tau_t$ 0.151 under an intercept alone but **0.0066 under the deployed 17-covariate design**; the deployed ratio of $\hat\tau_t$ to the per-sample quantification variance is 22, not the 373 an intercept-only design implies |
@@ -265,7 +265,7 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 | variance floor in (8) | | $10^{-8}$ | `_channel_weights` |
 | sparse-channel rule | minimum informative samples | $q_c + 2$ ($q_a = p_a$, $q_t = 1 + p_t$) | `_min_informative` |
 | $C_a$ | allelic covariate design | no nuisance columns and no intercept (API and driver) | `ase_covariates_df` |
-| $\hat\tau$ | moment estimator (13) | `tau_mode='estimate'` | `_estimate_tau`, `_estimate_tau_informative` |
+| $\hat\tau$ | moment estimator (13) | `tau_mode='estimate'` (NOT the default since 2026-09-21; the default `zero` omits $\tau$) | `_estimate_tau`, `_estimate_tau_informative` |
 | variance model | (7) additive, or (7b) two-component or library-scaled, allelic channel | `additive` | `variance_model`; `_estimate_c_tau` |
 | $d_i$ | per-library factor of (7b), mean 1 | required by `library_scaled` | `estimate_library_factors`, `library_factor` |
 | prior on $(c_g, \tau_g)$ | empirical-Bayes shrinkage toward expression bins in place of the zero clamp | off (clamp) | `estimate_variance_priors`, `variance_prior` |
