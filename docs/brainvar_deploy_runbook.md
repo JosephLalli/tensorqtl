@@ -413,9 +413,19 @@ own data, not a literature value.
 
 Hours of work; run it detached.
 
+CORRECTED 2026-09-23: `--vcf` must be `prepped/rephased.snps.maf05.vcf.gz`,
+not `prepped/rephased.vcf.gz`, which this block named until now. The latter
+still carries RefSeq accessions (`NC_060925.1`) while `annot/genes.tsv` uses
+`chr1`, so the driver reads no variants in any window and exits with "no
+phased biallelic SNPs read from the VCF" -- a clean-looking exit that
+produces nothing. `rename_chrs.tsv` in the deploy root is the mapping; the
+`snps.maf05` file is the renamed, SNP-only, MAF>=0.05 product and is what the
+comparison was actually run on. The driver has no `--rename-chrs` option, so
+this has to be right in the invocation.
+
 ```bash
 nohup python3 scripts/compare_pipelines.py \
-    --vcf prepped/rephased.vcf.gz --genes annot/genes.tsv --exons annot/exons.tsv \
+    --vcf prepped/rephased.snps.maf05.vcf.gz --genes annot/genes.tsv --exons annot/exons.tsv \
     --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
     --allelic-counts prepped/allelic_counts_manifest.tsv \
     --rasqual rasqual_src/src/rasqual --rasqual-jobs 8 --rasqual-threads 8 \
