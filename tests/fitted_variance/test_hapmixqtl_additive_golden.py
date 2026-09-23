@@ -66,7 +66,12 @@ def test_additive_reproduces_the_pre_change_numbers(refit, golden, scheme):
     res = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
                   d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
                   nperm=500, window=1000000, seed=3, verbose=False, tau_refit=refit,
-                  perm_scheme=scheme)
+                  perm_scheme=scheme,
+                  # The goldens come from commit 99921fd, whose DEFAULTS these were.
+                  # Stated explicitly because the defaults moved on 2026-09-21 to
+                  # tau_mode='zero' + se_mode='fitted'; leaving them implicit is what
+                  # silently broke this test then.
+                  tau_mode='estimate', se_mode='model')
     assert list(res.index) == list(golden), list(res.index)
     exp = pd.DataFrame(list(golden.values()), index=list(golden), columns=_COLS)
     assert (res['variant_id'] == exp['variant_id']).all()

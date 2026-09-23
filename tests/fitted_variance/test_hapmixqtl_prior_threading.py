@@ -110,8 +110,10 @@ class TestPriorThreadsThroughMapCis:
                 d['Va_df'], d['Vt_df'], d['pos_df'])
         kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=500, window=1000000,
                   seed=9, verbose=False)
-        no_prior = map_cis(*args, variance_model='two_component', **kw)
-        with_prior = map_cis(*args, variance_model='two_component', variance_prior=priors, **kw)
+        no_prior = map_cis(*args, variance_model='two_component',
+                           tau_mode='estimate', **kw)
+        with_prior = map_cis(*args, variance_model='two_component',
+                             variance_prior=priors, tau_mode='estimate', **kw)
         T = lambda x: torch.tensor(np.asarray(x, dtype=float), dtype=torch.float64, device=device)
         moved = 0
         for gene in d['A_df'].index:
@@ -140,7 +142,7 @@ class TestPriorThreadsThroughMapCis:
         kw = dict(xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=500, window=1000000,
                   seed=9, verbose=False)
         res = map_cis(*args, variance_model='two_component', variance_prior=priors,
-                      tau_refit=True, **kw)
+                      tau_refit=True, tau_mode='estimate', **kw)
         gene = d['causal_pheno']
         row = res.loc[gene]
         assert row['variant_id'] == d['causal_variant']

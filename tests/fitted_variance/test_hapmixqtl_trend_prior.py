@@ -98,7 +98,8 @@ def test_trend_prior_threads_through_map_cis_and_unknown_method_raises():
     pri = hapmixqtl.estimate_variance_priors(A_big, Va_big, expression=expr, prior_method='trend', min_informative=30)
     res = hapmixqtl.map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'], d['pos_df'],
                             xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=200, window=1000000, seed=6, verbose=False,
-                            variance_model='two_component', variance_prior=pri)
+                            variance_model='two_component', variance_prior=pri,
+                            tau_mode='estimate')
     assert res['variance_prior'].astype(bool).all()
     assert np.isfinite(res['c_a'].astype(float)).all() and (res['c_a'].astype(float) > 0).all()
     assert (res['tau_a'].astype(float) > 0).all()
