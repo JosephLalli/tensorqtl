@@ -797,6 +797,97 @@ different properties — `vooma`/`voomaLmFit`/`voomWithQualityWeights`/
 `arrayWeights` are installed but currently crash here; the CRASHES/RUNS
 lists above are the operative ones for what can actually be tried.
 
+## The shipped defaults hold on non-circular ground truth (2026-09-23)
+
+`tests/ase_external_benchmark.py` re-run with `Var(eps_i) = sigma^2 v_i`
+(`tau_mode='zero'` + `se_mode='fitted'`) as an arm, against the RASQUAL/TReCASE
+generative model, which hapmixQTL does not assume. 500 replicates at the
+archived configuration, verified field by field (N=200, mu=200, NB dispersion
+0.2, BB overdispersion 0.01, allele-specific fraction 0.25). Report:
+`brainvar_hapmix_deploy/external_benchmark_fitted_defaults_20260923/` (REPORT.md,
+an HTML version with figures, raw JSON, diagnostic scripts).
+
+- **The default is calibrated and at parity with the generating model's own
+  joint likelihood.** Type-I at nominal 0.05 is 0.0640 (lambda_GC 1.24), 1.4
+  Monte Carlo standard errors above nominal (se 0.0097 at 500 reps). Matched
+  power (each arm held to its own empirical 95th percentile) is
+  0.248/0.744/1.000 at allelic fold change 1.05/1.10/1.20 against TReCASE's
+  0.274/0.760/0.998 — differences -0.026/-0.016/+0.002 against paired se
+  0.028/0.027/0.002, so |z| <= 1.0 throughout. TReCASE is the joint likelihood
+  OF THE GENERATING MODEL, so this is parity with a ceiling, not with a peer.
+  Both dominate the single-channel arms (TReC-only 0.104/0.204/0.486; ASE-only
+  0.160/0.558/0.994, the latter genuinely anticonservative at type-I 0.158).
+- **The fitted scale, not the weights, is what makes `tau=0` usable.** Holding
+  weights at `1/v` and data fixed and changing ONLY the SE form, the
+  known-variance pairing reads type-I 0.516 (lambda 9.04) and matched power
+  0.148/0.330/0.786 — worse than total-counts-only at the largest effect. Power
+  gaps to the default are +0.100/+0.414/+0.214 at z = +4.0/+14.4/+11.7. This is
+  external confirmation of the same thing the BrainVar 23.3 measurement said
+  from inside: the additive floor was compensating for an SE form that cannot
+  tolerate a mis-scaled `v`. `tau='estimate'` known-variance is conservative
+  here (0.030, lambda 0.89) at power 0.280/0.744/0.998.
+- **`lambda_GC = 3020` was never a magnitude; it is the censoring ceiling of
+  the harness's `calib()`.** `calib()` clips p to 1e-300 before converting to
+  chi2(1), and `chi2.isf(1e-300,1)/chi2.ppf(0.5,1)` = 3019.92 — the archived
+  value to every digit. "3020" therefore means the median null p-value
+  underflowed, i.e. a FLOOR on the severity, and the identical 3020 in
+  `docs/ase_validation.md` §7 (simulation) and §7d (real GTEx phASER counts) is
+  one ceiling reached twice, not two agreeing measurements. Both cells are now
+  annotated `(censored)`; the direction and the "every null test significant"
+  conclusion stand.
+- **The archived 1.0000/3020 reproduces against its own commit; the change
+  since is a HARNESS defect, not estimator drift.** `git archive` of the whole
+  tree at 300af73 rerun gives 1.000/3020 exactly. TWO HYPOTHESES TESTED AND
+  FALSIFIED, not argued: deleting the harness's degenerate-weight guard changed
+  nothing to four digits, and neutralising `_zero_degenerate_ase_weights` to the
+  identity changed nothing either — at allele-specific fraction 0.25 NO sample
+  is degenerate (0 of 200, median 48 allele-specific reads), so both guards are
+  inert in this benchmark. The real cause: `hapmix_pval` emulates draws as
+  `yL ~ Binomial(n, frac)` with `yR = n - yL`, so `yL+yR` is EXACTLY constant
+  across draws and the total channel's across-draw variance is zero by
+  construction; `compute_summaries_from_gibbs` is called without `yT`, so it
+  derives the total channel from that constant subtotal. Historically it
+  returned ~2e-31 and the harness's own `clip(Vt, 1e-8, None)` floored it,
+  handing EVERY sample a total-channel weight of 1e8. `count_noise` now
+  replaces that with the Poisson delta-method term `1/(m_T + 2*kappa)`: measured
+  median `Vt` is 0.0204082 against median `1/(m_T+2*kappa)` of 0.0204082,
+  identical to every printed digit. Same "count_noise stands in for a missing
+  total-channel floor" behaviour already recorded, seen from the other side.
+- **Harness defect still present, consequence bounded by measurement.** That
+  counting term is computed on the ALLELE-SPECIFIC total (median 48 reads) while
+  the total-channel phenotype is built from the true totals (median 195.5), so
+  the harness overstates the total channel's inferential variance by 4.0x.
+  Substituting the delta-method variance of the harness's own phenotype,
+  `T/(T+lib)^2`, over 150 replicates: the fitted default moves 0.073 -> 0.067 in
+  type-I, inside the 150-rep Monte Carlo floor of ~0.018, while the
+  known-variance pairing swings 0.520 -> 0.800 and lambda 9.5 -> 36.5 on the
+  identical change. TReCASE is unchanged to three decimals — the required
+  internal control, since it never sees `v`. So 1.0000/3020, 0.516/9.04 and
+  0.800/36.5 are THREE READINGS OF ONE PHENOMENON at three fabricated scales for
+  `v`: a known-variance SE inherits any error in `v`'s absolute scale; a fitted
+  sigma^2 absorbs it by construction. This is also the cleanest available
+  demonstration that fitting the scale from the residuals it weights did NOT
+  produce the anticonservatism the limma/edgeR circularity objection predicts,
+  at this N and depth.
+- **The harness reseeds per replicate**, drawing data from
+  `RandomState(seed0+r)` and giving each arm its own
+  `RandomState(seed0+900000+r)`, so arm count and arm order cannot perturb any
+  result. That is what licenses both adding arms to the archived configuration
+  and pruning arms in the diagnostics. Checked before being relied on.
+- Cross-host fidelity of the unchanged comparators: TReC-only and TReCASE
+  lambda agree with the archive to 8 significant figures; ASE-only moved 2.8%
+  (1.952 -> 2.007), attributed to the beta-binomial optimizer at the
+  near-boundary overdispersion rho=0.01 under a different scipy build (the
+  archived run was on another host). Not investigated further.
+- Scope limits, unchanged by this run: the harness's allelic residualizer keeps
+  an intercept where production has been through-origin since 2026-09-15; the
+  total channel's inferential variance is fabricated; emulated draws are
+  binomial resampling of the observed split, not Salmon draws against a
+  personalized diploid transcriptome; natural-log units; ONE sample size, depth
+  and overdispersion pair, with no depth-stratified arm, so nothing here speaks
+  to the low-expression regime where 45% of the transcriptome sits and the
+  fitted weights are known to flatten toward equality.
+
 ## Claims withdrawn on 2026-09-13 — do not re-assert
 
 An eight-angle review retired these. They may survive in older text.
@@ -848,6 +939,19 @@ Withdrawn on 2026-09-16 (measured in `estimator_ablation_20260916`):
 - The total channel has no zero-count guard; `count_noise` is standing in for
   a floor (above). A coverage-based floor for zero-count total samples, then
   no `q` for samples with reads, is the fix, not the flag.
+- `tests/ase_external_benchmark.py` fabricates the total channel's inferential
+  variance: its emulated draws conserve `yL+yR` exactly, so the across-draw
+  total variance is 0 and `count_noise`'s `1/(m_T+2*kappa)` on the
+  ALLELE-SPECIFIC total is all that remains — 4.0x the delta-method variance of
+  the harness's own phenotype (2026-09-23, above). The fitted default is
+  insensitive to this (0.073 -> 0.067); the known-variance arms are not
+  (0.520 -> 0.800). Fix is to pass a `yT` built from the simulated totals.
+  Its allelic residualizer also still keeps an intercept, where production has
+  been through-origin since 2026-09-15.
+- `calib()` in that harness reports a censored `lambda_GC`: p is clipped to
+  1e-300, so lambda saturates at 3019.92 and any "3020" is a floor, not an
+  estimate. Reporting a censoring flag alongside it would stop the number being
+  read as a magnitude, as it was in `docs/ase_validation.md` until 2026-09-23.
 - Three input-validation defects found by the 2026-09-14 audit are unfixed
   and unarguable: a NaN at a zero-weight sample drives `pval_perm` to the
   `1/(nperm+1)` floor; variant-row identity between the genotype and phase

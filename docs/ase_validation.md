@@ -228,7 +228,7 @@ likelihood sharing one κ, LRT).
 | TReC-only | 0.0500 (1.00×) | 0.0080 (0.80×) | 0.91 |
 | ASE-only | 0.1540 (3.08×) | 0.0380 (3.80×) | 1.95 |
 | TReCASE (joint) | 0.0540 (1.08×) | 0.0120 (1.20×) | 1.18 |
-| hapmixQTL `tau='zero'` | **1.0000 (20×)** | **1.0000 (100×)** | **3020** |
+| hapmixQTL `tau='zero'` | **1.0000 (20×)** | **1.0000 (100×)** | **3020** (censored — see §7k) |
 | hapmixQTL `tau='estimate'` | 0.0460 (0.92×) | 0.0160 (1.60×) | 1.13 |
 
 TReC-only landing at exactly 1.00× validates the comparator implementation. TReCASE shows
@@ -470,16 +470,22 @@ p-values are not uniform here is miscalibrated on real data, whatever simulation
 
 | matrix | tau_mode | type-I @0.05 | @0.01 | @1e-3 | λ_GC |
 |---|---|---|---|---|---|
-| phASER | `zero` | **1.0000 (20×)** | **1.0000 (100×)** | **1.00000** | **3020** |
+| phASER | `zero` | **1.0000 (20×)** | **1.0000 (100×)** | **1.00000** | **3020** (censored) |
 | phASER | `estimate` | 0.0533 (1.07×) | 0.0117 (1.17×) | 0.00167 | 0.98 |
-| phASER + WASP | `zero` | **0.9992 (20×)** | **0.9992 (100×)** | **0.99917** | **3020** |
+| phASER + WASP | `zero` | **0.9992 (20×)** | **0.9992 (100×)** | **0.99917** | **3020** (censored) |
 | phASER + WASP | `estimate` | 0.0583 (1.17×) | 0.0117 (1.17×) | 0.00083 | 0.90 |
 
 **Findings.**
 
 1. **The defect is confirmed on real data, at full severity.** On real GTEx haplotype
-   counts, `tau_mode='zero'` makes **every single null test significant** (λ_GC = 3020).
-   This is no longer an inference from simulation.
+   counts, `tau_mode='zero'` makes **every single null test significant**.
+   This is no longer an inference from simulation. *(Corrected 2026-09-23: λ_GC = 3020
+   here is the **censoring ceiling** of `calib()`, not a magnitude — see §7k. It is the
+   value returned whenever the median null p-value underflows the 1e-300 clip, so this
+   table and the simulation table above agree at "3020" because both saturated, not
+   because they measured the same inflation. Read it as "over half the null p-values
+   underflowed", a floor on the severity. The direction and the "every test significant"
+   conclusion stand; only the number is censored.)*
 2. **The fix works on real data.** `tau_mode='estimate'` gives 1.07× nominal type-I error
    and λ_GC = 0.98 — properly calibrated on genuine GTEx expression variance.
 3. **Calibration is the same with and without WASP correction** (1.17×, λ = 0.90 on the
@@ -879,6 +885,85 @@ with `map_nominal`'s exact IVW slope by several percent (STR0: 0.313 vs 0.339; t
 the exact slope `(xy_a + xy_t)/(xx_a + xx_t)` and SE `1/sqrt(xx_a + xx_t)`; p-values are
 unchanged (the r² mapping is monotone). This matters for the effect-size concordance axis
 (§9), which compares slopes, not p-values.
+
+## 7k. The shipped defaults re-measured, and what λ = 3020 actually was
+
+*Added 2026-09-23.* Everything above tests `tau_mode='zero'` and `tau_mode='estimate'`
+against the **known-variance** standard error, because that was the only standard-error
+form the library had. `se_mode='fitted'` now exists, and the shipped default is
+`tau_mode='zero'` + `se_mode='fitted'`, i.e. `Var(ε_i) = σ²·v_i` — the inferential
+variance as a **shape**, with its absolute scale estimated from the residuals. This
+section re-runs the §7 benchmark with that arm present. Full report:
+`brainvar_hapmix_deploy/external_benchmark_fitted_defaults_20260923/` (REPORT.md, an HTML
+version with figures, raw JSON, and the diagnostic scripts).
+
+**Same configuration as §7**, verified field by field (500 replicates, N = 200, μ = 200,
+NB dispersion 0.2, BB overdispersion 0.01, allele-specific fraction 0.25):
+
+| Method | type-I @ 0.05 | @ 0.01 | λ_GC | power κ=1.05 / 1.10 / 1.20 |
+|---|---|---|---|---|
+| **hapmixQTL `σ²·v` (DEFAULT)** | **0.0640** | 0.0200 | **1.24** | **0.248 / 0.744 / 1.000** |
+| TReCASE (joint) | 0.0540 | 0.0120 | 1.18 | 0.274 / 0.760 / 0.998 |
+| hapmixQTL `tau+fitted` | 0.0560 | 0.0200 | 1.27 | 0.270 / 0.746 / 0.998 |
+| hapmixQTL `tau='estimate'` (known-var) | 0.0300 | 0.0060 | 0.89 | 0.280 / 0.744 / 0.998 |
+| hapmixQTL `tau='zero'` (known-var) | 0.5160 | 0.3640 | 9.04 | 0.148 / 0.330 / 0.786 |
+| ASE-only | 0.1580 | 0.0360 | 2.01 | 0.160 / 0.558 / 0.994 |
+| TReC-only | 0.0500 | 0.0080 | 0.91 | 0.104 / 0.204 / 0.486 |
+
+Power is at each arm's **own** empirical 95th percentile under the null (matched α). The
+Monte Carlo standard error on a proportion at 500 replicates is 0.0097 near 0.05 and
+0.0194 near 0.25.
+
+1. **The default is calibrated and matches the generating model's own joint likelihood.**
+   Type-I 0.0640 is 1.4 standard errors above nominal. Matched power differs from TReCASE
+   by −0.026, −0.016 and +0.002 against paired standard errors of 0.028, 0.027 and 0.002,
+   i.e. |z| ≤ 1.0 at every effect size. TReCASE is the joint likelihood **of the model
+   that generated the data**, so this is parity with the ceiling, not with a peer.
+2. **The fitted scale, not the weights, is what makes `tau=0` usable.** Holding the
+   weights at `1/v` and the data fixed and changing only the standard-error form, the
+   known-variance pairing reads 0.516 and loses 0.100 / 0.414 / 0.214 in matched power
+   (z = +4.0, +14.4, +11.7). The additive floor `tau_g` was compensating for a
+   standard-error form that cannot tolerate a mis-scaled `v`.
+3. **λ_GC = 3020 was never a magnitude — it is the censoring ceiling of `calib()`.**
+   `calib()` clips p to 1e-300 before converting to χ²(1), and
+   `chi2.isf(1e-300, 1) / chi2.ppf(0.5, 1) = 3019.92`, which is the archived value to
+   every digit. So "3020" means *the median null p-value underflowed*, a floor on the
+   severity, and the identical 3020 in §7 and §7d is one ceiling reached twice rather
+   than two agreeing measurements.
+4. **The archived 1.0000/3020 reproduces against its own commit, and the change since is
+   a harness defect, not estimator drift.** Rebuilding the whole tree at the archiving
+   commit and rerunning gives 1.000 / 3020 exactly. Two candidate causes were tested and
+   **both falsified**: deleting the harness's degenerate-weight guard changed nothing to
+   four digits, and neutralising `_zero_degenerate_ase_weights` changed nothing either —
+   at an allele-specific fraction of 0.25 no sample is degenerate (0 of 200, median 48
+   allele-specific reads). The real cause is that `hapmix_pval` emulates draws as
+   `yL ~ Binomial(n, frac)`, `yR = n − yL`, so `yL+yR` is **exactly constant across
+   draws** and the total channel's inferential variance is zero by construction;
+   `compute_summaries_from_gibbs` is called without `yT`, so it derives the total channel
+   from that constant subtotal. Historically it returned ~2e−31 and the harness's own
+   `clip(Vt, 1e-8, None)` floored it, giving every sample a total-channel weight of 1e8.
+   `count_noise` now replaces that with the Poisson delta-method term
+   `1/(m_T + 2κ)`: median `Vt` measures 0.0204082 against median `1/(m_T+2κ)` of
+   0.0204082, identical to every printed digit.
+5. **Remaining harness defect, with its consequence bounded rather than argued.** That
+   counting term is computed on the **allele-specific** total (median 48 reads) while the
+   total-channel phenotype is built from the true totals (median 195.5), so the harness
+   overstates the total channel's inferential variance by **4.0×**. Substituting the
+   delta-method variance of the harness's own phenotype, `T/(T+lib)²`, and rerunning 150
+   replicates: the fitted default moves 0.073 → 0.067 in type-I (inside the
+   150-replicate Monte Carlo floor of ~0.018), while the known-variance pairing swings
+   0.520 → **0.800** and λ 9.5 → **36.5**. TReCASE is unchanged to three decimals, the
+   internal control, since it never sees `v`. So **1.0000/3020, 0.516/9.04 and 0.800/36.5
+   are three readings of one phenomenon at three fabricated scales for `v`**: a
+   known-variance standard error inherits any error in the absolute scale of the
+   inferential variance, and a fitted σ² absorbs it by construction.
+
+**What this does not establish.** The harness's allelic residualizer keeps an intercept
+where production has been through-origin since 2026-09-15, so the allelic channel here is
+not exactly the shipped design. The total channel's inferential variance is fabricated —
+bounded above, not fixed. One sample size, one depth, one overdispersion pair, and no
+depth-stratified arm, so nothing here speaks to the low-expression regime where 45% of the
+transcriptome sits and the fitted weights are known to flatten toward equality.
 
 ## 8. What was done, and what is still recommended
 

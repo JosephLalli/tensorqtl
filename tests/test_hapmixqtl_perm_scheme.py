@@ -108,7 +108,11 @@ def test_residual_scheme_still_available_and_map_cis_records_the_scheme():
     r1 = hapmixqtl.map_cis(*args, **kw)
     r2 = hapmixqtl.map_cis(*args, perm_scheme='residuals', **kw)
     assert (r1['perm_scheme'] == 'records').all() and (r2['perm_scheme'] == 'residuals').all()
+    # The scheme touches only the permutation columns. Compared with .equals()
+    # rather than ==, because under the shipped default tau_mode='zero' there is
+    # no tau parameter in the model and tau_a/tau_t come back as None, which ==
+    # reports as unequal to itself.
     for col in ('variant_id', 'pval_nominal', 'slope', 'slope_se', 'tau_a', 'tau_t'):
-        assert (r1[col] == r2[col]).all(), col           # the scheme touches only the permutation columns
+        assert r1[col].equals(r2[col]), col
     with pytest.raises(ValueError):
         hapmixqtl.map_cis(*args, perm_scheme='shuffle', **kw)
