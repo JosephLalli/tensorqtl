@@ -59,7 +59,7 @@ RESIDUAL-FLOOR PROFILE (is the draw variance the WHOLE error?)
     converts "does it reduce the SE" into "does it reduce the SE honestly",
     which is the only version of the question that bears on a call.
 
-Data loading follows estimator_ablation_20260916/ablation29.py lines 32-58,
+Data loading follows fitted_variance/estimator_ablation_20260916/ablation29.py lines 32-58,
 copied rather than imported so this script has no dependency on a path
 outside the repository.
 """
@@ -121,7 +121,7 @@ def load_inputs():
     with contextlib.redirect_stdout(io.StringIO()):
         vdf, dos, xL, xR, order = H.read_phased_vcf(
             f'{D}/prepped/analysis.snps.maf01.vcf.gz', set(samples),
-            regions=f'{D}/null_calibration_29b/regions.bed')
+            regions=f'{D}/fitted_variance/null_calibration_29b/regions.bed')
     keep = [samples.index(s) for s in order]
     order = list(order)
     vdf['chrom'] = vdf['chrom'].astype(str)

@@ -3,6 +3,30 @@
 Reconciled 2026-09-16, updated 2026-09-18. A router to the current state:
 what is implemented, what was measured, and what is open.
 
+> **SUPERSEDED IN PART, 2026-09-23.** hapmixQTL now ships exactly **two modes**:
+> **mixQTL mode** (the published estimator on posterior-mean counts, no draws,
+> `tensorqtl/mixqtl_replication.py`) and **default mode**
+> (`Var(eps_i) = sigma^2 v_i` — the Gibbs across-draw variance as a shape with
+> the residual scale fitted, no additive floor; `tau_mode='zero'` +
+> `se_mode='fitted'`).
+>
+> Wherever this document discusses choosing among `additive`, `two_component`
+> or `library_scaled`, the `variance_prior` shrinkage, `tau_mode='estimate'`, or
+> the known-variance standard error, it is describing **DEPRECATED** work. Those
+> measurements were correctly made and are not withdrawn as measurements; only
+> their status as live options is. The estimators are quarantined in
+> `tensorqtl/fitted_variance.py` and the reports in
+> `brainvar_hapmix_deploy/fitted_variance/` (see its README). The structural
+> reasons, in brief: they fit a variance function from a gene's own squared
+> residuals and then weight those residuals by the fit, which no comparator
+> method does; and with `(c_g, tau_g)` both free the weights are provably
+> invariant to the absolute scale of the Gibbs draws, so the quantifier's
+> calibration never reaches the answer.
+>
+> The sections on what `v_ig` IS — that it is a donor-by-gene interaction, the
+> RTA comparison, the draw-count adequacy, the `squeezeVar` diagnostics — remain
+> live: they measure the Gibbs variance itself, not a choice among models.
+
 ## State at a glance
 
 - **Implemented, committed (bea450c, 2026-09-16):** ASE regression, null tau,
@@ -10,7 +34,7 @@ what is implemented, what was measured, and what is open.
   intercept.
   [ASE_IMPLEMENTATION.md](../../../../../brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/ASE_IMPLEMENTATION.md)
   records the scope and targeted validation. Measured on the 29 calibration
-  genes (`/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`):
+  genes (`/mnt/ssd/lalli/brainvar_hapmix_deploy/fitted_variance/estimator_ablation_20260916/REPORT.md`):
   median |change| in the lead statistic 0.42, one borderline call (TCF4) added.
 - **Current source behavior:** Gibbs summaries use natural logs and add an
   extra Poisson q term when `count_noise=True`; runtime migration to log2 is
@@ -109,7 +133,7 @@ what is implemented, what was measured, and what is open.
 
 **State on 2026-09-16, after measurement.** The three estimator questions
 reopened on 09-14 to 09-16 were run on the 29 calibration genes
-(`/mnt/ssd/lalli/brainvar_hapmix_deploy/estimator_ablation_20260916/REPORT.md`).
+(`/mnt/ssd/lalli/brainvar_hapmix_deploy/fitted_variance/estimator_ablation_20260916/REPORT.md`).
 The ASE intercept and the counting term `q` are inert there (median |change| in
 the lead statistic 0.42 and 0.19 chi2). The residual scale is not: with the
 DerSimonian-Laird `tau` the whitened residual mean square on the allelic channel
@@ -130,7 +154,7 @@ in the total channel get a coverage-based rule.
 
 **Decision record.**
 
-1. Settled by measurement (`estimator_ablation_20260916`): the allelic channel
+1. Settled by measurement (`fitted_variance/estimator_ablation_20260916`): the allelic channel
    is through-origin (bea450c); the counting term `q` is inert for genes with
    reads and stays on only as a floor for zero-count total samples until a
    coverage-based floor replaces it; a fitted per-variant residual scale is the
@@ -392,7 +416,7 @@ disagreement mechanisms) and the pending log2 unit migration.
 
 Worktree: `hapmix-runbook-local`; the through-origin change is commit
 `bea450c` on top of `f11d586`. The estimator ablation
-(`estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
+(`fitted_variance/estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
 final TMM normalization, production association mapping, or biological-residual
 calibration. Applying phASER error correction before constructing quantification
 references remains a future option, not an implemented workflow change.

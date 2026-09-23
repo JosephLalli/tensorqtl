@@ -43,7 +43,7 @@ allelic channel. tau_mode='estimate' is the DEFAULT. tau_mode='zero' asserts
 the Gibbs variance is the entire error variance, which is severely
 anticonservative on real data; it is retained only to reproduce earlier
 results, warns when used, and is only accepted with the additive model.
-Measured on BrainVar (estimator_ablation_20260916, estimator_ablation_tiers_20260917):
+Measured on BrainVar (fitted_variance/estimator_ablation_20260916, fitted_variance/estimator_ablation_tiers_20260917):
 the additive model is anticonservative at low expression (type-I 0.068 at
 nominal 0.05) and conservative at high (0.022); the two other models are
 0.029-0.041 in every tier with the same null width and calls; only
@@ -884,9 +884,11 @@ def _warn_tau_zero(tau_mode, fitted_scale=False):
             "quantifier posteriors never satisfy. Measured consequences: up to 107x "
             "nominal type-I error at alpha=1e-3, ~100% false positives on count-level "
             "simulations, 64.5% coverage of nominal 95% CIs, and a combined-statistic "
-            "calibration of 23.3. Either use tau_mode='estimate', or pair tau_mode='zero' "
-            "with se_mode='fitted' (calibration 1.068), which is the Var(eps)=sigma^2*v "
-            "model and the shipped default. See docs/ase_validation.md.",
+            "calibration of 23.3. Use DEFAULT MODE: pair tau_mode='zero' with "
+            "se_mode='fitted' (calibration 1.068), which is the Var(eps)=sigma^2*v model "
+            "and the shipped default. tau_mode='estimate' is NOT the remedy -- it is "
+            "deprecated as of 2026-09-23 along with the known-variance SE that makes this "
+            "warning fire (tensorqtl/fitted_variance.py). See docs/ase_validation.md.",
             RuntimeWarning, stacklevel=3)
 
 
@@ -1265,7 +1267,7 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     fixed weights, which hands a donor another donor's value at its own
     precision and mis-scales the null the other way (type-I 0.000): the
     record scheme moves the weight with the value. Measured 2026-09-17,
-    estimator_ablation_tiers_20260917/permutation_scheme_experiment.py and
+    fitted_variance/estimator_ablation_tiers_20260917/permutation_scheme_experiment.py and
     total_channel_schemes.py.
 
     Returns:

@@ -9,7 +9,7 @@ the cloud container is load-bearing except the git history, and that is pushed.
 Everything. The working tree is clean and pushed to
 `claude/hapmixqtl-gibbs-uncertainty-IQ6Za`. That includes:
 
-- SUPERSEDED 2026-09-21: the defaults are now `tau_mode='zero'` + `se_mode='fitted'`,
+- SUPERSEDED 2026-09-21, and the alternatives DEPRECATED 2026-09-23: there are now two modes only, mixQTL mode and default mode (`tau_mode='zero'` + `se_mode='fitted'`),
   i.e. `Var(eps) = sigma^2 v`. The text below describes the earlier
   `tau_mode='estimate'` default and is kept as the historical record.
 - the library changes: the `tau_mode='estimate'` default and its exact

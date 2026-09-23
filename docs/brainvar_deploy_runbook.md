@@ -863,7 +863,7 @@ record reports how many candidates it dropped.
 ### The null calibration, and why a fixed threshold was the wrong instrument
 
 Every comparison in the sections above thresholds both arms at a chi-squared of
-15, a guess at where a null maximum sits. `null_calibration_29b` replaces that
+15, a guess at where a null maximum sits. `fitted_variance/null_calibration_29b` replaces that
 guess. The same 29 genes (AGPAT5 dropped, below), 92 samples and 126,326 tested
 variants, five permutation draws, 145 null gene-statistics per arm, each arm
 thresholded against its own pooled null:
@@ -930,8 +930,8 @@ genes either arm calls.
 
 **The chi-squared values quoted in the earlier sections predate the scale
 correction** of commit a368f97 and are understated by a median 1.87 points, up
-to 22.5. The corrected observed values are in `final30_matched_scale/` and
-`null_calibration_29b/`.
+to 22.5. The corrected observed values are in `fitted_variance/final30_matched_scale/` and
+`fitted_variance/null_calibration_29b/`.
 
 ### Choosing pilot genes
 

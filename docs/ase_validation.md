@@ -1,5 +1,38 @@
 # hapmixQTL (ASE) pipeline validation
 
+> ## READ FIRST — this is the historical validation record
+>
+> **As of 2026-09-23 hapmixQTL ships exactly TWO MODES**, and most of what
+> follows compares configurations that are no longer among them.
+>
+> - **mixQTL mode** — the published estimator on Salmon posterior-mean counts,
+>   no draws (`tensorqtl/mixqtl_replication.py`).
+> - **default mode** — `Var(eps_i) = sigma^2 * v_i`: the **Gibbs** across-draw
+>   variance as a *shape*, residual scale fitted per variant, **no additive
+>   floor** (`tau_mode='zero'` + `se_mode='fitted'`).
+>
+> **DEPRECATED, and quarantined:** `additive`, `two_component`,
+> `library_scaled`, the `variance_prior` shrinkage, the `tau_mode='estimate'`
+> they require, and the known-variance standard error `se_mode='model'`. Code in
+> `tensorqtl/fitted_variance.py`, tests in `tests/fitted_variance/`, reports in
+> `brainvar_hapmix_deploy/fitted_variance/`.
+>
+> Sections below that choose among those, or that quote a known-variance
+> standard error, are **historical**. Their measurements were correctly made and
+> are NOT withdrawn as measurements; only their status as live options is. Do
+> not cite them as current practice, and do not use them as comparators in new
+> work. The deprecation is structural, not empirical: each fits a variance
+> function from a gene's own squared residuals and then weights those residuals
+> by the fit, which no comparator method does; and with `(c_g, tau_g)` both free
+> the weights are provably invariant to the absolute scale of the Gibbs draws,
+> so the quantifier's calibration never reaches the answer.
+>
+> The current validation of default mode against a generative model hapmixQTL
+> does not assume is section **7k**, and its report is
+> `brainvar_hapmix_deploy/external_benchmark_fitted_defaults_20260923/`.
+> Claims withdrawn on 2026-09-23 are marked in place (see 7d).
+
+
 **Date:** 2026-09-07, revised 2026-09-11 · **Harness:** `tests/ase_validation.py` · **Raw results:** `docs/ase_validation_results.json`
 **Config:** N = 200 samples, 1,500 replicates/cell (30,000 null p-values per Tier-0 cell)
 

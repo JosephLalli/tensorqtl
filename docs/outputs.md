@@ -123,4 +123,4 @@ Column | Description
 `pip` | Posterior inclusion probability
 `af` | In-sample ALT allele frequency of the variant
 `cs_id` | Credible-set index (the SuSiE single-effect `L` this variant belongs to)
-`tau_mode` | The `tau_mode` the fine-mapping was run under, recorded as provenance. Results produced under `zero` **with** `se_mode='model'` are invalid (`docs/ase_validation.md` §7g); `zero` is the default again since 2026-09-21 but paired with `se_mode='fitted'`, which does not carry that defect, so read the pairing and not the `tau_mode` alone; `hapmixqtl.fine_mapping_provenance()` classifies a file as `ok`, `stale` or `unknown`
+`tau_mode` | Provenance of the fine-mapping run. In **default mode** this is `'zero'`, paired with `se_mode='fitted'`, i.e. `Var(eps_i) = sigma^2 v_i`. Results produced under `'zero'` **with the deprecated known-variance SE** are invalid (`docs/ase_validation.md` §7g), so read the PAIRING and never the `tau_mode` alone; `hapmixqtl.fine_mapping_provenance()` classifies a file as `ok`, `stale` or `unknown`
