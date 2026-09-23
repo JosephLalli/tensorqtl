@@ -50,10 +50,15 @@ WHAT IT DOES
      the reference allele where each sample's reads land, so the sign it is
      given is orient_haplotypes over each GENE's own feature sites rather than
      one cohort-wide orientation. --force proceeds anyway (not recommended).
-  6. Runs hapmixqtl.map_cis with --tau-mode/--se-mode (default 'zero'/'fitted',
-     i.e. Var(eps) = sigma^2 * v) and the --variance-model
-     (additive by default; library-scaled estimates d_i across genes first) (do not
-     override -- sec 2, 6, 7d) and tau_refit=True, so the lead's slope, SE and
+  6. Runs hapmixqtl.map_cis in DEFAULT MODE, which is the only hapmixQTL
+     configuration this driver offers: Var(eps_i) = sigma^2 * v_i, the Gibbs
+     across-draw variance as a SHAPE with the residual scale fitted
+     (tau_mode='zero', se_mode='fitted'; module constants, not flags, because
+     there is nothing to choose -- the fitted-variance alternatives and the
+     known-variance standard error are deprecated, see
+     tensorqtl/fitted_variance.py). The other shipped mode, mixQTL mode, is a
+     different estimator and has its own driver
+     (scripts/compare_mixqtl_replication.py). Also tau_refit=True, so the lead's slope, SE and
      nominal p are reported with tau re-estimated at the lead instead of under
      the null model, which is the like-for-like with a method that fits its
      dispersion under the alternative. pval_perm and pval_beta stay on the
@@ -125,16 +130,25 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, count_cutoff_masks,
-                                     reference_bias_diagnostic, orient_haplotypes, map_cis, estimate_library_factors, estimate_variance_priors,
+                                     reference_bias_diagnostic, orient_haplotypes, map_cis,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (compute_summaries_from_gibbs, count_cutoff_masks,
-                           reference_bias_diagnostic, orient_haplotypes, map_cis, estimate_library_factors, estimate_variance_priors,
+                           reference_bias_diagnostic, orient_haplotypes, map_cis,
                            map_str_curvature, map_multiallelic)
 
 # mixQTL's shipped filters (R/mixqtl.R)
 ASC_CUTOFF, TRC_CUTOFF, MIN_SAMPLES = 5, 20, 30
+
+# DEFAULT MODE, and the only hapmixQTL configuration this driver runs:
+# Var(eps_i) = sigma^2 * v_i, the Gibbs across-draw variance as a SHAPE with the
+# residual scale fitted. Not flags, because there is nothing to choose: the
+# fitted-variance alternatives are deprecated (tensorqtl/fitted_variance.py) and
+# the known-variance standard error is one of them. The other shipped mode is
+# mixQTL mode, which is a different estimator entirely -- the NumPy port in
+# tensorqtl/mixqtl_replication.py, driven by scripts/compare_mixqtl_replication.py.
+TAU_MODE, SE_MODE = 'zero', 'fitted'
 
 
 # ---------------------------------------------------------------------------
@@ -990,21 +1004,8 @@ def main():
                     default=True,
                     help='per-sample Poisson counting noise in the Gibbs '
                          'variances; see compute_summaries_from_gibbs')
-    ap.add_argument('--variance-prior-method', default='deciles', choices=['deciles', 'trend'],
-                    help="how the empirical-Bayes prior is estimated across genes: 'deciles' (ten expression bins) or 'trend' (smooth precision-weighted curves on the log scale, limma's trend=TRUE idea; hapmixqtl.estimate_variance_priors)")
     ap.add_argument('--perm-scheme', default='records', choices=['records', 'residuals'],
                     help="map_cis permutation null: 'records' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
-    ap.add_argument('--tau-mode', default='zero', choices=['zero', 'estimate'],
-                    help="allelic/total residual scale: 'zero' (default) weights by 1/v "
-                         "with no additive floor, which with --se-mode fitted is the "
-                         "Var(eps)=sigma^2*v model; 'estimate' adds the per-gene tau "
-                         "floor and is required by the two-component variance models")
-    ap.add_argument('--se-mode', default='fitted', choices=['fitted', 'model'],
-                    help="standard error: 'fitted' (default) is the estimated-dispersion "
-                         "sigma_hat/sqrt(xx), so the weights are a shape and their "
-                         "absolute scale cancels; 'model' is the known-variance "
-                         "1/sqrt(xx), which propagates the draws' absolute scale but "
-                         "requires --tau-mode estimate to stay calibrated")
     ap.add_argument('--asc-cutoff', type=float, default=None,
                     help='allele-specific count FLOOR: both haplotypes must have at '
                          'least this many posterior-mean counts for a donor to enter '
@@ -1031,25 +1032,6 @@ def main():
                          'not applied to hapmixQTL, because capping costs two thirds of '
                          'the efficiency the Gibbs weights buy and exists to protect a '
                          'known-variance standard error hapmixQTL handles differently')
-    ap.add_argument('--variance-model', default='additive',
-                    choices=['additive', 'two-component', 'library-scaled'],
-                    help="allelic-channel error variance: additive v + tau (default, the "
-                         "shipped model); two-component c v + tau, (c, tau) fitted per gene; "
-                         "library-scaled d_i (c v + tau), d_i per library estimated across "
-                         "genes before the scan (written to library_factor.tsv). On BrainVar "
-                         "the additive model is anticonservative at low expression and "
-                         "conservative at high; the other two are calibrated in every tier and "
-                         "library-scaled is the form whose whitened residuals carry no "
-                         "per-library structure (estimator_ablation_tiers_20260917)")
-    ap.add_argument('--variance-prior', action='store_true',
-                    help='with a two-component or library-scaled model, fit each gene\'s (c, tau) '
-                         'with an empirical-Bayes prior toward its expression bin (estimated across '
-                         'all genes before the scan, written to variance_priors.tsv and '
-                         'variance_prior_bins.tsv) instead of clamping at zero')
-    ap.add_argument('--library-factor-min-reads', type=float, default=100,
-                    help='genes with at least this median allele-resolved read count '
-                         '(over samples) estimate the library factors; below about 100 '
-                         'the per-gene c is not identifiable')
     ap.add_argument('--window', type=int, default=1_000_000)
     ap.add_argument('--force', action='store_true',
                     help='proceed despite a reference-bias flag (NOT recommended)')
@@ -1086,9 +1068,7 @@ def main():
     args = ap.parse_args()
 
     if args.selftest:
-        return selftest(extra=('--variance-model', args.variance_model) + (('--variance-prior', '--variance-prior-method', args.variance_prior_method) if args.variance_prior else ())
-                        + (('--library-factor-min-reads', str(args.library_factor_min_reads))
-                           if args.variance_model.replace('-', '_') == 'library_scaled' else ()))
+        return selftest()
     for r in ('vcf', 'manifest', 'tx2gene'):
         if not getattr(args, r):
             raise SystemExit(f'--{r} is required (or use --selftest)')
@@ -1180,41 +1160,6 @@ def main():
             'from WASP-corrected or variant-aware alignments. A bundle with the '
             'diagnostic was still written so you can bring it back for triage.')
 
-    variance_model = args.variance_model.replace('-', '_')
-    library_factor = None
-    if variance_model == 'library_scaled':
-        # on the scanned genes only: sdf/vadf were sliced to ``common`` above, and
-        # estimate_library_factors rejects genes absent from them
-        reads = np.median((YLm + YRm)[gsel], axis=1)
-        lf_genes = [g for g, r in zip(common, reads) if r >= args.library_factor_min_reads]
-        if len(lf_genes) < 20:
-            print(f'WARNING: only {len(lf_genes)} genes reach {args.library_factor_min_reads:g} '
-                  f'median allele-resolved reads; estimating library factors from all {len(common)} genes')
-            lf_genes = None
-        library_factor = estimate_library_factors(
-            sdf, vadf, genes=lf_genes, min_informative=min(40, max(10, len(order) // 2)))
-        library_factor.rename_axis('sample').reset_index().to_csv(
-            out / 'library_factor.tsv', sep='\t', index=False)
-        print(f'Library factors from {library_factor.attrs["n_genes"]} genes '
-              f'({"interior fits" if library_factor.attrs["interior_only"] else "non-degenerate fits, too few interior"}) '
-              f'among {len(common) if lf_genes is None else len(lf_genes)} candidates: '
-              f'range {library_factor.min():.2f}-{library_factor.max():.2f}, '
-              f'sd {library_factor.std():.3f}')
-    variance_prior = None
-    if args.variance_prior:
-        if variance_model == 'additive':
-            raise SystemExit('--variance-prior needs --variance-model two-component or library-scaled')
-        reads = np.median((YLm + YRm)[gsel], axis=1)
-        variance_prior = estimate_variance_priors(
-            sdf, vadf, expression=pd.Series(reads, index=common), library_factor=library_factor,
-            min_informative=min(40, max(10, len(order) // 2)), n_bins=min(10, max(1, len(common) // 10)),
-            prior_method=args.variance_prior_method)
-        if args.variance_prior_method == 'trend' and variance_prior.attrs['n_genes'] < 200:
-            print(f"WARNING: the trend prior was fitted from {variance_prior.attrs['n_genes']} genes; its curves are poorly determined below a few hundred")
-        variance_prior.rename_axis('gene').reset_index().to_csv(out / 'variance_priors.tsv', sep='\t', index=False)
-        variance_prior.attrs['bins'].to_csv(out / 'variance_prior_bins.tsv', sep='\t', index=False)
-        print(f"Variance priors ({variance_prior.attrs['method']}) from {variance_prior.attrs['n_genes']} genes, "
-              f"{len(variance_prior.attrs['bins'])} expression bins; kappa {variance_prior.attrs['kappa']:.2f}")
     # mixQTL-style count cutoffs, off unless asked for. The masks are built
     # over EVERY gene so they align with sdf, which map_cis restricts by
     # map_pos rather than by row.
@@ -1240,20 +1185,14 @@ def main():
         print(f'  total channel   admits {sub_t.sum():,}/{sub_t.size:,} '
               f'donor-gene pairs ({sub_t.sum() / sub_t.size:.1%})')
 
-    if variance_model != 'additive' and args.tau_mode != 'estimate':
-        raise SystemExit(f"--variance-model {variance_model} needs --tau-mode estimate "
-                         "(it fits a tau, which --tau-mode zero removes)")
-    print(f'\nRunning map_cis on {len(common)} genes '
-          f"(tau_mode={args.tau_mode!r}, se_mode={args.se_mode!r}, "
-          f"variance_model={variance_model!r}"
-          f"{', empirical-Bayes prior' if variance_prior is not None else ''}"
+    print(f'\nRunning map_cis on {len(common)} genes in DEFAULT MODE '
+          f'(Var(eps_i) = sigma^2 v_i on the Gibbs variance: '
+          f'tau_mode={TAU_MODE!r}, se_mode={SE_MODE!r}'
           f"{', count cutoffs' if keep_a_df is not None else ''})")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window, tau_refit=True,
-                  verbose=True, variance_model=variance_model,
-                  library_factor=library_factor, variance_prior=variance_prior,
-                  perm_scheme=args.perm_scheme,
-                  tau_mode=args.tau_mode, se_mode=args.se_mode,
+                  verbose=True, perm_scheme=args.perm_scheme,
+                  tau_mode=TAU_MODE, se_mode=SE_MODE,
                   keep_a_df=keep_a_df, keep_t_df=keep_t_df)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
@@ -1266,11 +1205,8 @@ def main():
         'n_samples': len(order), 'n_genes_tested': int(len(common)),
         'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
-        'tau_mode': args.tau_mode, 'se_mode': args.se_mode,
-        'tau_refit': True, 'variance_model': variance_model,
-        'variance_prior': variance_prior is not None,
-        'library_factor_genes': (None if library_factor is None
-                                 else int(library_factor.attrs['n_genes']))})
+        'mode': 'default', 'tau_mode': TAU_MODE, 'se_mode': SE_MODE,
+        'tau_refit': True})
     if vtype is not None:
         print('\nNon-standard second pass')
         cur, site_res, _ = run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos,

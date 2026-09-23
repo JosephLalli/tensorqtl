@@ -145,22 +145,29 @@ class TestCLIErrorHandling:
 class TestHapmixQTLDefaults:
     """The hapmixQTL CLI defaults are the validated ones."""
 
-    def test_tau_mode_defaults_to_estimate(self):
-        """tau_mode='zero' was the CLI default long after the library had
-        moved to 'estimate' (docs/ase_validation.md: 'zero' is anticonservative
-        by up to 107x at alpha = 1e-3). The CLI must not silently reproduce
-        the defect."""
-        from tensorqtl.tensorqtl import build_parser
+    def test_the_cli_offers_only_the_shipped_default_mode(self):
+        """Until 2026-09-23 this CLI defaulted to --tau_mode estimate and
+        --se_mode model -- the DEPRECATED fitted-variance model plus the
+        known-variance standard error -- and 'fitted' was not even among the
+        --se_mode choices, so the shipped mode was unreachable from here. Both
+        deprecated knobs are gone: tau_mode is fixed at 'zero' and the fitted
+        residual scale is the default, i.e. Var(eps_i) = sigma^2 v_i."""
+        from tensorqtl.tensorqtl import build_parser, HAPMIX_TAU_MODE
         args = build_parser().parse_args(['geno', 'pheno.bed', 'out'])
-        assert args.tau_mode == 'estimate'
-        assert args.se_mode == 'model'
+        assert HAPMIX_TAU_MODE == 'zero'
+        assert args.se_mode == 'fitted'
+        assert not hasattr(args, 'tau_mode'), 'tau_mode is no longer selectable'
+        for gone in ('variance_model', 'variance_prior', 'variance_prior_method',
+                     'library_factor'):
+            assert not hasattr(args, gone), f'{gone} should be deprecated and gone'
+        # the known-variance form is not selectable any more
+        assert 'model' not in build_parser()._option_string_actions['--se_mode'].choices
         # the allelic channel is fitted through the origin by default: the
         # 17-covariate set explains 24% of its whitened residual variance
         # against 22% expected by chance, while each column costs a sample
         assert args.ase_covariates == 'none'
         assert args.tau_refit is False
         assert build_parser().parse_args(['g', 'p', 'o', '--tau_refit']).tau_refit is True
-        assert build_parser().parse_args(['g', 'p', 'o', '--tau_mode', 'zero']).tau_mode == 'zero'
         assert build_parser().parse_args(['g', 'p', 'o', '--ase_covariates', 'shared']).ase_covariates == 'shared'
 
     def test_help_documents_the_hapmixqtl_options(self):
@@ -168,7 +175,9 @@ class TestHapmixQTLDefaults:
             sys.executable, '-m', 'tensorqtl', '--help'
         ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
         assert result.returncode == 0
-        assert '--tau_mode' in result.stdout and '--ase_covariates' in result.stdout
+        assert '--se_mode' in result.stdout and '--ase_covariates' in result.stdout
+        assert '--tau_mode' not in result.stdout
+        assert '--variance_model' not in result.stdout
 
 
 class TestRasqualRowParsing:
