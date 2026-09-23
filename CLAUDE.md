@@ -1051,8 +1051,8 @@ absolute scale cancels. Before this the choices were `'model'`
 (known-variance `1/sqrt(xx)`) and `'robust'` (HC1 sandwich), neither of
 which is a fitted scale. Additive: `_wls_regression` and
 `calculate_hapmixqtl_nominal` gained a `fitted` keyword beside `robust`, the
-default path is pinned byte-identical, and `map_cis` still refuses any
-non-`'model'` mode. Six tests, including a cross-check against the mixQTL
+default path is pinned byte-identical. (`map_cis` refused any non-`'model'`
+mode when this was written; that changed on 2026-09-21, below.) Six tests, including a cross-check against the mixQTL
 port's independently written through-origin WLS to a relative 1e-12.
 
 - **Its degrees of freedom count informative donors, not rows.**
@@ -1102,7 +1102,67 @@ port's independently written through-origin WLS to a relative 1e-12.
   found identical to 1.7e-16. Under a fitted sigma each channel carries its
   own scale and the channels get reweighted. A single channel's slope is
   `xy/xx` and never moves. A test pins both halves.
-- Open and deliberately not fixed: `tau_mode='zero'` still warns under
-  `se_mode='fitted'`, where the warning is misleading, since it is about
-  asserting `Var(eps) = v` exactly and a fitted sigma does not. Report:
+- The `tau_mode='zero'` warning under `se_mode='fitted'` was misleading and
+  was FIXED on 2026-09-21 (below). Report:
   `mixqtl_replication_20260919/HAPMIXQTL_FITTED_SE.md`.
+
+## Var(eps)=sigma^2*v is the DEFAULT (2026-09-21)
+
+`tau_mode='zero'` + `se_mode='fitted'` on `map_nominal`, `map_cis`,
+`map_susie`, `run_second_pass` and `map_str_curvature`. `perm_scheme` stays
+`'records'`. USER DECISION, and the model he had been asking for over about
+two weeks; it was unreachable until `se_mode='fitted'` existed and was
+guarded by a warning measured on the known-variance pairing, so sessions kept
+refusing it. See `~/.claude/.../feedback_check_warning_scope_before_refusing.md`.
+
+- **`map_cis` now accepts `se_mode='fitted'`.** The permutation statistic
+  learned the form: `_combined_tstat2` already carried `yy_a`/`yy_t` "for
+  symmetry with an estimated-dispersion variant", and that variant now
+  exists, refitting a per-channel scale at EVERY permutation exactly as
+  mixQTL's `mixqtl_permutation_scan` does. Known-variance is the same algebra
+  at `s2 = 1`. The HC1 sandwich is still refused; it has no permutation
+  counterpart.
+- **Two defects found while doing it, both caught by existing tests.**
+  `rss = yy - xy^2/xx` is catastrophic cancellation when the fit is good,
+  which is where a real cis effect puts it, so the subtraction is float64.
+  And the best-variant slope in the permutation path was a SECOND
+  hand-inlined known-variance copy of the combination, which silently
+  disagreed with `map_nominal` the moment a fitted scale was allowed; it now
+  calls the same routine.
+- **The warning is now scoped** to `tau_mode='zero'` WITH a known-variance
+  SE, which is the pairing its 107x/100%/64.5% evidence came from. It no
+  longer fires for the fitted pairing, which measures 1.068.
+- **The runner reports what it runs.** `run_hapmixqtl_from_salmon.py` printed
+  and recorded `tau_mode='estimate'` while passing nothing, so after the flip
+  it ran the new model and recorded the old one. It now has `--tau-mode` and
+  `--se-mode`, passes them, and records them.
+- **Measured consequences (29 calibration genes, 40 null permutations).**
+  Per gene the change is TWO-SIDED, not absent: better in 12 of 29, APC
+  0.509 (49% less estimator variance), MATR3 0.671, but FABP7 1.573 and
+  TCF4 1.437; median 1.025, 10th percentile 0.788, 90th 1.185. Calibration
+  median 1.068 against 1.023, range 0.789-1.977 against 0.924-1.528.
+  Agreement with mixQTL FALLS (wide cutoffs, beta r 0.800 -> 0.708), which is
+  expected: removing tau removes the ceiling it placed on hapmixQTL's
+  weights while mixQTL's stay capped at sevenfold, the same mechanism seen
+  from the other side when uncapping mixQTL moved it AWAY from hapmixQTL.
+  Agreement with a capped estimator is not the criterion for a change whose
+  point is to stop discarding the draws. Report:
+  `mixqtl_replication_20260919/FITTED_DEFAULTS_BENCHMARK.md`.
+- **NOT MEASURED, and the one real risk to this default: RASQUAL.** The
+  `compare_pipelines.py` header records that `tau_mode='zero'` "looked best
+  of all before it was thresholded on its own null and collapsed to
+  total-only" — that is the matched-empirical-FPR power metric this
+  comparison exists to compute, and the one place the old `tau_mode='zero'`
+  was caught failing. The finding predates `se_mode='fitted'` and so is
+  plausibly scoped to the known-variance pairing (whose calibration is 23.3
+  against the fitted pairing's 1.068), but that is a PREDICTION. The RASQUAL
+  baseline in `null_calibration_29b/deploy_comparison.json` is
+  old-defaults/seed-0: Spearman 0.354, top-5 overlap 0.40, same lead 1/29,
+  at hapmixQTL's lead r 0.857 slope 1.203, at RASQUAL's lead r 0.794 slope
+  0.536, power at matched 5% FPR RASQUAL 0.379 vs hapmixQTL 0.276. Blocker
+  for re-running: `rasqual_src/` is gitignored and the binary is NOT built,
+  so RASQUAL's null rounds cannot be regenerated -- only the 5 cached
+  `null_rounds/rasqual.*.tsv` exist. A re-run needs a FRESH `--out`,
+  `--reuse-rasqual null_calibration_29b`, and the cached RASQUAL nulls
+  seeded in, or it will silently reuse the OLD hapmixQTL nulls too and mix
+  the arms.
