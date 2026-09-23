@@ -757,6 +757,18 @@ def _min_informative(covariates_t, extra=2, intercept=True):
     return int(intercept) + n_cov + extra
 
 
+# DEPRECATED (2026-09-23), all three. The shipped error model is
+#     Var(eps_i) = sigma^2 * v_i        (TIMES, no additive floor)
+# reached by tau_mode='zero' + se_mode='fitted'. These three, the
+# variance_prior shrinkage and the tau_mode='estimate' they require are kept
+# ONLY to reproduce historical results and WILL BE REMOVED. They are not
+# alternatives and not a fallback. They are inferior for a structural reason:
+# each fits its layer-1 variance from a gene's own squared residuals and then
+# weights those same residuals, which no comparator method does, and the
+# free-c forms are additionally invariant to the absolute scale of the Gibbs
+# draws so the quantifier's calibration never reaches the answer. Per-gene
+# efficiency comparisons do not rehabilitate them; efficiency was never the
+# objection. See CLAUDE.md, "The variance models are deprecated".
 VARIANCE_MODELS = ('additive', 'two_component', 'library_scaled')
 
 
@@ -1557,6 +1569,28 @@ def _resolve_ase_covariates(ase_covariates_df, covariates_df, samples, device, l
     return t, ase_covariates_df.shape[1]
 
 
+def _warn_deprecated_variance_path(tau_mode, variance_model):
+    """tau_mode='estimate' is the gateway to the deprecated variance models.
+
+    The shipped model is Var(eps) = sigma^2 * v, which needs tau_mode='zero'.
+    Anything reaching the (c_g, tau_g) family is historical; see
+    VARIANCE_MODELS above for why they are inferior rather than merely old.
+    """
+    if tau_mode == 'estimate':
+        import warnings
+        warnings.warn(
+            "hapmixQTL: tau_mode='estimate'"
+            + (f" with variance_model={variance_model!r}" if variance_model != 'additive' else "")
+            + " is DEPRECATED and will be removed. The shipped error model is "
+              "Var(eps_i) = sigma^2 * v_i (tau_mode='zero', se_mode='fitted'). The "
+              "(c_g, tau_g) family fits its layer-1 variance from the residuals it "
+              "then weights, which is why it is inferior and not merely older; "
+              "efficiency comparisons do not rehabilitate it. Use it only to "
+              "reproduce historical results. See CLAUDE.md, 'The variance models "
+              "are deprecated'.",
+            DeprecationWarning, stacklevel=3)
+
+
 def _warn_tau_zero(tau_mode, fitted_scale=False):
     """tau_mode='zero' is anticonservative ONLY under a known-variance SE.
 
@@ -1654,6 +1688,7 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
         variance_model when return_info)
     """
     _warn_tau_zero(tau_mode, fitted_scale=fitted_scale)
+    _warn_deprecated_variance_path(tau_mode, variance_model)
     _check_variance_model(variance_model, tau_mode, library_factor_t)
     if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
         ase_covariates_t = covariates_t

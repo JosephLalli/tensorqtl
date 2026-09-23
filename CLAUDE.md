@@ -288,7 +288,9 @@ existing state only; it does not imply or start a new experiment.
   none of them included. Keep the absolute floor (known-variance SE, PM
   `tau`), and run a depth-stratified arm before any genome-wide scan.
 
-- **Three variance models and an empirical-Bayes prior (2026-09-17).**
+- **Three variance models and an empirical-Bayes prior (2026-09-17). ALL
+  THREE ARE DEPRECATED as of 2026-09-23 — historical record only, see
+  "The variance models are deprecated" below.**
   `variance_model` on every mapping function and both CLIs: `additive`
   (default, `v + tau`; its nominal statistics and leads are byte-identical
   to before, max |d stat| 2.3e-6 on the 29-gene outputs; the permutation p
@@ -325,9 +327,11 @@ existing state only; it does not imply or start a new experiment.
   continuous prior below removes both, but is not the default); kappa
   is global; run_second_pass ignores the variance model; outputs.md/README
   lack the new columns and flags.
-  Production form for BrainVar: `library_scaled` with the prior. Report:
-  `estimator_ablation_20260916/REPORT.md`, the shrinkage and two-start
-  sections.
+  DEPRECATED, see "The variance models are deprecated" below. The former
+  "production form for BrainVar: `library_scaled` with the prior" is
+  WITHDRAWN and must not be quoted as current. Report retained as the
+  historical record: `estimator_ablation_20260916/REPORT.md`, the shrinkage
+  and two-start sections.
   A continuous prior (`prior_method='trend'`, 2026-09-18: curves of log c and
   log tau on log10 reads fitted by local marginal likelihood over all genes,
   two passes with curve-based weights, two starts per window) removes the
@@ -993,6 +997,54 @@ hapmixQTL-vs-RASQUAL.
   therefore simultaneously a published-cutoffs and a permissive-cutoffs result.
   `weight_cap` is set to the driver's 10 (user decision, 2026-09-20); the
   roxygen examples' 100 would change nothing here.
+
+## The variance models are deprecated (2026-09-23)
+
+USER DECISION, stated unambiguously and to be reflected everywhere: the
+shipped error model is
+
+    Var(eps_i) = sigma^2 * v_i          (TIMES, not plus)
+
+reached by the defaults `tau_mode='zero'` + `se_mode='fitted'`. `sigma^2` is
+the fitted residual scale; `v_i` is the Gibbs across-draw variance. There is
+no additive floor.
+
+`variance_model='additive'`, `'two_component'` and `'library_scaled'`, the
+`variance_prior` shrinkage (`prior_method='deciles'` and `'trend'`), and
+`tau_mode='estimate'` that they require are **DEPRECATED**. They are retained
+ONLY to reproduce historical results and WILL BE REMOVED. They are not
+alternatives, not a fallback, and not a tuning choice.
+
+**They are inferior, and the reason is structural rather than empirical.**
+Their layer-1 variance is fitted FROM the gene's own squared residuals and
+then used to weight those same residuals — `tau_g` alone under `additive`,
+`(c_g, tau_g)` jointly under the other two. That circularity breaks the
+premise that makes the statistic exact, and it is the one thing no
+comparator method in the limma/edgeR/sleuth/swish table does; every one of
+them fixes its per-observation variance before seeing a gene's residuals.
+The free-`c` models are worse again on a second count: their weights are
+provably invariant to the absolute scale of the Gibbs draws, so the
+quantifier's calibration — the entire point of propagating the draws — never
+reaches the answer. Both defects are documented at length under
+"Relationship to limma, edgeR, sleuth, swish" and were the reason for the
+change.
+
+**Do not resurrect them on efficiency numbers.** Per-gene comparisons where a
+deprecated model estimates more precisely than the default exist and are
+recorded (`mixqtl_replication_20260919/FITTED_DEFAULTS_BENCHMARK.md`: the
+default is better in 12 of 29 genes, worse in 17, median ratio 1.025). Those
+numbers do not rehabilitate anything: a model whose weights are fitted from
+the residuals they weight can win on realized variance and still be
+unsound, because the quantity it optimises is not the quantity it reports.
+Efficiency was never the objection.
+
+**What this means for reading older text.** Everything in this file and in
+`docs/` dated before 2026-09-23 that calls a variance model "production",
+"default", "the shipped model" or similar is historical. The numbers in
+those passages were correctly measured and are not withdrawn as
+measurements; only their status as current practice is. Where a passage says
+`additive` is the default, the correct reading is that it WAS, until
+2026-09-21.
 
 ## hapmixQTL can now apply mixQTL's count cutoffs (2026-09-20)
 

@@ -207,6 +207,13 @@ factors the same problem into the same three layers:
    hapmixQTL's analog is the `(c_g, tau_g)` prior in
    `estimate_variance_priors`/the continuous trend prior (`_trend_prior`).
 
+RESOLVED 2026-09-23 by deprecating the whole family: the shipped model is
+`Var(eps_i) = sigma^2 * v_i` (fitted scale times the Gibbs variance, no
+floor; `tau_mode='zero'` + `se_mode='fitted'`), and `additive`,
+`two_component`, `library_scaled` and `variance_prior` are deprecated,
+historical-only, and to be removed. The paragraph below states the defect
+that motivated it and is retained for that reason.
+
 hapmixQTL's departure is at layer 1: under every `variance_model` it fits
 its per-observation variance FROM the gene's own squared residuals, then
 uses that fit to weight those same residuals (the table above) — `tau_g`
