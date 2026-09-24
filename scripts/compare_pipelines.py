@@ -1152,6 +1152,26 @@ def run(args):
     lib = Ytot_full.sum(0).values
     K = np.outer(Ytot.mean(1), lib / lib.mean())
 
+    # --null-gene-list: the null draws may run on a SUBSET of the observed
+    # genes. EVERY gene-aligned array has to be subset with the same indices,
+    # not just the name list: RASQUAL is passed `-j <position>` into the Y
+    # matrix it is handed, so a restricted gene list against a full Y would
+    # silently score the wrong gene rather than fail.
+    null_idx = list(range(len(usable)))
+    if args.null_gene_list:
+        want_null = {l.strip() for l in open(args.null_gene_list) if l.strip()}
+        null_idx = [i for i, g in enumerate(usable) if g in want_null]
+        named_but_unusable = sorted(want_null - set(usable))
+        print(f'  null draws restricted to {len(null_idx)} of {len(usable)} genes'
+              + (f'; {len(named_but_unusable)} named but not usable'
+                 if named_but_unusable else ''))
+        if len(null_idx) < 5:
+            raise SystemExit('--null-gene-list leaves too few genes for a null')
+    null_genes = [usable[i] for i in null_idx]
+    A_n, T_n, Va_n, Vt_n = A[null_idx], T[null_idx], Va[null_idx], Vt[null_idx]
+    pos_df_n = pos_df.iloc[null_idx]
+    Ytot_n, K_n = Ytot[null_idx], K[null_idx]
+
     known = None
     if args.known_egenes:
         known = set(l.strip() for l in open(args.known_egenes) if l.strip())
@@ -1184,10 +1204,21 @@ def run(args):
         XL = xL if XL is None else XL
         XR = xR if XR is None else XR
         DOS = dos if DOS is None else DOS
+        # The observed draw always scores every usable gene. A null draw scores
+        # the --null-gene-list subset (identical to it when the option is off).
+        # Both arms take the same subset, so the two pooled null thresholds
+        # stay estimated from the same genes and remain comparable to each
+        # other -- which is the whole basis of scoring each arm on its own null.
+        is_observed = perm is None and XL is xL and XR is xR
+        g_d = usable if is_observed else null_genes
+        A_d, T_d = (A, T) if is_observed else (A_n, T_n)
+        Va_d, Vt_d = (Va, Vt) if is_observed else (Va_n, Vt_n)
+        pos_d = pos_df if is_observed else pos_df_n
+        Y_d, K_d = (Ytot, K) if is_observed else (Ytot_n, K_n)
         t0 = time.time()
         with hapmix_lock:
-            h = hapmix_arm(A, T, Va, Vt, usable, order, vdf, DOS, XL, XR,
-                           pos_df[['chr', 'pos']], args.window, tested, perm,
+            h = hapmix_arm(A_d, T_d, Va_d, Vt_d, g_d, order, vdf, DOS, XL, XR,
+                           pos_d[['chr', 'pos']], args.window, tested, perm,
                            cov_df=cov_df, ase_cov=args.ase_covariates,
                            nperm=args.hapmix_nperm)
         th = time.time() - t0; t0 = time.time()
@@ -1197,13 +1228,13 @@ def run(args):
             # hours; RASQUAL's inputs do not depend on anything changed here
             prev = pd.read_csv(Path(args.reuse_rasqual) / 'observed_rasqual.tsv',
                                sep='\t')
-            r = prev.set_index('gene').reindex(usable).reset_index()
+            r = prev.set_index('gene').reindex(g_d).reset_index()
             r['status'] = r['status'].fillna('missing_in_reused_run')
             print(f'  RASQUAL observed rows reused from {args.reuse_rasqual} '
                   f'({int((r["status"] == "ok").sum())}/{len(r)} present)')
         else:
-            r = rasqual_arm(args.rasqual, usable, pos_df, vdf, XL, XR, allelic,
-                        order, Ytot, K, args.window, perm,
+            r = rasqual_arm(args.rasqual, g_d, pos_d, vdf, XL, XR, allelic,
+                        order, Y_d, K_d, args.window, perm,
                         tested=tested, maf=args.maf,
                         min_coverage=args.min_coverage, cov_bin=cov_bin,
                         jobs=(args.rasqual_jobs if jobs is None else jobs),
@@ -1218,10 +1249,12 @@ def run(args):
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
             t0 = time.time()
-            x = hapmix_arm(A, T, Va, Vt, usable, order, ns['vdf'], ns['dos'], ns['xL'],
-                           ns['xR'], pos_df[['chr', 'pos']], args.window, ns['tested'], perm)
-            sp = second_pass_arm(ns['aux'], order, A, T, Va, Vt, usable,
-                                 pos_df[['chr', 'pos']], args.window, perm, args.min_hap)
+            # the opt-in arm follows the same draw's gene set, or a null draw
+            # would score a different set of genes here than in the arms above
+            x = hapmix_arm(A_d, T_d, Va_d, Vt_d, g_d, order, ns['vdf'], ns['dos'], ns['xL'],
+                           ns['xR'], pos_d[['chr', 'pos']], args.window, ns['tested'], perm)
+            sp = second_pass_arm(ns['aux'], order, A_d, T_d, Va_d, Vt_d, g_d,
+                                 pos_d[['chr', 'pos']], args.window, perm, args.min_hap)
             tx = time.time() - t0
         print(f'  {tag}: hapmixQTL {th:.0f}s, RASQUAL {tr:.0f}s '
               f'({int((r["status"]=="ok").sum())}/{len(r)} converged)'
@@ -1361,7 +1394,16 @@ def run(args):
                    'rasqual_input': 'phASER per-fSNP counts (native)',
                    'hapmixqtl_input': 'Salmon diploid Gibbs (native)',
                    'shared': ['samples', 'genes', 'tested variants outside gene '
-                              'bodies', 'phase (rephased.vcf.gz)', 'permutation'],
+                              'bodies', 'phase (rephased.vcf.gz)'],
+                   'not_shared': ['the permutation null: hapmixQTL sees '
+                                  'relabelled sample records, while RASQUAL is '
+                                  'passed -r and draws its own permutation '
+                                  'seeded from time and pid (main.c:209). Each '
+                                  'null is valid for its own arm, which is why '
+                                  'each arm is thresholded on its own; the two '
+                                  'thresholds are NOT a matched pair. '
+                                  'CORRECTED 2026-09-23: "permutation" was '
+                                  'listed as shared here, and is not.'],
                    'null': ('LD-preserving knockoff haplotypes substituted at the '
                             'tested rSNPs; fSNP genotypes + allele counts real'
                             if args.null == 'knockoff' else
@@ -1376,6 +1418,21 @@ def run(args):
                                         'min_count_frac': args.min_count_frac,
                                         'n_dropped': len(dropped)},
                    'n_genes': len(usable), 'n_samples': len(order),
+                   'null_gene_restriction': (
+                       None if not args.null_gene_list else {
+                           'file': args.null_gene_list,
+                           'n_genes_in_null': len(null_genes),
+                           'n_genes_observed_only': len(usable) - len(null_genes),
+                           'excluded': sorted(set(usable) - set(null_genes)),
+                           'note': ('the null draws ran on a SUBSET of the '
+                                    'observed genes, so every pooled null '
+                                    'threshold below is estimated from that '
+                                    'subset and inherits what it '
+                                    'over-represents. Genes scored observed '
+                                    'but absent from the null have no '
+                                    'threshold of their own here; hapmixQTL '
+                                    "still carries its own per-gene empirical "
+                                    'p for them from map_cis.')}),
                    'n_tested_variants': int(tested.sum()), 'n_perm': args.n_perm,
                    'n_genes_both_converged': len(common_genes),
                    'n_genes_hapmixqtl_input': len(genes_all),
@@ -1582,6 +1639,16 @@ def main(argv=None):
                          "Makes the shared set RASQUAL's real gate rather than "
                          'an approximation, and keeps genes it would drop out '
                          'of the null as well as the observed statistic')
+    ap.add_argument('--null-gene-list',
+                    help='restrict the NULL draws to this subset of the genes '
+                         'the observed run scores. RASQUAL cost per gene rises '
+                         'sharply as coverage falls, so dropping the slowest '
+                         'genes from every permutation is the cheapest large '
+                         'saving available. It is NOT free: the pooled null '
+                         'threshold each arm is scored against is then '
+                         'estimated from this subset, so it inherits whatever '
+                         'the subset over-represents. Recorded in the output '
+                         'JSON so a reader cannot miss it.')
     ap.add_argument('--gene-list',
                     help='explicit gene ids, one per line. Skips the candidate '
                          'filter -- use the genes a cheap RASQUAL-only probe '
@@ -1733,7 +1800,7 @@ def selftest():
         known_egenes=str(td / 'known.txt'), hap_suffix='_hapA,_hapB',
         n_genes=G, n_perm=2, window=10000, seed=0, maf=0.05,
         null='permute', knockoff_k=4, min_coverage=0.05, covariates=None,
-        gene_list=None, probe_genes=0, cache_dir=None, rasqual_jobs=2,
+        gene_list=None, null_gene_list=None, probe_genes=0, cache_dir=None, rasqual_jobs=2,
         asvcf=None, dump_rasqual=None, exons=None,
         rasqual_threads=2, fsnp_maf=0.0, rasqual_timeout=900,
         count_noise=True, min_count=6, min_count_frac=0.2, reuse_rasqual=None,
@@ -1830,6 +1897,37 @@ def selftest():
                                               n_perm=2)
     rk = run(argparse.Namespace(**ko_args, out=str(td / 'deploy_ko')))
     assert rk['design']['null_kind'] == 'knockoff', rk['design']
+    # --null-gene-list must restrict the NULL and leave the OBSERVED alone.
+    # Worth a real run rather than a unit check, because the failure mode is
+    # silent: RASQUAL is passed `-j <position>` into the Y matrix it is handed,
+    # so a restricted gene list against an unrestricted Y scores the wrong
+    # gene and still produces plausible numbers.
+    ngl = td / 'null_genes.txt'
+    r_full = r                                   # the unrestricted run above
+    obs_genes = sorted(pd.read_csv(td / 'deploy' / 'observed_rasqual.tsv',
+                                   sep='\t')['gene'])
+    half = obs_genes[:max(5, len(obs_genes) // 2)]
+    ngl.write_text('\n'.join(half) + '\n')
+    nargs = dict(base_args); nargs.update(null_gene_list=str(ngl), n_perm=1)
+    rn = run(argparse.Namespace(**nargs, out=str(td / 'deploy_ngl')))
+    rest = rn['design']['null_gene_restriction']
+    assert rest is not None, 'the null restriction was not recorded in the design'
+    assert rest['n_genes_in_null'] == len(half), (rest['n_genes_in_null'], len(half))
+    assert rest['n_genes_observed_only'] == len(obs_genes) - len(half), rest
+    assert set(rest['excluded']) == set(obs_genes) - set(half), rest
+    # the OBSERVED arm still covers every gene ...
+    obs_ngl = sorted(pd.read_csv(td / 'deploy_ngl' / 'observed_rasqual.tsv',
+                                 sep='\t')['gene'])
+    assert obs_ngl == obs_genes, 'the null restriction leaked into the observed arm'
+    # ... and the null round covers only the subset, in both arms
+    for arm in ('rasqual', 'hapmixqtl'):
+        nr = pd.read_csv(td / 'deploy_ngl' / 'null_rounds' / f'{arm}.000.tsv', sep='\t')
+        assert sorted(nr['gene']) == half, (arm, sorted(nr['gene'])[:5], half[:5])
+    assert rn['design']['null_gene_restriction']['file'] == str(ngl)
+    assert r_full['design']['null_gene_restriction'] is None, 'recorded when unused'
+    print(f'--null-gene-list: null on {len(half)} of {len(obs_genes)} genes in BOTH '
+          'arms, observed arm untouched, restriction recorded -- OK')
+
     # covariates must reach BOTH arms: a covariate file that is silently
     # ignored looks identical to one that works, so assert the run changes.
     cv = td / 'cov.tsv'
