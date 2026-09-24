@@ -413,6 +413,17 @@ own data, not a literature value.
 
 Hours of work; run it detached.
 
+CORRECTED 2026-09-23, SECOND DEFECT, same cause: `--allelic-counts` must be
+`prepped/allelic_counts_manifest.chr.tsv`, not
+`prepped/allelic_counts_manifest.tsv`, which this block named until now. The
+phASER counts under `phaser_out/` still carry RefSeq accessions
+(`NC_060925.1`), while the regions are built from `annot/genes.tsv`, which uses
+`chr1`, so not one count falls inside any window and the driver exits with "no
+allelic counts parsed from ..." after all the other setup has succeeded. The
+renamed copies are in `allelic_counts_chr/` and the `.chr` manifest points at
+them. The stale manifest also lists 91 donors against the renamed one's 92.
+Found by running it, 2026-09-23.
+
 CORRECTED 2026-09-23: `--vcf` must be `prepped/rephased.snps.maf05.vcf.gz`,
 not `prepped/rephased.vcf.gz`, which this block named until now. The latter
 still carries RefSeq accessions (`NC_060925.1`) while `annot/genes.tsv` uses
@@ -427,7 +438,7 @@ this has to be right in the invocation.
 nohup python3 scripts/compare_pipelines.py \
     --vcf prepped/rephased.snps.maf05.vcf.gz --genes annot/genes.tsv --exons annot/exons.tsv \
     --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
-    --allelic-counts prepped/allelic_counts_manifest.tsv \
+    --allelic-counts prepped/allelic_counts_manifest.chr.tsv \
     --rasqual rasqual_src/src/rasqual --rasqual-jobs 8 --rasqual-threads 8 \
     --covariates cov/covariates.tsv --cache-dir cache/ \
     --known-egenes brain_egenes.txt \
