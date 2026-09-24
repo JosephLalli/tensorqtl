@@ -1787,15 +1787,39 @@ def selftest():
     # to save nothing. Observed rows stay at the top level, where
     # --reuse-rasqual looks for them; each null draw gets its own subdirectory.
     rows_root = td / 'rows'
-    obs_rows = sorted(q.name for q in rows_root.glob('*.tsv'))
-    assert obs_rows, 'no observed per-variant RASQUAL rows were kept'
+
+    def _per_variant(d):
+        """Files kept under d, and the widest row any of them holds.
+
+        Checks CONTENT, not just presence: what has to survive is RASQUAL's
+        complete stdout for the gene -- one line per tested variant, all 25
+        fields, underived and unfiltered -- because the point of keeping it is
+        to read the statistic at a variant nobody has chosen yet. A file that
+        existed but held only a header, or only the best row, would pass a
+        presence check and be useless."""
+        files = sorted(d.glob('*.tsv')) if d.is_dir() else []
+        widest = n_lines = 0
+        for q in files:
+            for ln in q.read_text().strip().split('\n'):
+                if ln:
+                    n_lines += 1
+                    widest = max(widest, len(ln.split('\t')))
+        return files, n_lines, widest
+
+    obs_files, obs_lines, obs_wide = _per_variant(rows_root)
+    assert obs_files, 'no observed per-variant RASQUAL rows were kept'
+    assert obs_wide >= 25, f'observed rows hold {obs_wide} fields, not RASQUAL\'s 25'
+    assert obs_lines > len(obs_files), 'observed rows are not per-VARIANT (one line per gene)'
+    null_lines = 0
     for d in range(2):                       # base_args sets n_perm=2
-        nd = rows_root / f'null_{d:03d}'
-        kept = sorted(q.name for q in nd.glob('*.tsv')) if nd.is_dir() else []
-        assert kept, f'no per-variant RASQUAL rows kept for null draw {d}'
-    print(f'RASQUAL rows retained: {len(obs_rows)} observed + '
-          f'{sum(len(list((rows_root / f"null_{d:03d}").glob("*.tsv"))) for d in range(2))} '
-          'across 2 null draws -- OK')
+        f_d, l_d, w_d = _per_variant(rows_root / f'null_{d:03d}')
+        assert f_d, f'no per-variant RASQUAL rows kept for null draw {d}'
+        assert w_d >= 25, f'null draw {d} rows hold {w_d} fields, not 25'
+        assert l_d > len(f_d), f'null draw {d} rows are not per-VARIANT'
+        null_lines += l_d
+    print(f'RASQUAL per-variant rows retained: {obs_lines} variant lines over '
+          f'{len(obs_files)} observed genes, {null_lines} over 2 null draws, '
+          f'{obs_wide} fields wide -- OK')
     for m in ('RASQUAL', 'hapmixQTL'):
         assert 'power' in r[m], f'{m} produced no power estimate'
     # the knockoff null must run end to end and produce a usable null
