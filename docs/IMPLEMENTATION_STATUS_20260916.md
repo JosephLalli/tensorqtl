@@ -107,7 +107,7 @@ sleuth implementation nor a validated method.
 | Additive measurement-plus-residual weighting and leverage-corrected weighted residual-minus-measurement tau | Implemented in source | `_estimate_tau`, [hapmixQTL source](/mnt/ssd/lalli/tensorqtl/.claude/worktrees/hapmix-runbook/tensorqtl/hapmixqtl.py:520); fixed-gene GPU scan and lead refit exist. Per-variant tau is not implemented. |
 | Full-M paired log2 GLS, no extra q, CPU/GPU oracle, phase-label swap | Completed bounded prototype | [audit implementation](/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/analyze.py), [report](/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/REPORT.md), and [validation receipt](/mnt/ssd/lalli/brainvar_hapmix_deploy/gibbs_influence_audit_20260915/validation.json) record max effect error 2.833e-13 and zero swap error. Audit null REML weights and depth offsets are audit-specific, not a production helper. |
 | Counting interpretation | Bounded validated evidence | The closed counting fixture supports no unconditional extra q for its tested Salmon configuration. Production `count_noise=True` still adds q. |
-| Historical calibration | Closed historical receipt | `fitted_variance/null_calibration_29b` exited 0 with 145 old-null statistics; it is not calibration of the changed model. |
+| Historical calibration | Closed historical receipt | `deprecated_models/null_calibration_29b` exited 0 with 145 old-null statistics; it is not calibration of the changed model. |
 
 ## Deferred M+tau extension work (if later selected)
 

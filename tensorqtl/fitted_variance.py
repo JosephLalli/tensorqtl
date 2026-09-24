@@ -180,7 +180,7 @@ def _estimate_c_tau(y_t, v_t, covariates_t, device, intercept=True, d_t=None,
 
     This is the estimator whose calibration was measured on BrainVar (300
     genes across expression tiers, 40 genotype permutations each: type-I
-    0.029-0.041 at nominal 0.05; fitted_variance/estimator_ablation_tiers_20260917/
+    0.029-0.041 at nominal 0.05; deprecated_models/estimator_ablation_tiers_20260917/
     tiered_calibration.py, fit_cvt). With d = 1 it is that prototype exactly;
     with d != 1 and an empty design it equals fitting y/sqrt(d) against v,
     which is what the prototype's library-scaled configuration did.

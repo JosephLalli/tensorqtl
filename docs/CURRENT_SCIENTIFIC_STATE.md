@@ -154,7 +154,7 @@ in the total channel get a coverage-based rule.
 
 **Decision record.**
 
-1. Settled by measurement (`fitted_variance/estimator_ablation_20260916`): the allelic channel
+1. Settled by measurement (`deprecated_models/estimator_ablation_20260916`): the allelic channel
    is through-origin (bea450c); the counting term `q` is inert for genes with
    reads and stays on only as a floor for zero-count total samples until a
    coverage-based floor replaces it; a fitted per-variant residual scale is the
@@ -416,7 +416,7 @@ disagreement mechanisms) and the pending log2 unit migration.
 
 Worktree: `hapmix-runbook-local`; the through-origin change is commit
 `bea450c` on top of `f11d586`. The estimator ablation
-(`fitted_variance/estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
+(`deprecated_models/estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
 final TMM normalization, production association mapping, or biological-residual
 calibration. Applying phASER error correction before constructing quantification
 references remains a future option, not an implemented workflow change.

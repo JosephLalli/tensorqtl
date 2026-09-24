@@ -34,7 +34,7 @@ from scipy.stats import spearmanr, binomtest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
-ABL = f'{D}/fitted_variance/estimator_ablation_20260916'
+ABL = f'{D}/deprecated_models/estimator_ablation_20260916'
 OUT = f'{D}/mixqtl_replication_20260919'
 NDRAW = 40
 

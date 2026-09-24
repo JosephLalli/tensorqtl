@@ -475,7 +475,11 @@ exactly on a rerun.
 Each null draw is written to `<out>/null_rounds/{hapmixqtl,rasqual}.NNN.tsv` as
 it finishes, and a rerun into the same `--out` reuses every round already there.
 A RASQUAL null round costs over an hour per draw, so a killed calibration
-resumes instead of repaying them. Each draw's permutation is seeded from its own
+resumes instead of repaying them. The reuse is all-or-nothing per round: the
+check requires BOTH files and then reuses both, so pointing `--out` at a
+directory of rounds produced under a different hapmixQTL configuration silently
+adopts that configuration's hapmixQTL nulls along with the RASQUAL ones. Use a
+fresh `--out` whenever the hapmixQTL side has changed. Each draw's permutation is seeded from its own
 index rather than drawn in sequence, so a draw reproduces itself whatever order
 the draws run in and whatever subset a resumed run redoes. `--draw-jobs N` runs
 N draws concurrently, each getting `--rasqual-jobs / N` genes; it is only worth
@@ -863,7 +867,7 @@ record reports how many candidates it dropped.
 ### The null calibration, and why a fixed threshold was the wrong instrument
 
 Every comparison in the sections above thresholds both arms at a chi-squared of
-15, a guess at where a null maximum sits. `fitted_variance/null_calibration_29b` replaces that
+15, a guess at where a null maximum sits. `deprecated_models/null_calibration_29b` replaces that
 guess. The same 29 genes (AGPAT5 dropped, below), 92 samples and 126,326 tested
 variants, five permutation draws, 145 null gene-statistics per arm, each arm
 thresholded against its own pooled null:
@@ -930,8 +934,8 @@ genes either arm calls.
 
 **The chi-squared values quoted in the earlier sections predate the scale
 correction** of commit a368f97 and are understated by a median 1.87 points, up
-to 22.5. The corrected observed values are in `fitted_variance/final30_matched_scale/` and
-`fitted_variance/null_calibration_29b/`.
+to 22.5. The corrected observed values are in `deprecated_models/final30_matched_scale/` and
+`deprecated_models/null_calibration_29b/`.
 
 ### Choosing pilot genes
 

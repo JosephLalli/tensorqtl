@@ -83,6 +83,7 @@ status as current practice is.
 | What does a new session need to pick this up? | `docs/LOCAL_HANDOFF.md` |
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
+| What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html` |
 
 ## Scientific phase transitions
 
@@ -558,13 +559,41 @@ GTEx overdispersion, depth and zero-inflation structure.
   second-pass path) still charge the ASE channel `1 + n_cov` columns, so the
   robust SE there is ~6% conservative. `map_cis`/`map_nominal` are unaffected.
 - The log2 migration is pending; outputs are still natural logs.
-- `run_second_pass` and `map_susie` have not been re-verified under default mode
-  as carefully as `map_cis`/`map_nominal`.
+- **`map_susie` CANNOT REACH DEFAULT MODE, and the package CLI's fine-mapping
+  path runs the withdrawn known-variance configuration.** Established
+  2026-09-23 by reading the code, and stronger than the "not re-verified"
+  wording it replaces. `map_susie` (`tensorqtl/hapmixqtl.py:2248`) takes no
+  `se_mode` parameter at all, and its call to `_prepare_channels` (line 2362)
+  omits `fitted_scale`, which therefore defaults to `False` -- the
+  known-variance SE. Its own defaults are `tau_mode='estimate'` and
+  `variance_model='additive'`, both deprecated. `tensorqtl/tensorqtl.py:503`
+  passes `HAPMIX_TAU_MODE = 'zero'` into it, so the shipped CLI runs
+  `tau_mode='zero'` WITH the known-variance SE: exactly the pairing
+  `_warn_tau_zero` describes as up to 107x nominal type-I at alpha=1e-3.
+  Independently, `fine_mapping_provenance` (line 2492) labels any output
+  carrying `tau_mode='zero'` **stale, credible sets and PIPs invalid** -- so
+  the shipped path is declared invalid by the shipped checker. NOT FIXED here
+  because the fix is a design decision, not an edit: `map_susie` needs an
+  `se_mode`, and `fine_mapping_provenance` needs to be re-defined now that
+  `'zero'` is the shipped mode rather than the old default it was written to
+  flag. Changing it flips
+  `TestMapSusie::test_map_susie_records_tau_mode_provenance`. Third instance
+  of the defect class found in the 2026-09-23 CLI trim: an entry point left
+  defaulting to the deprecated model.
+- `run_second_pass` has not been re-verified under default mode as carefully as
+  `map_cis`/`map_nominal`.
 - RASQUAL agreement has NOT been re-measured under default mode. RASQUAL is now
   built from source and self-validated against the authors' bundled example, so
   the old blocker is cleared. The historical baseline is in the quarantine and
   was measured under a deprecated configuration, so it is not a valid
-  comparison; a fresh run is needed.
+  comparison; a fresh run is needed. What the comparison is, what it can and
+  cannot settle, and the two reuse traps are written up in
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`.
+  The traps in one line: `--reuse-rasqual` carries the OBSERVED arm only (it
+  never reads `null_rounds/`), and the cached null rounds cannot be taken
+  RASQUAL-half-only, so they must be regenerated;
+  `null_calibration_29b` has no `rasqual_rows/`, so a fresh run must pass
+  `--rasqual-rows` or the matched-variant comparison cannot be made.
 
 ## Self-tests
 
