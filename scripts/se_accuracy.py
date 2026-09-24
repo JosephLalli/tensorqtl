@@ -1,5 +1,34 @@
 """How accurate is each method's standard error, per gene?
 
+DEFINITION, because "bias" is loose. Per gene, the reported quantity is
+
+    ratio_g = (mean over draws of the se the method reported)
+              / (sd over those same draws of beta_hat)
+
+1.00 means the standard error means what it says; below 1 means the method
+claims more precision than its estimator delivers. This is a scale-free RATIO,
+not a bias in the E[theta_hat] - theta sense, because the arms are on different
+response scales and a difference in units would otherwise read as a difference
+in accuracy.
+
+THREE THINGS IT IS NOT.
+
+  It is a NULL-ONLY statement. The denominator is the spread of beta_hat under
+  permutation, where the true slope is zero. Whether the standard error is
+  equally accurate at a variant carrying real signal is not tested here.
+
+  The numerator could be taken on the variance scale instead, sqrt(E[se^2])
+  rather than E[se], and Jensen says those differ. Measured: 0.954 against 0.952
+  for hapmixQTL, 0.961 against 0.961 for mixQTL, 1.065 against 1.064 for RASQUAL
+  -- the se varies little across draws within a gene, so the choice does not
+  matter here.
+
+  The denominator is ESTIMATED, from 30 draws, and 1/sd_hat is convex. That
+  inflates every ratio by roughly 1 + cv^2 = 1.017. The medians below are
+  therefore about 1.7% HIGH, putting the corrected values near 0.936, 0.945 and
+  1.046.
+
+
 The earlier comparison put the median reported se beside the median realized
 null spread -- two separately summarised distributions, which says nothing about
 whether the se is right for any particular gene. This pairs them.
