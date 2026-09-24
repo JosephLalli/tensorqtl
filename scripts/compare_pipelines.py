@@ -412,12 +412,28 @@ def best_rasqual_row(stdout, gene, tested_pos=None):
         except (ValueError, IndexError):
             malformed += 1
             continue
+        # Field 15 (0-based 14) is RASQUAL's beta-binomial overdispersion: the
+        # extra-binomial fraction rho in Var = rho*p(1-p), against the
+        # binomial's p(1-p)/n. Retained as an EXTERNAL estimate of allelic
+        # overdispersion on the same donors and genes, from a likelihood with
+        # no stake in hapmixQTL's variance model.
+        #
+        # Parsed AFTER the guard, on purpose. rho is a bonus field that no
+        # comparison statistic depends on, so it must not decide which rows are
+        # admitted: inside the guard, a row whose field 15 was corrupted by
+        # RASQUAL's thread interleaving would be dropped even though every field
+        # the comparison uses parsed cleanly, silently shrinking the tested set
+        # relative to a run made without this field.
+        try:
+            rho = float(f[14])
+        except (ValueError, IndexError):
+            rho = np.nan
         if best is None or chi2 > best['stat']:
             pi = min(max(pi, 1e-6), 1 - 1e-6)
             # lead as chrom_pos_ref_alt, the id hapmixQTL's arm reports, so
             # lead agreement between arms can be read off the tables
             best = dict(gene=gene, stat=chi2, log_afc=np.log(pi / (1 - pi)),
-                        phi=phi, status='ok',
+                        phi=phi, rho=rho, status='ok',
                         lead=f'{f[2]}_{pos}_{f[4]}_{f[5]}')
     return best, malformed
 
@@ -447,7 +463,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
         # knockoff override of xL/xR never reaches it. Say so per gene rather
         # than re-running the observed data and calling it a null.
         return pd.DataFrame([dict(gene=g, stat=np.nan, log_afc=np.nan,
-                                  phi=np.nan, status='knockoff_null_not_implemented',
+                                  phi=np.nan, rho=np.nan,
+                                  status='knockoff_null_not_implemented',
                                   lead=None)
                              for g in genes])
     td = Path(tmp or tempfile.mkdtemp())
@@ -489,7 +506,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 stdout=fh, stderr=subprocess.DEVNULL)
         if r.returncode != 0:
             slice_vcf.unlink(missing_ok=True)
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, lead=None,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, rho=np.nan,
+                        lead=None,
                         status='bcftools_failed')
         # -l is every record in the slice; -m the ones inside the gene body,
         # which is what isExon classifies as feature SNPs.
@@ -502,7 +520,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                     n_m += 1
         if n_l == 0 or n_m == 0:
             slice_vcf.unlink(missing_ok=True)
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, lead=None,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, rho=np.nan,
+                        lead=None,
                         status='no_fsnp_or_rsnp')
         cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
                '-n', str(len(order)), '-j', str(j + 1), '-l', str(n_l),
@@ -529,7 +548,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                                     text=True, errors='replace',
                                     timeout=timeout)
         except Exception as e:
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, lead=None,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, rho=np.nan,
+                        lead=None,
                         status=f'error:{type(e).__name__}')
         finally:
             slice_vcf.unlink(missing_ok=True)
@@ -551,7 +571,8 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             if pr.stderr:
                 (Path(dump) / f'{g}.err').write_text(pr.stderr[:20000])
         return best or dict(gene=g, stat=np.nan, log_afc=np.nan,
-                            phi=np.nan, status='no_converged_row', lead=None)
+                            phi=np.nan, rho=np.nan, status='no_converged_row',
+                            lead=None)
 
     if jobs <= 1:
         recs = [_one(jg) for jg in enumerate(genes)]
@@ -1335,6 +1356,17 @@ def run(args):
             'median': float(np.nanmedian(ok['phi'])),
             'quantiles': np.nanquantile(ok['phi'], [.05, .5, .95]).round(4).tolist(),
             'note': 'reference-bias estimate on YOUR data; 0.5 = unbiased'}
+        if 'rho' in ok.columns and ok['rho'].notna().any():
+            result['RASQUAL']['rho_hat'] = {
+                'median': float(np.nanmedian(ok['rho'])),
+                'quantiles': np.nanquantile(ok['rho'], [.05, .5, .95]).round(4).tolist(),
+                'note': ("beta-binomial overdispersion at each gene's lead: the "
+                         'extra-binomial fraction rho in Var = rho*p(1-p), against '
+                         "the binomial's p(1-p)/n. An EXTERNAL estimate of allelic "
+                         "overdispersion, from a likelihood independent of "
+                         "hapmixQTL's variance model. Estimated AT THE LEAD "
+                         "variant, so it inherits that variant's selection and is "
+                         'not a per-gene average.')}
     (out / 'deploy_comparison.json').write_text(json.dumps(result, indent=2, default=float))
     obs_h.to_csv(out / 'observed_hapmixqtl.tsv', sep='\t', index=False)
     obs_r.to_csv(out / 'observed_rasqual.tsv', sep='\t', index=False)
