@@ -81,10 +81,11 @@ for k, v in obs_h.items():
     row(k, v)
 res['observed_at_hapmixqtl_lead'] = obs_h
 
-print('\n' + '=' * 74)
-print('NULL RUN -- 20 permutations per gene at the SAME fixed variant')
-print('=' * 74)
 lg = pd.read_csv(D / 'realized_variance_20260924/null_long.tsv', sep='\t')
+NPERM = int(lg.perm.max()) + 1          # read from the data, never hard-coded
+print('\n' + '=' * 74)
+print(f'NULL RUN -- {NPERM} permutations per gene at the SAME fixed variant')
+print('=' * 74)
 sd = pd.read_csv(D / 'realized_variance_20260924/null_beta_sd.tsv', sep='\t')
 
 print('\nspread of beta_hat across permutations (per-gene sd, then summarised):')
@@ -113,6 +114,7 @@ for arm, sub in lg.groupby('arm'):
           f'p<0.01 {(p < 0.01).mean():.3f}   KS vs uniform D={ks.statistic:.3f}, '
           f'p={ks.pvalue:.2e}')
 res['null_pvalue_histogram'] = hist
+res['n_perm'] = NPERM
 
 (OUT / 'values.json').write_text(json.dumps(res, indent=2, default=float))
 t.to_csv(OUT / 'observed_matched_values.tsv', sep='\t', index=False)
