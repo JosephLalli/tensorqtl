@@ -5,7 +5,7 @@ prototype evidence, and deferred extension work. The current gate is a
 from-beginning weighted-OLS recommendation: empirical per-variant residual
 variance plus Gibbs-informed precision, without assuming absolute known-variance
 SEs. Exact preservation of unweighted OLS coefficients is not a constraint.
-Measured on 2026-09-16: see `brainvar_hapmix_deploy/fitted_variance/estimator_ablation_20260916/REPORT.md`;
+Measured on 2026-09-16: see `brainvar_hapmix_deploy/deprecated_models/estimator_ablation_20260916/REPORT.md`;
 the fitted-scale rule coincides with the shipped estimator at a self-consistent
 `tau` away from the `tau = 0` boundary and discards the Gibbs variance floor at it.
 

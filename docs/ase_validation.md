@@ -15,7 +15,7 @@
 > `library_scaled`, the `variance_prior` shrinkage, the `tau_mode='estimate'`
 > they require, and the known-variance standard error `se_mode='model'`. Code in
 > `tensorqtl/fitted_variance.py`, tests in `tests/fitted_variance/`, reports in
-> `brainvar_hapmix_deploy/fitted_variance/`.
+> `brainvar_hapmix_deploy/deprecated_models/`.
 >
 > Sections below that choose among those, or that quote a known-variance
 > standard error, are **historical**. Their measurements were correctly made and

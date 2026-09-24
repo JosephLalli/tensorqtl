@@ -21,7 +21,7 @@ only the standard-error form, which is exactly the replacement its written
 refutation criterion named. The combined beta correlates with the shipped
 arm at 0.9978 with a median |beta| ratio of 1.011 — essentially unchanged,
 so the mechanism is refuted. Conclusion in `CLAUDE.md`; numbers in
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/fitted_variance/from_mixqtl_replication_20260919/HAPMIXQTL_FITTED_SE.md`.
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/deprecated_models/from_mixqtl_replication_20260919/HAPMIXQTL_FITTED_SE.md`.
 The six-mechanism catalogue is closed; this file keeps the entry only as a
 pointer and no longer lists it as work to do.
 

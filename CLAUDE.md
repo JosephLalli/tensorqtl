@@ -41,9 +41,11 @@ Quarantined: `variance_model` (`additive`, `two_component`, `library_scaled`),
 `variance_prior` (`deciles` and `trend`), `tau_mode='estimate'` which they
 require, and the known-variance standard error `se_mode='model'`. Code in
 `tensorqtl/fitted_variance.py`, tests in `tests/fitted_variance/`, reports and
-result files in `/mnt/ssd/lalli/brainvar_hapmix_deploy/fitted_variance/`
-(which has a README; note that folder name means a fitted variance FUNCTION,
-the opposite of `se_mode='fitted'`).
+result files in `/mnt/ssd/lalli/brainvar_hapmix_deploy/deprecated_models/`
+(renamed from `fitted_variance/` on 2026-09-23, because that name read as the
+shipped `se_mode='fitted'` when it meant the opposite: a variance FUNCTION
+fitted per gene from its own residuals. The module and test directory keep the
+old name; only the results folder was renamed).
 
 Two structural reasons, neither of them empirical:
 
@@ -80,7 +82,7 @@ status as current practice is.
 | What do the output columns mean? | `docs/outputs.md` |
 | What does a new session need to pick this up? | `docs/LOCAL_HANDOFF.md` |
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
-| What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/fitted_variance/README.md` |
+| What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 
 ## Scientific phase transitions
 

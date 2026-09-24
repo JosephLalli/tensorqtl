@@ -16,7 +16,7 @@ what is implemented, what was measured, and what is open.
 > measurements were correctly made and are not withdrawn as measurements; only
 > their status as live options is. The estimators are quarantined in
 > `tensorqtl/fitted_variance.py` and the reports in
-> `brainvar_hapmix_deploy/fitted_variance/` (see its README). The structural
+> `brainvar_hapmix_deploy/deprecated_models/` (see its README). The structural
 > reasons, in brief: they fit a variance function from a gene's own squared
 > residuals and then weight those residuals by the fit, which no comparator
 > method does; and with `(c_g, tau_g)` both free the weights are provably
@@ -34,7 +34,7 @@ what is implemented, what was measured, and what is open.
   intercept.
   [ASE_IMPLEMENTATION.md](../../../../../brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/ASE_IMPLEMENTATION.md)
   records the scope and targeted validation. Measured on the 29 calibration
-  genes (`/mnt/ssd/lalli/brainvar_hapmix_deploy/fitted_variance/estimator_ablation_20260916/REPORT.md`):
+  genes (`/mnt/ssd/lalli/brainvar_hapmix_deploy/deprecated_models/estimator_ablation_20260916/REPORT.md`):
   median |change| in the lead statistic 0.42, one borderline call (TCF4) added.
 - **Current source behavior:** Gibbs summaries use natural logs and add an
   extra Poisson q term when `count_noise=True`; runtime migration to log2 is
@@ -133,7 +133,7 @@ what is implemented, what was measured, and what is open.
 
 **State on 2026-09-16, after measurement.** The three estimator questions
 reopened on 09-14 to 09-16 were run on the 29 calibration genes
-(`/mnt/ssd/lalli/brainvar_hapmix_deploy/fitted_variance/estimator_ablation_20260916/REPORT.md`).
+(`/mnt/ssd/lalli/brainvar_hapmix_deploy/deprecated_models/estimator_ablation_20260916/REPORT.md`).
 The ASE intercept and the counting term `q` are inert there (median |change| in
 the lead statistic 0.42 and 0.19 chi2). The residual scale is not: with the
 DerSimonian-Laird `tau` the whitened residual mean square on the allelic channel
