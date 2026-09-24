@@ -395,7 +395,7 @@ RASQUAL_FIELDS = [
     'feature_id', 'rs_id', 'chrom', 'snp_pos', 'ref', 'alt',
     'allele_frequency', 'hwe_chisq', 'imputation_quality_ia',
     'log10_bh_qvalue', 'chisq', 'effect_size_pi', 'error_rate_delta',
-    'ref_mapping_bias_phi', 'overdispersion_rho', 'snp_id_in_region',
+    'ref_mapping_bias_phi', 'overdispersion_theta', 'snp_id_in_region',
     'n_feature_snps', 'n_tested_snps', 'n_iter_null', 'n_iter_alt',
     'tie_lead_snp', 'loglik_null', 'convergence', 'r2_prior_posterior_fsnps',
     'r2_prior_posterior_rsnp',
@@ -447,28 +447,36 @@ def best_rasqual_row(stdout, gene, tested_pos=None):
         except (ValueError, IndexError):
             malformed += 1
             continue
-        # Field 15 (0-based 14) is RASQUAL's beta-binomial overdispersion: the
-        # extra-binomial fraction rho in Var = rho*p(1-p), against the
-        # binomial's p(1-p)/n. Retained as an EXTERNAL estimate of allelic
-        # overdispersion on the same donors and genes, from a likelihood with
-        # no stake in hapmixQTL's variance model.
+        # Field 15 (0-based 14) is RASQUAL's beta-binomial overdispersion
+        # parameter THETA. CORRECTED 2026-09-24: this was first added, and
+        # first reported, as "the extra-binomial fraction rho in
+        # Var = rho*p(1-p)". That is wrong, and the run's own output showed it
+        # -- a fraction cannot have a median of 76.5. usage.c:61 names the
+        # parameter Theta and gives 10000 as its FIXED, no-overdispersion
+        # value, so it runs on a precision scale: LARGE is close to binomial,
+        # SMALL is strongly overdispersed. Retained as an EXTERNAL estimate of
+        # allelic overdispersion on the same donors and genes, from a
+        # likelihood with no stake in hapmixQTL's variance model. The exact
+        # algebraic map from theta to a variance-inflation factor is NOT yet
+        # pinned against the beta-binomial density in nbem.c, so report theta
+        # itself and its distance from 10000, not a converted inflation.
         #
-        # Parsed AFTER the guard, on purpose. rho is a bonus field that no
+        # Parsed AFTER the guard, on purpose. theta is a bonus field that no
         # comparison statistic depends on, so it must not decide which rows are
         # admitted: inside the guard, a row whose field 15 was corrupted by
         # RASQUAL's thread interleaving would be dropped even though every field
         # the comparison uses parsed cleanly, silently shrinking the tested set
         # relative to a run made without this field.
         try:
-            rho = float(f[14])
+            theta = float(f[14])
         except (ValueError, IndexError):
-            rho = np.nan
+            theta = np.nan
         if best is None or chi2 > best['stat']:
             pi = min(max(pi, 1e-6), 1 - 1e-6)
             # lead as chrom_pos_ref_alt, the id hapmixQTL's arm reports, so
             # lead agreement between arms can be read off the tables
             best = dict(gene=gene, stat=chi2, log_afc=np.log(pi / (1 - pi)),
-                        phi=phi, rho=rho, status='ok',
+                        phi=phi, theta=theta, status='ok',
                         lead=f'{f[2]}_{pos}_{f[4]}_{f[5]}')
             # and the whole row beside the derived columns. The seven names
             # above stay exactly as they were, so every downstream reader is
@@ -502,7 +510,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
         # knockoff override of xL/xR never reaches it. Say so per gene rather
         # than re-running the observed data and calling it a null.
         return pd.DataFrame([dict(gene=g, stat=np.nan, log_afc=np.nan,
-                                  phi=np.nan, rho=np.nan,
+                                  phi=np.nan, theta=np.nan,
                                   status='knockoff_null_not_implemented',
                                   lead=None)
                              for g in genes])
@@ -545,7 +553,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                 stdout=fh, stderr=subprocess.DEVNULL)
         if r.returncode != 0:
             slice_vcf.unlink(missing_ok=True)
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, rho=np.nan,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, theta=np.nan,
                         lead=None,
                         status='bcftools_failed')
         # -l is every record in the slice; -m the ones inside the gene body,
@@ -559,7 +567,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                     n_m += 1
         if n_l == 0 or n_m == 0:
             slice_vcf.unlink(missing_ok=True)
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, rho=np.nan,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, theta=np.nan,
                         lead=None,
                         status='no_fsnp_or_rsnp')
         cmd = [binary, '-y', str(td / 'Y.bin'), '-k', str(td / 'K.bin'),
@@ -596,7 +604,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                                     text=True, errors='replace',
                                     timeout=timeout)
         except Exception as e:
-            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, rho=np.nan,
+            return dict(gene=g, stat=np.nan, log_afc=np.nan, phi=np.nan, theta=np.nan,
                         lead=None,
                         status=f'error:{type(e).__name__}')
         finally:
@@ -623,7 +631,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             best['rasqual_seconds'] = secs
             best['n_variants_tested'] = sum(1 for ln in pr.stdout.strip().split('\n') if ln)
         return best or dict(gene=g, stat=np.nan, log_afc=np.nan,
-                            phi=np.nan, rho=np.nan, status='no_converged_row',
+                            phi=np.nan, theta=np.nan, status='no_converged_row',
                             lead=None, rasqual_seconds=secs)
 
     if jobs <= 1:
@@ -1484,17 +1492,24 @@ def run(args):
             'median': float(np.nanmedian(ok['phi'])),
             'quantiles': np.nanquantile(ok['phi'], [.05, .5, .95]).round(4).tolist(),
             'note': 'reference-bias estimate on YOUR data; 0.5 = unbiased'}
-        if 'rho' in ok.columns and ok['rho'].notna().any():
-            result['RASQUAL']['rho_hat'] = {
-                'median': float(np.nanmedian(ok['rho'])),
-                'quantiles': np.nanquantile(ok['rho'], [.05, .5, .95]).round(4).tolist(),
-                'note': ("beta-binomial overdispersion at each gene's lead: the "
-                         'extra-binomial fraction rho in Var = rho*p(1-p), against '
-                         "the binomial's p(1-p)/n. An EXTERNAL estimate of allelic "
-                         "overdispersion, from a likelihood independent of "
+        if 'theta' in ok.columns and ok['theta'].notna().any():
+            result['RASQUAL']['theta_hat'] = {
+                'median': float(np.nanmedian(ok['theta'])),
+                'quantiles': np.nanquantile(ok['theta'], [.05, .5, .95]).round(4).tolist(),
+                'note': ("RASQUAL's beta-binomial overdispersion parameter "
+                         'THETA at each gene lead (output field 15). It is a '
+                         'PRECISION-scale parameter, not a fraction: usage.c:61 '
+                         'gives 10000 as its fixed no-overdispersion value, so '
+                         'large is near-binomial and small is strongly '
+                         'overdispersed. An EXTERNAL estimate of allelic '
+                         "overdispersion, from a likelihood with no stake in "
                          "hapmixQTL's variance model. Estimated AT THE LEAD "
-                         "variant, so it inherits that variant's selection and is "
-                         'not a per-gene average.')}
+                         "variant, so it inherits that variant's selection and "
+                         'is not a per-gene average. The algebraic map from '
+                         'theta to a variance-inflation factor is not pinned '
+                         'here, so do not convert it. Runs before 2026-09-24 '
+                         'carry this same field mislabelled rho/rho_hat and '
+                         'described as a fraction.')}
     (out / 'deploy_comparison.json').write_text(json.dumps(result, indent=2, default=float))
     obs_h.to_csv(out / 'observed_hapmixqtl.tsv', sep='\t', index=False)
     obs_r.to_csv(out / 'observed_rasqual.tsv', sep='\t', index=False)
@@ -1845,13 +1860,13 @@ def selftest():
     _b, _bad = best_rasqual_row('\t'.join(_f), 'G')
     assert _bad == 0 and _b is not None
     assert [n for n in RASQUAL_FIELDS if n not in _b] == [], 'a RASQUAL field was dropped'
-    assert (_b['stat'], _b['phi'], _b['rho']) == (18.5, 0.51, 1.87), _b
+    assert (_b['stat'], _b['phi'], _b['theta']) == (18.5, 0.51, 1.87), _b
     assert _b['lead'] == 'chr1_1000_A_G' and _b['rs_id'] == 'rs77'
     _b2, _ = best_rasqual_row('\t'.join(_f + ['extra', '3.5']), 'G')
     assert _b2['rasqual_f26'] == 'extra' and _b2['rasqual_f27'] == 3.5, _b2
-    _fr = list(_f); _fr[14] = 'corrupt'          # rho is a bonus field ...
+    _fr = list(_f); _fr[14] = 'corrupt'          # theta is a bonus field ...
     _b3, _bad3 = best_rasqual_row('\t'.join(_fr), 'G')
-    assert _b3 is not None and _bad3 == 0 and np.isnan(_b3['rho'])
+    assert _b3 is not None and _bad3 == 0 and np.isnan(_b3['theta'])
     _fc = list(_f); _fc[10] = 'corrupt'          # ... chi2 is not
     _b4, _bad4 = best_rasqual_row('\t'.join(_fc), 'G')
     assert _b4 is None and _bad4 == 1
@@ -2035,7 +2050,14 @@ def selftest():
         db = pd.read_csv(io.StringIO(b), sep='\t')
         assert list(da.columns) == list(db.columns), f'{f}: the column set changed'
         differing = [c for c in da.columns if not da[c].equals(db[c])]
-        assert differing == ['tie_lead_snp'], (
+        # Exactly two columns may differ between runs, each for a stated
+        # reason: tie_lead_snp is RASQUAL's own random tie-break (README:68),
+        # and rasqual_seconds is a wall-clock measurement. Everything else,
+        # including n_variants_tested, must reproduce -- and it does, which is
+        # what shows the run is otherwise deterministic. Named explicitly so a
+        # THIRD difference appearing later still fails.
+        assert differing in (['tie_lead_snp'], ['rasqual_seconds'],
+                             ['rasqual_seconds', 'tie_lead_snp']), (
             f'{f} changed when the opt-in arm was enabled: {differing}')
     assert r2['hapmixQTL'] == r['hapmixQTL']
     # RASQUAL's -r draws its own permutation, seeded from time and pid, so
