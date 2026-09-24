@@ -34,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy import stats as sps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -65,7 +66,7 @@ def rasqual_null_betas(gene, variant, n_draw):
                 if int(float(x[22])) != 0:
                     break
                 pi = min(max(float(x[11]), 1e-6), 1 - 1e-6)
-                out.append(np.log(pi / (1 - pi)))
+                out.append((np.log(pi / (1 - pi)), float(x[10]), d))
             except (ValueError, IndexError):
                 pass
             break
@@ -100,6 +101,7 @@ def main():
     perms = [rng.permutation(N) for _ in range(n_draw)]
 
     rec = {g: dict(hm=[], mx=[]) for g in targets}
+    long = []          # one row per (arm, gene, permutation): beta and p
     for p, prm in enumerate(perms):
         # relabelling, not reindexing: the VALUES move together across donors
         # while the sample labels stay put, which is what perm_scheme='records'
@@ -113,6 +115,11 @@ def main():
         for r in hm.itertuples():
             if r.gene in rec and np.isfinite(r.log_afc):
                 rec[r.gene]['hm'].append(float(r.log_afc))
+                # hapmixQTL's stat is T^2, so the nominal p is chi2(1)'s upper
+                # tail -- the same conversion the driver uses for its own scale
+                long.append(dict(arm='hapmixQTL', gene=r.gene, perm=p,
+                                 beta=float(r.log_afc), stat=float(r.stat),
+                                 pval=float(sps.chi2.sf(float(r.stat), 1))))
         for g, var in targets.items():
             j = gi[g]
             vsel = CM.gene_variant_index(I, g)
@@ -132,11 +139,19 @@ def main():
             b = o['meta']['beta'][0]
             if np.isfinite(b):
                 rec[g]['mx'].append(float(b) * LN2)
+                long.append(dict(arm='mixQTL', gene=g, perm=p,
+                                 beta=float(b) * LN2,
+                                 stat=float(o['meta']['stat'][0]),
+                                 pval=float(o['meta']['pval'][0])))
         print(f'  perm {p + 1}/{n_draw}', flush=True)
 
     rows = []
     for g, var in targets.items():
-        rq = rasqual_null_betas(g, var, n_draw)
+        rq_full = rasqual_null_betas(g, var, n_draw)
+        for b_, chi_, d_ in rq_full:
+            long.append(dict(arm='RASQUAL', gene=g, perm=d_, beta=b_, stat=chi_,
+                             pval=float(sps.chi2.sf(chi_, 1))))
+        rq = [b_ for b_, _, _ in rq_full]
         h, m = rec[g]['hm'], rec[g]['mx']
         rows.append(dict(gene=g, stratum=strata.loc[g, 'stratum'], variant=var,
                          n_hm=len(h), n_mx=len(m), n_rq=len(rq),
@@ -147,11 +162,11 @@ def main():
     out = D / 'realized_variance_20260924'
     out.mkdir(exist_ok=True)
     t.to_csv(out / 'null_beta_sd.tsv', sep='\t', index=False)
+    pd.DataFrame(long).to_csv(out / 'null_long.tsv', sep='\t', index=False)
 
     print('\nrealized sd of beta_hat under the null, at the same fixed variant')
     print('(smaller = less estimation error; this is what a reported SE cannot fake)')
     res = {'n_draw': n_draw}
-    from scipy import stats as sps
     for a, b in (('mx', 'hm'), ('rq', 'hm'), ('rq', 'mx')):
         m = t[f'sd_{a}'].notna() & t[f'sd_{b}'].notna()
         if m.sum() < 5:
