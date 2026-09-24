@@ -1928,6 +1928,26 @@ def selftest():
     print(f'--null-gene-list: null on {len(half)} of {len(obs_genes)} genes in BOTH '
           'arms, observed arm untouched, restriction recorded -- OK')
 
+    # Rounds are meant to be EXTENDABLE: re-running into the same --out with a
+    # larger --n-perm should recompute nothing that is already on disk and add
+    # only the new draws. That is what makes "add 10 more rounds later" cheap
+    # instead of a full re-run, so it is pinned rather than assumed. Each
+    # draw's permutation is seeded from its own index (seed0 + 10007 + p), so a
+    # draw reproduces itself whatever order draws run in.
+    before = (td / 'deploy_ngl' / 'null_rounds' / 'rasqual.000.tsv').read_bytes()
+    before_h = (td / 'deploy_ngl' / 'null_rounds' / 'hapmixqtl.000.tsv').read_bytes()
+    eargs = dict(nargs); eargs.update(n_perm=2)
+    run(argparse.Namespace(**eargs, out=str(td / 'deploy_ngl')))
+    nrd = td / 'deploy_ngl' / 'null_rounds'
+    assert (nrd / 'rasqual.000.tsv').read_bytes() == before, \
+        'extending --n-perm recomputed round 000 instead of reusing it'
+    assert (nrd / 'hapmixqtl.000.tsv').read_bytes() == before_h, \
+        'extending --n-perm recomputed round 000 of the hapmixQTL arm'
+    assert (nrd / 'rasqual.001.tsv').exists() and (nrd / 'hapmixqtl.001.tsv').exists(), \
+        'extending --n-perm did not add the new draw'
+    print('extending --n-perm into the same --out: round 000 reused byte for byte, '
+          'round 001 added -- OK')
+
     # covariates must reach BOTH arms: a covariate file that is silently
     # ignored looks identical to one that works, so assert the run changes.
     cv = td / 'cov.tsv'
