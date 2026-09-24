@@ -73,6 +73,9 @@ def mixqtl_at_variants(I, Y1, Y2, YT, g, j, want_ids, cuts):
         if np.isfinite(b):
             res[vid] = dict(beta_ln=float(b) * LN2, se_ln=float(se) * LN2,
                             beta_raw_log2=float(b),
+                            stat=float(out['meta']['stat'][k]),
+                            n_asc=int(out['asc']['sample_size']),
+                            n_trc=int(out['trc']['sample_size']),
                             method=str(out['meta']['method'][k]))
     return res
 
@@ -135,9 +138,13 @@ def main():
             afc_r=r['afc_r'], afc_h_at_r=r['afc_h_at_r'],
             mx_at_h=got.get(str(r['lead_h']), {}).get('beta_ln', np.nan),
             mx_se_at_h=got.get(str(r['lead_h']), {}).get('se_ln', np.nan),
+            mx_stat_at_h=got.get(str(r['lead_h']), {}).get('stat', np.nan),
             mx_method_at_h=got.get(str(r['lead_h']), {}).get('method', ''),
             mx_at_r=got.get(str(r['lead_r']), {}).get('beta_ln', np.nan),
             mx_se_at_r=got.get(str(r['lead_r']), {}).get('se_ln', np.nan),
+            mx_stat_at_r=got.get(str(r['lead_r']), {}).get('stat', np.nan),
+            mx_nasc_at_r=got.get(str(r['lead_r']), {}).get('n_asc', np.nan),
+            mx_ntrc_at_r=got.get(str(r['lead_r']), {}).get('n_trc', np.nan),
             mx_method_at_r=got.get(str(r['lead_r']), {}).get('method', '')))
     t = pd.DataFrame(rows)
     out = D / f'mixqtl_rasqual_control_20260924/{which}'
