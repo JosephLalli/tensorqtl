@@ -581,6 +581,15 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
                ['-x', str(cov_bin)] if cov_bin else []) + ['-a', str(maf)] + (
                # the authors' own lever for very long genes
                ['--minor-allele-frequency-fsnp', str(fsnp_maf)] if fsnp_maf else [])
+        # Per-gene wall time, recorded because completion ORDER cannot answer
+        # what drives RASQUAL's cost: genes are dispatched in list order over a
+        # fixed pool, so a gene late in the list finishes late whatever it
+        # costs. On 2026-09-23 that confound made a stratified gene list look
+        # like evidence that cost rises as coverage falls; the eight genes
+        # dispatched first, which have no queue ahead of them, ran 1.1 to 21.3
+        # minutes with no relation to their coverage. An exact per-gene
+        # duration settles it without needing a randomised order.
+        t_gene = time.time()
         try:
             with open(slice_vcf) as fh:
                 pr = subprocess.run(cmd, stdin=fh, capture_output=True,
@@ -597,6 +606,7 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             # variant (the other arm's lead, say) can be read back later
             Path(rows).mkdir(parents=True, exist_ok=True)
             (Path(rows) / f'{g}.tsv').write_text(pr.stdout)
+        secs = time.time() - t_gene
         best, malformed = best_rasqual_row(pr.stdout, g, tested_pos)
         if malformed:
             print(f'  {g}: skipped {malformed} unparseable RASQUAL output line(s)',
@@ -609,9 +619,12 @@ def rasqual_arm(binary, genes, pos_df, vdf, xL, xR, allelic, order, Y, K,
             (Path(dump) / f'{g}.out').write_text(pr.stdout[:200000])
             if pr.stderr:
                 (Path(dump) / f'{g}.err').write_text(pr.stderr[:20000])
+        if best is not None:
+            best['rasqual_seconds'] = secs
+            best['n_variants_tested'] = sum(1 for ln in pr.stdout.strip().split('\n') if ln)
         return best or dict(gene=g, stat=np.nan, log_afc=np.nan,
                             phi=np.nan, rho=np.nan, status='no_converged_row',
-                            lead=None)
+                            lead=None, rasqual_seconds=secs)
 
     if jobs <= 1:
         recs = [_one(jg) for jg in enumerate(genes)]
