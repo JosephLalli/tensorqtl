@@ -386,6 +386,41 @@ def knockoff_haplotypes(xL, xR, vdf, draws, block=6000, K=4, n_em_iter=10,
 #  RASQUAL arm: native per-fSNP counts, tested rSNPs permuted, fSNPs fixed
 # ---------------------------------------------------------------------------
 
+# RASQUAL's output columns, verbatim from rasqual_src/README.md:49-73 (the
+# 1-based list there; these are in order, so index i here is field i+1).
+# Retained IN FULL on the best row. Before 2026-09-23 this parser kept seven of
+# them and dropped the other eighteen, which is unrecoverable without paying
+# for RASQUAL again -- and RASQUAL time, not disk, is the scarce resource here.
+RASQUAL_FIELDS = [
+    'feature_id', 'rs_id', 'chrom', 'snp_pos', 'ref', 'alt',
+    'allele_frequency', 'hwe_chisq', 'imputation_quality_ia',
+    'log10_bh_qvalue', 'chisq', 'effect_size_pi', 'error_rate_delta',
+    'ref_mapping_bias_phi', 'overdispersion_rho', 'snp_id_in_region',
+    'n_feature_snps', 'n_tested_snps', 'n_iter_null', 'n_iter_alt',
+    'tie_lead_snp', 'loglik_null', 'convergence', 'r2_prior_posterior_fsnps',
+    'r2_prior_posterior_rsnp',
+]
+
+
+def _rasqual_all_fields(f):
+    """Every field of a RASQUAL row, named where the README names it.
+
+    Numeric where it parses as a number and the raw string otherwise, so a
+    field this code has never inspected still survives to the table. Fields
+    beyond the documented 25 are kept as rasqual_f26, rasqual_f27, ... rather
+    than dropped, because a newer RASQUAL appending columns should not silently
+    lose them. Nothing here can reject a row: it runs after the guard.
+    """
+    out = {}
+    for i, v in enumerate(f):
+        name = RASQUAL_FIELDS[i] if i < len(RASQUAL_FIELDS) else f'rasqual_f{i+1}'
+        try:
+            out[name] = float(v)
+        except (TypeError, ValueError):
+            out[name] = v
+    return out
+
+
 def best_rasqual_row(stdout, gene, tested_pos=None):
     """The best converged row of one gene's RASQUAL output, and how many lines
     could not be parsed.
@@ -435,6 +470,10 @@ def best_rasqual_row(stdout, gene, tested_pos=None):
             best = dict(gene=gene, stat=chi2, log_afc=np.log(pi / (1 - pi)),
                         phi=phi, rho=rho, status='ok',
                         lead=f'{f[2]}_{pos}_{f[4]}_{f[5]}')
+            # and the whole row beside the derived columns. The seven names
+            # above stay exactly as they were, so every downstream reader is
+            # unaffected; the rest arrive under their README names.
+            best.update(_rasqual_all_fields(f))
     return best, malformed
 
 
@@ -1119,7 +1158,26 @@ def run(args):
 
     hapmix_lock = threading.Lock()   # torch work is serialized; it costs seconds
 
-    def both(perm, tag, XL=None, XR=None, DOS=None, jobs=None):
+    def _rows_for_draw(perm, XL, XR, rows_tag):
+        """Where this draw's per-variant RASQUAL output goes, or None.
+
+        Until 2026-09-23 rows were kept for the OBSERVED draw alone and every
+        null round's per-variant output was discarded as soon as its best row
+        had been taken. That is the expensive thing to throw away: a null round
+        costs RASQUAL about an hour, the rows are a few tens of MB, and nothing
+        short of re-running the round can get them back. Anything wanted later
+        from the null -- a different lead rule, the distribution of a field
+        this comparison does not read, per-variant behaviour at low coverage --
+        needs them. Observed rows stay at the top level so --reuse-rasqual
+        still finds them; each null draw gets its own subdirectory.
+        """
+        if not args.rasqual_rows:
+            return None
+        if perm is None and XL is xL and XR is xR:
+            return args.rasqual_rows
+        return str(Path(args.rasqual_rows) / (rows_tag or 'null_untagged'))
+
+    def both(perm, tag, XL=None, XR=None, DOS=None, jobs=None, rows_tag=None):
         # XL/XR/DOS override the real genotypes. The knockoff null substitutes
         # knockoff haplotypes at the tested variants and leaves perm=None;
         # the permutation null leaves them None and passes a perm vector.
@@ -1155,8 +1213,7 @@ def run(args):
                         n_threads=args.rasqual_threads,
                         fsnp_maf=args.fsnp_maf, timeout=args.rasqual_timeout,
                         knockoff=(XL is not xL or XR is not xR),
-                        rows=(args.rasqual_rows if perm is None and XL is xL
-                              else None))
+                        rows=_rows_for_draw(perm, XL, XR, rows_tag))
         tr = time.time() - t0
         x, sp, tx = None, {}, 0.0
         if ns is not None:                       # opt-in arm; standard arms above untouched
@@ -1247,7 +1304,8 @@ def run(args):
                     pd.read_csv(fx, sep='\t') if fx.exists() else None, None)
         prm, XLm, XRm, DOSm = _draw_genotypes(p)
         h, r, _, _, x, sp, _ = both(prm, _draw_tag(p), XLm, XRm, DOSm,
-                                    jobs=per_draw_jobs)
+                                    jobs=per_draw_jobs,
+                                    rows_tag=f'null_{p:03d}')
         h.to_csv(fh, sep='\t', index=False)
         r.to_csv(fr, sep='\t', index=False)
         if x is not None:
@@ -1697,9 +1755,47 @@ def selftest():
     assert vt0[0, 0] == 0.0 and vt0[0, 1] == 0.0 and vt[0, 2] > vt0[0, 2] > 0, (vt0[0, :], vt[0, 2])
     print('count_noise contract: zero-count Vt = 1/(2 kappa), constant count Vt > 0, '
           'no-coverage Va stays 0 -- OK')
+    # Every RASQUAL field is retained on the best row, and nothing but the
+    # fields the comparison uses can reject a row. Checked here against a
+    # synthetic row rather than a real one, so the contract is pinned even when
+    # RASQUAL is absent.
+    _f = ['G', 'rs77', 'chr1', '1000', 'A', 'G', '0.31', '0.12', '0.99', '-2.5',
+          '18.5', '0.62', '3.3e-5', '0.51', '1.87', '7', '40', '500', '12',
+          '20', '0', '-123.4', '0', '0.98', '0.97']
+    _b, _bad = best_rasqual_row('\t'.join(_f), 'G')
+    assert _bad == 0 and _b is not None
+    assert [n for n in RASQUAL_FIELDS if n not in _b] == [], 'a RASQUAL field was dropped'
+    assert (_b['stat'], _b['phi'], _b['rho']) == (18.5, 0.51, 1.87), _b
+    assert _b['lead'] == 'chr1_1000_A_G' and _b['rs_id'] == 'rs77'
+    _b2, _ = best_rasqual_row('\t'.join(_f + ['extra', '3.5']), 'G')
+    assert _b2['rasqual_f26'] == 'extra' and _b2['rasqual_f27'] == 3.5, _b2
+    _fr = list(_f); _fr[14] = 'corrupt'          # rho is a bonus field ...
+    _b3, _bad3 = best_rasqual_row('\t'.join(_fr), 'G')
+    assert _b3 is not None and _bad3 == 0 and np.isnan(_b3['rho'])
+    _fc = list(_f); _fc[10] = 'corrupt'          # ... chi2 is not
+    _b4, _bad4 = best_rasqual_row('\t'.join(_fc), 'G')
+    assert _b4 is None and _bad4 == 1
+    print(f'RASQUAL row capture: all {len(RASQUAL_FIELDS)} documented fields kept, '
+          'undocumented extras kept, only comparison fields can reject a row -- OK')
+
     print('SELF-TEST: deploy comparison on fabricated native inputs (standard: biallelic SNPs)\n')
     r = run(argparse.Namespace(**base_args, out=str(td / 'deploy')))
     print('\n' + (td / 'deploy' / 'deploy_comparison.md').read_text())
+    # Per-variant RASQUAL rows are kept for EVERY draw, not only the observed
+    # one (2026-09-23). A null round costs RASQUAL about an hour and its rows
+    # are a few tens of MB, so discarding them was trading the cheap thing away
+    # to save nothing. Observed rows stay at the top level, where
+    # --reuse-rasqual looks for them; each null draw gets its own subdirectory.
+    rows_root = td / 'rows'
+    obs_rows = sorted(q.name for q in rows_root.glob('*.tsv'))
+    assert obs_rows, 'no observed per-variant RASQUAL rows were kept'
+    for d in range(2):                       # base_args sets n_perm=2
+        nd = rows_root / f'null_{d:03d}'
+        kept = sorted(q.name for q in nd.glob('*.tsv')) if nd.is_dir() else []
+        assert kept, f'no per-variant RASQUAL rows kept for null draw {d}'
+    print(f'RASQUAL rows retained: {len(obs_rows)} observed + '
+          f'{sum(len(list((rows_root / f"null_{d:03d}").glob("*.tsv"))) for d in range(2))} '
+          'across 2 null draws -- OK')
     for m in ('RASQUAL', 'hapmixQTL'):
         assert 'power' in r[m], f'{m} produced no power estimate'
     # the knockoff null must run end to end and produce a usable null
@@ -1768,7 +1864,24 @@ def selftest():
     # the standard arms are byte-identical with and without the opt-in
     for f in ('observed_hapmixqtl.tsv', 'observed_rasqual.tsv'):
         a = (td / 'deploy' / f).read_text(); b = (td / 'deploy_ns' / f).read_text()
-        assert a == b, f'{f} changed when the opt-in arm was enabled'
+        if a == b:
+            continue
+        # Since 2026-09-23 the parser retains EVERY RASQUAL field, and one of
+        # them is not reproducible by design: field 21 is documented as
+        # "Random location of ties (tie lead SNP)" and is redrawn per run
+        # (rasqual_src/README.md:68). So the byte-for-byte form of this check
+        # can no longer hold on observed_rasqual.tsv. The invariant it exists
+        # to protect -- that enabling the opt-in arm perturbs nothing in the
+        # standard arms -- is kept in full: the column SET must match and every
+        # column except that one random field must be identical. Narrowed
+        # deliberately to exactly one named column, so a second difference
+        # appearing later still fails.
+        da = pd.read_csv(io.StringIO(a), sep='\t')
+        db = pd.read_csv(io.StringIO(b), sep='\t')
+        assert list(da.columns) == list(db.columns), f'{f}: the column set changed'
+        differing = [c for c in da.columns if not da[c].equals(db[c])]
+        assert differing == ['tie_lead_snp'], (
+            f'{f} changed when the opt-in arm was enabled: {differing}')
     assert r2['hapmixQTL'] == r['hapmixQTL']
     # RASQUAL's -r draws its own permutation, seeded from time and pid, so
     # its null (and the power it implies) is not reproducible run to run;
