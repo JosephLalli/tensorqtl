@@ -103,12 +103,21 @@ log = lambda *a: print(time.strftime('%H:%M:%S'), *a, flush=True)
 #  inputs (ablation29.py:32-58)
 # ---------------------------------------------------------------------------
 
-def load_inputs():
+def load_inputs(gene_list=None, regions=None):
+    """Load the shared inputs.
+
+    ``gene_list`` overrides the default 29 calibration genes with any file of
+    gene ids. ``regions`` MUST be overridden with it: the default regions.bed
+    covers those 29 genes only, so passing a wider gene list on its own loads
+    NO VARIANTS for the extra genes and every per-variant lookup there comes
+    back empty -- which reads as "the method could not estimate here" rather
+    than as a missing input. That is exactly how it failed on 2026-09-24.
+    """
     import run_hapmixqtl_from_salmon as H
     cache = f'{D}/cache/gibbs_56b63c3b37ed5df8'
     genes_all = open(f'{cache}/genes.txt').read().split()
     samples = open(f'{cache}/samples.txt').read().split()
-    genes = [l.strip() for l in open(f'{D}/pilot29_hc.txt') if l.strip()]
+    genes = [l.strip() for l in open(gene_list or f'{D}/pilot29_hc.txt') if l.strip()]
     gi = {g: i for i, g in enumerate(genes_all)}
     rows = [gi[g] for g in genes]
     mm = {k: np.load(f'{cache}/{k}.npy', mmap_mode='r') for k in ('YL', 'YR', 'YT')}
@@ -121,7 +130,8 @@ def load_inputs():
     with contextlib.redirect_stdout(io.StringIO()):
         vdf, dos, xL, xR, order = H.read_phased_vcf(
             f'{D}/prepped/analysis.snps.maf01.vcf.gz', set(samples),
-            regions=f'{D}/deprecated_models/null_calibration_29b/regions.bed')
+            regions=regions or
+                    f'{D}/deprecated_models/null_calibration_29b/regions.bed')
     keep = [samples.index(s) for s in order]
     order = list(order)
     vdf['chrom'] = vdf['chrom'].astype(str)
