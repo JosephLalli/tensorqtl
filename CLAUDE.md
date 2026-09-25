@@ -519,6 +519,27 @@ for the missing-floor reason above. Also withdrawn: that `count_noise=False`
 drops zero-read samples from the total channel (it does not; the guard is
 ASE-only).
 
+**2026-09-24** (all from the RASQUAL/calibration session; each was asserted in
+that session and then measured away):
+
+- "The 0.997 matched-variant slope means hapmixQTL and RASQUAL estimate the same
+  quantity." It is `c*s` with c=1.28 and s=0.78.
+- "Both Salmon-based arms understate their standard error by ~15%." That compared
+  medians of two separately summarised distributions. Paired per variant it is
+  ~6% for hapmixQTL and ~1% for mixQTL.
+- "RASQUAL's standard error is less consistent gene to gene." RASQUAL reports no
+  standard error; that spread may be Wald-conversion noise.
+- "Heavy-tailed residuals explain the nominal-p miscalibration." Refuted by
+  parametric bootstrap at the measured kurtosis.
+- "What RASQUAL gains is the non-Gaussian likelihood, not jointness."
+  Unsupported; the stacked arm imposed one common Gaussian scale, which is not
+  RASQUAL's structure.
+- "The empirical permutation p is calibrated by construction." Only for the null
+  it is built from. Under the allelic channel's own sign-flip symmetry the
+  ALLELIC-ONLY empirical p calls 7 genes against 11 (sign p=8.2e-4). This does
+  NOT transfer to the shipped combined `pval_perm`, for which the two nulls
+  agree.
+
 **2026-09-23:** `docs/ase_validation.md` sec 7d's finding 1, "the defect is
 confirmed on real data, at full severity", is withdrawn as INDEPENDENT
 real-data corroboration. `tests/ase_gtex_real_data.py` has the same fabricated
@@ -582,18 +603,103 @@ GTEx overdispersion, depth and zero-inflation structure.
   defaulting to the deprecated model.
 - `run_second_pass` has not been re-verified under default mode as carefully as
   `map_cis`/`map_nominal`.
-- RASQUAL agreement has NOT been re-measured under default mode. RASQUAL is now
-  built from source and self-validated against the authors' bundled example, so
-  the old blocker is cleared. The historical baseline is in the quarantine and
-  was measured under a deprecated configuration, so it is not a valid
-  comparison; a fresh run is needed. What the comparison is, what it can and
-  cannot settle, and the two reuse traps are written up in
+- **The nominal p is anticonservative and the cause is NOT identified.** See
+  the section below; five candidate mechanisms were tested and eliminated on
+  2026-09-24. Cross-donor dependence is the leading untested candidate. The
+  DETECTION call is the empirical permutation p, which is unaffected for the
+  combined statistic, so this is a bound on `pval_nominal`.
+- RASQUAL agreement has now been re-measured under default mode (section
+  below). The reuse traps recorded when that run was designed still hold for
+  any future one: `--reuse-rasqual` carries the OBSERVED arm only and never
+  reads `null_rounds/`, the cached null rounds cannot be taken
+  RASQUAL-half-only so they must be regenerated, and `null_calibration_29b` has
+  no `rasqual_rows/`, so a run that wants matched-variant effects must pass
+  `--rasqual-rows`. Design writeup:
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`.
-  The traps in one line: `--reuse-rasqual` carries the OBSERVED arm only (it
-  never reads `null_rounds/`), and the cached null rounds cannot be taken
-  RASQUAL-half-only, so they must be regenerated;
-  `null_calibration_29b` has no `rasqual_rows/`, so a fresh run must pass
-  `--rasqual-rows` or the matched-variant comparison cannot be made.
+
+## hapmixQTL against RASQUAL and mixQTL, measured (2026-09-24)
+
+`brainvar_hapmix_deploy/rasqual_default_mode_20260923/` (59 genes in three
+coverage strata: the 29 calibration genes plus 15 MID and 15 LOW, median
+allele-resolved reads 3,068 / 217 / 42; 30 null rounds on a 46-gene null subset
+via `--null-gene-list`; seed 42). Summary page:
+`brainvar_hapmix_deploy/calibration_summary_20260924/calibration_summary.html`.
+
+- **Neither method out-detects the other.** McNemar exact on the discordant
+  genes is p=0.77 at a 5% empirical false-positive rate and p=0.82 at 10%. At 10
+  rounds the gap looked real; doubling the rounds dissolved it, so the earlier
+  appearance was threshold noise. Detection counts are the weakest instrument
+  here and should not be led with.
+- **hapmixQTL's effects are about 0.78x RASQUAL's, not equal to them.** The
+  matched-variant slope is 0.997 at hapmixQTL's own lead and 0.611 at RASQUAL's;
+  since each arm's lead inflates its own effect by a selection factor c, these
+  are c*s and s/c, giving a true scale ratio s = 0.78 and c = 1.28. The union
+  slope, 0.767, lands on s as it must. The archived deprecated-config run
+  decomposes the same way (s = 0.80).
+- **Calibration of the nominal p at a fixed variant**, 30 draws, 46 genes, each
+  arm's own nominal p: RASQUAL 0.044 at nominal 0.05 (KS vs uniform p=0.51,
+  uniform); mixQTL 0.067 (p=0.11); hapmixQTL 0.082 (p=0.0066). hapmixQTL runs
+  ~1.6x nominal at 0.05 and ~2x at 0.01, reproducing the external simulation
+  benchmark's tail finding on real data by a different route.
+- **Standard-error accuracy**, mean reported se over realized null sd, ~215,000
+  (gene, variant) units, corrected for the 1.017 convexity inflation of an
+  estimated denominator: hapmixQTL 0.939, mixQTL 0.987. **Flat across MAF** for
+  every arm, so allele frequency is not a factor. Per channel hapmixQTL is
+  0.956 allelic / 0.960 total and mixQTL 1.004 / 0.999, so the ~1.5-2% cost of
+  combining two channels is shared by both methods and the rest is ours.
+- **RASQUAL reports no standard error**, verified against its output spec: the
+  only "error" among its 25 fields is the sequencing/mapping error rate delta.
+  Any RASQUAL se quoted anywhere is `|beta|/sqrt(chi2)`, a Wald back-derivation
+  that equals a standard error only if the Wald approximation holds -- which is
+  the very thing its likelihood-ratio inference does not assume. Label it as
+  derived, never as reported.
+
+### Five mechanisms tested and ELIMINATED for the nominal-p miscalibration
+
+Recorded so they are not re-proposed. Each was measured, not argued.
+
+1. **Not the Gibbs weights.** mixQTL never touches a draw and is miscalibrated
+   in the same direction (0.067).
+2. **Not the null construction.** For the COMBINED statistic, records against
+   records-plus-sign-flip differ by nothing significant (0.082 vs 0.070,
+   McNemar p=0.198). It matters only for the allelic channel in isolation,
+   where sign flip gives 0.117 against 0.068.
+3. **Not the channel combination.** Both channels are miscalibrated alone and
+   are indistinguishable from each other (0.068 allelic vs 0.067 total, paired
+   McNemar p=0.94).
+4. **Not weight-estimation noise.** Closed form for estimating `v` from `m`
+   effective draws: `E[SE]/sd(beta) = sqrt((m-4)/(m-2))`, because the noisy
+   weights inflate the true variance by `m/(m-4)` while `E[1/v_hat] = m/(m-2)`
+   inflates the fitted scale and pushes the reported se back up. At m=170 that
+   is 0.994 against the 4% measured; verified by simulation (0.9936 over 60,000
+   replicates). A Satterthwaite dof correction is correspondingly inert
+   (0.080 -> 0.080).
+5. **Not heavy tails and not the variance shape.** A parametric bootstrap under
+   the model's own assumptions returns a uniform p (KS p=0.75), and simulations
+   at the MEASURED excess kurtosis (+2.312 allelic, nu=6.6) and the MEASURED
+   shape error (Var ~ v^0.936, from the -0.064 regression slope of the
+   standardized squared residual on log v) both return exactly nominal 0.050
+   against the real data's 0.080. Both departures are real and both are too
+   small to matter, because beta_hat is a weighted sum over tens of donors.
+
+**So the estimator and its reference are CORRECT under the model**, which is why
+all three attempted repairs failed: baseline 0.080, Satterthwaite 0.080,
+stacked 0.128, stacked with an HC3 sandwich 0.093.
+
+**Joint modelling of the two channels is WORSE, not better.** Stacking them
+under one residual scale gives 0.128 with the median p falling to 0.392. The
+channels' fitted scales differ by a median factor of five (allelic 2.13 against
+total 13.62, within two-fold in only 5 of 46 genes), so a single scale is a
+misspecification the inverse-variance meta-analysis does not make. Do not
+conclude from this that RASQUAL's advantage is its non-Gaussian likelihood
+rather than its jointness: RASQUAL's channels sit on different likelihood
+families, so the stacked arm was not a proxy for its structure, and that claim
+is untested.
+
+**Untested candidate:** every simulation drew errors independently across
+donors. Cross-donor dependence -- relatedness, population structure, batch, or
+anything the 17 covariates do not absorb -- understates a model-based standard
+error and is the right shape for a 1.6x inflation. Not measured.
 
 ## Self-tests
 
