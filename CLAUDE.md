@@ -67,6 +67,32 @@ whose weights are fitted from the residuals they weight can win on realized
 variance and still be unsound, because the quantity it optimises is not the
 quantity it reports. Efficiency was never the objection.
 
+**2026-09-25, user decision: a biological variance term may be EXPLORED,
+tentatively, as measurement only.** After the nominal-p mechanism was
+decomposed (section "What the 2026-09-25 hypothesis round established": the
+fitted scale is the unweighted mean of `a^2/v` while the slope's variance is
+governed by the weight-weighted mean, and residual variance grows as
+`v^0.65`), the user judged that a need for a depth-independent variance term
+"might" exist and authorized exploring it as an extension of default mode.
+Conditions, from the proposal the decision was made on: nothing ships and
+no third mode appears without a further decision; every candidate must
+satisfy the two objections above BY CONSTRUCTION -- the technical coefficient
+pinned (`Var = v + tau`, never `c_g v + tau_g`; doubling every `v` must change
+the fitted weights) and no record's own residual setting its own weight
+except through a cross-gene trend, cross-gene shrinkage with a stated prior
+weight and a reference that charges it, or cross-fitting; pre-registered
+criteria are pooled rates within the gene-clustered interval of nominal on the
+records and sampling nulls, per-gene `R_g` in band for all but ~1 of 46
+genes, at least 70% of the `1/v` efficiency gain retained, and TReCASE parity
+on the external benchmark after its total channel is repaired. Candidates in
+order of how little they change: a closed-form permutation-variance reference
+(`se^2 x R_g`); one global shape exponent (`v^-gamma`); a pinned-technical
+additive floor trended on record covariates or shrunk per gene; effective
+counts into beta-binomial / negative-binomial with shrunk dispersion. A
+naked per-gene floor remains excluded. Proposal record:
+`brainvar_hapmix_deploy/nominal_p_hypotheses_20260925/` (Codex second-opinion
+prompt `codex_second_opinion_prompt.md`).
+
 Anything in `docs/` dated before 2026-09-23 that calls one of these
 "production", "default" or "the shipped model" is historical. Those numbers
 were correctly measured and are not withdrawn as measurements; only their
