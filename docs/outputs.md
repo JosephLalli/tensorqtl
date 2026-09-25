@@ -113,6 +113,8 @@ Column | Description
 
 Two scales coexist in this table. `pval_perm` and `pval_beta` are always on the scan scale, where the permutations carry the same tau and the empirical p is calibrated; `pval_nominal`, `slope` and `slope_se` move to the refit scale when `tau_refit` is true. `pval_nominal` is the best of the cis-window and is never a gene-level p — `pval_beta` is.
 
+`pval_nominal` (and `pval_a`, `pval_t`) is anticonservative under a donor-record permutation null, measured 2026-09-25 on 46 BrainVar genes at a fixed variant with 2,000 permutations: the combined statistic rejects at 0.068 / 0.0175 / 0.0028 at nominal 0.05 / 0.01 / 0.001, and the allelic channel transcriptome-wide (20,281 genes) at about 1.3x / 1.8x / 3.3x / 8.5x nominal at 0.05 / 0.01 / 0.001 / 1e-4. The cause is a per-gene mismatch between the reported variance and the realized one, set by how each gene's Gibbs weights pair with its residual sizes; the estimator itself is correct when `Var(eps) = sigma^2 v` holds. `pval_perm` and `pval_beta` are the detection calls and are unaffected by that scale error, but a call can rest on a single donor record (CLAUDE.md, "Known and unfixed"). See CLAUDE.md, "What the 2026-09-25 hypothesis round established".
+
 #### Mode `hapmixqtl_susie`
 SuSiE fine-mapping of the combined ASE + total signal. Two files are written: a credible-set summary parquet `${prefix}.hapmixqtl_SuSiE_summary.parquet` and a pickle `${prefix}.hapmixqtl_SuSiE.pickle` with the full per-phenotype SuSiE results (PIPs, credible sets, log Bayes factors, ELBO, convergence).
 Summary columns:

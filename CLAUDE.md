@@ -543,9 +543,14 @@ that session and then measured away):
   RASQUAL's structure.
 - "The empirical permutation p is calibrated by construction." Only for the null
   it is built from. Under the allelic channel's own sign-flip symmetry the
-  ALLELIC-ONLY empirical p calls 7 genes against 11 (sign p=8.2e-4). This does
-  NOT transfer to the shipped combined `pval_perm`, for which the two nulls
-  agree.
+  ALLELIC-ONLY empirical p is larger than under records permutation (2,000
+  draws, 2026-09-25: mean difference +0.043 [0.010, 0.080], sign test p=0.008).
+  AMENDED 2026-09-25: the 30-draw count "7 genes against 11 (sign p=8.2e-4)" is
+  withdrawn as a result. At 2,000 draws it is 10 against 13, a gap of 3 [-1, 7],
+  and about a third of the shift (0.015 [0.002, 0.028] of 0.043) is the observed
+  lead association carried into the sign-flip null; with leverage-corrected
+  lead removal the counts are 13 against 12. This does NOT transfer to the
+  shipped combined `pval_perm`, for which the two nulls agree.
 
 **2026-09-23:** `docs/ase_validation.md` sec 7d's finding 1, "the defect is
 confirmed on real data, at full severity", is withdrawn as INDEPENDENT
@@ -610,11 +615,49 @@ GTEx overdispersion, depth and zero-inflation structure.
   defaulting to the deprecated model.
 - `run_second_pass` has not been re-verified under default mode as carefully as
   `map_cis`/`map_nominal`.
-- **The nominal p is anticonservative and the cause is NOT identified.** See
-  the section below; five candidate mechanisms were tested and eliminated on
-  2026-09-24. Cross-donor dependence is the leading untested candidate. The
-  DETECTION call is the empirical permutation p, which is unaffected for the
-  combined statistic, so this is a bound on `pval_nominal`.
+- **The nominal p is anticonservative; the MECHANISM is identified
+  (2026-09-25), the generative SOURCE is not.** At 2,000 records permutations
+  the shipped combined statistic rejects at 0.068 [0.061, 0.076] / 0.0175 /
+  0.0028 at nominal 0.05 / 0.01 / 0.001 (the recorded 0.082 was a high 30-draw
+  sample; the same 30 draws give 0.080). Within a gene, records with high Gibbs
+  weight (small `v`) have larger whitened squared residuals `a^2/v`, ON
+  AVERAGE, than the same gene's low-weight records, where `Var(eps) = sigma^2
+  v` says the two averages are equal (every record's `a^2/v` has expectation
+  `sigma^2`; no single residual is bounded). The fitted scale is the unweighted
+  mean of `a^2/v` while the slope's variance is governed by the
+  weight-weighted mean, so the reported se is short by that ratio. Residual
+  variance grows as about `v^0.65`, not `v^1`, in both channels, and
+  shuffling residuals against weights within gene removes 91% [73, 100] of the
+  allelic channel's excess at 0.05 (85% / 88% at 0.01 / 0.001). Model records
+  (N(0,1) residuals at the real weights) are exactly nominal, so the estimator
+  and its reference are correct under the model. Over a per-channel
+  scale-matched model the combined excess is 0.0172 / 0.0076 / 0.0019, of which
+  allelic coupling is 62% / 60% / 65% and total-channel scale 27% / 19% / 8%.
+  Cross-donor dependence CANNOT produce a records-permutation excess (the record
+  set is fixed; only its assignment is random), so it does not explain these
+  numbers; it remains untested for observed-data calibration. The DETECTION
+  call is the empirical permutation p, which is unaffected by the scale error,
+  so this bounds `pval_nominal` -- but see the CALM2 entry below for what the
+  empirical p does not protect against. Section below; full record in
+  `brainvar_hapmix_deploy/nominal_p_hypotheses_20260925/` (report
+  `nominal_p_report.html`, reconciled budget `reconciliation.md`).
+- **A single donor record can carry a gene-level call, and the empirical p does
+  not protect against it** (2026-09-25). `map_cis` on observed data gives CALM2
+  `pval_perm` 0.028 with donor 657_D1's allelic record and 0.684 without it
+  (the lead moves); excluding any of 12 random other records leaves 0.008-0.036.
+  CYCS 0.005 -> 0.049, FABP7 0.121 -> 0.415, and APC 0.359 -> 0.003 the other
+  way. 657_D1's Gibbs variance (rank 2 of 84 in CALM2) matches Salmon's counting
+  noise on its 1,282 haplotype-informative fragments, but its log ratio (-0.93)
+  is about 12 of its own sd from the alignment-based phASER count (-0.16); all
+  three of its exonic heterozygous SNVs are cohort singletons and it carries 6
+  heterozygous indels. Say "disagrees with alignment-based allele counts beyond
+  counting error"; the mechanism is NOT identified and "artefact" is not a
+  safe label. No influence diagnostic is reported at the lead.
+- For allelic-only runs (`keep_t_df` all False), `pval_nominal` is referred to
+  `F(1, N - 2 - max(n_cov, n_cov_a))` = F(1, 73) here rather than
+  `F(1, n_a - 1)` (45-88 on these genes): `dof = N - 2 - max(n_cov, n_cov_a)`
+  at `tensorqtl/hapmixqtl.py:1694` and `:1991` is one reference for the
+  combined statistic. Found by reading, 2026-09-25; no empirical p is affected.
 - RASQUAL agreement has now been re-measured under default mode (section
   below). The reuse traps recorded when that run was designed still hold for
   any future one: `--reuse-rasqual` carries the OBSERVED arm only and never
@@ -643,11 +686,20 @@ via `--null-gene-list`; seed 42). Summary page:
   are c*s and s/c, giving a true scale ratio s = 0.78 and c = 1.28. The union
   slope, 0.767, lands on s as it must. The archived deprecated-config run
   decomposes the same way (s = 0.80).
-- **Calibration of the nominal p at a fixed variant**, 30 draws, 46 genes, each
-  arm's own nominal p: RASQUAL 0.044 at nominal 0.05 (KS vs uniform p=0.51,
-  uniform); mixQTL 0.067 (p=0.11); hapmixQTL 0.082 (p=0.0066). hapmixQTL runs
-  ~1.6x nominal at 0.05 and ~2x at 0.01, reproducing the external simulation
-  benchmark's tail finding on real data by a different route.
+- **Calibration of the nominal p at a fixed variant**, 46 genes, each arm's
+  own nominal p. SUPERSEDED 2026-09-25 by 2,000 records permutations of the
+  same stream: hapmixQTL combined 0.068 [0.061, 0.076] / 0.0175 / 0.0028 at
+  0.05 / 0.01 / 0.001 (allelic 0.069 / 0.020 / 0.0057, total 0.060 / 0.0136 /
+  0.0014); mixQTL port 0.056 [0.053, 0.060] / 0.0132 / 0.0020 under its own
+  normal reference (permissive cutoffs; 0.051 / 0.0107 / 0.0012 under an F
+  reference it does not use; published cutoffs 0.0553 / 0.0497). The 30-draw
+  figures recorded here on 2026-09-24 -- hapmixQTL 0.082 (KS p=0.0066), mixQTL
+  0.067 -- were high samples of that stream. RASQUAL 0.044 stands (converged
+  rows only, KS p=0.51) but is on its own `-r` null, which permutes each feature
+  SNP separately with no haplotype swap, at 30 draws, so it is NOT like-for-like;
+  its 96 of 1,380 non-converged null rows reject at 0.083 and must be excluded.
+  The external simulation benchmark's tail (0.064 / 0.020) has the same
+  mechanism (section below).
 - **Standard-error accuracy**, mean reported se over realized null sd, ~215,000
   (gene, variant) units, corrected for the 1.017 convexity inflation of an
   estimated denominator: hapmixQTL 0.939, mixQTL 0.987. **Flat across MAF** for
@@ -661,19 +713,33 @@ via `--null-gene-list`; seed 42). Summary page:
   the very thing its likelihood-ratio inference does not assume. Label it as
   derived, never as reported.
 
-### Five mechanisms tested and ELIMINATED for the nominal-p miscalibration
+### Five mechanisms tested on 2026-09-24, two of them mis-measured
 
-Recorded so they are not re-proposed. Each was measured, not argued.
+Recorded so they are not re-proposed in the same form. Each was measured, not
+argued. Items 1 and 5 were found on 2026-09-25 to be mis-measured; the
+corrections are inline and the amended items are the ones to cite.
 
-1. **Not the Gibbs weights.** mixQTL never touches a draw and is miscalibrated
-   in the same direction (0.067).
+1. **Not the Gibbs weights -- AMENDED 2026-09-25.** mixQTL never touches a
+   draw and is anticonservative in the same direction (0.056 at 2,000
+   permutations, not 0.067). But what separates hapmixQTL from mixQTL is
+   UNCAPPED inverse-variance weighting in BOTH channels: on hapmixQTL's own
+   records, mixQTL's allelic fold cap (`min(10, floor(n_a/10))` x the smallest
+   weight, 4-9 fold on these genes) plus an unweighted total channel
+   reproduces mixQTL's calibration to within 0.0003 and removes 98 / 95 / 93%
+   of the combined excess. Whether the Gibbs `1/v` shape differs from harmonic
+   count weights is UNRESOLVED (-0.0055 [-0.0138, +0.0032]); mixQTL's normal
+   reference adds about +0.005 against it.
 2. **Not the null construction.** For the COMBINED statistic, records against
-   records-plus-sign-flip differ by nothing significant (0.082 vs 0.070,
-   McNemar p=0.198). It matters only for the allelic channel in isolation,
-   where sign flip gives 0.117 against 0.068.
-3. **Not the channel combination.** Both channels are miscalibrated alone and
-   are indistinguishable from each other (0.068 allelic vs 0.067 total, paired
-   McNemar p=0.94).
+   records-plus-sign-flip differ by nothing significant (0.082 vs 0.070 at 30
+   draws, McNemar p=0.198). It matters only for the allelic channel in
+   isolation, where sign flip gives 0.098 against 0.069 at 2,000 draws (the
+   30-draw 0.117 was a high sample); about a third of that gap is the observed
+   lead association carried into the sign-flip null.
+3. **Not the channel combination.** Both channels are miscalibrated alone
+   (0.069 allelic, 0.060 total at 2,000 draws; "indistinguishable" no longer
+   holds at that resolution, and no paired test was rerun). Combining adds no
+   excess of its own: the cross-channel interaction is 5-14% of the combined
+   excess and does not clear its floor.
 4. **Not weight-estimation noise.** Closed form for estimating `v` from `m`
    effective draws: `E[SE]/sd(beta) = sqrt((m-4)/(m-2))`, because the noisy
    weights inflate the true variance by `m/(m-4)` while `E[1/v_hat] = m/(m-2)`
@@ -681,17 +747,96 @@ Recorded so they are not re-proposed. Each was measured, not argued.
    is 0.994 against the 4% measured; verified by simulation (0.9936 over 60,000
    replicates). A Satterthwaite dof correction is correspondingly inert
    (0.080 -> 0.080).
-5. **Not heavy tails and not the variance shape.** A parametric bootstrap under
-   the model's own assumptions returns a uniform p (KS p=0.75), and simulations
-   at the MEASURED excess kurtosis (+2.312 allelic, nu=6.6) and the MEASURED
-   shape error (Var ~ v^0.936, from the -0.064 regression slope of the
-   standardized squared residual on log v) both return exactly nominal 0.050
-   against the real data's 0.080. Both departures are real and both are too
-   small to matter, because beta_hat is a weighted sum over tens of donors.
+5. **Not heavy tails; the variance shape WAS mis-measured -- AMENDED
+   2026-09-25.** The parametric bootstrap under the model's own assumptions is
+   uniform (KS p=0.75) and heavy tails ALONE are small: decoupled-minus-model
+   is 0.0018 / 0.0014 / 0.00055 in the allelic channel, 9-15% of its excess.
+   The shape test was wrong in two ways. (i) The pooled -0.064 slope of the
+   standardized squared residual on log v is the WITHIN-gene slope (-0.164)
+   times an exact attenuation of 0.3905 = SSW/(SSW+SSB), the within-gene share
+   of the variance of log v (reproduced to 1e-6); the fitted within-gene
+   exponent has median about 0.65 in both channels, not 0.936. (ii) The
+   coupling ratio's sign varies by gene (log R_g from -0.58 to +1.51), which no
+   single global exponent can express, and the rejection rate is convex in
+   that ratio. A fresh allelic-only arm at gamma 0.936 gives 0.054, not 0.050
+   (the recorded "exactly 0.050" was measured on the combined statistic and
+   was not rerun there).
 
-**So the estimator and its reference are CORRECT under the model**, which is why
-all three attempted repairs failed: baseline 0.080, Satterthwaite 0.080,
-stacked 0.128, stacked with an HC3 sandwich 0.093.
+**So the estimator and its reference are CORRECT under the model** (model
+records give 0.0502 / 0.0101 / 0.0010), which is why all three attempted
+repairs failed: baseline 0.080, Satterthwaite 0.080, stacked 0.128, stacked
+with an HC3 sandwich 0.093.
+
+### What the 2026-09-25 hypothesis round established
+
+Scripts in `scripts/` (`null_permutation_instrument`,
+`weight_residual_coupling`, `total_channel_null_calibration`,
+`dominant_record_anatomy`, `allelic_overdispersion_floor`,
+`imbalance_downweighting`, `comparator_null_2000`,
+`coupling_transfer_to_observed`, `coupling_reach`, `combined_statistic_budget`,
+`dominant_record_share_corrected`, `lead_signal_share_corrected`,
+`alignment_discordance_coupling`); outputs in `brainvar_hapmix_deploy/*_20260925/`;
+every claim adversarially re-run, the corrected figures are the ones here.
+
+- **Mechanism.** Write `w = 1/v_a` and `z^2 = a^2/v_a`. `R_g =
+  mean(w z^2)/(mean(w) mean(z^2))` is 1 under the model and is, to first
+  order, the realized-over-reported variance of the permuted slope; its
+  Spearman 0.955 with the realized ratio is algebra, not evidence. The
+  evidence is the arm ladder on the identical stream (allelic, 0.05 / 0.01 /
+  0.001): real 0.0692 / 0.0200 / 0.0057; model 0.0502 / 0.0101 / 0.0010;
+  decoupled (z shuffled against w within gene) 0.0519 / 0.0116 / 0.0016;
+  Gaussian errors at each record's own realized variance 0.0693 / 0.0219 /
+  0.0058. Under a null that keeps the heavy-tailed z^2 marginal, 10 genes lie
+  above their band against 1.15 expected; only CAMSAP2 is conservative beyond
+  chance; the across-gene spread of log R_g is 1.75x the null.
+- **Total channel** = pure per-gene scale, the leverage-corrected R_t; rescaled
+  0.0505 / 0.0098 / 0.00085; unit weights 0.0496; `Var(e) ~ v_t^0.66`; the
+  Gibbs variance is ~1/50 of between-donor variance in HIGH genes, so `1/v_t`
+  is effectively a depth weight (corr(t, log w) median 0.993). A per-donor
+  variance component exists (221_D1, RIN 3.1, mean z^2 3.75 vs model max
+  1.93), not converted to a rate.
+- **Single records.** Against a selection control that keeps the real heavy
+  tails, dropping each gene's top record removes 2% [-49, 24] / 18% [-51, 43]
+  / 58% [-25, 75] of the allelic excess -- no interval excludes zero (a
+  Gaussian control had read 15 / 31 / 68%). CALM2 657_D1 alone is 52% of this
+  gene set's 0.001 excess and 8% at 0.05; without CALM2 no single-record share
+  is detectable. Transcriptome-wide a record holding >50% of `sum(w z^2)`
+  occurs in 5.7% of genes against 0.57% under the model, mostly at low
+  coverage and few informative donors.
+- **Sources tested.** Observed lead association carried into the records:
+  13-22% of the allelic 0.05 excess (leverage-corrected removal), nothing in
+  the tail. Salmon-vs-alignment discordant records (|dz| > 3, 0.82% of
+  records): 0.03 / 1.5 / 4.7 / 10% of the coupling at 0.05 / 0.01 / 0.001 /
+  1e-4 net of a weight-matched control, so confident point-estimate errors are
+  REFUTED as the generator (a diffuse Salmon-specific error is not excluded);
+  they do collapse CALM2 (R 4.53 -> 0.67). A common additive floor reproduces
+  the pooled rate but ranks no genes (|Spearman| <= 0.18) and a power law
+  beats it in 38/46 genes; count-based beta-binomial rho does not predict R_g.
+  Singleton exonic SNVs are phased against read-backed phase in at most 19.1%
+  of cases (2.0% for common variants) but reach 137 of 9,328 discordant
+  records: not distinguishable. Conditioning on additional cis variants: NOT
+  TESTED, by user decision (multi-SNP hits are unreliable here). The remaining
+  ~55-65% of the allelic 0.05 excess is smooth positive coupling of unknown
+  source that alignment-based counts also show (phASER counts at their own
+  counting variance: 0.061 / 0.014 / 0.0020).
+- **Transfer and reach.** Split-half correlation of the rank coupling across
+  genes 0.53 (model 0.01); a sampling null matches the permutation null at
+  0.05 and 0.01, so this applies to `pval_nominal` on observed data; 79 / 61 /
+  34% of the excess recurs in held-out halves. Transcriptome-wide (20,281
+  genes, n_a >= 20, synthetic Hardy-Weinberg variants): 0.0653 / 0.0177 /
+  0.00334 / 0.00085 at 0.05 / 0.01 / 0.001 / 1e-4, coupling 88 / 79 / 66 /
+  51% of it by direct decoupling; the 30-100-read stratum is worst at 0.05
+  (0.075); the 46-gene set is 67% >= 700 reads against 22% transcriptome-wide.
+- **NOT established, do not write:** any generative cause; any "Salmon
+  artefact" label; that the components are additive (the interaction is
+  14-18% at 0.01-0.001); the top-3-records share at 0.001 (seed-dependent
+  lower bound); the transcriptome band counts (Gaussian null); anything below
+  0.001 on these genes or 1e-4 transcriptome-wide; a lead-removed null as a
+  fix for `pval_perm`.
+- **Lead removal needs different leverage corrections per channel.** Allelic:
+  `e/sqrt(1-h)` is nominal, uncorrected is conservative (0.042). Total:
+  `e/sqrt(1-h)` is anticonservative (0.0527) because the covariate row travels
+  with the record; the derived `e/sqrt(1 - h_g/(1-h_Z))` is nominal (0.0503).
 
 **Joint modelling of the two channels is WORSE, not better.** Stacking them
 under one residual scale gives 0.128 with the median p falling to 0.392. The
@@ -703,10 +848,17 @@ rather than its jointness: RASQUAL's channels sit on different likelihood
 families, so the stacked arm was not a proxy for its structure, and that claim
 is untested.
 
-**Untested candidate:** every simulation drew errors independently across
-donors. Cross-donor dependence -- relatedness, population structure, batch, or
-anything the 17 covariates do not absorb -- understates a model-based standard
-error and is the right shape for a 1.6x inflation. Not measured.
+**Cross-donor dependence, split three ways (2026-09-25; replaces "the leading
+untested candidate"):** (a) a records permutation cannot create excess from
+errors correlated across donors, because the permuted record set is fixed and
+only its assignment to genotypes is random -- so it does NOT explain the
+records-null excess measured here, and the external benchmark (i.i.d. donors
+by construction) shows the same tail; (b) cross-donor CORRELATION -- relatedness,
+population structure, batch, anything the 17 covariates do not absorb --
+remains untested as a source of miscalibration on OBSERVED data; (c) a
+per-donor VARIANCE component does exist in the total channel (221_D1, RIN 3.1,
+mean whitened squared residual 3.75 against a model maximum of 1.93; 5 donors
+above the model 95th percentile), not converted to a rate.
 
 ## Self-tests
 
