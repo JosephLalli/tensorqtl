@@ -185,6 +185,13 @@ Open:
   (`pilotI` through `pilotN`), with calibration, the per-channel covariate
   check, the lead refit and the matched-variant effect comparison. What
   remains is the run at scale.
+
+  UPDATE 2026-09-24: the run at scale has since happened, under the shipped
+  default mode rather than the deprecated configuration the pilots above used
+  — 59 genes across 3 coverage strata, 30 null rounds
+  (`brainvar_hapmix_deploy/rasqual_default_mode_20260923/`). See CLAUDE.md's
+  "hapmixQTL against RASQUAL and mixQTL, measured (2026-09-24)" section for
+  the findings and their bounds.
 - **Four axes blocked on genotypes** (§9): effect-size concordance against GTEx
   aFC, eGene replication, functional/motif enrichment, and the `slope_a` vs
   `slope_tc` concordance check. BrainVar unblocks all four.

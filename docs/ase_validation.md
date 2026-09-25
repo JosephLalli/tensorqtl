@@ -1098,7 +1098,20 @@ transcriptome sits and the fitted weights are known to flatten toward equality.
 
 **Still open — each needs genotypes paired with haplotype expression, which public GTEx
 does not supply and BrainVar does. The deploy runbook (`docs/brainvar_deploy_runbook.md`)
-and scripts are in place; the run has not yet happened:**
+and scripts are in place.**
+
+UPDATE 2026-09-24: "the run has not yet happened" is stale. BrainVar
+hapmixQTL-vs-RASQUAL runs have since happened repeatedly — 29/30-gene pilots
+under the now-deprecated configuration (`brainvar_hapmix_deploy/deprecated_models/`),
+and, under the shipped default mode, a 59-gene/3-stratum run with 30 null
+rounds (`brainvar_hapmix_deploy/rasqual_default_mode_20260923/`, findings in
+CLAUDE.md's "hapmixQTL against RASQUAL and mixQTL, measured" section: detection
+counts indistinguishable, effect sizes related by a scale factor rather than
+equal, nominal-p miscalibration measured and its cause narrowed but not
+identified). None of that is the same measurement as the four items below —
+none of it compares against GTEx's published aFC, checks eGene replication,
+tests motif enrichment, or runs the `slope_a` vs `slope_tc` concordance check
+— so those four remain genuinely open:
 
 - **Effect-size concordance.** Compare hapmixQTL's log aFC against GTEx's published aFC —
   the check mixQTL used (their Supp. Fig. 10), and the natural external validation for a

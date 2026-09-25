@@ -309,16 +309,23 @@ experiment.
   RTA-vs-Poisson finding says these are the same quantity on different scales,
   so the two are checkable against each other — not yet done.
 
-- **RASQUAL's beta-binomial overdispersion rho is an available external check.**
-  RASQUAL models the allelic count as beta-binomial (a binomial whose success
-  probability is itself Beta-distributed across donors, giving extra-binomial
-  variance `rho*p(1-p)`); `rho` is that extra-binomial fraction.
-  `best_rasqual_row` in `scripts/compare_pipelines.py` currently reads
-  1-indexed fields 3-6 (chrom/pos/ref/alt), 11 (chi2), 12 (pi), 14 (phi) and 23
-  (convergence), plus field 2 to detect `SKIPPED`. RASQUAL's vendored
-  `rasqual_src/README.md:64` lists field 15 as "Overdispersion"
-  (repo-verified 2026-09-18) but that has not been cross-checked against parsed
-  stdout in a run here; retaining that one field would enable the check.
+- **RASQUAL's output field 15 is theta, NOT rho, and this was wrong here until
+  2026-09-24.** It was originally read as "the extra-binomial fraction rho in
+  Var = rho*p(1-p)" and that definition was written into the code, the output
+  JSON and the comparison write-up. The first real run's own output caught it:
+  a fraction cannot have a median of 76.5. `rasqual_src/src/usage.c:61`
+  documents `--fix-theta` as "Fix overdispersion parameter (Theta=10000)",
+  and field 15 is that Theta, on a PRECISION scale — 10000 is the fixed
+  no-overdispersion value, so large is near-binomial and small is strongly
+  overdispersed. `best_rasqual_row` in `scripts/compare_pipelines.py` now
+  carries it as `overdispersion_theta`/`theta`/`theta_hat`, reported as itself
+  and its distance from 10000, never converted to a variance-inflation factor
+  (that algebraic map is not pinned against the beta-binomial density in
+  `nbem.c`). **Two runs made before this fix are on disk with the same field
+  under the old `rho`/`rho_hat` name and the wrong description; do not read
+  their theta as a fraction.** `best_rasqual_row` also reads 1-indexed fields
+  3-6 (chrom/pos/ref/alt), 11 (chi2), 12 (pi), 14 (phi) and 23 (convergence),
+  plus field 2 to detect `SKIPPED`.
 
 - **The mixed-BLAS crash blocks any limma path that fits a linear model.** The
   BLAS is Debian's openblas-pthread `libblas.so.3` while the LAPACK is a
