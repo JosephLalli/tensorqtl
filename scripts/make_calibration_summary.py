@@ -45,7 +45,16 @@ def card(title, sub, frac, colour, stat):
 
 
 # --- three methods, records null -------------------------------------------
-H = V['null_pvalue_histogram']
+# hapmixQTL's entry in values.json converts its statistic with chi2(1), which is
+# the dof -> infinity limit and anticonservative on its own; the corrected
+# figure references its T^2 to hapmixQTL's own t distribution at the right dof
+# (0.082 and KS 0.0066, against 0.086 and 0.0021). channel_split's 'both' arm
+# used pval_nominal straight from map_cis, so it carries the correct reference
+# and is substituted here. mixQTL and RASQUAL are untouched: mixQTL's p comes
+# from mixqtl_scan directly and RASQUAL's statistic IS a chi-square likelihood
+# ratio, so chi2(1) is its own reference.
+H = dict(V['null_pvalue_histogram'])
+H['hapmixQTL'] = {**CH['both'], 'n': CH['both']['n']}
 cards_methods = ''
 for arm in ('RASQUAL', 'hapmixQTL', 'mixQTL'):
     h = H[arm]
