@@ -119,7 +119,9 @@ def main():
 
     rng = np.random.RandomState(SEED)
     perms = [rng.permutation(N) for _ in range(n_draw)]
-    hm, mx, rq = Acc(), Acc(), Acc()
+    acc = {k: Acc() for k in ('hapmixQTL', 'hapmixQTL_allelic',
+                              'hapmixQTL_total', 'mixQTL',
+                              'mixQTL_allelic', 'mixQTL_total', 'RASQUAL')}
     want_by_gene, af_map = {}, {}
     tmp = Path(tempfile.mkdtemp())
 
@@ -139,9 +141,19 @@ def main():
             df = df[np.isfinite(df.slope_se) & (df.slope_se > 0)]
             for g, v, af, sl, se in zip(df.phenotype_id, df.variant_id, df.af,
                                         df.slope, df.slope_se):
-                hm.add((g, v), float(sl), float(se))
+                acc['hapmixQTL'].add((g, v), float(sl), float(se))
                 af_map.setdefault(v, float(af))
                 want_by_gene.setdefault(g, set()).add(v)
+            # the two channels, reported per variant by map_nominal alongside
+            # the combined statistic
+            for chan, bcol, scol in (('hapmixQTL_allelic', 'slope_a', 'slope_a_se'),
+                                     ('hapmixQTL_total', 'slope_t', 'slope_t_se')):
+                if bcol not in df.columns:
+                    continue
+                sub = df[np.isfinite(df[scol]) & (df[scol] > 0) & np.isfinite(df[bcol])]
+                for g, v, sl, se in zip(sub.phenotype_id, sub.variant_id,
+                                        sub[bcol], sub[scol]):
+                    acc[chan].add((g, v), float(sl), float(se))
             pq.unlink()
 
         for g in genes:
@@ -156,21 +168,22 @@ def main():
                                I['lib_size'][prm], h1, h2,
                                covariates=I['cov_df'].values[prm],
                                **MX.PACKAGE_DEFAULT_CUTOFFS)
-            b, s = o['meta']['beta'], o['meta']['se']
-            for vid, bb, ss in zip(map(str, vv.index), b, s):
-                if np.isfinite(bb) and np.isfinite(ss) and ss > 0:
-                    mx.add((g, vid), float(bb) * LN2, float(ss) * LN2)
+            for chan, key in (('mixQTL', 'meta'), ('mixQTL_allelic', 'asc'),
+                              ('mixQTL_total', 'trc')):
+                b, s_ = o[key]['beta'], o[key]['se']
+                for vid, bb, ss in zip(map(str, vv.index), b, s_):
+                    if np.isfinite(bb) and np.isfinite(ss) and ss > 0:
+                        acc[chan].add((g, vid), float(bb) * LN2, float(ss) * LN2)
 
             for vid, afc, chi2 in rasqual_rows(g, p_i, want_by_gene.get(g, set())):
-                rq.add((g, vid), afc, abs(afc) / np.sqrt(chi2))
+                acc['RASQUAL'].add((g, vid), afc, abs(afc) / np.sqrt(chi2))
         print(f'  draw {p_i + 1}/{n_draw}', flush=True)
     shutil.rmtree(tmp, ignore_errors=True)
 
     # a variant must appear in most draws to get a usable sd; with a short
     # smoke-test run the floor drops so the pipeline can still be exercised
     min_n = max(3, min(10, n_draw))
-    parts = [hm.frame('hapmixQTL', min_n), mx.frame('mixQTL', min_n),
-             rq.frame('RASQUAL', min_n)]
+    parts = [a.frame(k, min_n) for k, a in acc.items()]
     parts = [q for q in parts if len(q)]
     if not parts:
         raise SystemExit('no variant reached the minimum draw count')
@@ -187,25 +200,26 @@ def main():
     print(f'\nmean reported se / realized sd of beta, per (gene, variant)')
     print(f'1.00 = the standard error means what it says; '
           f'log noise floor {floor:.3f}\n')
-    print(f'{"MAF":>12s} ' + ''.join(f'{a:>22s}' for a in
-                                     ('hapmixQTL', 'mixQTL', 'RASQUAL')))
+    ARMS = ('hapmixQTL', 'hapmixQTL_allelic', 'hapmixQTL_total',
+                    'mixQTL', 'mixQTL_allelic', 'mixQTL_total', 'RASQUAL')
+    print(f'{"MAF":>12s} ' + ''.join(f'{a:>20s}' for a in ARMS))
     res = {'n_draw': n_draw, 'log_noise_floor': float(floor), 'buckets': {}}
     for lo, hi in BUCKETS:
         line = f'  {lo:.2f}-{hi:.2f} '
         rec = {}
-        for arm in ('hapmixQTL', 'mixQTL', 'RASQUAL'):
+        for arm in ARMS:
             s = t[(t.arm == arm) & (t.maf >= lo) & (t.maf < hi)]
             if len(s) < 30:
-                line += f'{"--":>22s}'; continue
+                line += f'{"--":>20s}'; continue
             med = float(s.ratio.median())
-            line += f'{med:8.3f} (n={len(s):6d})'
+            line += f'{med:11.3f} (n={len(s)//1000:3d}k)'
             rec[arm] = dict(n=int(len(s)), median=med,
                             q25=float(s.ratio.quantile(.25)),
                             q75=float(s.ratio.quantile(.75)))
         res['buckets'][f'{lo}-{hi}'] = rec
         print(line)
     print('\noverall, all variants MAF>=0.05:')
-    for arm in ('hapmixQTL', 'mixQTL', 'RASQUAL'):
+    for arm in ARMS:
         s = t[t.arm == arm]
         if len(s):
             print(f'  {arm:10s} n={len(s):7d}  median {s.ratio.median():.3f}   '
