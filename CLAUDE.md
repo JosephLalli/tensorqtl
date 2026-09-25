@@ -93,6 +93,41 @@ naked per-gene floor remains excluded. Proposal record:
 `brainvar_hapmix_deploy/nominal_p_hypotheses_20260925/` (Codex second-opinion
 prompt `codex_second_opinion_prompt.md`).
 
+**First measurement under that authorization, same day
+(`scripts/count_scale_weights.py`, adversarially re-run;
+`brainvar_hapmix_deploy/count_scale_weights_20260925/`), on the identical
+2,000-permutation stream.** Count scale versus log scale is not the issue:
+in the TOTAL channel a quasi-Poisson GLM on counts is the Gibbs-weighted
+log-scale fit (0.0588 vs 0.0601 at 0.05, paired -0.0012 [-0.0026, +0.0001],
+slope variance 0.998), and **unit weights lose no precision there** (variance
+1.000 [0.954, 1.049] of Gibbs) while calibrating (0.0496 / 0.0099 / 0.0010):
+the total channel's Gibbs weights buy nothing on these genes. In the ALLELIC
+channel a quasi-binomial GLM is WORSE (0.0861 [0.072, 0.103]) because IRLS at
+the null weights every record n/4 from the fitted proportion and stops
+downweighting imbalanced records (+0.0245 [+0.016, +0.034] of the +0.0169
+gap comes from that swap). A COMMON dispersion floor is 70x (allelic) / 44x
+(total) the median record's counting variance, so it flattens the weights:
+on the log scale `Var = v + tau` is unit weights in disguise (variance 1.99x
+Gibbs vs 2.07x unit; 0.0537 / 0.0117 / 0.00143, the last two 1.17x / 1.43x
+nominal), and per-gene, shrunk (prior df 10) and common rho are
+indistinguishable (+0.002, +0.001). The count-scale quasi-beta-binomial
+floor (rho 0.0404) is the one allelic arm within its intervals at all three
+alphas (0.0520 [0.049, 0.055] / 0.0107 / 0.00125) at 1.50x Gibbs variance,
+1.62x after correcting the 0.964 attenuation of a planted effect -- about
+half of the 1/v gain, BELOW the 70% criterion. It does not bring the coupling
+to its noise floor (sd log R_g 0.046 vs 0.018 model; reversed, conservative,
+in about half the genes). Gibbs variance plus the count-based floor
+over-corrects (0.0425) because rho from posterior-mean counts already carries
+Salmon's assignment ambiguity (per-gene median 0.030 vs 0.005 at
+Gibbs-matched effective counts). A weight-independent allelic excess of
+0.0553 (1.11x; per-gene max 0.13) survives every arm. Scope: 45 of 46 genes
+exceed 1/rho ~ 25 reads, where any floor is flat; the 30-100-read stratum,
+worst transcriptome-wide, was not tested; rho and phi were fitted in-sample
+on unpermuted counts. Consequence for the candidates: the flat additive
+floor (candidate 3, flat form) is out on efficiency; unit weights for the
+total channel are measurement-backed at zero cost; candidates 1 and 2 remain
+unmeasured.
+
 Anything in `docs/` dated before 2026-09-23 that calls one of these
 "production", "default" or "the shipped model" is historical. Those numbers
 were correctly measured and are not withdrawn as measurements; only their
