@@ -405,6 +405,28 @@ allelic mean se from 0.430 (unit) to 0.334 and stays honest (stated / true
 1.04); in the total channel it gives 0.173 against 0.166 and is overconfident
 (0.93) at every MAF band.
 
+**Targeted gene sets** (`scripts/build_targeted_gene_sets.py`,
+`scripts/gene_set_weighting_null.py`,
+`brainvar_hapmix_deploy/targeted_gene_sets_20260926/`): the 100 most
+reference-dependent runnable genes (T2T vs GRCh38 CPM Spearman below 0.95,
+the earlier analysis's metric) and the 24 runnable genes whose significant T2T
+lead had |slope| and slope_se both in the top 10%. Same pipeline and 200
+permutations. Unit / 1/v / 1/(v+1):
+
+| Set, channel | Mean se | Median se | Stated / true |
+|---|---|---|---|
+| Reference-dependent, allelic | 0.474 / 0.411 / 0.451 | 0.385 / 0.318 / 0.363 | 1.00 / 1.01 / 1.04 |
+| Reference-dependent, total | 0.174 / 0.167 / 0.173 | 0.141 / 0.139 / 0.140 | 1.00 / 0.94 / 1.00 |
+| Reference-dependent, combined | 0.154 / 0.144 / 0.152 | 0.131 / 0.124 / 0.130 | 0.99 / 0.94 / 1.00 |
+| High-effect high-se, allelic | 0.465 / 0.394 / 0.438 | 0.365 / 0.294 / 0.339 | 1.00 / 1.02 / 1.04 |
+| High-effect high-se, total | 0.180 / 0.178 / 0.180 | 0.148 / 0.148 / 0.148 | 1.00 / 0.95 / 1.00 |
+| High-effect high-se, combined | 0.161 / 0.153 / 0.159 | 0.138 / 0.132 / 0.137 | 0.99 / 0.95 / 1.00 |
+
+Combined rejection at 0.05: reference-dependent 0.052 / 0.072 / 0.050,
+high-effect high-se 0.051 / 0.063 / 0.050. The pattern of the random 100
+genes holds in both sets. This is a permutation null: it does not test
+whether a weighting removes the observed spurious hits these genes carry.
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
