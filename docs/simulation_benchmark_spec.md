@@ -143,12 +143,12 @@ At the time of writing, `mixqtl-replication` was 30 commits ahead of
 was introduced by `89bed4e`, one of those local-only commits (the oldest is
 `d3248f0`). Simulator work goes on `simulation-benchmark` (section 9.1).
 
-Three calibration scripts whose measurements set this document's defaults are
-untracked in the working tree and must be committed before implementation
-starts: `scripts/simulator_layer2_calibration.py`,
-`scripts/simulator_layer4_calibration.py` and `scripts/variance_family_test.py`.
-This document and those commits will descend from the pin. The implementer
-builds against the tip that contains them and:
+The three calibration scripts whose measurements set this document's defaults,
+`scripts/simulator_layer2_calibration.py`,
+`scripts/simulator_layer4_calibration.py` and `scripts/variance_family_test.py`,
+were committed with this document in `d9a9f16`, which descends from the pin
+and changes no pipeline file. The implementer builds against the tip that
+contains them and:
 
 - records `git rev-parse HEAD`, and the blob hashes of
   `tensorqtl/hapmixqtl.py` and `tensorqtl/mixqtl_replication.py`, in a
@@ -1559,7 +1559,7 @@ intervals not printed here are read from the source files by the test):
 | `scripts/validate_simulator_layers.py` | New | *Coupling mechanism*, *Expression-layer recovery*, *Uninformative-pair structure*, *Variance-profile reproduction* |
 | `scripts/run_simulation_benchmark.py` | New | Driver: scenarios by arms, outputs under `brainvar_hapmix_deploy/simulation_benchmark_<date>/` with `provenance.json` |
 | `scripts/analyze_simulation_benchmark.py` | New | Metrics tables and an HTML report with figures (the user's reporting convention) |
-| `scripts/simulator_layer2_calibration.py`, `scripts/simulator_layer4_calibration.py`, `scripts/variance_family_test.py` | Existing, untracked | Commit before implementation; they are the provenance of the defaults |
+| `scripts/simulator_layer2_calibration.py`, `scripts/simulator_layer4_calibration.py`, `scripts/variance_family_test.py` | Committed (`d9a9f16`) | The provenance of the defaults |
 
 The simulator modules in `tests/` import NumPy, pandas, `scipy.special` and
 `scipy.stats` only (section 3.0); the arms and driver import the pipeline.
@@ -1571,8 +1571,8 @@ so this document and any new Markdown file under `docs/` must be added with
 
 Each step is gated by the acceptance tests named in it.
 
-1. **Prerequisites.** Commit the three calibration scripts; bring the HMM
-   simulator from master. If the attachments have been provided, commit them
+1. **Prerequisites.** Bring the HMM simulator from master (the three
+   calibration scripts are already committed). If the attachments have been provided, commit them
    verbatim in their own commit; this is the only step that may reference
    them, and nothing later waits for them.
 2. **Pin and randomness** (*Pin check*, *Randomness isolation*).
