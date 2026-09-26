@@ -390,6 +390,21 @@ channels (`hybrid_weights_null.py --config=unit` / Gibbs `drop` arm /
 Unit weights in both channels: combined 0.0529 / 0.0122 / 0.0028, allelic
 0.0546 / 0.0136 / 0.0034 at 0.05 / 0.01 / 0.001.
 
+Stated se, log2 units, over all tested variants and 200 permutations, finite
+values only (infinite: allelic 1.4%, total 0.1%, combined none; identical
+across weightings). Mean / median:
+
+| Channel | Unit | 1/v | 1/(v+1) |
+|---|---|---|---|
+| Allelic | 0.294 / 0.219 | 0.223 / 0.147 | 0.271 / 0.197 |
+| Total | 0.117 / 0.102 | 0.121 / 0.104 | 0.117 / 0.102 |
+| Combined | 0.100 / 0.087 | 0.093 / 0.079 | 0.098 / 0.086 |
+
+Every tested variant has MAF >= 0.05. At MAF 0.05 to 0.10, 1/v cuts the
+allelic mean se from 0.430 (unit) to 0.334 and stays honest (stated / true
+1.04); in the total channel it gives 0.173 against 0.166 and is overconfident
+(0.93) at every MAF band.
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
