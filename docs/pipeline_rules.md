@@ -360,6 +360,23 @@ NOT tested: the gene-level `pval_perm`, observed data, anything below 0.001,
 genes outside the calibration filter. Not in the shipped code: both the drop
 and the total-channel unit weights exist only in these experiment scripts.
 
+**1/(v+1) in both channels** (`hybrid_weights_null.py --config=plus_one`,
+`summary_plus_one.json`), same genes and permutations. The combined statistic
+is calibrated, 0.0498 [0.0475, 0.0538] / 0.0112 / 0.0026, and so is each
+channel (allelic 0.0419 / 0.0095 / 0.0027, slightly conservative; total
+0.0503 / 0.0104 / 0.0012). Standard errors, stated over true and true spread
+relative to Gibbs weights in both:
+
+| Channel | Stated / true, split | Stated / true, Gibbs in both | Stated / true, 1/(v+1) | True spread vs Gibbs in both, split | same, 1/(v+1) |
+|---|---|---|---|---|---|
+| Allelic | 1.05 | 1.05 | 1.05 | 1.00 | 1.22 |
+| Total | 1.00 | 0.93 | 1.00 | 0.94 | 0.94 |
+| Combined | 1.00 | 0.94 | 1.00 | 0.96 | 1.00 |
+
+In the total channel 1/(v+1) is unit weighting in practice. In the allelic
+channel it flattens the weights and widens the slope's true spread by 22%,
+which cancels the total channel's gain in the combined slope.
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
