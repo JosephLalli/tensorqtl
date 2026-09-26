@@ -15,12 +15,14 @@ report a comparison against one.
 
 `tensorqtl/mixqtl_replication.py`, a NumPy port of `hakyimlab/mixqtl` @
 `624ae44` with all eleven divergences from the 2026-09-14 review removed. It
-consumes Salmon **posterior-mean counts** and never touches the draws, so it
-doubles as the **no-draws comparator**: it is what hapmixQTL has to beat, and
-the only honest measure of what the draws buy. Published cutoffs
-(`100/50/10/1000`, the GTEx v8 driver that produced the paper) are the primary
-setting; `weight_cap` is 10. Driver `scripts/compare_mixqtl_replication.py`,
-analysis `scripts/analyze_mixqtl_comparison.py`.
+consumes Salmon **point estimates** and never touches the Gibbs draws (user
+rule, 2026-09-25; before that it was fed posterior means OF the draws, see
+`docs/pipeline_rules.md`), so it doubles as the **no-draws comparator**: it
+is what hapmixQTL has to beat, and the only honest measure of what the draws
+buy. Published cutoffs (`100/50/10/1000`, the GTEx v8 driver that produced
+the paper) are the primary setting; `weight_cap` is 10. Driver
+`scripts/compare_mixqtl_replication.py`, analysis
+`scripts/analyze_mixqtl_comparison.py` (the 2026-09-19 record only).
 
 ### (b) default mode — `Var(eps_i) = sigma^2 * v_i`
 
@@ -96,7 +98,7 @@ prompt `codex_second_opinion_prompt.md`).
 **First measurement under that authorization, same day
 (`scripts/count_scale_weights.py`, adversarially re-run;
 `brainvar_hapmix_deploy/count_scale_weights_20260925/`), on the identical
-2,000-permutation stream.** Count scale versus log scale is not the issue:
+2,000-permutation stream; pre-correction pipeline.** Count scale versus log scale is not the issue:
 in the TOTAL channel a quasi-Poisson GLM on counts is the Gibbs-weighted
 log-scale fit (0.0588 vs 0.0601 at 0.05, paired -0.0012 [-0.0026, +0.0001],
 slope variance 0.998), and **unit weights lose no precision there** (variance
@@ -144,7 +146,23 @@ status as current practice is.
 | What does a new session need to pick this up? | `docs/LOCAL_HANDOFF.md` |
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
+| What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
 | What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html` |
+
+## Pipeline rules, 2026-09-25 (user decisions, standing)
+
+Both modes: every value from Salmon point estimates, Gibbs draws only for
+measurement variance; unit log2(CPM + 1) on edgeR's effective library size
+(allelic ratio log2((L+0.5)/(R+0.5)); mixQTL keeps its natural-log response);
+expression-PC gene filter = eQTL gene filter; genotype PCs stay with the
+genotypes under permutation, every other covariate moves with the RNA record;
+mixQTL never touches the draws. Full statement, code map, built inputs, what
+is not yet switched (`compare_pipelines.py`), two open decisions (1,208
+filtered genes without Gibbs draws; Salmon point estimates that put one
+haplotype at exactly zero in 3.6% of informative pairs), and which results
+predate the rules: `docs/pipeline_rules.md`. Every
+calibration number in this file dated on or before 2026-09-25 was measured on
+the pre-correction pipeline.
 
 ## Scientific phase transitions
 
@@ -171,7 +189,11 @@ experiment.
 
 - **Use log2 for expression, ASE ratios, aFC, and their uncertainty.** Project
   convention since 2026-09-15. beta=1 means a twofold effect. Runtime
-  conversion is PENDING: current outputs are still natural logs. See the
+  conversion is DONE for the default-mode runner since 2026-09-25:
+  `run_hapmixqtl_from_salmon.py` builds `log2((L+0.5)/(R+0.5))` and
+  `log2(CPM+1)` through `summaries_from_point_estimates`. Still natural log: `compare_pipelines.py` and every dated script
+  on `compute_summaries_from_gibbs`, so every result recorded before
+  2026-09-25, and mixQTL mode's published response by design. See the
   [unit convention record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).
 
 - **ASE has no automatic intercept since 2026-09-15.** `ase_covariates_df=None`
@@ -341,6 +363,10 @@ experiment.
   most so at high expression. Cost 0.34 s vs 0.10 s per 1,000-permutation
   scan; the swap adds one element-wise product.
 
+  Since 2026-09-25 the genotype PCs stay with the genotypes and every other
+  covariate moves with the record (`genotype_covariates_df`; both modes; code
+  map and tests in `docs/pipeline_rules.md`).
+
 - **Gene-level Gibbs shape has bounded real-data evidence.** The three-library
   pilot found Gaussian competitive within 0.05 bits/draw for 98.51% of 4,500 ASE
   and 99.93% of total summaries, retaining two reproducible ASE candidates and
@@ -500,7 +526,9 @@ hapmixQTL-vs-RASQUAL.
 ## hapmixQTL can apply mixQTL's count cutoffs (2026-09-20)
 
 `count_cutoff_masks(yL, yR, yT, asc_cutoff, asc_cap, trc_cutoff)` builds
-per-channel boolean admission masks from posterior-mean counts; `map_nominal`,
+per-channel boolean admission masks from the counts its caller passes: the
+runner passes point estimates since 2026-09-25, and the retention figures in
+this section were measured on posterior-mean counts before that; `map_nominal`,
 `map_cis` and `map_susie` take them as `keep_a_df`/`keep_t_df`, and the runner
 exposes `--asc-cutoff --asc-cap --trc-cutoff` plus `--mixqtl-cutoffs`. The point
 is a MATCHED-DONOR comparison between the two modes: the non-weighting ladder
@@ -706,7 +734,7 @@ GTEx overdispersion, depth and zero-inflation structure.
 - `run_second_pass` has not been re-verified under default mode as carefully as
   `map_cis`/`map_nominal`.
 - **The nominal p is anticonservative; the MECHANISM is identified
-  (2026-09-25), the generative SOURCE is not.** At 2,000 records permutations
+  (2026-09-25), the generative SOURCE is not.** (measured on the pre-correction pipeline, `docs/pipeline_rules.md`). At 2,000 records permutations
   the shipped combined statistic rejects at 0.068 [0.061, 0.076] / 0.0175 /
   0.0028 at nominal 0.05 / 0.01 / 0.001 (the recorded 0.082 was a high 30-draw
   sample; the same 30 draws give 0.080). Within a gene, records with high Gibbs
@@ -732,7 +760,8 @@ GTEx overdispersion, depth and zero-inflation structure.
   `brainvar_hapmix_deploy/nominal_p_hypotheses_20260925/` (report
   `nominal_p_report.html`, reconciled budget `reconciliation.md`).
 - **A single donor record can carry a gene-level call, and the empirical p does
-  not protect against it** (2026-09-25). `map_cis` on observed data gives CALM2
+  not protect against it** (2026-09-25; pre-correction pipeline). `map_cis` on
+  observed data gives CALM2
   `pval_perm` 0.028 with donor 657_D1's allelic record and 0.684 without it
   (the lead moves); excluding any of 12 random other records leaves 0.008-0.036.
   CYCS 0.005 -> 0.049, FABP7 0.121 -> 0.415, and APC 0.359 -> 0.003 the other
@@ -758,6 +787,8 @@ GTEx overdispersion, depth and zero-inflation structure.
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`.
 
 ## hapmixQTL against RASQUAL and mixQTL, measured (2026-09-24)
+
+Measured on the pre-correction pipeline (`docs/pipeline_rules.md`).
 
 `brainvar_hapmix_deploy/rasqual_default_mode_20260923/` (59 genes in three
 coverage strata: the 29 calibration genes plus 15 MID and 15 LOW, median
@@ -804,6 +835,8 @@ via `--null-gene-list`; seed 42). Summary page:
   derived, never as reported.
 
 ### Five mechanisms tested on 2026-09-24, two of them mis-measured
+
+Measured on the pre-correction pipeline (`docs/pipeline_rules.md`).
 
 Recorded so they are not re-proposed in the same form. Each was measured, not
 argued. Items 1 and 5 were found on 2026-09-25 to be mis-measured; the
@@ -858,6 +891,8 @@ repairs failed: baseline 0.080, Satterthwaite 0.080, stacked 0.128, stacked
 with an HC3 sandwich 0.093.
 
 ### What the 2026-09-25 hypothesis round established
+
+Measured on the pre-correction pipeline (`docs/pipeline_rules.md`).
 
 Scripts in `scripts/` (`null_permutation_instrument`,
 `weight_residual_coupling`, `total_channel_null_calibration`,
@@ -953,9 +988,10 @@ above the model 95th percentile), not converted to a rate.
 ## Self-tests
 
 ```bash
-# the hapmixQTL/mixQTL surface: 175 tests, all passing as of 2026-09-23
+# the hapmixQTL/mixQTL surface: 190 tests, all passing as of 2026-09-25
 pytest tests/test_hapmixqtl.py tests/test_hapmixqtl_calibration.py \
-       tests/test_hapmixqtl_perm_scheme.py tests/test_fitted_variance_quarantine.py \
+       tests/test_hapmixqtl_perm_scheme.py tests/test_hapmixqtl_point_estimates.py \
+       tests/test_fitted_variance_quarantine.py \
        tests/fitted_variance/ tests/test_cli.py tests/test_mixqtl_replication.py -q
 
 python3 scripts/run_hapmixqtl_from_salmon.py --selftest

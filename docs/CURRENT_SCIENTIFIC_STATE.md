@@ -395,6 +395,25 @@ single-scale cross-gene borrowing has little left to add once a gene has
 mechanism — a between-gene TREND in the scale, applied within each gene —
 which could still help even where moderation of the scale's level does not.
 
+## Pipeline correction, 2026-09-25 (point estimates, log2 units, genotype-tied permutation)
+
+Six user rules, stated in full with a code map in `docs/pipeline_rules.md`.
+The "SUPERSEDED IN PART, 2026-09-23" box above describes mixQTL mode as
+running "on posterior-mean counts, no draws"; a posterior mean is computed
+from the draws, and mixQTL mode now takes point estimates.
+
+- **Implemented and committed:** the library, the default-mode runner and the
+  mixQTL port and driver. The first corrected mixQTL-driver run is in
+  `brainvar_hapmix_deploy/mixqtl_replication_point_estimates_20260925/`.
+- **Not yet switched:** `scripts/compare_pipelines.py`; no corrected stored
+  null and no before/after calibration comparison.
+- **Open, needs a user decision:** 1,208 filtered genes have no Gibbs draws;
+  Salmon's point estimates put one haplotype at exactly zero in 79 of 2,188
+  informative pairs on the 29 calibration genes, which dominates the
+  corrected weighting ablation.
+- **Pre-correction:** every calibration number recorded on or before
+  2026-09-25, and the stored null in `protein_coding_null_store_20260925/`.
+
 ## Routing and run state
 
 Start with `docs/hapmixqtl_methods.md` for implementation and
