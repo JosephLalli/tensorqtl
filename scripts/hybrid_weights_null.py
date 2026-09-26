@@ -14,12 +14,20 @@ Everything else as corrected_null_store: point-estimate values, log2 CPM on
 edgeR library sizes, new covariates with the genotype PCs held with the
 genotypes, records_signflip permutations from the same stream.
 
+A second configuration, --config=plus_one (user proposal 2026-09-26):
+  plus_one allelic: 1 / (v + 1) for pairs with allelic information; excluded
+                    pairs (no haplotype reads, zero-haplotype) stay excluded
+           total:   1 / (v + 1)
+v in squared log2 units, so the floor of 1 is small against the allelic
+channel's variances and large against the total channel's.
+
 GATE on draw 0 against null_permutation_instrument.fit_channels (both channel
 slopes, 1e-3 se), as in corrected_null_store.
-SUMMARY: rejection rates per channel with gene-clustered 95% intervals, the
-paired hybrid - drop difference, and for the COMBINED slope the reported se
-over the realized null spread and the realized spread relative to `drop`.
-Usage: hybrid_weights_null.py [n_draw=200] [--summarize-only]
+SUMMARY (summary_<config>.json): rejection rates per channel with
+gene-clustered 95% intervals, the paired config - drop difference, and for
+each channel's slope and the combined slope the reported se over the
+realized null spread and the realized spread relative to `drop`.
+Usage: hybrid_weights_null.py [n_draw=200] [--config=hybrid|plus_one] [--summarize-only]
 """
 import contextlib
 import io
@@ -42,9 +50,21 @@ SEED, N_STREAM, N_BOOT, EPS = 42, 1000, 2000, 1e-12
 ALPHAS = (0.05, 0.01, 0.001)
 CHANNELS = CNS.CHANNELS
 COLS = CNS.COLS
+CONFIGS = ('hybrid', 'plus_one')
+SLOPES = {'combined': ('slope', 'slope_se'), 'allelic': ('slope_a', 'slope_a_se'),
+          'total': ('slope_t', 'slope_t_se')}
 
 
-def run_draws(n_draw):
+def config_variances(config, Va, Vt):
+    """(allelic, total) working variances; Va is 0 where a pair is excluded."""
+    if config == 'hybrid':
+        return Va, np.ones_like(Vt)
+    if config == 'plus_one':
+        return np.where(Va > EPS, Va + 1.0, 0.0), Vt + 1.0
+    raise SystemExit(f'unknown config {config}')
+
+
+def run_draws(n_draw, config):
     OUT.mkdir(exist_ok=True)
     with contextlib.redirect_stdout(io.StringIO()):
         I = CM.load_point_estimate_inputs(gene_list=str(CNS.OUT / 'genes.txt'),
@@ -53,10 +73,10 @@ def run_draws(n_draw):
     N = len(order)
     A, T, Va, Vt, _ = summaries_from_point_estimates(I['pL'], I['pR'], I['pT'], I['eff_lib'],
                                                      I['YL'], I['YR'], I['YT'])
-    A, T, Va = A[:, keep], T[:, keep], Va[:, keep]
+    A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
     pL, pR = I['pL'][:, keep], I['pR'][:, keep]
     Va = np.where((pL < 0.5) ^ (pR < 0.5), 0.0, Va)
-    Vt_unit = np.ones_like(T)
+    Va, Vt_unit = config_variances(config, Va, Vt)
     genes = list(I['genes'])
     gp = I['gp'].loc[genes][['chr', 'pos']]
     C, G = I['cov_df'].values, I['geno_cov_df']
@@ -74,7 +94,7 @@ def run_draws(n_draw):
     if not (np.array_equal(ref['perms'], perms) and np.array_equal(ref['flips'], flips)):
         raise SystemExit('permutation stream differs from the corrected store')
     ddir = OUT / 'draws'; ddir.mkdir(exist_ok=True)
-    scratch = OUT / 'scratch'; scratch.mkdir(exist_ok=True)
+    scratch = OUT / f'scratch_{config}'; scratch.mkdir(exist_ok=True)
 
     def draw(p):
         prm, f = perms[p], flips[p].astype(float)
@@ -119,7 +139,7 @@ def run_draws(n_draw):
         raise SystemExit(f'GATE FAILED: {worst:.2e}')
     t0 = time.time()
     for p in range(n_draw):
-        fo = ddir / f'hybrid_{p:03d}.parquet'
+        fo = ddir / f'{config}_{p:03d}.parquet'
         if fo.exists():
             continue
         df = first if p == 0 else draw(p)
@@ -130,30 +150,38 @@ def run_draws(n_draw):
     shutil.rmtree(scratch, ignore_errors=True)
 
 
-def slope_moments(files, b_col, s_col):
-    acc = idx = None
+def slope_moments(files):
+    """Per channel: (reported se, realized null sd) over the draws, reading each file once."""
+    acc, idx = {}, None
+    cols = ['phenotype_id', 'variant_id'] + [c for bs in SLOPES.values() for c in bs]
     for f in files:
-        d = pd.read_parquet(f, columns=['phenotype_id', 'variant_id', b_col, s_col]).set_index(
-            ['phenotype_id', 'variant_id']).sort_index()
-        b, s = d[b_col].values.astype(float), d[s_col].values.astype(float)
-        if acc is None:
-            idx, acc = d.index, np.zeros((4, len(b)))
-        ok = np.isfinite(b) & np.isfinite(s)
-        acc += np.stack([ok, np.where(ok, b, 0), np.where(ok, b * b, 0), np.where(ok, s * s, 0)])
-    n = acc[0]
+        d = pd.read_parquet(f, columns=cols).set_index(['phenotype_id', 'variant_id']).sort_index()
+        if idx is None:
+            idx = d.index
+        elif not d.index.equals(idx):
+            raise SystemExit(f'variant set differs in {f}')
+        for ch, (bc, sc) in SLOPES.items():
+            b, s = d[bc].values.astype(float), d[sc].values.astype(float)
+            ok = np.isfinite(b) & np.isfinite(s)
+            acc.setdefault(ch, np.zeros((4, len(b))))
+            acc[ch] += np.stack([ok, np.where(ok, b, 0), np.where(ok, b * b, 0), np.where(ok, s * s, 0)])
+    out = {}
     with np.errstate(invalid='ignore', divide='ignore'):
-        return idx, np.sqrt(acc[3] / n), np.sqrt((acc[2] - acc[1] ** 2 / n) / (n - 1))
+        for ch, a_ in acc.items():
+            n = a_[0]
+            out[ch] = (np.sqrt(a_[3] / n), np.sqrt((a_[2] - a_[1] ** 2 / n) / (n - 1)))
+    return idx, out
 
 
-def summarize():
+def summarize(config):
     genes = (CNS.OUT / 'genes.txt').read_text().split()
-    files = {'hybrid': sorted((OUT / 'draws').glob('hybrid_*.parquet')),
+    files = {config: sorted((OUT / 'draws').glob(f'{config}_*.parquet')),
              'drop': sorted((CNS.OUT / 'draws').glob('drop_*.parquet'))}
     n_draw = min(len(v) for v in files.values())
     files = {k: v[:n_draw] for k, v in files.items()}
     brng = np.random.default_rng(np.random.SeedSequence(SEED).spawn(7)[6])
     bidx = brng.integers(0, len(genes), size=(N_BOOT, len(genes)))
-    res = dict(n_draw=n_draw, rates={}, hybrid_minus_drop={}, combined_slope={})
+    res = dict(config=config, n_draw=n_draw, rates={}, minus_drop={}, se={})
     for ch, col in CHANNELS.items():
         KN = {arm: CNS.rates_by_gene(files[arm], genes, col) for arm in files}
         for arm, (K, n) in KN.items():
@@ -161,41 +189,45 @@ def summarize():
                 rate=float(K[al].sum() / n.sum()),
                 lo=float(np.quantile(K[al][bidx].sum(1) / n[bidx].sum(1), .025)),
                 hi=float(np.quantile(K[al][bidx].sum(1) / n[bidx].sum(1), .975))) for al in ALPHAS}
-        (Kh, nh), (Kd, nd) = KN['hybrid'], KN['drop']
-        res['hybrid_minus_drop'][ch] = {}
+        (Kh, nh), (Kd, nd) = KN[config], KN['drop']
+        res['minus_drop'][ch] = {}
         for al in ALPHAS:
             dd = Kh[al][bidx].sum(1) / nh[bidx].sum(1) - Kd[al][bidx].sum(1) / nd[bidx].sum(1)
-            res['hybrid_minus_drop'][ch][str(al)] = dict(diff=float(Kh[al].sum() / nh.sum() - Kd[al].sum() / nd.sum()),
-                                                         lo=float(np.quantile(dd, .025)), hi=float(np.quantile(dd, .975)))
-    ih, rep_h, real_h = slope_moments(files['hybrid'], 'slope', 'slope_se')
-    idr, rep_d, real_d = slope_moments(files['drop'], 'slope', 'slope_se')
+            res['minus_drop'][ch][str(al)] = dict(diff=float(Kh[al].sum() / nh.sum() - Kd[al].sum() / nd.sum()),
+                                                  lo=float(np.quantile(dd, .025)), hi=float(np.quantile(dd, .975)))
+    ih, mh = slope_moments(files[config])
+    idr, md = slope_moments(files['drop'])
     if not ih.equals(idr):
         raise SystemExit('arms cover different variants')
-    ok = (real_h > 0) & (real_d > 0) & np.isfinite(rep_h) & np.isfinite(rep_d)
-    res['combined_slope'] = dict(
-        hybrid_reported_over_realized=float(np.median(rep_h[ok] / real_h[ok])),
-        drop_reported_over_realized=float(np.median(rep_d[ok] / real_d[ok])),
-        realized_hybrid_over_drop=float(np.median(real_h[ok] / real_d[ok])),
-        realized_hybrid_over_drop_per_gene_q10_q50_q90=np.quantile(
-            pd.DataFrame(dict(g=ih.get_level_values(0)[ok], r=(real_h / real_d)[ok])).groupby('g').r.median(),
-            [.1, .5, .9]).tolist())
-    (OUT / 'summary.json').write_text(json.dumps(res, indent=1))
+    for ch in SLOPES:
+        (rep_h, real_h), (rep_d, real_d) = mh[ch], md[ch]
+        ok = (real_h > 0) & (real_d > 0) & np.isfinite(rep_h) & np.isfinite(rep_d)
+        res['se'][ch] = dict(
+            config_reported_over_realized=float(np.median(rep_h[ok] / real_h[ok])),
+            drop_reported_over_realized=float(np.median(rep_d[ok] / real_d[ok])),
+            reported_config_over_drop=float(np.median(rep_h[ok] / rep_d[ok])),
+            realized_config_over_drop=float(np.median(real_h[ok] / real_d[ok])))
+    (OUT / f'summary_{config}.json').write_text(json.dumps(res, indent=1))
     for k, v in res['rates'].items():
-        print(f'{k:18s} ' + '  '.join(f'{al}: {v[al]["rate"]:.4f} [{v[al]["lo"]:.4f}, {v[al]["hi"]:.4f}]'
+        print(f'{k:20s} ' + '  '.join(f'{al}: {v[al]["rate"]:.4f} [{v[al]["lo"]:.4f}, {v[al]["hi"]:.4f}]'
                                       for al in map(str, ALPHAS)))
-    for ch, v in res['hybrid_minus_drop'].items():
-        print(f'hybrid - drop {ch:9s} ' + '  '.join(
+    for ch, v in res['minus_drop'].items():
+        print(f'{config} - drop {ch:9s} ' + '  '.join(
             f'{al}: {v[al]["diff"]:+.4f} [{v[al]["lo"]:+.4f}, {v[al]["hi"]:+.4f}]' for al in map(str, ALPHAS)))
-    print('combined slope:', {k: (np.round(v, 3).tolist() if isinstance(v, list) else round(v, 3))
-                              for k, v in res['combined_slope'].items()})
+    for ch, v in res['se'].items():
+        print(f'se {ch:9s} ' + '  '.join(f'{k}: {x:.3f}' for k, x in v.items()))
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     n_draw = int(args[0]) if args else 200
+    cfg = [a.split('=', 1)[1] for a in sys.argv[1:] if a.startswith('--config=')]
+    config = cfg[0] if cfg else 'hybrid'
+    if config not in CONFIGS:
+        raise SystemExit(f'unknown config {config}')
     if '--summarize-only' not in sys.argv:
-        run_draws(n_draw)
-    summarize()
+        run_draws(n_draw, config)
+    summarize(config)
     print(f'wrote {OUT}')
 
 
