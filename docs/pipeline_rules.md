@@ -300,6 +300,28 @@ acts through the Gibbs weights. By median total CPM tercile (below 18, 18 to
 first 140 draws, so the weights fail most at low expression but not only
 there.
 
+**Standard errors under unit weights** (`scripts/total_channel_se_accuracy.py`,
+`total_channel_decomposition_20260926/se_accuracy.json`; 486,947 variants,
+200 permutations, medians over variants). Realized se is the sd of the null
+slope across permutations; reported se is what the fit states.
+
+| Genes by median total CPM | Gibbs: reported / realized | Unit: reported / realized | Unit / Gibbs, reported se | Unit / Gibbs, realized se |
+|---|---|---|---|---|
+| all | 0.928 | 1.001 | 1.001 | 0.936 |
+| below 18 | 0.897 | 1.001 | 0.975 | 0.887 |
+| 18 to 64 | 0.933 | 1.000 | 0.998 | 0.944 |
+| above 64 | 0.952 | 1.003 | 1.025 | 0.988 |
+
+Under this null the Gibbs-weighted total channel states an se about 7% too
+small (10% in low-expression genes), and its slope is also LESS precise than
+the unweighted one. Per gene the realized ratio has median 0.933 (quartiles
+0.838 to 1.004; 10th and 90th percentiles 0.696 and 1.079), so the weights
+help in a minority of genes. This is under the tied-genotype-PC permutation,
+which may leave variance in the residual that the observed data do not have.
+It concerns the total channel only: in the allelic channel 1/v weighting cut
+the slope's variance to 0.340 of unweighted on the 29 calibration genes
+(2026-09-19, pre-correction).
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
