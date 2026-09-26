@@ -217,12 +217,49 @@ def expression_pcs(expr, base, n_pc=10, min_samples_expressed=0.5, seed=0):
     return pcs
 
 
+def expression_pcs_log2cpm(totals_all, eff_lib, genes, base, n_pc=10):
+    """Expression PCs in the pipeline's unit, on the eQTL gene set.
+
+    User rules, 2026-09-25: values come from Salmon's POINT estimates; the unit
+    is log2(CPM + 1) at every step, with CPM from edgeR's effective library
+    size (lib.size x TMM norm.factors); the expression-PC gene filter is the
+    eQTL gene filter. So: log2(count / eff_lib * 1e6 + 1) over exactly
+    ``genes`` (edgeR's calibration_genes.txt), each gene CENTRED but not
+    scaled (scaling to unit variance would change the unit), residualized on
+    ``base`` (metadata and genotype PCs) so the PCs are orthogonal to it, then
+    the top ``n_pc`` right singular vectors.
+    """
+    Y = totals_all.loc[list(genes)].to_numpy(dtype=float)       # [genes, samples]
+    Y = np.log2(Y / np.asarray(eff_lib, float)[None, :] * 1e6 + 1.0)
+    Y = Y - Y.mean(1, keepdims=True)
+    Yr = residualize(Y, np.asarray(base, float))
+    U, S, Vt = np.linalg.svd(Yr / np.sqrt(Yr.shape[0]), full_matrices=False)
+    var = (S ** 2 / (S ** 2).sum())[:n_pc]
+    print(f'  expression PCs (log2 CPM+1, point estimates) from {Y.shape[0]} genes; '
+          f'top-{n_pc} residual variance {100*var.sum():.1f}%')
+    return Vt[:n_pc].T
+
+
 def build(metadata, pairing, salmon, tx2gene, vcf, n_expr_pc=10, n_geno_pc=3,
-          hap_suffix=('_L', '_R'), seed=0, min_level_n=2):
+          hap_suffix=('_L', '_R'), seed=0, min_level_n=2, point_estimates=None):
     meta = metadata_covariates(metadata, pairing, min_level_n=min_level_n)
     samples = list(meta.index)
     gpc = genotype_pcs(vcf, samples, n_pc=n_geno_pc, seed=seed)
     base = pd.concat([meta, gpc], axis=1).loc[samples]
+    if point_estimates is not None:
+        pdir = Path(point_estimates)
+        totals = pd.read_csv(pdir / 'totals_all.tsv.gz', sep='\t', index_col=0)
+        es = pd.read_csv(pdir / 'edger' / 'edger_samples.tsv', sep='\t', index_col=0)
+        es.index = es.index.astype(str)
+        genes = open(pdir / 'edger' / 'calibration_genes.txt').read().split()
+        missing = [s for s in samples if s not in totals.columns or s not in es.index]
+        if missing:
+            raise SystemExit(f'{len(missing)} samples lack point estimates or edgeR sizes, e.g. {missing[:3]}')
+        epc = expression_pcs_log2cpm(totals[samples], es.loc[samples, 'eff_lib_size'].values,
+                                     genes, base.values, n_pc=n_expr_pc)
+        epc = pd.DataFrame(epc, index=samples,
+                           columns=[f'expr_pc{i+1}' for i in range(n_expr_pc)])
+        return pd.concat([base, epc], axis=1)
     sys.path.insert(0, str(Path(__file__).parent))
     from make_rasqual_inputs import read_salmon_totals
     expr = read_salmon_totals(salmon, tx2gene, samples, hap_suffix)
@@ -244,6 +281,13 @@ def main(argv=None):
                          'than this many samples: it is not estimable and '
                          'absorbs those samples entirely (default 2)')
     ap.add_argument('--hap-suffix', default='_L,_R')
+    ap.add_argument('--point-estimates',
+                    help="the point_estimates/ folder from build_point_estimate_cache.py. "
+                         "When given, expression PCs are log2(CPM+1) of Salmon point "
+                         "estimates with edgeR effective library sizes, on edgeR's "
+                         "calibration_genes.txt (the eQTL gene set), per the 2026-09-25 "
+                         "rules; without it the pre-2026-09-25 PCs are built "
+                         "(log1p of raw counts, genes nonzero in half the samples)")
     ap.add_argument('--out', default='cov')
     a = ap.parse_args(argv)
     if a.selftest:
@@ -253,9 +297,22 @@ def main(argv=None):
             raise SystemExit(f'--{r} is required (or --selftest)')
     C = build(a.metadata, a.pairing, a.salmon, a.tx2gene, a.vcf,
               a.n_expr_pc, a.n_geno_pc, tuple(a.hap_suffix.split(',')),
-              min_level_n=a.min_level_n)
+              min_level_n=a.min_level_n, point_estimates=a.point_estimates)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     C.to_csv(out / 'covariates.tsv', sep='\t')
+    geno_cols = [c for c in C.columns if c.startswith('geno_pc')]
+    (out / 'genotype_covariates.txt').write_text('\n'.join(geno_cols) + '\n')
+    import json as _json
+    (out / 'covariate_build.json').write_text(_json.dumps(dict(
+        columns=list(C.columns), genotype_tied=geno_cols,
+        rna_tied=[c for c in C.columns if c not in geno_cols],
+        permutation_rule='genotype_tied columns stay with the genotypes; all others move with the RNA record',
+        expression_pcs=('log2(CPM+1) of Salmon point estimates, edgeR effective library size '
+                        '(lib.size x TMM), genes = edgeR calibration_genes.txt, centred not scaled, '
+                        'residualized on metadata + genotype PCs') if a.point_estimates else
+                       'PRE-2026-09-25: log1p of raw Salmon NumReads, genes nonzero in half the samples, '
+                       'standardized',
+        point_estimates=a.point_estimates, metadata=a.metadata, pairing=a.pairing, vcf=a.vcf), indent=2))
     # RASQUAL's -x is COVARIATE-major, not sample-major: it reads into X and
     # then takes mean(X + N*i, N), i.e. N consecutive doubles are ONE covariate
     # across all samples (main.c:301-307). Writing [samples, covariates] would

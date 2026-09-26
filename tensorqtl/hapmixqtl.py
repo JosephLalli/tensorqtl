@@ -423,6 +423,106 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=True):
     return A, T, Va, Vt, Cat
 
 
+LN2 = float(np.log(2.0))
+
+
+def summaries_from_point_estimates(pL, pR, pT, eff_lib_size, yL, yR, yT,
+                                   kappa=0.5, count_noise=True):
+    """The phenotype since 2026-09-25: VALUES from Salmon's point estimates,
+    VARIANCE from the Gibbs draws, in log2.
+
+    User rules (2026-09-25): every value is computed from the point estimates
+    (quant.sf NumReads); the Gibbs draws are used ONLY for the measurement
+    variance of that same value, through the identical transform. The unit is
+    log2(CPM + 1), with CPM from edgeR's effective library size (lib.size x
+    TMM norm.factors, computed by edgeR on the calibration gene set). The one
+    exception is the allelic ratio, a within-sample contrast in which library
+    size cancels, which stays a pseudocounted log ratio of haplotype counts:
+
+        a  = log2((pL + kappa) / (pR + kappa))
+        t  = log2(pT / Leff * 1e6 + 1)
+        Va = var over draws of log2((yL + kappa) / (yR + kappa))  [+ q_a]
+        Vt = var over draws of log2(yT / Leff * 1e6 + 1)           [+ q_t]
+
+    The counting terms are the delta-method Poisson variance of the same
+    transform at the point estimate: q_a = (1/(pL+kappa) + 1/(pR+kappa)) /
+    ln2^2, and q_t = k^2 (pT + 1/2) / ((k (pT + 1/2) + 1)^2 ln2^2) with
+    k = 1e6 / Leff, evaluated at count + 1/2 so a zero-read donor keeps a
+    positive variance (user decision 2026-09-25) -- on this scale a zero-read
+    donor is a precise observation of no expression. They are the floor the
+    total channel otherwise lacks, as count_noise is in
+    compute_summaries_from_gibbs. A donor with no haplotype-informative reads
+    (pL + pR = 0) keeps Va = 0, so the allelic channel excludes it.
+
+    Args:
+        pL, pR: point-estimate haplotype counts [features, samples], summed
+                over paired transcripts only (as the Gibbs ingest does)
+        pT:     point-estimate total counts [features, samples], summed over
+                ALL transcripts (never pL + pR; see compute_summaries_from_gibbs)
+        eff_lib_size: edgeR effective library sizes [samples]
+        yL, yR, yT: the Gibbs draws [features, samples, draws], same summing
+    Returns:
+        A, T, Va, Vt, Cat -- Cat is the across-draw covariance of a and t,
+        returned for inspection and unused by the mapping functions.
+    """
+    pL, pR, pT = (np.asarray(x, dtype=float) for x in (pL, pR, pT))
+    yL, yR, yT = (np.asarray(x, dtype=float) for x in (yL, yR, yT))
+    L = np.asarray(eff_lib_size, dtype=float)
+    if pL.shape != pR.shape or pL.shape != pT.shape:
+        raise ValueError(f'point-estimate shapes differ: {pL.shape}, {pR.shape}, {pT.shape}')
+    if yL.shape[:2] != pL.shape or yR.shape != yL.shape or yT.shape != yL.shape:
+        raise ValueError('Gibbs draw arrays must be [features, samples, draws] matching the point estimates')
+    if L.shape != (pL.shape[1],) or not np.all(np.isfinite(L)) or not np.all(L > 0):
+        raise ValueError('eff_lib_size must be one positive value per sample')
+    k = 1e6 / L                                                  # CPM per count
+    A = np.log2((pL + kappa) / (pR + kappa))
+    T = np.log2(pT * k[None, :] + 1.0)
+    a_d = np.log2((yL + kappa) / (yR + kappa))
+    t_d = np.log2(yT * k[None, :, None] + 1.0)
+    Va = a_d.var(axis=2, ddof=0)
+    Vt = t_d.var(axis=2, ddof=0)
+    Cat = ((a_d - a_d.mean(axis=2, keepdims=True)) *
+           (t_d - t_d.mean(axis=2, keepdims=True))).mean(axis=2)
+    no_cov = (pL + pR) <= 0
+    if count_noise:
+        q_a = (1.0 / (pL + kappa) + 1.0 / (pR + kappa)) / LN2 ** 2
+        y = pT + 0.5
+        q_t = (k[None, :] ** 2) * y / ((k[None, :] * y + 1.0) ** 2 * LN2 ** 2)
+        Va = Va + q_a
+        Vt = Vt + q_t
+    Va = np.where(no_cov, 0.0, Va)
+    return A, T, Va, Vt, Cat
+
+
+def _combine_covariates(covariates_df, genotype_covariates_df, samples, logger=None):
+    """One covariate design with the genotype-tied columns LAST.
+
+    ``covariates_df`` holds the covariates tied to the RNA record (metadata,
+    expression PCs); ``genotype_covariates_df`` those tied to the genotypes
+    (genotype PCs). Both enter the regression identically; they differ only in
+    the permutation, where the genotype-tied columns stay with the genotypes
+    (user rule, 2026-09-25). Returns the combined frame (or None) and the
+    number of genotype-tied columns.
+    """
+    if genotype_covariates_df is None:
+        return covariates_df, 0
+    if not np.all(np.asarray(samples) == np.asarray(genotype_covariates_df.index)):
+        raise ValueError('genotype-covariate samples must match phenotype samples, in order')
+    if covariates_df is not None:
+        if not np.all(np.asarray(samples) == np.asarray(covariates_df.index)):
+            raise ValueError('covariate samples must match phenotype samples, in order')
+        clash = set(covariates_df.columns) & set(genotype_covariates_df.columns)
+        if clash:
+            raise ValueError(f'columns in both covariate frames: {sorted(clash)}')
+        combined = pd.concat([covariates_df, genotype_covariates_df], axis=1)
+    else:
+        combined = genotype_covariates_df.copy()
+    if logger is not None:
+        logger.write(f'  * {genotype_covariates_df.shape[1]} covariates tied to the genotypes '
+                     f'(stay with them under permutation): {list(genotype_covariates_df.columns)}')
+    return combined, int(genotype_covariates_df.shape[1])
+
+
 def count_cutoff_masks(yL, yR, yT=None, asc_cutoff=None, asc_cap=None,
                        trc_cutoff=None):
     """Per-channel admission masks from mixQTL-style count cutoffs.
@@ -579,6 +679,10 @@ class WeightedResidualizer:
         # design from permuted weights and covariate rows
         self.C_t = C_t if (C_t is not None and C_t.numel() > 0 and C_t.shape[1] > 0) else None
         self.intercept = bool(intercept)
+        # the LAST n_fixed_cov columns of C_t are tied to the genotypes (genotype
+        # PCs): the donor-record permutation leaves them at their position while
+        # the other covariate columns move with the RNA record. Set by map_cis.
+        self.n_fixed_cov = 0
         self.sqrt_w_t = sqrt_w_t
         if design.shape[1] > 0 and bool((sqrt_w_t != 0).any()):
             self.Q_t, _ = torch.linalg.qr(design)
@@ -1175,6 +1279,14 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
     passed for the allelic channel only (``perm_scheme='records_signflip'``);
     a swap leaves total expression unchanged.
 
+    Covariates tied to the genotypes (the genotype PCs; the LAST
+    ``residualizer.n_fixed_cov`` columns of its covariate matrix, set by
+    map_cis from ``genotype_covariates_df``) stay at their position with the
+    genotypes; every other covariate column moves with the RNA record
+    (user rule, 2026-09-25). By relabeling, this equals permuting the genotype
+    columns and the genotype-covariate rows together by the inverse
+    permutation, with the records and their covariates fixed.
+
     Returns xy [V, nperm], xx [V, nperm] (the denominator changes with the
     permutation) and yy [nperm]. A through-origin channel with no nuisance
     columns (the default allelic design) needs no re-residualization and
@@ -1205,6 +1317,13 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
         return xy, xx, yy
     if chunk is None:
         chunk = int(max(8, min(256, 2e7 // max(V * N, 1))))
+    n_fixed = int(getattr(residualizer, 'n_fixed_cov', 0) or 0)
+    C_move, C_fix = C_t, None
+    if C_t is not None and n_fixed > 0:
+        if n_fixed > C_t.shape[1]:
+            raise ValueError(f'n_fixed_cov {n_fixed} exceeds the {C_t.shape[1]} covariate columns')
+        C_move = C_t[:, :C_t.shape[1] - n_fixed] if C_t.shape[1] > n_fixed else None
+        C_fix = C_t[:, C_t.shape[1] - n_fixed:]                        # stays with the genotypes
     xy = x_t.new_empty((V, nperm))
     xx = x_t.new_empty((V, nperm))
     yy = x_t.new_empty(nperm)
@@ -1215,8 +1334,10 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
         cols = []
         if intercept:
             cols.append(sw.unsqueeze(2))
-        if C_t is not None:
-            cols.append(sw.unsqueeze(2) * C_t[ix])                     # [K, N, c]
+        if C_move is not None:
+            cols.append(sw.unsqueeze(2) * C_move[ix])                  # [K, N, c] moves with the record
+        if C_fix is not None:
+            cols.append(sw.unsqueeze(2) * C_fix.unsqueeze(0))          # [K, N, g] stays in place
         design = torch.cat(cols, 2)                                    # [K, N, p]
         Q, _ = torch.linalg.qr(design)                                 # [K, N, p]
         ys = y_star[ix]                                                # [K, N]
@@ -1579,9 +1700,14 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 ase_covariates_df=None, variance_model='additive',
                 library_factor=None, variance_prior=None,
                 keep_a_df=None, keep_t_df=None,
-                total_variance_model='additive'):
+                total_variance_model='additive', genotype_covariates_df=None):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
+
+    ``genotype_covariates_df`` (the genotype PCs) enters the design exactly as
+    ``covariates_df`` does; the split exists for map_cis's permutation, where
+    genotype-tied covariates stay with the genotypes. Pass it here too so the
+    nominal and permutation runs use the same design.
 
     Writes per-chromosome parquet files in the format:
         <output_dir>/<prefix>.hapmixqtl_pairs.<chr>.parquet
@@ -1709,6 +1835,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     robust = se_mode == 'robust'
     fitted = se_mode == 'fitted'
 
+    covariates_df, _ = _combine_covariates(covariates_df, genotype_covariates_df, samples, logger)
     if covariates_df is not None:
         assert np.all(samples == covariates_df.index), \
             "Covariate samples must match phenotype samples"
@@ -1930,7 +2057,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
             ase_covariates_df=None, tau_refit=False, variance_model='additive',
             library_factor=None, variance_prior=None,
-            perm_scheme=DEFAULT_PERM_SCHEME, keep_a_df=None, keep_t_df=None):
+            perm_scheme=DEFAULT_PERM_SCHEME, keep_a_df=None, keep_t_df=None,
+            genotype_covariates_df=None):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
@@ -2018,6 +2146,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             "mixQTL's mixqtl_permutation_scan does. The HC1 sandwich does "
             "not; use map_nominal for se_mode='robust'.")
 
+    covariates_df, n_genotype_cov = _combine_covariates(
+        covariates_df, genotype_covariates_df, samples, logger)
     if covariates_df is not None:
         assert covariates_df.index.equals(A_df.columns), \
             'Sample names in phenotype columns and covariate rows must match'
@@ -2106,6 +2236,11 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             variance_model=variance_model, library_factor_t=library_factor_t, prior=prior_g,
             keep_a_t=keep_a_t, keep_t_t=keep_t_t,
             fitted_scale=(se_mode == 'fitted'))
+        # genotype-tied covariates (the last n_genotype_cov columns) stay with
+        # the genotypes in the record permutation; the rest move with the record
+        residualizer_tc.n_fixed_cov = n_genotype_cov
+        if isinstance(ase_covariates_t, str) and ase_covariates_t == SAME_COVARIATES:
+            residualizer_a.n_fixed_cov = n_genotype_cov
 
         genotypes_t = torch.tensor(genotypes, dtype=torch.float32).to(device)
         genotypes_t = genotypes_t[:, genotype_ix_t]
@@ -2244,6 +2379,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('variance_prior', bool(tau_info['prior_used'])),
             ('variance_model', variance_model),
             ('perm_scheme', perm_scheme),
+            ('n_genotype_covariates', n_genotype_cov),
         ]), name=phenotype_id)
 
         if beta_approx:

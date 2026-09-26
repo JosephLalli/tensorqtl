@@ -68,6 +68,50 @@ def test_record_permutation_equals_the_genotype_permutation(device):
         assert abs(float(r_nom) ** 2 - float(max_r2_rec[k])) < 1e-9, (k, float(r_nom) ** 2, float(max_r2_rec[k]))
 
 
+def test_genotype_tied_covariates_permute_with_the_genotypes(device):
+    """User rule 2026-09-25: under the record permutation, covariates move with
+    the RNA record EXCEPT the genotype PCs, which stay with the genotypes. By
+    relabeling, the scheme must then equal permuting the genotype columns AND
+    the genotype-covariate rows together by the inverse permutation, with the
+    records and their other covariates fixed. The old pin above (all
+    covariates with the record) is the special case with none tied."""
+    rng = np.random.RandomState(23)
+    N, V, nperm = 70, 80, 30
+    g, sign, T = _design(rng, N, V, device)
+    va = 10 ** rng.uniform(-2, 0, N)
+    vt = 10 ** rng.uniform(-3, -1.5, N)
+    sqrt_wa = T(1 / np.sqrt(va))
+    sqrt_wt = T(1 / np.sqrt(vt + 0.01))
+    a = T(rng.normal(0, 1, N) * np.sqrt(va))
+    C_rna = rng.normal(size=(N, 4))
+    C_geno = rng.normal(size=(N, 3))
+    t = T(rng.normal(0, 1, N) * np.sqrt(vt + 0.01) + C_rna @ np.array([0.3, -0.2, 0.1, 0.4])
+          + C_geno @ np.array([0.5, -0.3, 0.2]))
+    res_a = WeightedResidualizer(None, sqrt_wa, intercept=False)
+    res_t = WeightedResidualizer(T(np.hstack([C_rna, C_geno])), sqrt_wt, intercept=True)
+    res_t.n_fixed_cov = 3
+    perm = torch.tensor(np.array([rng.permutation(N) for _ in range(nperm)]), dtype=torch.long, device=device)
+    dof = N - 2 - 7
+    _, _, _, max_r2, _ = calculate_hapmixqtl_permutations(
+        g, sign, a, t, sqrt_wa, sqrt_wt, res_a, res_t, perm, dof=dof, perm_scheme='records')
+    worst_moved = 0.0
+    for k in range(nperm):
+        inv = torch.argsort(perm[k]).cpu().numpy()
+        res_t_k = WeightedResidualizer(T(np.hstack([C_rna, C_geno[inv]])), sqrt_wt, intercept=True)
+        r_nom, _, _, _, _ = calculate_hapmixqtl_permutations(
+            g[:, inv], sign[:, inv], a, t, sqrt_wa, sqrt_wt, res_a, res_t_k, perm[:1], dof=dof,
+            perm_scheme='records')
+        assert abs(float(r_nom) ** 2 - float(max_r2[k])) < 1e-9, (k, float(r_nom) ** 2, float(max_r2[k]))
+        # and the genotype PCs really stayed put: moving them with the record
+        # (the pre-2026-09-25 behaviour) gives a different statistic
+        res_t_all = WeightedResidualizer(T(np.hstack([C_rna, C_geno])), sqrt_wt, intercept=True)
+        r_old, _, _, _, _ = calculate_hapmixqtl_permutations(
+            g[:, inv], sign[:, inv], a, t, sqrt_wa, sqrt_wt, res_a, res_t_all, perm[:1], dof=dof,
+            perm_scheme='records')
+        worst_moved = max(worst_moved, abs(float(r_old) ** 2 - float(max_r2[k])))
+    assert worst_moved > 1e-4, worst_moved
+
+
 def test_record_scheme_is_calibrated_where_the_residual_scheme_is_not(device):
     """Weights 1/(v + tau) with v spanning two decades; the true noise variance
     is (v + tau) f(v) with f rising in v, so the lowest-weight donors carry the

@@ -897,6 +897,58 @@ def nonstandard_summary(res, vtype, cur, site_res, enabled):
 
 # ---------------------------------------------------------------------------
 
+def load_point_estimates(manifest, tx2gene, suffixes, genes, samples=None):
+    """Salmon POINT estimates (quant.sf NumReads), summed to genes exactly as
+    load_counts sums the Gibbs draws.
+
+    User rule 2026-09-25: every value in the pipeline comes from the point
+    estimates; the Gibbs draws are used only for measurement variance. The
+    summing mirrors load_counts so a value and its variance describe the same
+    quantity: pL / pR over haplotype-PAIRED transcripts only (pair_haplotypes),
+    pT over EVERY transcript whose base id maps to a gene (an unpaired row is a
+    homozygous transcript carrying both haplotypes).
+
+    Returns (pL, pR, pT) as [len(genes), len(samples)] arrays for the requested
+    genes, and ``totals_all``, a DataFrame of pT for EVERY gene in tx2gene
+    [genes x samples], which is the count matrix edgeR normalizes (its
+    library sizes and TMM factors are properties of the whole library, not of
+    the genes under test).
+    """
+    rows = [l.split('\t') for l in Path(manifest).read_text().strip().split('\n')
+            if l.strip() and not l.startswith('#')]
+    dirs = {r[0].strip(): r[1].strip() for r in rows}
+    samples = [r[0].strip() for r in rows] if samples is None else list(samples)
+    t2g = dict(l.split('\t')[:2] for l in
+               Path(tx2gene).read_text().strip().split('\n') if '\t' in l)
+    gi = {g: i for i, g in enumerate(genes)}
+    pL = np.zeros((len(genes), len(samples)))
+    pR = np.zeros((len(genes), len(samples)))
+    pT = np.zeros((len(genes), len(samples)))
+    totals = {}
+    for si, s in enumerate(samples):
+        if s not in dirs:
+            raise SystemExit(f'sample {s} not in the Salmon manifest {manifest}')
+        q = pd.read_csv(Path(dirs[s]) / 'quant.sf', sep='\t', usecols=['Name', 'NumReads'])
+        names = q['Name'].astype(str).tolist()
+        nr = q['NumReads'].to_numpy(dtype=float)
+        for base, (ia, ib) in pair_haplotypes(names, suffixes).items():
+            g = t2g.get(base)
+            if g is None or g not in gi:
+                continue
+            pL[gi[g], si] += nr[ia]
+            pR[gi[g], si] += nr[ib]
+        base = pd.Series(names)
+        for suf in suffixes:
+            base = base.str.replace(f'{suf}$', '', regex=True)
+        gene = base.map(t2g)
+        tot = pd.Series(nr).groupby(gene.values).sum()           # NaN genes dropped
+        totals[s] = tot
+        hit = [g for g in tot.index if g in gi]
+        pT[[gi[g] for g in hit], si] = tot.loc[hit].to_numpy()
+    totals_all = pd.DataFrame(totals).reindex(columns=samples).fillna(0.0)
+    return pL, pR, pT, totals_all
+
+
 def load_counts(manifest, tx2gene, suffixes, out):
     rows = [l.split('\t') for l in Path(manifest).read_text().strip().split('\n')
             if l.strip() and not l.startswith('#')]
