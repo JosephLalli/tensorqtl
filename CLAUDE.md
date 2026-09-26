@@ -300,17 +300,46 @@ experiment.
   channel; heterozygosity governs the ALLELIC channel; passing one says nothing
   about passing the other.
 
-- **The permutation null permutes donor records, not residuals.**
-  `perm_scheme='records'` is the default and the one to use: each donor's
-  whitened phenotype value, weight and covariate row move together, genotypes
-  stay, and the denominator is recomputed per permutation
-  (`_record_permutation_channel`). By relabeling this equals the
-  genotype-permutation null of FastQTL and tensorQTL with per-donor weights,
-  pinned to 1e-9 by `tests/test_hapmixqtl_perm_scheme.py`. mixQTL permutes the
-  phenotype bundle the same way. `perm_scheme='residuals'` is the earlier
+- **The permutation null permutes donor records AND swaps haplotype labels
+  (default since 2026-09-25, user decision).** `perm_scheme='records_signflip'`
+  is the default everywhere (`map_cis`, `tensorqtl --perm_scheme`,
+  `run_hapmixqtl_from_salmon.py --perm-scheme`): each donor's whitened
+  phenotype value, weight and covariate row move together, genotypes stay, the
+  denominator is recomputed per permutation (`_record_permutation_channel`),
+  AND each permuted record's L/R labels are swapped with probability one half,
+  negating its allelic log ratio (weight and covariate row unchanged; the total
+  channel is never flipped). The user's reasoning: L/R is arbitrary phase
+  order, so this is the only reasonable permutation for allelic ratios.
+  Evidence: under `records` alone the through-origin allelic slope's
+  permutation mean is the gene's net imbalance times the variant's phase
+  lopsidedness, which offset 13 of 46 genes by up to 0.21 se (matching the
+  algebra at r = 0.90); phase orientation is balanced (628 ALT-on-L vs 642
+  ALT-on-R heterozygotes at the 46 leads, p = 0.72) and gene net imbalances
+  are those of chance (z sd 0.98), so the swap is a symmetry of the null.
+  Pooled calibration is unchanged (0.0690 vs 0.0692 at 0.05): the excess is
+  spread, not centre. The swap changes the NULL only; the observed slope keeps
+  its chance offset. Verified through the shipped code 2026-09-25
+  (`scripts/allelic_signflip_null_check.py`,
+  `brainvar_hapmix_deploy/allelic_signflip_null_check_20260925/`): at the 46
+  fixed leads the permuted allelic slope is off-centre in 13 genes under
+  `records` and 0 under `records_signflip` (0.12 expected by chance; max 0.042
+  se), rates 0.0698 / 0.0206 / 0.0060 against 0.0692 / 0.0200 / 0.0057 (paired
+  differences all span zero); on `map_cis` over 59 genes at 10,000 permutations
+  no `pval_perm` or `pval_beta` call at 0.05 changes (15 / 15 and 14 / 14),
+  leads and `pval_nominal` are identical, and the median shift in -log10
+  `pval_perm` (0.0060) is below the seed-to-seed floor of `records` itself
+  (0.0079). Signs are drawn right AFTER the permutation indices from
+  the same generator, so `records` at the same seed sees identical indices and
+  an identical total channel (pinned: a total-only run is identical under both
+  schemes). `perm_scheme='records'` is retained unchanged: by relabeling it
+  equals the genotype-permutation null of FastQTL and tensorQTL with per-donor
+  weights, pinned to 1e-9 by `tests/test_hapmixqtl_perm_scheme.py`. mixQTL
+  mode (`mixqtl_replication.py`) permutes the phenotype bundle its own
+  published way and was NOT changed. `perm_scheme='residuals'` is the earlier
   Freedman-Lane scheme (leverage-standardized whitened residuals permuted at
-  fixed weights), retained but conservative where weights vary — most so at
-  high expression. Cost 0.34 s vs 0.10 s per 1,000-permutation scan.
+  fixed weights, unswapped), retained but conservative where weights vary —
+  most so at high expression. Cost 0.34 s vs 0.10 s per 1,000-permutation
+  scan; the swap adds one element-wise product.
 
 - **Gene-level Gibbs shape has bounded real-data evidence.** The three-library
   pilot found Gaussian competitive within 0.05 bits/draw for 98.51% of 4,500 ASE
