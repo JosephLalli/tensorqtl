@@ -184,6 +184,42 @@ limits every weight to a multiple of the smallest.
 Those numbers describe the boundary zeros, not the weightings, and should
 not be cited as a before/after of the weighting result.
 
+**Which allelic value agrees with phASER** (`scripts/allelic_value_vs_phaser.py`,
+`brainvar_hapmix_deploy/allelic_value_vs_phaser_20260925/summary.json`).
+Pairs with at least 10 Salmon haplotype-informative reads and at least 20
+gw-phased phASER reads. "Inconsistent" means the value differs from phASER's
+log2 ratio by more than 3 of phASER's own counting sd. Candidates: the point
+estimate; the draw mean of log2((yL+1/2)/(yR+1/2)), the pre-2026-09-25 value;
+and log2 of the draw-mean counts. Intervals resample genes (SEED 42, 2,000
+draws).
+
+| Candidate | Zero-haplotype pairs (37,546): median abs difference, share inconsistent | Pairs with reads on both copies (595,009) |
+|---|---|---|
+| Point estimate | 6.45 log2, 97.0% [96.5, 97.4] | 0.30, 17.8% |
+| Draw mean of the log ratio | 0.88, 37.0% [35.9, 38.1] | 0.24, 10.0% |
+| Log of the draw-mean counts | 0.77, 31.6% [30.5, 32.6] | 0.23, 9.6% |
+
+Log of the draw-mean counts beats the draw mean of the log by 5.4 points
+[5.2, 5.7] on zero pairs. The point estimate overstates imbalance on
+ordinary pairs too: median excess magnitude over phASER +0.12 log2 against
++0.04 for either draw value. No candidate is clean on deep zero pairs: at
+1,000 or more reads the log of the draw-mean counts is still inconsistent in
+63.5% and overstates magnitude by a median 1.77 log2, against 89.2% and 10.99
+for the point estimate. Dropping zero pairs would discard 3,055 of them, 8.1%,
+that phASER calls clearly imbalanced, beyond 2-fold and 3 sd; on those the
+point estimate reads a median 9.29 log2 against phASER's 3.27, and the draw
+values 3.36 and 3.11. Orientation was checked: where both sources call a
+clear imbalance their signs agree in 95.7% of 3,538 pairs.
+
+Limits: phASER is not truth. It aligns to the reference genome, so it
+carries reference-mapping bias; it shares its SNP-covering reads with
+Salmon; and a monoallelic ratio is bounded by the pseudocount in both
+sources. Only 37,546 of about 467,000 zero-haplotype pairs have enough
+phASER coverage to score, few of them below 10 Salmon reads. Agreement with
+phASER is not calibration of the eQTL test, and the draw mean of the log
+ratio is the allelic value on which the pre-correction calibration was
+measured.
+
 Options for the user: keep point estimates and let the weights handle it;
 treat a haplotype at zero in the point estimate while the draws disagree as
 uninformative for the allelic channel; re-quantify with Salmon's `--useEM`
