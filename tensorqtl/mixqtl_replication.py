@@ -8,38 +8,42 @@ It exists so the hapmixQTL estimator can be compared against its parent on
 identical inputs, rather than against a description of its parent.
 
 It is also, by construction, **the no-draws comparator**. mixQTL consumes
-observed counts; this arm feeds it the Salmon posterior-mean counts
-``mean_draws(YL), mean_draws(YR), mean_draws(YT)`` and then never looks at the
-draws again. Where hapmixQTL weights donor i by ``1/(c_g v_gi + tau_g)`` with
-``v_gi`` the across-draw variance of the log ratio, this arm weights by the
-harmonic sum ``1/(1/y1 + 1/y2)`` -- the Poisson-predicted precision of
+observed counts. Since 2026-09-25 (user decision: mixQTL must not touch the
+Gibbs draws at any point) this arm is fed Salmon's POINT estimates, quant.sf
+NumReads summed to haplotype and gene totals, through
+``inputs_from_point_estimates``, which refuses a draws axis. Before that it
+was fed posterior means computed FROM the draws
+(``summaries_from_gibbs_posterior_mean``, now deprecated), so results recorded
+from 2026-09-19 to 2026-09-25 did depend on the draws, through their mean.
+Where hapmixQTL's default mode weights donor i by ``1/v_gi``, the across-draw
+variance of the log ratio, with the residual scale fitted, this arm weights
+by the harmonic sum ``1/(1/y1 + 1/y2)`` -- the Poisson-predicted precision of
 ``log(y1/y2)``. So the pair (hapmixQTL, mixqtl_replication) isolates exactly
 one thing: whether propagating the Gibbs draws buys anything over the Poisson
 approximation that the counts alone imply.
-
-Nothing here should be read as an endorsement of either weighting. Per the
-standing instruction recorded in CLAUDE.md, the allelic error model is
-undetermined and no parameterization is incumbent.
 
 THE DIVERGENCES THIS ARM REMOVES
 --------------------------------
 Relative to ``hapmixqtl.py``, and keyed to the divergence table in
 ``mixqtl_algorithm_review_20260914/REPORT.md`` section 4:
 
-  1. Gibbs variance propagation      -> posterior-mean counts only
+  1. Gibbs variance propagation      -> point-estimate counts only (posterior
+                                        means of the draws before 2026-09-25)
   2. weights 1/(c*v + tau)           -> harmonic sum of counts, capped
   3. per-gene null-model tau         -> no tau; dispersion is the residual scale
   4. known-variance SE 1/sqrt(xx)    -> fitted sigma_hat from the residuals
-  5. pseudocount kappa=0.5, and the
-     mean over draws of the log    -> no pseudocount, and the log of the
-                                        mean (mixQTL cutoffs instead). NOTE
-                                        both arms are in NATURAL log:
-                                        hapmixqtl.py:406 uses np.log and
-                                        log2 appears nowhere in it, the
-                                        migration being pending. An earlier
-                                        version of this list said log2 and
-                                        was wrong; the betas are directly
-                                        comparable.
+  5. pseudocount kappa=0.5         -> no pseudocount (mixQTL cutoffs
+                                        instead). UNITS: mixQTL keeps its
+                                        published NATURAL-log response.
+                                        hapmixQTL's point-estimate phenotype
+                                        (summaries_from_point_estimates,
+                                        2026-09-25) is log2, so a hapmixQTL
+                                        beta or SE is the mixQTL one divided
+                                        by ln 2; convert before comparing raw
+                                        betas. The older Gibbs-mean path
+                                        (compute_summaries_from_gibbs) is
+                                        natural log, so comparisons recorded
+                                        before 2026-09-25 need no conversion.
   6. no library-size offset          -> log(YT / 2 / lib_size)
   7. joint WLS covariate adjustment  -> two-step selected-covariate offset
   8. combined Z^2 statistic          -> inverse-variance meta of (beta, se)
@@ -49,11 +53,27 @@ Relative to ``hapmixqtl.py``, and keyed to the divergence table in
                                         signature's defaults; see the cutoff
                                         presets block below.
  11. permuted whitened residuals     -> permuted phenotype bundle (y, w, mask)
+ 12. covariates under permutation    -> the RNA-tied covariates move with the
+                                        phenotype bundle and the genotype PCs
+                                        (``genotype_covariates``) stay with the
+                                        genotypes, the rule hapmixQTL follows
+                                        since 2026-09-25. mixQTL fits its
+                                        two-step offset once and permutes the
+                                        adjusted response, which carries every
+                                        covariate with the RNA; that is exact
+                                        only when no covariate is tied to the
+                                        genotypes, so with genotype covariates
+                                        the offset is refitted on each permuted
+                                        dataset. Under the null a fixed
+                                        genotype block is unrelated to the
+                                        permuted response, so the |t| > 2
+                                        selection usually drops it: the
+                                        two-step design behaving as designed.
 
 Items already aligned before this module (do not re-remove): the allelic
-channel is fitted through the origin in both, and both are in natural log
-units (the log2 migration in hapmixQTL is still pending, so no unit
-conversion happens anywhere in this comparison).
+channel is fitted through the origin in both. Both sides take the same
+effective library size L (edgeR lib.size x TMM factor) since 2026-09-25:
+hapmixQTL divides by it inside log2(CPM + 1), mixQTL inside log(YT / 2 / L).
 
 VALIDATION BOUNDARY
 -------------------
@@ -87,12 +107,15 @@ cutoff-passing samples only -- the behaviour the non-permutation path already
 has, and the minimal change that makes a gene-level p-value obtainable.
 """
 
+import warnings
+
 import numpy as np
 
 __all__ = [
     'harmonic_weights', 'apply_weight_cap', 'covariate_offset',
     'trc_channel', 'asc_channel', 'meta_analyze', 'mixqtl_scan',
-    'mixqtl_permutation_scan', 'summaries_from_gibbs_posterior_mean',
+    'mixqtl_permutation_scan', 'inputs_from_point_estimates',
+    'summaries_from_gibbs_posterior_mean',
     'PUBLISHED_CUTOFFS', 'PACKAGE_DEFAULT_CUTOFFS',
 ]
 
@@ -164,12 +187,39 @@ META_N_CUTOFF = 15
 #  input adapter
 # ---------------------------------------------------------------------------
 
-def summaries_from_gibbs_posterior_mean(yL, yR, yT=None):
-    """Collapse Gibbs draws to the posterior-mean counts mixQTL would consume.
+def inputs_from_point_estimates(pL, pR, pT):
+    """mixQTL's inputs: Salmon POINT-estimate counts, never the Gibbs draws.
 
-    This is the whole of this arm's use of the draws: their mean. The
-    across-draw variance is deliberately discarded -- that discarding is the
-    comparison this module exists to support.
+    User decision 2026-09-25: mixQTL must not touch the draws at any point.
+    ``pL``/``pR`` are quant.sf NumReads summed over haplotype-paired
+    transcripts and ``pT`` over every transcript of the gene (the same sums
+    hapmixQTL's values use). A third axis is refused, because a draws axis
+    here is exactly what the rule forbids.
+
+    Returns (y1, y2, ytotal) as float arrays [features, samples].
+    """
+    out = []
+    for name, a in (('pL', pL), ('pR', pR), ('pT', pT)):
+        a = np.asarray(a, dtype=float)
+        if a.ndim != 2:
+            raise ValueError(f'{name} must be [features, samples] point estimates, '
+                             f'got shape {a.shape}; mixQTL does not read Gibbs draws')
+        if not np.isfinite(a).all() or (a < 0).any():
+            raise ValueError(f'{name} must be finite and non-negative counts')
+        out.append(a)
+    if not (out[0].shape == out[1].shape == out[2].shape):
+        raise ValueError(f'shapes differ: {[a.shape for a in out]}')
+    return tuple(out)
+
+
+def summaries_from_gibbs_posterior_mean(yL, yR, yT=None):
+    """DEPRECATED 2026-09-25: posterior-mean counts computed from the draws.
+
+    mixQTL must not touch the Gibbs draws at any point; use
+    ``inputs_from_point_estimates``. Kept, with a DeprecationWarning, so the
+    dated scripts that recorded results from 2026-09-19 to 2026-09-25 can be
+    re-run as they were. The across-draw variance was discarded; the mean was
+    not, which is why this counts as touching the draws.
 
     Args:
         yL, yR: haplotype counts [features, samples, draws]
@@ -178,6 +228,9 @@ def summaries_from_gibbs_posterior_mean(yL, yR, yT=None):
 
     Returns (y1, y2, ytotal), each [features, samples].
     """
+    warnings.warn('summaries_from_gibbs_posterior_mean feeds mixQTL values computed from '
+                  'the Gibbs draws; since 2026-09-25 mixQTL takes point estimates '
+                  '(inputs_from_point_estimates)', DeprecationWarning, stacklevel=2)
     tot = (yL + yR) if yT is None else np.asarray(yT)
     return yL.mean(axis=2), yR.mean(axis=2), np.asarray(tot).mean(axis=2)
 
@@ -249,6 +302,16 @@ def apply_weight_cap(weights, sample_size, weight_cap=WEIGHT_CAP, passed=None,
 # ---------------------------------------------------------------------------
 #  covariates
 # ---------------------------------------------------------------------------
+
+def _stack_covariates(covariates, genotype_covariates):
+    """RNA-tied columns first, then the genotype-tied ones; None if neither."""
+    parts = [np.asarray(c, float) for c in (covariates, genotype_covariates) if c is not None]
+    if not parts:
+        return None
+    if len({p.shape[0] for p in parts}) != 1:
+        raise ValueError(f'covariate blocks have different sample counts: {[p.shape for p in parts]}')
+    return np.column_stack(parts)
+
 
 def covariate_offset(ytotal, lib_size, covariates, t_threshold=2.0):
     """mixQTL's two-step covariate offset  [rlib_covariate.R:27-40].
@@ -513,18 +576,25 @@ def meta_analyze(trc, asc, n_cutoff=META_N_CUTOFF):
 
 def mixqtl_scan(y1, y2, ytotal, lib_size, h1, h2, covariates=None,
                 trc_cutoff=TRC_CUTOFF, asc_cutoff=ASC_CUTOFF,
-                asc_cap=ASC_CAP, weight_cap=WEIGHT_CAP):
+                asc_cap=ASC_CAP, weight_cap=WEIGHT_CAP, genotype_covariates=None):
     """One gene's nominal pass; mixQTL's ``mixqtl``  [mixqtl.R:44-68].
 
     NA genotypes are imputed to 0.5, as the reference does, before forming
     Xasc = h1 - h2 and Xtrc = (h1 + h2)/2.
 
     Args:
-        y1, y2, ytotal: [samples] posterior-mean counts
-        lib_size:       [samples]
+        y1, y2, ytotal: [samples] point-estimate counts
+        lib_size:       [samples] effective library size
         h1, h2:         [samples, P] phased haplotype dosages in {0, 1}
         covariates:     [samples, n_cov] or None
+        genotype_covariates: [samples, k] or None. On an observed dataset they
+            enter the offset exactly like ``covariates`` (appended after
+            them); the distinction matters only under permutation, where they
+            stay with the genotypes (divergence 12). A caller building a
+            permuted dataset for this function permutes ``covariates`` with
+            the phenotype and leaves these in place.
     """
+    covariates = _stack_covariates(covariates, genotype_covariates)
     h1 = np.array(h1, dtype=float, copy=True)
     h2 = np.array(h2, dtype=float, copy=True)
     h1[np.isnan(h1)] = 0.5
@@ -548,7 +618,8 @@ def mixqtl_scan(y1, y2, ytotal, lib_size, h1, h2, covariates=None,
 def mixqtl_permutation_scan(y1, y2, ytotal, lib_size, h1, h2, perm_idx,
                             covariates=None, trc_cutoff=TRC_CUTOFF,
                             asc_cutoff=ASC_CUTOFF, asc_cap=ASC_CAP,
-                            weight_cap=WEIGHT_CAP, strict_reference_cap=False):
+                            weight_cap=WEIGHT_CAP, strict_reference_cap=False,
+                            genotype_covariates=None):
     """Permutation pass; mixQTL's ``*_permutation``  [rlib_matrix_ls_with_mask.R].
 
     The reference permutes the *phenotype bundle*: response, weights and mask
@@ -560,8 +631,16 @@ def mixqtl_permutation_scan(y1, y2, ytotal, lib_size, h1, h2, perm_idx,
         perm_idx: [n_perm, samples] integer permutations of range(samples)
         strict_reference_cap: reproduce the reference's all-weights-zeroed
             defect. See the module docstring. Default False.
+        genotype_covariates: [samples, k] or None. Covariates tied to the
+            GENOTYPES (the genotype PCs): they stay in place while the
+            phenotype bundle and ``covariates`` move, and the two-step offset
+            is refitted on each permuted dataset (divergence 12). None keeps
+            the reference behaviour, one offset fitted before permuting,
+            which is exact when every covariate moves with the phenotype.
     Returns [n_perm] array of the maximum meta |stat| over variants.
     """
+    G = None if genotype_covariates is None else np.asarray(genotype_covariates, float)
+    C = None if covariates is None else np.asarray(covariates, float)
     h1 = np.array(h1, dtype=float, copy=True)
     h2 = np.array(h2, dtype=float, copy=True)
     h1[np.isnan(h1)] = 0.5
@@ -570,8 +649,8 @@ def mixqtl_permutation_scan(y1, y2, ytotal, lib_size, h1, h2, perm_idx,
 
     y1 = np.asarray(y1, float); y2 = np.asarray(y2, float)
     ytotal = np.asarray(ytotal, float); lib_size = np.asarray(lib_size, float)
-    off = (np.zeros(len(ytotal)) if covariates is None
-           else covariate_offset(ytotal, lib_size, covariates)[0])
+    off = (np.zeros(len(ytotal)) if C is None or G is not None
+           else covariate_offset(ytotal, lib_size, C)[0])
 
     passed_a = (y1 >= asc_cutoff) & (y2 >= asc_cutoff) & (y1 <= asc_cap) & (y2 <= asc_cap)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -603,7 +682,16 @@ def mixqtl_permutation_scan(y1, y2, ytotal, lib_size, h1, h2, perm_idx,
                 ak, Xasc[:, ~mono_a], wk)
 
         mk = passed_t[idx].astype(float)
-        tk = resp_t[idx]
+        if G is None:
+            tk = resp_t[idx]
+        else:
+            # the permuted dataset: RNA record and its covariates at idx,
+            # genotype covariates in place; mixQTL fits its offset on it
+            yk, lk = ytotal[idx], lib_size[idx]
+            off_k = covariate_offset(yk, lk, _stack_covariates(
+                None if C is None else C[idx], G))[0]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                tk = np.where(passed_t[idx], np.log(yk / 2.0 / lk) - off_k, 0.0)
         b_t = np.full(Xtrc.shape[1], np.nan); s_t = np.full(Xtrc.shape[1], np.nan)
         if (~mono_t).any() and mk.sum() > 2:
             sel = mk > 0

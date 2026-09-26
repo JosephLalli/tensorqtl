@@ -26,6 +26,7 @@ from tensorqtl.mixqtl_replication import (
     harmonic_weights, apply_weight_cap, covariate_offset,
     trc_channel, asc_channel, meta_analyze, mixqtl_scan,
     mixqtl_permutation_scan, summaries_from_gibbs_posterior_mean,
+    inputs_from_point_estimates,
     _simple_regression_through_origin, _simple_regression_with_intercept,
 )
 
@@ -259,16 +260,32 @@ def test_na_genotypes_impute_to_half():
     assert np.isfinite(out['meta']['beta']).any()
 
 
-def test_posterior_mean_adapter_discards_the_draw_variance():
-    """This arm's only use of the draws is their mean."""
+def test_posterior_mean_adapter_is_deprecated():
+    """The pre-2026-09-25 adapter took the draws' mean; it still does, and
+    now warns, because mixQTL must not touch the draws at any point."""
     rng = np.random.default_rng(9)
     yL = rng.gamma(20, 2, (3, 5, 200))
     yR = rng.gamma(20, 2, (3, 5, 200))
     yT = yL + yR
-    a, b, t = summaries_from_gibbs_posterior_mean(yL, yR, yT)
+    with pytest.warns(DeprecationWarning):
+        a, b, t = summaries_from_gibbs_posterior_mean(yL, yR, yT)
     assert np.allclose(a, yL.mean(2))
     assert np.allclose(b, yR.mean(2))
     assert np.allclose(t, yT.mean(2))
+
+
+def test_point_estimate_inputs_refuse_a_draws_axis():
+    rng = np.random.default_rng(12)
+    pL, pR = rng.gamma(20, 2, (3, 5)), rng.gamma(20, 2, (3, 5))
+    pT = pL + pR + 10
+    y1, y2, yt = inputs_from_point_estimates(pL, pR, pT)
+    assert np.array_equal(y1, pL) and np.array_equal(y2, pR) and np.array_equal(yt, pT)
+    with pytest.raises(ValueError, match='Gibbs draws'):
+        inputs_from_point_estimates(pL[..., None], pR, pT)
+    with pytest.raises(ValueError):
+        inputs_from_point_estimates(-pL, pR, pT)
+    with pytest.raises(ValueError):
+        inputs_from_point_estimates(pL, pR, pT[:, :-1])
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +389,52 @@ def test_permutation_moves_response_weights_and_mask_together():
     perm = mixqtl_permutation_scan(y1, y2, yt, lib, h1, h2, identity)
     assert perm[0] == pytest.approx(np.nanmax(np.abs(obs['meta']['stat'])),
                                     rel=1e-9)
+
+
+def _covariate_fixture(seed=13, n=70, P=4):
+    rng = np.random.default_rng(seed)
+    C = rng.normal(size=(n, 2))                     # RNA-tied (RIN, an expression PC)
+    G = rng.normal(size=(n, 1))                     # genotype-tied (a genotype PC)
+    lib = rng.uniform(1.5e7, 2.5e7, n)
+    # the total response carries both kinds of covariate, so the offset has
+    # something to select
+    yt = np.round(lib / 1e4 * np.exp(0.4 * C[:, 0] + 0.5 * G[:, 0] + rng.normal(0, 0.2, n)))
+    y1 = rng.uniform(200, 800, n); y2 = rng.uniform(200, 800, n)
+    h1 = rng.integers(0, 2, (n, P)).astype(float)
+    h2 = rng.integers(0, 2, (n, P)).astype(float)
+    return y1, y2, yt, lib, h1, h2, C, G, rng
+
+
+def test_genotype_covariates_enter_the_nominal_offset_like_any_other():
+    y1, y2, yt, lib, h1, h2, C, G, _ = _covariate_fixture()
+    split = mixqtl_scan(y1, y2, yt, lib, h1, h2, covariates=C, genotype_covariates=G)
+    joint = mixqtl_scan(y1, y2, yt, lib, h1, h2, covariates=np.column_stack([C, G]))
+    assert np.array_equal(split['meta']['stat'], joint['meta']['stat'], equal_nan=True)
+    assert split['cov_selected'][-1]                # the genotype PC is selected here
+
+
+def test_genotype_covariates_stay_with_the_genotypes_under_permutation():
+    """A permuted draw is the nominal scan of the permuted DATASET: the RNA
+    record and its covariates move, the genotype PCs and haplotypes stay, and
+    mixQTL refits its two-step offset on that dataset (divergence 12)."""
+    y1, y2, yt, lib, h1, h2, C, G, rng = _covariate_fixture()
+    n = len(yt)
+    perm = np.array([rng.permutation(n) for _ in range(6)])
+    got = mixqtl_permutation_scan(y1, y2, yt, lib, h1, h2, perm,
+                                  covariates=C, genotype_covariates=G)
+    for k, idx in enumerate(perm):
+        ref = mixqtl_scan(y1[idx], y2[idx], yt[idx], lib[idx], h1, h2,
+                          covariates=C[idx], genotype_covariates=G)
+        assert got[k] == pytest.approx(np.nanmax(np.abs(ref['meta']['stat'])), rel=1e-9)
+    # identity: the observed statistic
+    obs = mixqtl_scan(y1, y2, yt, lib, h1, h2, covariates=C, genotype_covariates=G)
+    ident = mixqtl_permutation_scan(y1, y2, yt, lib, h1, h2, np.arange(n)[None, :],
+                                    covariates=C, genotype_covariates=G)
+    assert ident[0] == pytest.approx(np.nanmax(np.abs(obs['meta']['stat'])), rel=1e-9)
+    # moving the genotype PC with the RNA instead gives a different null
+    moved = mixqtl_permutation_scan(y1, y2, yt, lib, h1, h2, perm,
+                                    covariates=np.column_stack([C, G]))
+    assert not np.allclose(got, moved)
 
 
 # ---------------------------------------------------------------------------
