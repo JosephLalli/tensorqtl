@@ -269,6 +269,46 @@ Gibbs variance, the new covariates, and holding genotype PCs with the
 genotypes. Limits: 100 genes, nothing below 0.001, and the allelic channel in
 the 21 genes below 30 reads reads 0.061 / 0.019 / 0.009 on few donors.
 
+## What made the total channel worse (2026-09-26)
+
+`scripts/total_channel_decomposition.py`,
+`brainvar_hapmix_deploy/total_channel_decomposition_20260926/`: the corrected
+store's 100 genes and 200 permutations, total channel only, undoing one change
+at a time. Rates at 0.05 / 0.01 / 0.001; the difference from `corrected` is
+paired on the same resampled genes.
+
+| Arm | Rates | Minus corrected at 0.05 |
+|---|---|---|
+| corrected | 0.0835 / 0.0261 / 0.0066 | |
+| genotype PCs moving with the record | 0.0662 / 0.0165 / 0.0025 | -0.0172 [-0.0248, -0.0106] |
+| old covariate file, all moving | 0.0678 / 0.0171 / 0.0026 | -0.0156 [-0.0234, -0.0087] |
+| pre-correction values, genotype PCs held | 0.1028 / 0.0334 / 0.0082 | +0.0194 [+0.0150, +0.0236] |
+| pre-correction values and covariates | 0.0702 / 0.0183 / 0.0030 | -0.0132 [-0.0211, -0.0056] |
+| half-read pseudocount, library-normalized | 0.0875 / 0.0284 / 0.0077 | +0.0041 [+0.0020, +0.0067] |
+| half-read pseudocount, no library size | 0.1024 / 0.0333 / 0.0082 | +0.0190 [+0.0147, +0.0233] |
+| unit weights | 0.0503 / 0.0104 / 0.0011 | -0.0332 [-0.0427, -0.0252] |
+
+Holding the genotype PCs with the genotypes accounts for all of the
+regression: moving them with the record gives 0.0662, slightly better than
+the pre-correction pipeline's 0.0702. The value changes help rather than hurt:
+with every covariate moving, the corrected values give 0.0678 against 0.0702,
+and library normalization is the part that matters (0.1024 without it, 0.0875
+with it). The pseudocount's size does not matter. Unit weights are nominal
+at every level and at every expression tercile, so every part of the excess
+acts through the Gibbs weights. By median total CPM tercile (below 18, 18 to
+64, above 64) the corrected arm reads 0.094 / 0.079 / 0.075 at 0.05 on the
+first 140 draws, so the weights fail most at low expression but not only
+there.
+
+Not established: why the genotype-PC tie hurts only through the weights. A
+candidate is that the permuted record keeps its own ancestry-related
+expression, which the genotype PCs in the design no longer absorb, so the
+permuted residual carries variance that does not scale with depth; that is
+the kind the 1/v weighting with a fitted scale mishandles. If so, the tied
+null carries residual variance the observed data do not, which matters for
+`pval_perm` as well as for this nominal-p check. Not measured on observed
+data.
+
 ## Built inputs
 
 All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
