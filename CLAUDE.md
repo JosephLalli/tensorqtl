@@ -147,6 +147,7 @@ status as current practice is.
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
+| How is the simulation benchmark to be built, and against which commit? | `docs/simulation_benchmark_spec.md` |
 | What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html` |
 
 ## Pipeline rules, 2026-09-25 (user decisions, standing)
@@ -157,10 +158,15 @@ measurement variance; unit log2(CPM + 1) on edgeR's effective library size
 expression-PC gene filter = eQTL gene filter; genotype PCs stay with the
 genotypes under permutation, every other covariate moves with the RNA record;
 mixQTL never touches the draws. Full statement, code map, built inputs, what
-is not yet switched (`compare_pipelines.py`), two open decisions (1,208
-filtered genes without Gibbs draws; Salmon point estimates that put one
-haplotype at exactly zero in 3.6% of informative pairs), and which results
-predate the rules: `docs/pipeline_rules.md`. Every
+is not yet switched (`compare_pipelines.py`), and which results predate the
+rules: `docs/pipeline_rules.md`. Four open decisions live there, one section
+each: 1,208 filtered genes without Gibbs draws; Salmon point estimates that
+put one haplotype at exactly zero (rate depends on the gene set — see the
+page, do not quote a single percentage); which weighting configuration ships
+(2026-09-26: the shipped Gibbs-both-channels default is anticonservative on
+the corrected pipeline's total channel; unit/1/v split weighting and
+`1/(v+1)` both calibrate, at different costs); and why tying genotype PCs to
+the genotypes under permutation interacts with the weights. Every
 calibration number in this file dated on or before 2026-09-25 was measured on
 the pre-correction pipeline.
 
@@ -365,7 +371,13 @@ experiment.
 
   Since 2026-09-25 the genotype PCs stay with the genotypes and every other
   covariate moves with the record (`genotype_covariates_df`; both modes; code
-  map and tests in `docs/pipeline_rules.md`).
+  map and tests in `docs/pipeline_rules.md`). This evidence for the swap
+  itself is pre-correction (natural-log Gibbs-mean phenotype); it is not
+  redone on the corrected pipeline. Held on the corrected pipeline instead,
+  2026-09-26: tying the genotype PCs to the genotypes, combined with Gibbs
+  weighting, is what moved the total channel's nominal-p rate — see
+  `docs/pipeline_rules.md`'s "What made the total channel worse" and its
+  "genotype-PC permutation rule interacts with the weights" open decision.
 
 - **Gene-level Gibbs shape has bounded real-data evidence.** The three-library
   pilot found Gaussian competitive within 0.05 bits/draw for 98.51% of 4,500 ASE
@@ -709,7 +721,11 @@ GTEx overdispersion, depth and zero-inflation structure.
 - After the through-origin change, `_joint_gls`/`_pvals` (the robust
   second-pass path) still charge the ASE channel `1 + n_cov` columns, so the
   robust SE there is ~6% conservative. `map_cis`/`map_nominal` are unaffected.
-- The log2 migration is pending; outputs are still natural logs.
+- The log2 migration is done for the default-mode runner's point-estimate
+  path (`summaries_from_point_estimates`, since 2026-09-25) but not for
+  `compute_summaries_from_gibbs`, `compare_pipelines.py`, or the dated
+  scripts that import it — see the "Use log2..." bullet above and
+  `docs/pipeline_rules.md`.
 - **`map_susie` CANNOT REACH DEFAULT MODE, and the package CLI's fine-mapping
   path runs the withdrawn known-variance configuration.** Established
   2026-09-23 by reading the code, and stronger than the "not re-verified"
@@ -758,7 +774,12 @@ GTEx overdispersion, depth and zero-inflation structure.
   so this bounds `pval_nominal` -- but see the CALM2 entry below for what the
   empirical p does not protect against. Section below; full record in
   `brainvar_hapmix_deploy/nominal_p_hypotheses_20260925/` (report
-  `nominal_p_report.html`, reconciled budget `reconciliation.md`).
+  `nominal_p_report.html`, reconciled budget `reconciliation.md`). On the
+  corrected pipeline (point estimates, log2 units, genotype-tied
+  permutation) the picture is not identical: `docs/pipeline_rules.md`'s
+  "Nominal-p calibration on the corrected pipeline" and "What made the total
+  channel worse" sections decompose it further and leave which weighting
+  configuration ships as an open decision.
 - **A single donor record can carry a gene-level call, and the empirical p does
   not protect against it** (2026-09-25; pre-correction pipeline). `map_cis` on
   observed data gives CALM2

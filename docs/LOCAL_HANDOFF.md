@@ -202,4 +202,9 @@ Read `docs/pipeline_rules.md`: the 2026-09-25 rules (values from Salmon point
 estimates, Gibbs draws only for variance; log2(CPM + 1) on edgeR's effective
 library size; expression-PC gene filter = eQTL gene filter; genotype PCs tied
 to the genotypes under permutation; mixQTL never touches the draws), where
-each is implemented, what is not yet switched, and the two open decisions.
+each is implemented, what is not yet switched, and four open decisions (as of
+2026-09-26: the two original ones — 1,208 filtered genes without Gibbs draws,
+and Salmon point estimates that put one haplotype at exactly zero — plus
+which weighting configuration ships and how the genotype-PC permutation tie
+interacts with the weights, both added after the corrected-pipeline null and
+its before/after decomposition were run that week).

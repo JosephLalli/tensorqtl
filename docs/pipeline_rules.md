@@ -86,8 +86,10 @@ beside it) and `scripts/compare_mixqtl_replication.py`
 - `scripts/analyze_mixqtl_comparison.py` reads the 2026-09-19 folder, whose
   hapmixQTL arm is a deprecated-model ablation record. Do not point it at the
   corrected folder.
-- No corrected stored null and no before/after calibration comparison have
-  been run.
+- A corrected stored null and a before/after calibration comparison, which
+  this bullet used to say were missing, have both been run since — see
+  "Nominal-p calibration on the corrected pipeline" and "What made the total
+  channel worse" below.
 
 ## Open decision: 1,208 filtered genes have no Gibbs draws
 
@@ -427,6 +429,28 @@ high-effect high-se 0.051 / 0.063 / 0.050. The pattern of the random 100
 genes holds in both sets. This is a permutation null: it does not test
 whether a weighting removes the observed spurious hits these genes carry.
 
+## Open decision: which weighting configuration ships
+
+Not decided; the results directly above are measurement only. On the
+corrected pipeline's 100-gene, 200-permutation null
+(`total_channel_decomposition_20260926/`, `hybrid_weights_null_20260926/`,
+`gibbs_weight_benefit_by_gene_20260926/`): the shipped default, Gibbs `1/v`
+weights in both channels, is anticonservative in the total channel and in the
+combined statistic; unit weights in the total channel with Gibbs weights kept
+in the allelic channel ("split weighting") calibrates both channels and the
+combined statistic while keeping most of the allelic channel's precision
+gain; unit weights in both channels also calibrates but gives up that gain
+entirely; `1/(v+1)` in both channels calibrates the total channel (it acts as
+unit weighting there in practice) but widens the allelic channel's true
+spread by 22%, which cancels the total channel's gain in the combined slope.
+Neither the zero-haplotype drop nor a total-channel weight override is wired
+into `tensorqtl/hapmixqtl.py` or the `scripts/run_hapmixqtl_from_salmon.py`
+CLI; both exist only in `scripts/hybrid_weights_null.py` and
+`scripts/drop_zero_haplotype_cost.py`. Choosing among these configurations —
+or leaving the shipped default as is — is a user decision.
+
+## Open decision: the genotype-PC permutation rule interacts with the weights
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
@@ -470,13 +494,17 @@ All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
 
 ## Results that predate the rules
 
-Every calibration number recorded on or before 2026-09-25 was measured on the
+The 2,000-permutation instrument, the mechanism decomposition, the comparator
+rates, the transcriptome reach and the count-scale arms — including the
+2026-09-25 hypothesis round (`nominal_p_hypotheses_20260925/`), recorded
+before the correction landed later that same day — were all measured on the
 pre-correction pipeline: Gibbs-mean phenotype, natural-log raw counts, the
 old covariates, the whole covariate row moved with the record under
-permutation, and mixQTL fed posterior means. That covers the
-2,000-permutation instrument, the mechanism decomposition, the comparator
-rates, the transcriptome reach and the count-scale arms. The numbers are not
-withdrawn; they describe that pipeline, not the corrected one.
+permutation, and mixQTL fed posterior means. The numbers are not withdrawn;
+they describe that pipeline, not the corrected one. "On or before 2026-09-25"
+is not a safe cutoff by itself, since the corrected pipeline's own results
+above (`corrected_null_store_20260925/` onward) are dated 2026-09-25 and
+2026-09-26 too.
 
 The stored 200-draw null on 100 protein-coding genes
 (`protein_coding_null_store_20260925/`, commit d3248f0) is pre-correction. 90

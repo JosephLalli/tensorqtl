@@ -407,10 +407,23 @@ from the draws, and mixQTL mode now takes point estimates.
   `brainvar_hapmix_deploy/mixqtl_replication_point_estimates_20260925/`.
 - **Not yet switched:** `scripts/compare_pipelines.py`; no corrected stored
   null and no before/after calibration comparison.
+  **UPDATE 2026-09-26:** the corrected stored null and the before/after
+  comparison this bullet says were missing have both been run since
+  (`corrected_null_store_20260925/`, `total_channel_decomposition_20260926/`);
+  `docs/pipeline_rules.md`'s "Nominal-p calibration on the corrected
+  pipeline" and "What made the total channel worse" sections are the record.
+  `compare_pipelines.py` is still not switched.
 - **Open, needs a user decision:** 1,208 filtered genes have no Gibbs draws;
   Salmon's point estimates put one haplotype at exactly zero in 79 of 2,188
   informative pairs on the 29 calibration genes, which dominates the
   corrected weighting ablation.
+  **UPDATE 2026-09-26:** two more open decisions were added on the corrected
+  pipeline, each its own section in `docs/pipeline_rules.md`: which
+  weighting configuration ships (the shipped Gibbs-both-channels default is
+  anticonservative in the corrected null; unit/1/v split weighting and
+  `1/(v+1)` both calibrate it, at different costs to precision), and why
+  tying the genotype PCs to the genotypes under permutation interacts with
+  the weights to move the total channel's calibration.
 - **Pre-correction:** every calibration number recorded on or before
   2026-09-25, and the stored null in `protein_coding_null_store_20260925/`.
 
@@ -431,7 +444,10 @@ Work that is **proposed and not yet run** is kept out of this document and out
 of `CLAUDE.md`, both of which record what is established. It lives in
 [OPEN_INVESTIGATIONS_20260920.md](OPEN_INVESTIGATIONS_20260920.md): currently
 the per-channel residual sigma test (the last untested of the six mixQTL
-disagreement mechanisms) and the pending log2 unit migration.
+disagreement mechanisms) and the pending log2 unit migration. (The residual-
+sigma test was itself closed 2026-09-20, refuted; that file keeps it only as
+a pointer and no longer lists it as open work — this sentence was not
+updated when that happened.)
 
 Worktree: `hapmix-runbook-local`; the through-origin change is commit
 `bea450c` on top of `f11d586`. The estimator ablation
