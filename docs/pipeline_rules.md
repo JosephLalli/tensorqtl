@@ -340,6 +340,26 @@ their count). In the total channel no donor in any of the 100 genes reaches
 10x its gene's median Gibbs variance, so there is nothing of that kind for
 the weights to downweight.
 
+**Split weighting is calibrated** (`scripts/hybrid_weights_null.py`,
+`brainvar_hapmix_deploy/hybrid_weights_null_20260926/`): Gibbs weights with
+zero-haplotype pairs dropped in the allelic channel, unit weights in the
+total channel, everything else as the corrected store, same 100 genes and
+200 permutations, compared paired with the `drop` arm (Gibbs weights in both).
+
+| Combined statistic | 0.05 | 0.01 | 0.001 |
+|---|---|---|---|
+| Split weighting | 0.0512 [0.0481, 0.0558] | 0.0117 [0.0095, 0.0160] | 0.0027 [0.0009, 0.0064] |
+| Gibbs weights in both | 0.0719 [0.0656, 0.0798] | 0.0206 [0.0166, 0.0265] | 0.0054 [0.0028, 0.0099] |
+| Split minus Gibbs-in-both | -0.0207 [-0.0262, -0.0159] | -0.0089 [-0.0118, -0.0065] | -0.0026 [-0.0037, -0.0017] |
+
+The combined slope's reported se is 1.003 of its realized null spread under
+split weighting against 0.944 with Gibbs weights in both, and its realized
+spread is 0.956 of the Gibbs-in-both one (per gene 10th / 50th / 90th
+percentile 0.756 / 0.955 / 1.025), so it is honest and slightly more precise.
+NOT tested: the gene-level `pval_perm`, observed data, anything below 0.001,
+genes outside the calibration filter. Not in the shipped code: both the drop
+and the total-channel unit weights exist only in these experiment scripts.
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
