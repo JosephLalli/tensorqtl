@@ -322,6 +322,24 @@ It concerns the total channel only: in the allelic channel 1/v weighting cut
 the slope's variance to 0.340 of unweighted on the 29 calibration genes
 (2026-09-19, pre-correction).
 
+**Where the Gibbs weights buy precision, per gene**
+(`scripts/gibbs_weight_benefit_by_gene.py`,
+`brainvar_hapmix_deploy/gibbs_weight_benefit_by_gene_20260926/per_gene.tsv`):
+realized null-slope sd under unit weights over that under Gibbs weights,
+median over a gene's tested variants, 100 genes, 200 permutations; allelic
+channel with zero-haplotype pairs dropped. Above 1 the weights help.
+
+| Channel | 10th / 25th / 50th / 75th / 90th percentile | Max | Genes at 1.2 or more |
+|---|---|---|---|
+| Allelic | 1.11 / 1.18 / 1.38 / 1.69 / 2.19 | 3.42 (ZNF180) | 70 |
+| Total | 0.70 / 0.84 / 0.93 / 1.00 / 1.08 | 1.21 (ZZZ3) | 1 |
+
+In the allelic channel the gain is broad and largest in genes with several
+donors whose Gibbs variance exceeds 10x the gene's median (Spearman 0.41 with
+their count). In the total channel no donor in any of the 100 genes reaches
+10x its gene's median Gibbs variance, so there is nothing of that kind for
+the weights to downweight.
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
