@@ -34,13 +34,18 @@ WHAT IT DOES
      the sample is heterozygous, so yL + yR is a heterozygous-transcript
      subtotal whose pattern tracks local heterozygosity -- which is in LD
      with the cis variants under test.
-  3. Calls the production compute_summaries_from_gibbs -> A, T, Va, Vt. The
-     inferential variance therefore comes from YOUR Gibbs draws, which is the
-     whole point of the method. Per-sample Poisson counting noise is added to
-     those variances by default (--count-noise / --no-count-noise): the Gibbs
-     draws describe allelic assignment given the observed total, so a
-     zero-count sample has zero across-draw variance and would otherwise carry
-     the largest weight in the gene.
+  3. Reads Salmon's POINT estimates (quant.sf NumReads), summed to genes the
+     same way, and runs edgeR on the all-gene totals (filterByExpr with no
+     design, the optional --gene-restrict list, keep.lib.sizes=FALSE, TMM;
+     scripts/edger_library_normalization.R). Its kept genes are the eQTL gene
+     filter and lib.size x norm.factors is the effective library size.
+     Every VALUE comes from the point estimates and the draws give only its
+     measurement variance (rule of 2026-09-25), through
+     summaries_from_point_estimates: allelic A = log2((L + 1/2)/(R + 1/2)),
+     total T = log2(CPM + 1) with CPM on the effective library size, and
+     Va / Vt the across-draw variance of the same transforms plus a
+     counting term (--count-noise / --no-count-noise), which also floors a
+     zero-read total donor at the counting variance of count + 1/2.
   4. Reads phased genotypes from the VCF -> dosages and the signed het
      indicator s = xL - xR.
   5. GATES on reference_bias_diagnostic. hapmixQTL does not model reference
@@ -62,7 +67,14 @@ WHAT IT DOES
      nominal p are reported with tau re-estimated at the lead instead of under
      the null model, which is the like-for-like with a method that fits its
      dispersion under the alternative. pval_perm and pval_beta stay on the
-     scan scale. No covariates are passed to either channel on this route.
+     scan scale. --covariates (required) adjust the total channel inside the
+     weighted fit; the allelic channel is through the origin. Under the
+     permutation null the genotype-tied columns (--genotype-covariates,
+     default the genotype_covariates.txt beside --covariates: the genotype
+     PCs) stay with the genotypes and every other column moves with the RNA
+     record. The expression PCs must be built on the same gene set and
+     library sizes as this run (build_covariates.py --point-estimates);
+     check_covariate_provenance refuses otherwise.
   7. Optionally runs the REAL RASQUAL binary on the same genes (--rasqual)
      for a side-by-side comparison.
   8. Writes an EVAL BUNDLE of aggregate statistics only.
@@ -109,6 +121,8 @@ Usage:
       --vcf phased.vcf.gz \\
       --manifest samples.tsv \\
       --tx2gene tx2gene.tsv \\
+      --gene-pos genes.tsv \\
+      --covariates cov/covariates.tsv \\
       --out results/
 
   samples.tsv:  <sample_id> <TAB> <path to that sample's salmon output dir>
@@ -129,12 +143,14 @@ import pandas as pd
 warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
-    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, count_cutoff_masks,
+    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, summaries_from_point_estimates,
+                                     count_cutoff_masks,
                                      reference_bias_diagnostic, orient_haplotypes, map_cis,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
-    from hapmixqtl import (compute_summaries_from_gibbs, count_cutoff_masks,
+    from hapmixqtl import (compute_summaries_from_gibbs, summaries_from_point_estimates,
+                           count_cutoff_masks,
                            reference_bias_diagnostic, orient_haplotypes, map_cis,
                            map_str_curvature, map_multiallelic)
 
@@ -834,22 +850,26 @@ def nonstandard_extension(vdf, dos, xL, xR, order, str_vcf=None, multiallelic_vc
     return vdf, dos, xL, xR, vtype, aux
 
 
-def run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos, window, min_hap, out):
+def run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos, window, min_hap, out,
+                    covariates_df=None):
     """The two second-pass models on whatever sidecars the extension produced.
-    Writes per-locus tables locally; returns (curvature_df, site_df, allele_df)."""
+    Writes per-locus tables locally; returns (curvature_df, site_df, allele_df).
+    Nominal fits only (no permutation), so every covariate column enters the
+    total channel the same way whether it is tied to the RNA or the genotypes."""
     cur = site_res = allele_res = None
     if aux.get('str_len') is not None:
         print(f'  second pass: linear + curvature on {len(aux["str_sites"])} STRs')
         cur = map_str_curvature(aux['str_len'], aux['str_phased'],
                                 aux['str_sites'].set_index('id'), list(order),
-                                sdf, tdf, vadf, vtdf, map_pos, window=window, verbose=False)
+                                sdf, tdf, vadf, vtdf, map_pos, covariates_df=covariates_df,
+                                window=window, verbose=False)
         cur.to_csv(out / 'hapmixqtl_str_curvature.tsv.gz', sep='\t', index=False)
     if aux.get('ma_alleles') is not None:
         print(f'  second pass: categorical on {len(aux["ma_sites"])} multi-ALT sites')
         site_res, allele_res = map_multiallelic(
             aux['ma_alleles'], aux['ma_sites'].set_index('site_id'), list(order),
             sdf, tdf, vadf, vtdf, map_pos, hap_phased=aux['ma_phased'],
-            window=window, min_hap=min_hap, verbose=False)
+            covariates_df=covariates_df, window=window, min_hap=min_hap, verbose=False)
         site_res.to_csv(out / 'hapmixqtl_multiallelic_sites.tsv.gz', sep='\t', index=False)
         allele_res.to_csv(out / 'hapmixqtl_multiallelic_alleles.tsv.gz', sep='\t', index=False)
     return cur, site_res, allele_res
@@ -947,6 +967,73 @@ def load_point_estimates(manifest, tx2gene, suffixes, genes, samples=None):
         pT[[gi[g] for g in hit], si] = tot.loc[hit].to_numpy()
     totals_all = pd.DataFrame(totals).reindex(columns=samples).fillna(0.0)
     return pL, pR, pT, totals_all
+
+
+EDGER_SCRIPT = Path(__file__).resolve().parent / 'edger_library_normalization.R'
+
+
+def edger_normalize(totals_all, restrict, out_dir, rscript='Rscript'):
+    """Run edgeR on the all-gene point-estimate totals (edger_library_normalization.R:
+    filterByExpr with no design, the ``restrict`` gene list, keep.lib.sizes=FALSE,
+    TMM) and return read_edger_dir(out_dir, samples)."""
+    import subprocess
+    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    counts, rfile = out_dir / 'totals_all.tsv.gz', out_dir / 'restrict.txt'
+    totals_all.to_csv(counts, sep='\t')
+    rfile.write_text('\n'.join(map(str, restrict)) + '\n')
+    res = subprocess.run([rscript, str(EDGER_SCRIPT), str(counts), str(rfile), str(out_dir)],
+                         capture_output=True, text=True)
+    if res.returncode:
+        raise SystemExit(f'edgeR normalization failed:\n{res.stderr[-1500:]}')
+    print('  ' + res.stdout.strip())
+    return read_edger_dir(out_dir, list(totals_all.columns))
+
+
+def read_edger_dir(edger_dir, samples):
+    """(effective library sizes aligned to ``samples``, the edgeR-kept gene list)
+    from an edger_library_normalization.R output folder. The effective library
+    size is lib.size x TMM norm.factor, the value edgeR's cpm() divides by."""
+    d = Path(edger_dir)
+    es = pd.read_csv(d / 'edger_samples.tsv', sep='\t', dtype={'sample': str}).set_index('sample')
+    missing = [s for s in samples if s not in es.index]
+    if missing:
+        raise SystemExit(f'{len(missing)} samples have no edgeR library size in {d}, e.g. {missing[:3]}')
+    return es.loc[list(samples), 'eff_lib_size'].to_numpy(float), (d / 'calibration_genes.txt').read_text().split()
+
+
+def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=False):
+    """The expression-PC gene set must equal the eQTL gene set, and the PCs
+    must be in the same unit (log2 CPM + 1 on the same effective library
+    sizes). build_covariates.py --point-estimates records where its PCs came
+    from in covariate_build.json; compare that to this run. Refuses on a
+    mismatch or a missing record unless ``override``."""
+    j = Path(cov_path).parent / 'covariate_build.json'
+    why = None
+    if not j.exists():
+        why = f'{j} is absent, so the expression-PC gene set cannot be checked'
+    else:
+        meta = json.loads(j.read_text())
+        pe = meta.get('point_estimates')
+        if not pe:
+            why = ('the covariates carry the pre-2026-09-25 expression PCs (log1p of raw '
+                   'counts on genes nonzero in half the samples), not log2(CPM+1) on the '
+                   'eQTL gene set')
+        else:
+            pc_genes = (Path(pe) / 'edger' / 'calibration_genes.txt').read_text().split()
+            pc_lib, _ = read_edger_dir(Path(pe) / 'edger', samples)
+            if set(pc_genes) != set(eqtl_genes):
+                why = (f'the expression PCs were built on {len(pc_genes)} genes and this run '
+                       f'filters to {len(eqtl_genes)}: the PC gene filter must equal the eQTL '
+                       'gene filter')
+            elif not np.allclose(pc_lib, eff_lib, rtol=1e-6, atol=0):
+                why = 'the expression PCs used different edgeR effective library sizes'
+    if why is None:
+        print('  covariate provenance: expression PCs on the eQTL gene set, same library sizes')
+        return
+    if not override:
+        raise SystemExit(f'covariate check failed: {why}.\nRebuild with scripts/build_covariates.py '
+                         '--point-estimates, or pass --covariates-unverified to proceed anyway.')
+    print(f'  WARNING (--covariates-unverified): {why}')
 
 
 def load_counts(manifest, tx2gene, suffixes, out):
@@ -1055,20 +1142,41 @@ def main():
     ap.add_argument('--count-noise', action=argparse.BooleanOptionalAction,
                     default=True,
                     help='per-sample Poisson counting noise in the Gibbs '
-                         'variances; see compute_summaries_from_gibbs')
+                         'variances; see summaries_from_point_estimates')
+    ap.add_argument('--covariates',
+                    help='TSV [samples x covariates], index = sample id, e.g. '
+                         'build_covariates.py --point-estimates output. Required: every '
+                         'run is fitted on covariate-adjusted residuals. Applied to the '
+                         'total channel; the allelic channel is through the origin')
+    ap.add_argument('--genotype-covariates', default='auto',
+                    help="file listing the covariate columns tied to the GENOTYPES under "
+                         "permutation (the genotype PCs); every other column moves with "
+                         "the RNA record. 'auto' (default) reads genotype_covariates.txt "
+                         "beside --covariates; 'none' ties every column to the RNA")
+    ap.add_argument('--covariates-unverified', action='store_true',
+                    help='proceed when the expression PCs cannot be shown to use the eQTL '
+                         'gene set and library sizes of this run (NOT recommended)')
+    ap.add_argument('--edger-dir', default=None,
+                    help='a finished edger_library_normalization.R folder (edger_samples.tsv, '
+                         'calibration_genes.txt) to reuse; by default edgeR is run here on '
+                         'the point-estimate totals of every gene')
+    ap.add_argument('--gene-restrict', default=None,
+                    help='gene list intersected with filterByExpr to form the eQTL gene '
+                         'set (the calibration phase uses protein-coding autosomal genes); '
+                         'default: no restriction')
     ap.add_argument('--perm-scheme', default='records_signflip',
                     choices=['records_signflip', 'records', 'residuals'],
                     help="map_cis permutation null: 'records_signflip' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed, and each permuted record's haplotype labels L/R are swapped at random, negating its allelic log ratio), 'records' (the same without the swap) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
     ap.add_argument('--asc-cutoff', type=float, default=None,
                     help='allele-specific count FLOOR: both haplotypes must have at '
-                         'least this many posterior-mean counts for a donor to enter '
+                         'least this many point-estimate counts for a donor to enter '
                          "the allelic channel. mixQTL's published value is 50. Off by "
                          'default; hapmixQTL has no count cutoffs of its own')
     ap.add_argument('--asc-cap', type=float, default=None,
                     help='allele-specific count CEILING: both haplotypes must have at '
                          "most this many counts. mixQTL's published value is 1000, "
                          'justified there as an alignment-artifact guard. NOT recommended '
-                         'on Salmon posterior means, where exceeding 1000 means a '
+                         'on Salmon point estimates, where exceeding 1000 means a '
                          'well-expressed gene: on the 29 calibration genes it discards '
                          '1,656 of 2,193 informative donor-gene pairs. Provided so the '
                          'two estimators can be run on a matched donor set')
@@ -1122,25 +1230,71 @@ def main():
 
     if args.selftest:
         return selftest()
-    for r in ('vcf', 'manifest', 'tx2gene'):
+    for r in ('vcf', 'manifest', 'tx2gene', 'covariates'):
         if not getattr(args, r):
             raise SystemExit(f'--{r} is required (or use --selftest)')
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     sufs = tuple(args.hap_suffix.split(','))
 
-    print('Reading Salmon Gibbs quantifications')
+    print('Reading Salmon Gibbs quantifications (measurement variance only)')
     genes, samples, YL, YR, YT = load_counts(args.manifest, args.tx2gene,
                                              sufs, out)
+    n_draws = int(YL.shape[2])
 
-    print('Computing Gibbs summaries (production code path)')
-    A, T, Va, Vt, Cat = compute_summaries_from_gibbs(
-        YL, YR, yT=YT, count_noise=getattr(args, 'count_noise', True))
+    # Values come from Salmon's POINT estimates (quant.sf NumReads); the Gibbs
+    # draws above give only their measurement variance (rule of 2026-09-25).
+    print('Reading Salmon point estimates (every value in the analysis)')
+    pL, pR, pT, totals_all = load_point_estimates(args.manifest, args.tx2gene, sufs,
+                                                  list(genes), samples)
+    print('edgeR library normalization (filterByExpr, keep.lib.sizes=FALSE, TMM)')
+    if args.edger_dir:
+        eff_lib, eqtl_genes = read_edger_dir(args.edger_dir, samples)
+    else:
+        restrict = (Path(args.gene_restrict).read_text().split() if args.gene_restrict
+                    else list(totals_all.index))
+        eff_lib, eqtl_genes = edger_normalize(totals_all, restrict, out / 'edger')
+
+    print('Computing summaries: values from point estimates, variance from the Gibbs draws')
+    A, T, Va, Vt, Cat = summaries_from_point_estimates(
+        pL, pR, pT, eff_lib, YL, YR, YT, count_noise=args.count_noise)
+    del YL, YR, YT
+    # The eQTL gene filter. Genes that pass it but carry no haplotype-paired
+    # transcript in any donor have no Gibbs draws from load_counts and cannot
+    # be given a variance, so they are reported, not tested.
+    kept = set(eqtl_genes)
+    gmask = np.array([g in kept for g in genes])
+    print(f'  eQTL gene filter: {int(gmask.sum())} of {len(genes)} genes with Gibbs draws; '
+          f'{len(kept) - int(gmask.sum())} filtered genes have no Gibbs draws')
+    genes = np.asarray(genes)[gmask]
+    A, T, Va, Vt, pL, pR, pT = (x[gmask] for x in (A, T, Va, Vt, pL, pR, pT))
 
     print('Reading phased VCF')
     vdf, dos, xL, xR, order = read_phased_vcf(args.vcf, set(samples))
     keep = [samples.index(s) for s in order]
     A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
-    YLm, YRm = YL[:, keep, :].mean(2), YR[:, keep, :].mean(2)
+    pL, pR, pT, eff_lib = pL[:, keep], pR[:, keep], pT[:, keep], eff_lib[keep]
+
+    cov = pd.read_csv(args.covariates, sep='\t', index_col=0)
+    cov.index = cov.index.astype(str)
+    missing = [s for s in order if s not in cov.index]
+    if missing:
+        raise SystemExit(f'{len(missing)} samples have no covariates, e.g. {missing[:3]}')
+    cov = cov.loc[order]
+    gfile = (Path(args.covariates).parent / 'genotype_covariates.txt'
+             if args.genotype_covariates == 'auto' else
+             None if args.genotype_covariates == 'none' else Path(args.genotype_covariates))
+    gcols = gfile.read_text().split() if gfile is not None and gfile.exists() else []
+    if args.genotype_covariates not in ('auto', 'none') and not gcols:
+        raise SystemExit(f'--genotype-covariates {gfile} lists no columns')
+    absent = [c for c in gcols if c not in cov.columns]
+    if absent:
+        raise SystemExit(f'genotype-tied covariates not in --covariates: {absent}')
+    gcov = cov[gcols] if gcols else None
+    cov = cov.drop(columns=gcols)
+    print(f'Covariates: {cov.shape[1]} move with the RNA record, {len(gcols)} with the '
+          f'genotypes ({", ".join(gcols) if gcols else "none"})')
+    check_covariate_provenance(args.covariates, eqtl_genes, eff_lib, order,
+                               override=args.covariates_unverified)
 
     sdf = pd.DataFrame(A, index=genes, columns=order)
     tdf = pd.DataFrame(T, index=genes, columns=order)
@@ -1201,7 +1355,7 @@ def main():
     # i.e. an unrelated variant for every gene past the first.
     g_sign = gene_orientation(common, pos_df, *[snp_arrays[k] for k in (0, 2, 3)],
                               order, allelic=allelic)
-    diag = reference_bias_diagnostic(YLm[gsel], YRm[gsel], g_sign)
+    diag = reference_bias_diagnostic(pL[gsel], pR[gsel], g_sign)
     print('\nReference-bias gate:\n  ' + diag['message'])
     if diag['flag'] and not args.force:
         (out / 'eval_bundle.json').write_text(json.dumps(
@@ -1223,8 +1377,9 @@ def main():
         trc_cutoff = 100.0 if trc_cutoff is None else trc_cutoff
     keep_a_df = keep_t_df = None
     if any(c is not None for c in (asc_cutoff, asc_cap, trc_cutoff)):
-        # the total cutoff reads yT over ALL transcripts, never yL + yR
-        ka, kt = count_cutoff_masks(YLm, YRm, YT[:, keep, :].mean(2),
+        # point-estimate counts; the total cutoff reads the total over ALL
+        # transcripts, never yL + yR
+        ka, kt = count_cutoff_masks(pL, pR, pT,
                                     asc_cutoff=asc_cutoff, asc_cap=asc_cap,
                                     trc_cutoff=trc_cutoff)
         keep_a_df = pd.DataFrame(ka, index=sdf.index, columns=sdf.columns)
@@ -1246,7 +1401,8 @@ def main():
                   xL_df=xLdf, xR_df=xRdf, window=args.window, tau_refit=True,
                   verbose=True, perm_scheme=args.perm_scheme,
                   tau_mode=TAU_MODE, se_mode=SE_MODE,
-                  keep_a_df=keep_a_df, keep_t_df=keep_t_df)
+                  keep_a_df=keep_a_df, keep_t_df=keep_t_df,
+                  covariates_df=cov, genotype_covariates_df=gcov)
     # map_cis returns the gene id as the index; keep it as a column so the
     # written table and the RASQUAL concordance merge both have it.
     res = res.reset_index()
@@ -1256,14 +1412,18 @@ def main():
 
     bundle = build_eval_bundle(res, diag, {
         'n_samples': len(order), 'n_genes_tested': int(len(common)),
-        'n_variants': int(len(vdf)), 'n_gibbs_draws': int(YL.shape[2]),
+        'n_variants': int(len(vdf)), 'n_gibbs_draws': n_draws,
+        'n_covariates_rna': int(cov.shape[1]), 'n_covariates_genotype': len(gcols),
+        'phenotype': 'point estimates; allelic log2((L+0.5)/(R+0.5)), total log2(CPM+1) '
+                     'with edgeR effective library size; Gibbs variance for weights',
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
         'mode': 'default', 'tau_mode': TAU_MODE, 'se_mode': SE_MODE,
         'tau_refit': True})
     if vtype is not None:
         print('\nNon-standard second pass')
-        cur, site_res, _ = run_second_pass(aux, order, sdf, tdf, vadf, vtdf, map_pos,
-                                           args.window, args.min_hap, out)
+        cur, site_res, _ = run_second_pass(
+            aux, order, sdf, tdf, vadf, vtdf, map_pos, args.window, args.min_hap, out,
+            covariates_df=cov if gcov is None else pd.concat([cov, gcov], axis=1))
         bundle['nonstandard'] = nonstandard_summary(
             res, vtype, cur, site_res,
             {'str_vcf': bool(args.str_vcf), 'multiallelic': bool(args.multiallelic)})
@@ -1272,14 +1432,12 @@ def main():
         if not Path(args.rasqual).exists():
             raise SystemExit(f'--rasqual binary not found: {args.rasqual}\n'
                              'Build it with scripts/build_rasqual.sh')
-        # RASQUAL models counts. The tested genes' Gibbs-mean totals go in as
-        # Y (the log-scale T is hapmixQTL's phenotype; expm1 of log(tot/2 + k)
-        # is half the count), and the offset K is the gene mean times the
-        # sample's relative library size, summed over EVERY quantified gene.
-        YTm = YT[:, keep, :].mean(2)
-        Tcounts = YTm[gsel]
-        libsz = YTm.sum(0)
-        libsz = libsz / libsz.mean()
+        # RASQUAL models counts. The tested genes' point-estimate totals go
+        # in as Y, and the offset K is the gene mean times the sample's
+        # relative edgeR effective library size (lib.size x TMM), the same
+        # library size the hapmixQTL phenotype's CPM uses.
+        Tcounts = pT[gsel]
+        libsz = eff_lib / eff_lib.mean()
         if allelic is None and args.rasqual_input in ('native', 'both'):
             raise SystemExit(
                 f'--rasqual-input {args.rasqual_input} requires --allelic-counts.\n'
@@ -1290,7 +1448,7 @@ def main():
                 "RASQUAL's statistic). Supply phASER allelic_counts files.")
         rq = run_rasqual_comparison(
             args.rasqual, list(sdf.index), pos_df, *snp_arrays,
-            YLm[gsel], YRm[gsel],
+            pL[gsel], pR[gsel],
             Tcounts, libsz, out, args.window, args.rasqual_genes,
             allelic=allelic, order=order, mode=args.rasqual_input)
         if rq is not None:
@@ -1372,8 +1530,27 @@ def selftest(extra=()):
             fh.write(boot.tobytes())
         (td / s / 'aux_info' / 'meta_info.json').write_text(
             json.dumps({'num_bootstraps': ND, 'samp_type': 'gibbs'}))
+        # the point estimates every value is taken from (quant.sf NumReads)
+        pd.DataFrame({'Name': names, 'Length': 1000, 'EffectiveLength': 800.0,
+                      'TPM': 0.0, 'NumReads': boot.mean(0)}).to_csv(
+            td / s / 'quant.sf', sep='\t', index=False)
         man.append(f'{s}\t{td/s}')
     (td / 'manifest.tsv').write_text('\n'.join(man))
+
+    # Covariates as build_covariates.py --point-estimates writes them: one
+    # genotype PC tied to the genotypes, the rest to the RNA record, and a
+    # provenance record naming the edgeR run the expression PCs used.
+    _, _, _, tot_all = load_point_estimates(td / 'manifest.tsv', td / 't2g.tsv',
+                                            ('_hapA', '_hapB'), [], samples)
+    edger_normalize(tot_all, list(tot_all.index), td / 'pe' / 'edger')
+    edger_normalize(tot_all, list(tot_all.index[:-3]), td / 'pe_other' / 'edger')
+    cov_ = pd.DataFrame({'rin': rng.normal(size=N), 'expr_pc1': rng.normal(size=N),
+                         'geno_pc1': rng.normal(size=N)}, index=samples)
+    for tag, pe in (('cov', td / 'pe'), ('cov_other', td / 'pe_other')):
+        (td / tag).mkdir()
+        cov_.to_csv(td / tag / 'covariates.tsv', sep='\t')
+        (td / tag / 'genotype_covariates.txt').write_text('geno_pc1\n')
+        (td / tag / 'covariate_build.json').write_text(json.dumps({'point_estimates': str(pe)}))
 
     # A personalized diploid transcriptome is built per sample from that
     # sample's own variants, so transcript sets differ BETWEEN samples. Build
@@ -1414,7 +1591,7 @@ def selftest(extra=()):
 
     argv = ['x', '--vcf', str(td / 'p.vcf'), '--manifest', str(td / 'manifest.tsv'),
             '--tx2gene', str(td / 't2g.tsv'), '--gene-pos', str(td / 'genepos.tsv'),
-            '--out', str(td / 'out')]
+            '--covariates', str(td / 'cov' / 'covariates.tsv'), '--out', str(td / 'out')]
     rq_bin = os.environ.get('RASQUAL_BIN')
     if rq_bin and Path(rq_bin).exists():
         print(f'(also exercising the RASQUAL comparison via {rq_bin})')
@@ -1433,10 +1610,24 @@ def selftest(extra=()):
     assert gene_orientation(['GX'], gt_, vdf_, xL_, xR_, ['s0', 's1']).tolist() == [[0.0, -1.0]]
     assert gene_orientation(['GX'], gt_[['chr', 'pos']], vdf_, xL_, xR_, ['s0', 's1']).tolist() == [[1.0, 0.0]]
 
+    # expression PCs built on a different gene set than the eQTL filter: refused
+    sys.argv = [a if a != str(td / 'cov' / 'covariates.tsv') else str(td / 'cov_other' / 'covariates.tsv')
+                for a in argv]
+    sys.argv[sys.argv.index('--out') + 1] = str(td / 'out_refused')
+    try:
+        main()
+        raise AssertionError('covariates built on another gene set must be refused')
+    except SystemExit as e:
+        assert 'covariate check failed' in str(e), e
+    print('covariate provenance check: PCs on another gene set are refused')
+    sys.argv = argv + list(extra)
+
     print('running the real pipeline on the fabricated inputs (standard: biallelic SNPs)...\n')
     main()
     b = json.loads((td / 'out' / 'eval_bundle.json').read_text())
     std = pd.read_csv(td / 'out' / 'hapmixqtl_cis.tsv.gz', sep='\t')
+    assert (std['n_genotype_covariates'] == 1).all(), 'geno_pc1 must be tied to the genotypes'
+    assert b['meta']['n_covariates_rna'] == 2 and b['meta']['n_covariates_genotype'] == 1, b['meta']
     assert 'nonstandard' not in b and 'variant_type' not in std.columns, \
         'default run must not carry the opt-in passes'
     assert 'phenotype_id' in std.columns and std['variant_id'].str.startswith('v').all(), \
