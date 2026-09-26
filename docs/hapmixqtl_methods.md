@@ -5,8 +5,12 @@
 This document specifies the statistics implemented in `tensorqtl/hapmixqtl.py` at the level needed to reproduce them: every quantity, its estimator, the null distribution used for inference, and the defaults. Section 7 lists the measured properties on which the choices rest, Section 8 the assumptions, Section 9 a symbol-to-code map. Equation numbers are referenced throughout.
 
 > **TWO MODES, as of 2026-09-23.** hapmixQTL ships exactly two configurations.
-> **mixQTL mode** is the published estimator on posterior-mean counts, no draws
-> (`tensorqtl/mixqtl_replication.py`). **Default mode** is
+> **mixQTL mode** is the published estimator, no draws
+> (`tensorqtl/mixqtl_replication.py`). User rule, 2026-09-25: it consumes
+> Salmon POINT estimates, never posterior-mean counts (a mean over Gibbs
+> draws is computed FROM the draws); every mixQTL-mode measurement recorded
+> before 2026-09-25 was run on posterior-mean counts
+> (`docs/pipeline_rules.md`). **Default mode** is
 > `Var(\varepsilon_i) = \sigma^2 v_i` — the Gibbs across-draw variance as a
 > *shape*, with the residual scale fitted per variant, and **no additive
 > floor** (`tau_mode='zero'` + `se_mode='fitted'`).
@@ -35,13 +39,40 @@ explanation of equation (4). The counting formula remains in the implementation
 pending a separate variance-model decision; it is not justified by that
 explanation. See the [corrected algorithm review](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md).
 
+**Since 2026-09-25, the deployed path: values from Salmon's point estimates,
+variance from the draws.** User rule: every VALUE below — the
+per-sample summaries $a_i$, $t_i$ of Section 2, the total-channel CPM
+normalization, mixQTL's inputs, count cutoffs and expression PCs — must come
+from Salmon's point estimates (`quant.sf` `NumReads`), never from a mean over
+the Gibbs draws (a "posterior-mean count"); the draws are used ONLY to
+measure that same value's variance, through the identical transform. This is
+implemented as `summaries_from_point_estimates` in `tensorqtl/hapmixqtl.py`
+(tested, `tests/test_hapmixqtl_point_estimates.py`), which replaces the draw
+MEAN of equations (2)-(3) with the point-estimate value while keeping an
+across-draw variance of the same transform, in `log2` rather than natural
+log: $a_i = \log_2\!\big((p_{L,i}+\kappa)/(p_{R,i}+\kappa)\big)$,
+$t_i = \log_2(\mathrm{CPM}_i + 1)$ with $\mathrm{CPM}_i = p_{T,i} /
+L^{\mathrm{eff}}_i \times 10^6$ from edgeR's effective library size
+$L^{\mathrm{eff}}$ (TMM norm.factors times lib.size; "Pipeline rules,
+2026-09-25" in `CLAUDE.md` has the exact procedure), and $v_{a,i}$, $v_{t,i}$
+the across-draw variance of $\log_2$ applied to the draws by the identical
+formula. The counting term of equation (4) is likewise evaluated at the point
+estimate plus one half rather than at the draw mean, so a zero-read donor
+keeps a positive, finite counting variance (user decision) rather than an
+undefined one. `run_hapmixqtl_from_salmon.py` uses this function since
+2026-09-25, with covariates required. **Equations (2)-(4) below describe
+`compute_summaries_from_gibbs`**, the natural-log draws-mean phenotype that
+every result recorded before 2026-09-25 used and that `compare_pipelines.py`
+still uses. Rules, code map and open decisions: `docs/pipeline_rules.md`.
+
 ### Summary
 
 **Project unit convention (2026-09-15):** use log2 for expression, ASE ratios,
 aFC, and associated uncertainty. beta=1 denotes a twofold effect; variance and
-covariance use squared log2 units. Runtime conversion remains pending, so the
-as-implemented equations and historical results below still describe natural-log
-units. See the [conversion record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).
+covariance use squared log2 units. Runtime conversion is DONE for the
+default-mode runner as of 2026-09-25 (`summaries_from_point_estimates`, the
+paragraph above). Equations (2)-(4) and the historical results below are in
+natural-log units. See the [conversion record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).
 
 For each gene, hapmixQTL takes two measurements per sample from the posterior draws of a diploid (personalized) quantification: the log ratio of the two haplotypes' expression, and the log total. Both are regressed on the phased genotype of each cis variant in a known-variance generalized least squares (GLS) whose per-sample error variance is the sum of the quantifier's inferential variance, a Poisson counting term, and a per-gene between-sample variance $\tau$ estimated across samples. The two regressions estimate the same parameter, the log allelic fold change of the ALT haplotype relative to the REF haplotype, and are combined by inverse-variance weighting. The lead variant is the maximum of the combined statistic over the window; its gene-level significance is empirical, from a Freedman-Lane permutation of leverage-standardized whitened residuals, with a Beta approximation of the permutation distribution. Effect sizes are reported at the lead with $\tau$ re-estimated under the alternative so that a gene's own signal does not shrink its reported scale.
 
@@ -190,7 +221,25 @@ $T^2_v$ follows from (15) and the lead is $\arg\max_v T^2_v$ (undefined statisti
 
 ### 5.3 Permutation null
 
-The null permutes sample records. Draw $P$ permutations $\pi_1, \dots, \pi_P$ of $\{1, \dots, N\}$ from a seeded generator, shared across genes and across the two channels. Under $\pi$, sample $i$ receives sample $\pi(i)$'s whitened phenotype value $\tilde y_{c,\pi(i)}$, weight $w_{c,\pi(i)}$ and covariate row $C_{c,\pi(i)}$ together; the genotypes stay in sample order. The whitened null design is rebuilt from the permuted weights and covariate rows, $D^{\pi}_c = [\sqrt{w^{\pi}_c}\,\mathbf 1,\ \sqrt{w^{\pi}_c} \odot C^{\pi}_c]$ with orthonormal basis $Q^{\pi}_c$; the permuted phenotype and the weighted predictors are residualized on it, $\tilde e^{\pi}_c = (I - Q^{\pi}_c Q^{\pi\top}_c)\,\tilde y^{\pi}_c$ and $\tilde X^{\pi}_c = (I - Q^{\pi}_c Q^{\pi\top}_c)(\sqrt{w^{\pi}_c} \odot X_c)$ with $X_a = S$, $X_t = G/2$; then
+The null permutes sample records. Draw $P$ permutations $\pi_1, \dots, \pi_P$ of $\{1, \dots, N\}$ from a seeded generator, shared across genes and across the two channels. Under $\pi$, sample $i$ receives sample $\pi(i)$'s whitened phenotype value $\tilde y_{c,\pi(i)}$, weight $w_{c,\pi(i)}$ and covariate row $C_{c,\pi(i)}$ together; the genotypes stay in sample order.
+
+**Genotype-tied covariates, 2026-09-25 (user rule).** Where $C_c$ includes genotype PCs, those columns are an
+exception to "covariate row together" above: they stay fixed in genotype
+order and only the remaining covariate columns (metadata, expression PCs)
+move with $\pi(i)$'s record. `map_cis`'s `genotype_covariates_df` parameter
+and `_combine_covariates` build one combined $C_t$ with the genotype-tied
+columns last; `WeightedResidualizer.n_fixed_cov` tells
+`_record_permutation_channel` how many trailing columns to hold fixed while
+permuting the rest. By relabeling, this equals permuting the genotype
+columns AND the genotype-covariate rows together by $\pi^{-1}$, with the
+records and their remaining covariates fixed — the same identity as above,
+generalized (`test_genotype_tied_covariates_permute_with_the_genotypes`,
+`tests/test_hapmixqtl_perm_scheme.py`). It reaches the total channel
+whenever `genotype_covariates_df` is passed; it reaches the allelic channel
+only when `ase_covariates_df=SAME_COVARIATES`, so the default through-origin
+allelic design ($C_a$ empty, Section 3.3) is unaffected by it.
+
+The whitened null design is rebuilt from the permuted weights and covariate rows, $D^{\pi}_c = [\sqrt{w^{\pi}_c}\,\mathbf 1,\ \sqrt{w^{\pi}_c} \odot C^{\pi}_c]$ with orthonormal basis $Q^{\pi}_c$; the permuted phenotype and the weighted predictors are residualized on it, $\tilde e^{\pi}_c = (I - Q^{\pi}_c Q^{\pi\top}_c)\,\tilde y^{\pi}_c$ and $\tilde X^{\pi}_c = (I - Q^{\pi}_c Q^{\pi\top}_c)(\sqrt{w^{\pi}_c} \odot X_c)$ with $X_a = S$, $X_t = G/2$; then
 $$ xy^{\pi}_{c,v} = \tilde X^{\pi}_{c,v} \cdot \tilde e^{\pi}_c, \qquad xx^{\pi}_{c,v} = \lVert \tilde X^{\pi}_{c,v} \rVert^2, \qquad T^{2,\pi}_v = \frac{(xy^{\pi}_{a,v} + xy^{\pi}_{t,v})^2}{xx^{\pi}_{a,v} + xx^{\pi}_{t,v}}, \qquad M_\pi = \max_v T^{2,\pi}_v. \tag{18} $$
 Relabeling the samples shows that $T^{2,\pi}$ equals the observed statistic computed on the genotype matrix with its columns permuted by $\pi^{-1}$ and the records fixed: the null is the permutation of genotypes against everything else, the null of FastQTL and tensorQTL, with the per-sample weights carried along. A non-informative sample travels with its zero weight, so no information lands on a zero weight. Because the denominator changes with $\pi$, the allelic channel's default through-origin design costs two matrix products per permutation set, $S\,(w_a \odot a)^{\pi}$ and $S^{\circ 2}\, w^{\pi}_a$, and the total channel a re-residualization batched over permutations (a QR of $D^{\pi}_t$ per permutation, chunked; about 0.25 s per gene for $P = 1000$ and 4,000 variants on a GPU, against 0.1 s for the scheme below). This is `perm_scheme='records'`, the default from 2026-09-17 to 2026-09-25 (`_record_permutation_channel`).
 
@@ -316,6 +365,7 @@ The choices above rest on measurements from the calibration suite (`tests/test_h
 | Beta approximation | fitted, else $p_{\mathrm{beta}}$ is missing | on | `beta_approx` |
 | leverage floor in (17) | | $10^{-3}$ | `_leverage_standardized` |
 | seed | permutation generator | none | `seed` |
+| genotype-tied covariates | columns of $C_t$ (and, under `SAME_COVARIATES`, $C_a$) held fixed in genotype order under the record permutation of 5.3, rather than moved with the record | none (2026-09-25 user rule) | `map_cis(genotype_covariates_df)`, `_combine_covariates`, `WeightedResidualizer.n_fixed_cov` |
 | predictor validity | $xx > 10^{-12}\max(\lVert x^{*}\rVert^2, 10^{-30})$ | | `_wls_regression` |
 | gate thresholds | min depth 10, min usable gene-samples 20, $p < 10^{-3}$ | | `reference_bias_diagnostic` |
 
@@ -327,7 +377,7 @@ still importable from `hapmixqtl` for historical scripts, with a
 `DeprecationWarning`; a default-mode run never loads that module at all, which
 `tests/test_fitted_variance_quarantine.py` pins.
 
-Functions: `compute_summaries_from_gibbs` (Section 2), `_prepare_channels` and `_channel_weights` (4.1, 4.3), `WeightedResidualizer` (4.1), `_wls_regression` (4.2), `_estimate_tau`, `_estimate_c_tau`, `estimate_library_factors`, `estimate_variance_priors` (4.3), `calculate_hapmixqtl_nominal` and `_combined_tstat2` (4.4), `calculate_hapmixqtl_permutations`, `_leverage_standardized`, `_permute_within_informative` (5.3), `map_cis` (5), `map_nominal` (per-pair statistics on the null-model $\tau$ scale), `cis_trans_diagnostic` (6.2), `orient_haplotypes` and `reference_bias_diagnostic` (6.3), `calculate_beta_approx_pval` in `core.py` (5.3).
+Functions: `compute_summaries_from_gibbs` (Section 2; the pre-2026-09-25 phenotype), `summaries_from_point_estimates` (Section 2 box; the deployed phenotype since 2026-09-25), `_prepare_channels` and `_channel_weights` (4.1, 4.3), `WeightedResidualizer` and its `n_fixed_cov` (4.1, 5.3), `_wls_regression` (4.2), `_estimate_tau`, `_estimate_c_tau`, `estimate_library_factors`, `estimate_variance_priors` (4.3), `calculate_hapmixqtl_nominal` and `_combined_tstat2` (4.4), `calculate_hapmixqtl_permutations`, `_leverage_standardized`, `_permute_within_informative`, `_combine_covariates` and `genotype_covariates_df` (5.3), `map_cis` (5), `map_nominal` (per-pair statistics on the null-model $\tau$ scale), `cis_trans_diagnostic` (6.2), `orient_haplotypes` and `reference_bias_diagnostic` (6.3), `calculate_beta_approx_pval` in `core.py` (5.3).
 
 ## References
 

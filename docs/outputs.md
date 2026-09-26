@@ -94,6 +94,8 @@ Column | Description
 
 All statistics are on the null-model tau scale (tau estimated once per phenotype per channel without a genotype term); `map_cis(tau_refit=True)` is the only entry point that reports a lead on a refit scale.
 
+**Units.** From `run_hapmixqtl_from_salmon.py` since 2026-09-25, `slope`/`slope_a`/`slope_t` are log2 effect sizes (beta=1 is a twofold effect): the phenotype is `summaries_from_point_estimates` (`docs/pipeline_rules.md`). Tables written before 2026-09-25, and by `compare_pipelines.py` until it is switched, are natural-log effect sizes from `compute_summaries_from_gibbs`.
+
 #### Mode `hapmixqtl`
 Top association per phenotype with permutation and Beta-approximated p-values, written to `${prefix}.hapmixqtl.txt.gz`. The columns of `cis` are all present (plus `qval` and `pval_nominal_threshold` when rpy2/qvalue is available), where `slope`/`slope_se`/`pval_nominal` are the combined ASE + total estimates and `slope` is interpretable as the log allelic fold change per ALT allele. `beta_shape1`, `beta_shape2`, `true_df`, `pval_true_df` and `pval_beta` are NaN when `--disable_beta_approx` is set or the Beta fit fails. The following columns are additional to `cis`:
 
@@ -110,6 +112,8 @@ Column | Description
 `tau_a_null` | ASE-channel overdispersion of the scan, estimated under the null model (no genotype term)
 `tau_t_null` | Total-channel overdispersion of the scan, estimated under the null model
 `tau_refit` | Whether either channel's tau was re-estimated with the lead in the design (`--tau_refit`; false otherwise, in which case `tau_a`/`tau_t` equal `tau_a_null`/`tau_t_null`)
+`perm_scheme` | Which permutation null produced `pval_perm`/`pval_beta` (`records_signflip`, the default since 2026-09-25; `records`; or `residuals`) — see CLAUDE.md's permutation bullet
+`n_genotype_covariates` | Added 2026-09-25 (user rule). Count of covariate columns tied to the genotypes (genotype PCs) rather than the RNA record, which stay fixed in genotype order under the permutation null (`map_cis(genotype_covariates_df=...)`); 0 when none were passed, as in every run before 2026-09-25
 
 Two scales coexist in this table. `pval_perm` and `pval_beta` are always on the scan scale, where the permutations carry the same tau and the empirical p is calibrated; `pval_nominal`, `slope` and `slope_se` move to the refit scale when `tau_refit` is true. `pval_nominal` is the best of the cis-window and is never a gene-level p — `pval_beta` is.
 

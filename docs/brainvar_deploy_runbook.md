@@ -460,6 +460,62 @@ python3 scripts/build_covariates.py --metadata <metadata_v1.4.tsv> \
     --vcf prepped/rephased.vcf.gz --hap-suffix _L,_R --out cov/
 ```
 
+`<metadata_v1.4.tsv>` is
+`/mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv` (SHA-256
+prefix `c70e3599`, matching the pairing section above).
+
+**2026-09-25 correction, user decision: run `build_point_estimate_cache.py`
+first and pass its output to `build_covariates.py --point-estimates`.**
+Without `--point-estimates`, `build_covariates.py` builds the pre-2026-09-25
+expression PCs: `log1p` of raw `quant.sf` NumReads, not library-normalized,
+on genes nonzero in half the samples, standardized. That breaks the
+2026-09-25 rules (`docs/pipeline_rules.md`) on unit and gene filter. Build the
+point-estimate cache once, beside the Gibbs cache it is keyed to:
+
+```bash
+python3 scripts/build_point_estimate_cache.py
+```
+
+`build_point_estimate_cache.py` takes no flags: its paths (the deploy root
+`/mnt/ssd/lalli/brainvar_hapmix_deploy`, the Gibbs cache
+`cache/gibbs_56b63c3b37ed5df8`, `cohort/salmon.tsv`, `annot/tx2gene.tsv`,
+`annot/genes.tsv`) are hardcoded to this deployment and must be edited in the
+script for a different cache directory or manifest. It reads the Salmon
+manifest and the existing Gibbs cache and writes `point_estimates/` beside
+the cache (`pL.npy`/`pR.npy`/`pT.npy`, `totals_all.tsv.gz`,
+`restrict_calibration.txt`, `edger/edger_samples.tsv`,
+`edger/calibration_genes.txt`, `summary.json`); it shells out to
+`edger_library_normalization.R` and requires R with edgeR installed. Read
+`summary.json` before continuing: the script aborts unless `pT` equals the
+all-gene totals, `pL + pR <= pT`, point-estimate totals track the Gibbs
+posterior means (Pearson of log1p above 0.99), and edgeR's sample order
+matches the cache's.
+
+```bash
+python3 scripts/build_covariates.py --metadata <metadata_v1.4.tsv> \
+    --pairing <pairing.tsv> --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
+    --vcf prepped/rephased.vcf.gz --hap-suffix _L,_R \
+    --point-estimates <gibbs_cache>/point_estimates --out cov/
+```
+
+With `--point-estimates`, expression PCs are `log2(CPM+1)` of the point
+estimates on the edgeR-computed calibration gene set (12,955 genes in the
+2026-09-25 build: `filterByExpr` AND protein-coding AND autosomal — a
+calibration-phase filter only, per user decision; the deployment filter may
+differ), each gene centred (not scaled) and residualized on metadata plus
+genotype PCs before the top 10 are kept; without it, `build_covariates.py`
+falls back to the pre-2026-09-25 behavior above. The output additionally
+carries `genotype_covariates.txt` (the genotype-PC column names) and
+`covariate_build.json` (the exact columns, the genotype-tied/RNA-tied split,
+and every input path), for the 2026-09-25 permutation rule in `CLAUDE.md`
+("Pipeline rules, 2026-09-25", rule d). A build run this way is at
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/cov/log2cpm1_point_calibration_20260925/`;
+the pre-correction `cov/covariates.tsv` is kept unchanged beside it as the
+before-baseline (its genotype PCs were built from a different VCF snapshot:
+old PC1 correlates with the corrected PC1 at r=0.985, old PC3 with
+-(corrected PC2) at r=-0.973, old PC2 has no counterpart in the corrected
+build).
+
 It is passed to both arms rather than regressed out first: hapmixQTL projects
 covariates out inside the weighted space and its two channels carry different
 weights, and RASQUAL fits a GLM on the count scale, so a pre-residualized
@@ -467,6 +523,29 @@ phenotype is wrong for both. `--ase-covariates` defaults to `none`, leaving the
 allelic channel through the origin. Since 2026-09-15 neither its regression
 nor its tau estimator adds an intercept; the total channel keeps its intercept.
 Historical pilot/calibration results below predate this correction.
+
+Run default mode with those covariates. The runner runs edgeR itself on the
+point-estimate totals (or reuses a finished folder with `--edger-dir`),
+refuses covariates whose expression PCs used another gene set or other
+library sizes, and keeps the columns in `genotype_covariates.txt` with the
+genotypes under permutation:
+
+`--gene-pos` is read as gene, chromosome, TSS, start, end. `annot/genes.tsv`
+is gene, chromosome, start, end, TSS, so reorder it first; passed as it is,
+the runner would take each gene's start as its TSS without complaint.
+
+```bash
+awk -v OFS='\t' '{print $1, $2, $5, $3, $4}' annot/genes.tsv > <run_dir>/gene_pos.tsv
+python3 scripts/run_hapmixqtl_from_salmon.py --vcf prepped/analysis.snps.maf01.vcf.gz \
+    --manifest cohort/salmon.tsv --tx2gene annot/tx2gene.tsv --hap-suffix _L,_R \
+    --gene-pos <run_dir>/gene_pos.tsv \
+    --covariates cov/log2cpm1_point_calibration_20260925/covariates.tsv \
+    --edger-dir cache/gibbs_56b63c3b37ed5df8/point_estimates/edger --out <run_dir>
+```
+
+`scripts/compare_pipelines.py` is not yet on these rules: it still reads the
+Gibbs-mean phenotype and moves the whole covariate row with the RNA record in
+its null rounds.
 
 ### The scale both arms are reported on
 

@@ -195,3 +195,11 @@ Open:
 - **Four axes blocked on genotypes** (§9): effect-size concordance against GTEx
   aFC, eGene replication, functional/motif enrichment, and the `slope_a` vs
   `slope_tc` concordance check. BrainVar unblocks all four.
+
+## 6. Before touching phenotypes, covariates or the permutation null
+
+Read `docs/pipeline_rules.md`: the 2026-09-25 rules (values from Salmon point
+estimates, Gibbs draws only for variance; log2(CPM + 1) on edgeR's effective
+library size; expression-PC gene filter = eQTL gene filter; genotype PCs tied
+to the genotypes under permutation; mixQTL never touches the draws), where
+each is implemented, what is not yet switched, and the two open decisions.
