@@ -220,6 +220,16 @@ phASER is not calibration of the eQTL test, and the draw mean of the log
 ratio is the allelic value on which the pre-correction calibration was
 measured.
 
+**Cost of dropping them from the allelic channel** (the total channel keeps
+them; `scripts/drop_zero_haplotype_cost.py`,
+`brainvar_hapmix_deploy/drop_zero_haplotype_cost_20260925/`), on the 11,747
+calibration genes with draws: 114,999 of 786,919 informative pairs, 14.6%,
+all of them exact zeros; 89.5% of pairs at 1 to 9 haplotype reads, 42.4% at 10
+to 99, 7.8% at 100 to 999, 2.2% at 1,000 or more. They carry 0.19% of the
+allelic channel's total weight (median per gene 0.18%) under the shipped
+weight 1 / (Gibbs variance + counting term at the point estimate). Genes
+with at least 20 informative donors fall from 11,237 to 10,738.
+
 Options for the user: keep point estimates and let the weights handle it;
 treat a haplotype at zero in the point estimate while the draws disagree as
 uninformative for the allelic channel; re-quantify with Salmon's `--useEM`
