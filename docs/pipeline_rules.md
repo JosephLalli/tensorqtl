@@ -377,6 +377,19 @@ In the total channel 1/(v+1) is unit weighting in practice. In the allelic
 channel it flattens the weights and widens the slope's true spread by 22%,
 which cancels the total channel's gain in the combined slope.
 
+**Stated se over the spread of the permuted slopes**, by weighting in both
+channels (`hybrid_weights_null.py --config=unit` / Gibbs `drop` arm /
+`--config=plus_one`; zero-haplotype pairs excluded throughout):
+
+| Channel | Unit | 1/v | 1/(v+1) |
+|---|---|---|---|
+| Allelic | 1.00 | 1.05 | 1.05 |
+| Total | 1.00 | 0.93 | 1.00 |
+| Combined | 0.99 | 0.94 | 1.01 |
+
+Unit weights in both channels: combined 0.0529 / 0.0122 / 0.0028, allelic
+0.0546 / 0.0136 / 0.0034 at 0.05 / 0.01 / 0.001.
+
 Not established: why the genotype-PC tie hurts only through the weights. A
 candidate is that the permuted record keeps its own ancestry-related
 expression, which the genotype PCs in the design no longer absorb, so the
