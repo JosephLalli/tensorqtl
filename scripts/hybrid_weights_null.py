@@ -20,6 +20,8 @@ A second configuration, --config=plus_one (user proposal 2026-09-26):
            total:   1 / (v + 1)
 v in squared log2 units, so the floor of 1 is small against the allelic
 channel's variances and large against the total channel's.
+A third, --config=unit: every included pair weight 1 in both channels
+(excluded allelic pairs stay excluded).
 
 GATE on draw 0 against null_permutation_instrument.fit_channels (both channel
 slopes, 1e-3 se), as in corrected_null_store.
@@ -50,7 +52,7 @@ SEED, N_STREAM, N_BOOT, EPS = 42, 1000, 2000, 1e-12
 ALPHAS = (0.05, 0.01, 0.001)
 CHANNELS = CNS.CHANNELS
 COLS = CNS.COLS
-CONFIGS = ('hybrid', 'plus_one')
+CONFIGS = ('hybrid', 'plus_one', 'unit')
 SLOPES = {'combined': ('slope', 'slope_se'), 'allelic': ('slope_a', 'slope_a_se'),
           'total': ('slope_t', 'slope_t_se')}
 
@@ -61,6 +63,8 @@ def config_variances(config, Va, Vt):
         return Va, np.ones_like(Vt)
     if config == 'plus_one':
         return np.where(Va > EPS, Va + 1.0, 0.0), Vt + 1.0
+    if config == 'unit':
+        return np.where(Va > EPS, 1.0, 0.0), np.ones_like(Vt)
     raise SystemExit(f'unknown config {config}')
 
 
