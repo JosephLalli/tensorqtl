@@ -59,6 +59,35 @@ RESIDUAL-FLOOR PROFILE (is the draw variance the WHOLE error?)
     converts "does it reduce the SE" into "does it reduce the SE honestly",
     which is the only version of the question that bears on a call.
 
+INPUTS SINCE 2026-09-25 (user rules)
+    Every value comes from Salmon's POINT estimates (point_estimates/ beside
+    the Gibbs cache, scripts/build_point_estimate_cache.py); the Gibbs draws
+    are read only for hapmixQTL's measurement variance, and the mixQTL arm
+    never reads them (tensorqtl.mixqtl_replication.inputs_from_point_estimates).
+    hapmixQTL's values are log2((L+0.5)/(R+0.5)) and log2(CPM+1); mixQTL keeps
+    its published natural-log response log(YT/2/L). Both use the SAME
+    effective library size L, edgeR lib.size x TMM factor. Covariates are
+    cov/log2cpm1_point_calibration_20260925/: the genotype PCs listed in its
+    genotype_covariates.txt stay with the genotypes under permutation and
+    every other column moves with the RNA record. Genes must pass the eQTL
+    gene filter the expression PCs were built on (edger/calibration_genes.txt).
+
+    Before 2026-09-25 this driver fed mixQTL posterior means of the draws,
+    used mapped fragments as the library size and the older covariates
+    (cov/covariates.tsv, genotype PCs from another VCF) with every column
+    moving with the RNA record. Those results are in
+    mixqtl_replication_20260919/ and are not overwritten: output now goes to
+    $MIXQTL_OUT, default mixqtl_replication_point_estimates_20260925/.
+    scripts/analyze_mixqtl_comparison.py still reads the 2026-09-19 folder,
+    whose hapmixQTL arm is a deprecated-model ablation record; do not point
+    it at the new folder.
+
+UNITS in the ablation: hapmixQTL's allelic response is log2, so the
+harmonic Poisson precision of the natural-log ratio, 1/(1/y1 + 1/y2), is
+multiplied by (ln 2)^2 to be a precision of the log2 ratio. That changes
+only the known-variance column; every fitted-scale quantity is invariant to
+a constant weight factor.
+
 Data loading follows deprecated_models/estimator_ablation_20260916/ablation29.py lines 32-58,
 copied rather than imported so this script has no dependency on a path
 outside the repository.
@@ -77,7 +106,10 @@ import pandas as pd
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
-OUT = f'{D}/mixqtl_replication_20260919'
+OUT = os.environ.get('MIXQTL_OUT', f'{D}/mixqtl_replication_point_estimates_20260925')
+CACHE = f'{D}/cache/gibbs_56b63c3b37ed5df8'
+PE = f'{CACHE}/point_estimates'
+COV = f'{D}/cov/log2cpm1_point_calibration_20260925'
 NP_NULL = int(os.environ.get('NP', '40'))
 WIN, MAF, NPERM = 1_000_000, 0.05, 1000
 # Master seed for every random draw here. Child streams are derived as
@@ -104,7 +136,13 @@ log = lambda *a: print(time.strftime('%H:%M:%S'), *a, flush=True)
 # ---------------------------------------------------------------------------
 
 def load_inputs(gene_list=None, regions=None):
-    """Load the shared inputs.
+    """Load the shared inputs, PRE-CORRECTION (before the 2026-09-25 rules).
+
+    Kept unchanged because 46 dated scripts import it to reproduce recorded
+    results: old covariates with every column moving with the RNA record,
+    mapped fragments as library size, and no point estimates, so callers
+    derive values from the Gibbs draws. New work uses
+    load_point_estimate_inputs.
 
     ``gene_list`` overrides the default 29 calibration genes with any file of
     gene ids. ``regions`` MUST be overridden with it: the default regions.bed
@@ -114,7 +152,7 @@ def load_inputs(gene_list=None, regions=None):
     than as a missing input. That is exactly how it failed on 2026-09-24.
     """
     import run_hapmixqtl_from_salmon as H
-    cache = f'{D}/cache/gibbs_56b63c3b37ed5df8'
+    cache = CACHE
     genes_all = open(f'{cache}/genes.txt').read().split()
     samples = open(f'{cache}/samples.txt').read().split()
     genes = [l.strip() for l in open(gene_list or f'{D}/pilot29_hc.txt') if l.strip()]
@@ -162,6 +200,48 @@ def load_inputs(gene_list=None, regions=None):
                 cov_df=cov_df, lib_size=lib_size)
 
 
+def load_point_estimate_inputs(gene_list=None, regions=None):
+    """The inputs under the 2026-09-25 rules; new work uses this, not load_inputs.
+
+    ``load_inputs`` is the PRE-CORRECTION loader (old covariates with every
+    column moving with the RNA record, mapped fragments as library size, no
+    point estimates) and stays unchanged because 46 dated scripts import it to
+    reproduce recorded results. This takes its genes, genotypes and draws and
+    replaces the rest:
+
+      pL, pR, pT   Salmon point estimates [genes, cache samples]; every VALUE
+      lib_size     edgeR effective library size (lib.size x TMM), VCF order
+      cov_df       RNA-tied covariates from cov/log2cpm1_point_calibration_20260925
+      geno_cov_df  the genotype PCs its genotype_covariates.txt lists, which
+                   stay with the genotypes under permutation
+
+    Refuses genes outside the eQTL gene filter the expression PCs were built on.
+    """
+    import run_hapmixqtl_from_salmon as H
+    I = load_inputs(gene_list, regions)
+    cal = set(open(f'{PE}/edger/calibration_genes.txt').read().split())
+    off = [g for g in I['genes'] if g not in cal]
+    if off:
+        raise SystemExit(f'{len(off)} genes fail the eQTL gene filter the expression PCs '
+                         f'were built on, e.g. {off[:5]}')
+    genes_all = open(f'{CACHE}/genes.txt').read().split()
+    samples = open(f'{CACHE}/samples.txt').read().split()
+    gi = {g: i for i, g in enumerate(genes_all)}
+    rows = [gi[g] for g in I['genes']]
+    for k in ('pL', 'pR', 'pT'):                     # [cache genes x cache samples]
+        I[k] = np.asarray(np.load(f'{PE}/{k}.npy', mmap_mode='r')[rows])
+    eff_lib, _ = H.read_edger_dir(f'{PE}/edger', samples)
+    I['eff_lib'] = eff_lib                           # cache sample order
+    I['lib_size'] = eff_lib[I['keep']]               # VCF order
+    cov_all = pd.read_csv(f'{COV}/covariates.tsv', sep='\t', index_col=0)
+    cov_all.index = cov_all.index.astype(str)
+    cov_all = cov_all.loc[I['order']]
+    gcols = open(f'{COV}/genotype_covariates.txt').read().split()
+    I['geno_cov_df'] = cov_all[gcols]
+    I['cov_df'] = cov_all.drop(columns=gcols)
+    return I
+
+
 def gene_variant_index(I, g):
     """Variant rows within I['idx'] that fall in gene g's cis window."""
     r = I['gp'].loc[g]
@@ -177,17 +257,17 @@ def gene_variant_index(I, g):
 def weighting_ablation(I):
     """Vary only the allelic weights; measure var(beta_hat) under the null."""
     genes, order, keep = I['genes'], I['order'], I['keep']
-    A, _T, Va, _Vt, _C = HM.compute_summaries_from_gibbs(
-        I['YL'], I['YR'], yT=I['YT'], count_noise=True)
+    pe = (I['pL'], I['pR'], I['pT'], I['eff_lib'], I['YL'], I['YR'], I['YT'])
+    A, _T, Va, _Vt, _C = HM.summaries_from_point_estimates(*pe, count_noise=True)
     # count_noise=True adds a Poisson term q on top of the draw variance, so
     # Va is 1/(draw_var + q), not the draws alone. The 2026-09-15 controlled
     # Salmon experiment found q double-counts. Carry both so the ablation
     # separates "the draws help" from "the shipped variance helps".
-    _A0, _T0, Va_noq, _Vt0, _C0 = HM.compute_summaries_from_gibbs(
-        I['YL'], I['YR'], yT=I['YT'], count_noise=False)
+    _A0, _T0, Va_noq, _Vt0, _C0 = HM.summaries_from_point_estimates(*pe, count_noise=False)
     A, Va, Va_noq = A[:, keep], Va[:, keep], Va_noq[:, keep]
-    mL = I['YL'].mean(2)[:, keep]
-    mR = I['YR'].mean(2)[:, keep]
+    # mixQTL's harmonic weights read the point-estimate counts, never the draws
+    mL = I['pL'][:, keep]
+    mR = I['pR'][:, keep]
 
     # Per-haplotype draw variances, for the third candidate weight. Va_noq is
     # already Var_draws(log(yL+k) - log(yR+k)), the DIRECT variance of the
@@ -202,8 +282,8 @@ def weighting_ablation(I):
     # (within-gene log-weight correlation 0.998), and a constant weight factor
     # cancels from beta_hat entirely.
     KAPPA = 0.5
-    vL = np.log(I['YL'] + KAPPA).var(2)[:, keep]
-    vR = np.log(I['YR'] + KAPPA).var(2)[:, keep]
+    vL = np.log2(I['YL'] + KAPPA).var(2)[:, keep]     # log2, the unit of A
+    vR = np.log2(I['YR'] + KAPPA).var(2)[:, keep]
 
     s_all = (I['xL'] - I['xR'])[I['idx']][:, keep]      # [V, N] allelic design
     rows = []
@@ -235,8 +315,10 @@ def weighting_ablation(I):
         # with "uncapped vs capped", since mixQTL caps and hapmixQTL does not.
         w_gibbs = 1.0 / np.maximum(Va[j][inf], 1e-12)
         w_gibbs_noq = 1.0 / np.maximum(Va_noq[j][inf], 1e-12)
+        # Poisson precision of the natural-log ratio, times (ln 2)^2 to make
+        # it the precision of the log2 ratio A is measured in
         w_harm = MX.harmonic_weights(np.maximum(mL[j][inf], 1e-12),
-                                     np.maximum(mR[j][inf], 1e-12))
+                                     np.maximum(mR[j][inf], 1e-12)) * HM.LN2 ** 2
         w_sumvar = 1.0 / np.maximum(vL[j][inf] + vR[j][inf], 1e-12)
         w_gibbs_cap, cap, _ = MX.apply_weight_cap(w_gibbs, n_inf, MX.WEIGHT_CAP)
         w_harm_cap, _, _ = MX.apply_weight_cap(w_harm, n_inf, MX.WEIGHT_CAP)
@@ -326,8 +408,8 @@ def residual_floor_profile(I, grid=(0.0, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.
     them, in units of the gene's own measurement scale.
     """
     genes, keep = I['genes'], I['keep']
-    A, _T, Va, _Vt, _C = HM.compute_summaries_from_gibbs(
-        I['YL'], I['YR'], yT=I['YT'], count_noise=True)
+    A, _T, Va, _Vt, _C = HM.summaries_from_point_estimates(
+        I['pL'], I['pR'], I['pT'], I['eff_lib'], I['YL'], I['YR'], I['YT'], count_noise=True)
     A, Va = A[:, keep], Va[:, keep]
     s_all = (I['xL'] - I['xR'])[I['idx']][:, keep]
 
@@ -377,13 +459,16 @@ def mixqtl_gene(I, g, j, y1, y2, yt, perm=None):
     h1 = I['xL'][I['idx']][:, keep][vsel].T.astype(float)   # [N, P]
     h2 = I['xR'][I['idx']][:, keep][vsel].T.astype(float)
     cov = I['cov_df'].values
+    G = I['geno_cov_df'].values if I.get('geno_cov_df') is not None else None
     lib = I['lib_size']
     a1, a2, at = y1[j], y2[j], yt[j]
     if perm is not None:
+        # the RNA record, its covariates and its library size move; the
+        # genotype PCs stay with the genotypes
         a1, a2, at = a1[perm], a2[perm], at[perm]
         cov = cov[perm]
         lib = lib[perm]
-    out = MX.mixqtl_scan(a1, a2, at, lib, h1, h2, covariates=cov)
+    out = MX.mixqtl_scan(a1, a2, at, lib, h1, h2, covariates=cov, genotype_covariates=G)
     stat = np.abs(out['meta']['stat'])
     if not np.isfinite(stat).any():
         return None
@@ -403,7 +488,8 @@ def mixqtl_gene(I, g, j, y1, y2, yt, perm=None):
 
 def endtoend_comparison(I):
     genes, order = I['genes'], I['order']
-    y1, y2, yt = MX.summaries_from_gibbs_posterior_mean(I['YL'], I['YR'], I['YT'])
+    # point estimates only: mixQTL never touches the Gibbs draws
+    y1, y2, yt = MX.inputs_from_point_estimates(I['pL'], I['pR'], I['pT'])
     keep = I['keep']
     y1, y2, yt = y1[:, keep], y2[:, keep], yt[:, keep]
     n_donor = len(order)
@@ -431,9 +517,10 @@ def endtoend_comparison(I):
 def main():
     os.makedirs(OUT, exist_ok=True)
     log('loading inputs')
-    I = load_inputs()
+    I = load_point_estimate_inputs()
     log(f"{len(I['genes'])} genes, {len(I['order'])} donors, "
-        f"{len(I['idx'])} tested variants, {I['cov_df'].shape[1]} covariates")
+        f"{len(I['idx'])} tested variants, {I['cov_df'].shape[1]} RNA-tied and "
+        f"{I['geno_cov_df'].shape[1]} genotype-tied covariates; writing to {OUT}")
 
     log('WEIGHTING ABLATION')
     b = weighting_ablation(I)
@@ -473,6 +560,11 @@ def main():
     nulls.to_csv(f'{OUT}/endtoend_mixqtl_nulls.tsv', sep='\t', index=False)
 
     summary = dict(
+        inputs=('2026-09-25 rules: values from Salmon point estimates (mixQTL never reads '
+                'the draws); hapmixQTL log2, mixQTL natural log; edgeR effective library '
+                'size; covariates ' + COV + ' with genotype PCs tied to the genotypes'),
+        genotype_covariates=list(I['geno_cov_df'].columns),
+        rna_covariates=list(I['cov_df'].columns),
         n_genes=len(I['genes']), n_donors=len(I['order']),
         n_tested_variants=int(len(I['idx'])), n_null_draws=NP_NULL,
         weighting_ablation=agg.to_dict('records'),
