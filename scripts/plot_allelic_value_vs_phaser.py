@@ -30,9 +30,19 @@ def compute():
     pL = np.load(CACHE / 'point_estimates' / 'pL.npy')
     pR = np.load(CACHE / 'point_estimates' / 'pR.npy')
     _, draw_count = draw_values(len(genes))
+    # Gibbs variance: across-draw variance of log2((yL + 1/2) / (yR + 1/2)),
+    # exactly as summaries_from_point_estimates computes it before the
+    # counting term is added
+    YL = np.load(CACHE / 'YL.npy', mmap_mode='r'); YR = np.load(CACHE / 'YR.npy', mmap_mode='r')
+    gibbs_var = np.empty(pL.shape)
+    for s in range(0, len(genes), 1500):
+        gibbs_var[s:s + 1500] = np.log2((np.asarray(YL[s:s + 1500]) + KAPPA)
+                                        / (np.asarray(YR[s:s + 1500]) + KAPPA)).var(2)
+    # the counting term the shipped weight adds, evaluated at the point estimate
+    count_term = (1 / (pL + KAPPA) + 1 / (pR + KAPPA)) / LN2 ** 2
     point = np.log2((pL + KAPPA) / (pR + KAPPA))
     P, _ = ADC.load_phaser_all()
-    ap, _, k, comp = ADC.phaser_arrays(P, genes, samples)
+    ap, q, k, comp = ADC.phaser_arrays(P, genes, samples)
     ph = ap / LN2
     n = pL + pR
     sel = comp & (k >= MIN_PHASER) & (n >= 10)
@@ -40,13 +50,20 @@ def compute():
     sign = np.where(ph >= 0, 1.0, -1.0)
     x = np.abs(ph)
     np.savez_compressed(OUT / 'scatter_pairs.npz', x=x[sel], point=(sign * point)[sel],
-                        draw_count=(sign * draw_count)[sel], zero=zero[sel])
+                        draw_count=(sign * draw_count)[sel], zero=zero[sel],
+                        ph_sd=(np.sqrt(q) / LN2)[sel], gibbs_var=gibbs_var[sel],
+                        count_term=count_term[sel])
+
+
+def load_pairs():
+    f = OUT / 'scatter_pairs.npz'
+    if not f.exists() or 'gibbs_var' not in np.load(f).files:
+        compute()
+    return np.load(f)
 
 
 def main():
-    if not (OUT / 'scatter_pairs.npz').exists():
-        compute()
-    d = np.load(OUT / 'scatter_pairs.npz')
+    d = load_pairs()
     x, zero = d['x'], d['zero']
     sel = np.ones(len(x), bool)
 
