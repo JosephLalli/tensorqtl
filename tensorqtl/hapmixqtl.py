@@ -1149,10 +1149,12 @@ def _permute_within_informative(r_t, informative_t, permutation_ix_t):
     return out
 
 
-PERM_SCHEMES = ('records', 'residuals')
+PERM_SCHEMES = ('records_signflip', 'records', 'residuals')
+DEFAULT_PERM_SCHEME = 'records_signflip'
 
 
-def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix_t, chunk=None):
+def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix_t, chunk=None,
+                                flip_t=None):
     """One channel's permutation statistics under the donor-record permutation.
 
     For each row s of ``permutation_ix_t`` [nperm, N], donor i receives donor
@@ -1166,6 +1168,13 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
     empirical p is the one FastQTL and tensorQTL compute, with per-donor
     weights carried along.
 
+    ``flip_t`` [nperm, N] of +-1, if given, multiplies the whitened phenotype
+    value placed at each position before residualization: the record's
+    haplotype labels L and R are swapped with that sign, which negates its
+    allelic log ratio and leaves its weight and covariate row unchanged. It is
+    passed for the allelic channel only (``perm_scheme='records_signflip'``);
+    a swap leaves total expression unchanged.
+
     Returns xy [V, nperm], xx [V, nperm] (the denominator changes with the
     permutation) and yy [nperm]. A through-origin channel with no nuisance
     columns (the default allelic design) needs no re-residualization and
@@ -1178,6 +1187,8 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
     if not bool((sqrt_w_t != 0).any()):
         z = x_t.new_zeros((V, nperm))
         return z, z.clone(), x_t.new_zeros(nperm)
+    if flip_t is not None and tuple(flip_t.shape) != (nperm, N):
+        raise ValueError(f'flip_t must have shape {(nperm, N)}, got {tuple(flip_t.shape)}')
     w = sqrt_w_t * sqrt_w_t
     y_star = y_t * sqrt_w_t                       # moves as a whole with the record
     C_t = getattr(residualizer, 'C_t', None)
@@ -1185,9 +1196,12 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
     p = (1 if intercept else 0) + (int(C_t.shape[1]) if C_t is not None else 0)
     if p == 0:
         wy = w * y_t
-        xy = torch.mm(x_t, wy[permutation_ix_t].t())
+        wy_perm = wy[permutation_ix_t]
+        if flip_t is not None:
+            wy_perm = wy_perm * flip_t
+        xy = torch.mm(x_t, wy_perm.t())
         xx = torch.mm(x_t * x_t, w[permutation_ix_t].t())
-        yy = (y_star * y_star)[permutation_ix_t].sum(1)
+        yy = (y_star * y_star)[permutation_ix_t].sum(1)   # a sign swap leaves squares alone
         return xy, xx, yy
     if chunk is None:
         chunk = int(max(8, min(256, 2e7 // max(V * N, 1))))
@@ -1206,6 +1220,9 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
         design = torch.cat(cols, 2)                                    # [K, N, p]
         Q, _ = torch.linalg.qr(design)                                 # [K, N, p]
         ys = y_star[ix]                                                # [K, N]
+        if flip_t is not None:
+            ys = ys * flip_t[s0:s0 + K]                                # swap before projecting
+
         e = ys - torch.bmm(Q, torch.bmm(Q.transpose(1, 2), ys.unsqueeze(2))).squeeze(2)
         Xs = x_t.unsqueeze(0) * sw.unsqueeze(1)                        # [K, V, N]
         Xs = Xs - torch.bmm(torch.bmm(Xs, Q), Q.transpose(1, 2))       # residualized, no cancellation in xx
@@ -1218,8 +1235,8 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
 def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
                                       sqrt_wa_t, sqrt_wt_t,
                                       residualizer_a, residualizer_t,
-                                      permutation_ix_t, dof=None, perm_scheme='records',
-                                      fitted=False):
+                                      permutation_ix_t, dof=None, perm_scheme=DEFAULT_PERM_SCHEME,
+                                      fitted=False, flip_t=None):
     """
     Compute nominal and permutation statistics for hapmixQTL.
 
@@ -1230,19 +1247,45 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     dof, which with per-channel covariates is the total channel's (the
     larger design). map_cis passes its own N - 2 - n_cov so both agree.
 
-    The permutation null. ``perm_scheme='records'`` (the default) permutes
-    donor records: for each permutation every donor receives another donor's
-    whitened phenotype value, weight and covariate row together, the
-    genotypes stay in place, and the statistic is recomputed with the
-    permuted weights and design (the denominator xx changes per permutation:
-    a second matrix product on the allelic channel, a chunked batched
-    re-residualization on the total channel; _record_permutation_channel).
-    Relabeling the donors shows this is exactly the distribution of the
-    statistic under a permutation of the genotype columns, the null FastQTL
-    and tensorQTL use, with per-donor weights carried along.
+    The permutation null. ``perm_scheme='records'`` permutes donor records:
+    for each permutation every donor receives another donor's whitened
+    phenotype value, weight and covariate row together, the genotypes stay in
+    place, and the statistic is recomputed with the permuted weights and
+    design (the denominator xx changes per permutation: a second matrix
+    product on the allelic channel, a chunked batched re-residualization on
+    the total channel; _record_permutation_channel). Relabeling the donors
+    shows this is exactly the distribution of the statistic under a
+    permutation of the genotype columns, the null FastQTL and tensorQTL use,
+    with per-donor weights carried along.
 
-    ``perm_scheme='residuals'`` is the earlier scheme, Freedman-Lane in
-    whitened space: the leverage-standardized whitened residuals are permuted
+    ``perm_scheme='records_signflip'`` (the default since 2026-09-25) does the
+    same and, in addition, swaps each permuted record's haplotype labels L and
+    R with probability one half: ``flip_t`` [nperm, N] of +-1 multiplies the
+    allelic log ratio placed at each position, and the caller must supply it
+    (map_cis draws it right after the permutation indices, from the same
+    generator, so the indices and therefore the total channel are identical to
+    'records'). The labels L and R are arbitrary phase order, so under H0 a
+    record's allelic ratio is as likely to carry either sign, and the swap is a
+    symmetry of the null the record permutation alone does not use. Its effect:
+    the allelic numerator's permutation distribution becomes symmetric about
+    zero for every gene and every phase pattern. Under 'records' alone the
+    through-origin allelic slope has a permutation mean equal to the gene's
+    net allelic imbalance times the lopsidedness of the variant's phase
+    (sum of s over the heterozygotes); on 46 BrainVar genes at a fixed variant
+    that shifted 13 genes' permuted slopes by up to 0.21 standard errors,
+    matching the algebra at Pearson r = 0.90, while the phase orientation was
+    itself balanced (628 ALT-on-L against 642 ALT-on-R heterozygotes) and the
+    genes' net imbalances were those of chance (z sd 0.98). Pooled rejection
+    rates were unchanged (0.0690 against 0.0692 at 0.05). The swap changes the
+    null only: the observed slope keeps whatever chance offset its own records
+    carry, which with arbitrary phase labels is exchangeable with the swapped
+    draws. The total channel is not flipped. Measured 2026-09-25,
+    brainvar_hapmix_deploy/nominal_p_null_instrument_20260925 and
+    lead_signal_share_corrected_20260925.
+
+    ``perm_scheme='residuals'`` is the earlier scheme (retained, unflipped),
+    Freedman-Lane in whitened space: the leverage-standardized whitened
+    residuals are permuted
     among each channel's informative donors (the two channels share the
     draw; _permute_within_informative, _leverage_standardized) while the
     predictors, weights and covariates stay in place, so every permuted
@@ -1349,9 +1392,18 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
                             torch.zeros_like(slope_nom))
 
     # --- Permutation statistics (see the docstring) ---
-    if perm_scheme == 'records':
+    if perm_scheme in ('records', 'records_signflip'):
+        if perm_scheme == 'records_signflip':
+            if flip_t is None:
+                raise ValueError(
+                    "perm_scheme='records_signflip' needs flip_t, the [nperm, N] "
+                    "+-1 haplotype-label swaps; map_cis draws them after the "
+                    "permutation indices. Pass perm_scheme='records' for the "
+                    "unswapped record permutation.")
+        else:
+            flip_t = None
         xy_a_perm, xx_a_perm, yy_a_perm = _record_permutation_channel(
-            sign_t, a_t, sqrt_wa_t, residualizer_a, permutation_ix_t)
+            sign_t, a_t, sqrt_wa_t, residualizer_a, permutation_ix_t, flip_t=flip_t)
         xy_t_perm, xx_t_perm, yy_t_perm = _record_permutation_channel(
             genotypes_t / 2, t_t, sqrt_wt_t, residualizer_t, permutation_ix_t)
         tstat2_perm = _combined_tstat2(xy_a_perm, xx_a_perm, yy_a_perm,
@@ -1878,7 +1930,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             logger=None, seed=None, verbose=True, warn_monomorphic=True,
             ase_covariates_df=None, tau_refit=False, variance_model='additive',
             library_factor=None, variance_prior=None,
-            perm_scheme='records', keep_a_df=None, keep_t_df=None):
+            perm_scheme=DEFAULT_PERM_SCHEME, keep_a_df=None, keep_t_df=None):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
@@ -1921,11 +1973,17 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     dof = N - 2 - max(n_cov, n_cov_a).
 
     For each phenotype, finds the best cis variant and computes empirical
-    p-values by permuting the whitened null residuals of each channel among
-    its informative samples (Freedman-Lane in whitened space; see
-    calculate_hapmixqtl_permutations). ``se_mode`` must be 'model': the
-    permutation statistic is the known-variance GLS statistic, which has no
-    sandwich counterpart here; use map_nominal for robust standard errors.
+    p-values from ``nperm`` permutations shared across genes. The default
+    ``perm_scheme='records_signflip'`` permutes donor records (each donor's
+    whitened phenotype value, weight and covariate row move together against
+    fixed genotypes) and swaps each permuted record's haplotype labels with
+    probability one half, which negates its allelic log ratio; the signs are
+    drawn right after the permutation indices from the same seeded generator,
+    so 'records' (no swap) sees the same indices and the same total channel.
+    'residuals' is the pre-2026-09-17 Freedman-Lane scheme. See
+    calculate_hapmixqtl_permutations. ``se_mode`` must be 'model' or
+    'fitted': the HC1 sandwich has no permutation counterpart here; use
+    map_nominal for robust standard errors.
 
     Returns:
         DataFrame with one row per phenotype, analogous to cis.map_cis output.
@@ -2006,6 +2064,16 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     permutation_ix_t = torch.LongTensor(
         np.array([np.random.permutation(ix) for _ in range(nperm)])
     ).to(device)
+    # haplotype-label swaps, drawn AFTER the indices from the same stream so the
+    # indices (and the total channel) are identical to perm_scheme='records'
+    flip_t = None
+    if perm_scheme == 'records_signflip':
+        logger.write('  * permutation null: donor records, haplotype labels swapped at random')
+        flip_t = torch.tensor(
+            np.random.randint(0, 2, size=(nperm, n_samples)) * 2 - 1,
+            dtype=torch.float32).to(device)
+    else:
+        logger.write(f'  * permutation null: {perm_scheme}')
 
     igc = genotypeio.InputGeneratorCis(
         genotype_df, variant_df, T_df, phenotype_pos_df, window=window,
@@ -2081,7 +2149,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             sqrt_wa_t, sqrt_wt_t,
             residualizer_a, residualizer_tc,
             permutation_ix_t, dof=dof, perm_scheme=perm_scheme,
-            fitted=(se_mode == 'fitted'),
+            fitted=(se_mode == 'fitted'), flip_t=flip_t,
         )
         r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
         best_local = int(var_ix)

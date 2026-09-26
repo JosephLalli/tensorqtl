@@ -1004,8 +1004,9 @@ def main():
                     default=True,
                     help='per-sample Poisson counting noise in the Gibbs '
                          'variances; see compute_summaries_from_gibbs')
-    ap.add_argument('--perm-scheme', default='records', choices=['records', 'residuals'],
-                    help="map_cis permutation null: 'records' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
+    ap.add_argument('--perm-scheme', default='records_signflip',
+                    choices=['records_signflip', 'records', 'residuals'],
+                    help="map_cis permutation null: 'records_signflip' (default; each donor's phenotype, weight and covariate row move together, genotypes fixed, and each permuted record's haplotype labels L/R are swapped at random, negating its allelic log ratio), 'records' (the same without the swap) or 'residuals' (the pre-2026-09-17 whitened-residual permutation)")
     ap.add_argument('--asc-cutoff', type=float, default=None,
                     help='allele-specific count FLOOR: both haplotypes must have at '
                          'least this many posterior-mean counts for a donor to enter '
