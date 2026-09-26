@@ -129,10 +129,11 @@ On the 29 calibration genes:
 
 Transcriptome-wide it is much larger. Over all 34,457 cache genes, among the
 1,294,098 donor-gene pairs with haplotype-informative reads in the point
-estimate, the share with exactly one haplotype below 0.5 reads is below.
-The control is the same count on the Gibbs draw means for the same pairs:
-if the zeros were genuine monoallelic expression or low-count sampling, the
-draws would show them too.
+estimate, the share with exactly one haplotype below 0.5 reads is below,
+beside the same count on the Gibbs draw means. The draw means are NOT a
+control for biology: where the copies share sequence the sampler spreads
+ambiguous reads over both by construction, so a draw mean above zero does
+not show that both alleles are expressed.
 
 | Haplotype-informative reads | Point estimate | Gibbs draw mean |
 |---|---|---|
@@ -144,8 +145,31 @@ draws would show them too.
 
 66,826 of these pairs have at least 50 reads on the other haplotype, so their
 ratio exceeds about 7 log2 units; 27,016 of 34,457 genes have at least one.
-The zeros come from the point estimator, not from the data the draws
-describe.
+
+**Imprinting or estimator?** Tested against phASER's alignment-based counts
+at heterozygous SNPs, which cannot be spread between copies
+(`scripts/zero_haplotype_phaser_check.py`,
+`brainvar_hapmix_deploy/zero_haplotype_phaser_check_20260925/`; pairs with at
+least 20 gw-phased phASER reads). The statistic is the phASER minor-allele
+fraction, near 0 for monoallelic expression and near 0.5 for balanced.
+
+| Haplotype-informative reads | Zero-haplotype pairs outside the 35 genes below: median minor fraction, share below 0.05 | Control, reads on both copies |
+|---|---|---|
+| 10 to 99 | 0.444, 1.1% of 23,700 | 0.440, 0.2% |
+| 100 to 999 | 0.438, 5.6% of 10,699 | 0.453, 0.1% |
+| 1,000 or more | 0.408, 21.6% of 2,682 | 0.471, 0.4% |
+
+Most zero-haplotype pairs are biallelic by phASER, as balanced as the
+control, so for them the zero is an estimator effect. A minority is real
+monoallelic expression, and it grows with depth: at 1,000 or more reads
+about a fifth, against 0.4% in the control. Imprinting silences the same
+parental copy in nearly every heterozygous donor, but only 35 of 11,500
+evaluable genes are one-copy in at least 80% of their donors with at least
+100 reads, holding 2.5% of such zero pairs. Those 35 include known imprinted
+genes (NAP1L5, FAM50B) beside readthrough transcripts and pseudogene
+families (COMMD3-BMI1, INO80B-WBP1, TBC1D3D, NPIPB12, PKD1P1), and below
+1,000 reads phASER shows their zero pairs biallelic too. Only 13,768 of the
+41,579 zero pairs at 100 or more reads have enough phASER coverage to test.
 
 So on the 29 calibration genes the Gibbs weights mostly protect the default-mode slope, because these
 pairs get the lowest weights, but their extreme values still inflate the
