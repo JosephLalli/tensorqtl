@@ -237,6 +237,38 @@ uninformative for the allelic channel; re-quantify with Salmon's `--useEM`
 it helps would have to be measured; or use a different point summary for
 the allelic split only.
 
+## Nominal-p calibration on the corrected pipeline (2026-09-25)
+
+`scripts/corrected_null_store.py`, `brainvar_hapmix_deploy/corrected_null_store_20260925/`:
+200 records_signflip permutations, the stream of the pre-correction store, on
+its 90 genes that pass the calibration filter plus 10 replacements (487,454
+tested gene-variant pairs). Two arms on identical draws: zero-haplotype pairs
+kept, or dropped from the allelic channel (953 pairs; allelic pairs 6,982 ->
+6,029). Rejection rates at 0.05 / 0.01 / 0.001, 95% gene-clustered intervals.
+
+| Channel | Zeros kept | Zeros dropped |
+|---|---|---|
+| Allelic | 0.0332 [0.0285, 0.0387] / 0.0074 / 0.0023 | 0.0455 [0.0405, 0.0506] / 0.0103 [0.0077, 0.0141] / 0.0026 [0.0008, 0.0062] |
+| Total | 0.0835 [0.0752, 0.0923] / 0.0261 [0.0214, 0.0313] / 0.0066 [0.0044, 0.0092] | identical |
+| Combined | 0.0694 [0.0629, 0.0769] / 0.0199 / 0.0053 | 0.0719 [0.0656, 0.0793] / 0.0206 / 0.0054 |
+
+With zeros dropped the allelic channel is within its intervals of nominal at
+all three levels; with them kept it is conservative, because their extreme
+values inflate the fitted scale (paired drop - keep +0.0122 [+0.0090,
++0.0157] at 0.05). The combined statistic stays anticonservative because the
+TOTAL channel is, and on the 90 shared genes the total channel is worse than
+before the correction: 0.0714 / 0.0187 / 0.0031 pre-correction against
+0.0827 / 0.0256 / 0.0065 now. The allelic channel went the other way, 0.0697 /
+0.0217 / 0.0080 pre-correction against 0.0449 / 0.0103 / 0.0028 with the drop.
+The total channel's excess sits in genes below 700 allele-resolved reads
+(0.092 to 0.094 at 0.05) against 0.066 at 700 to 3,000 and 0.053 at 3,000 or
+more. Which of the corrections moved each channel is NOT isolated: the
+allelic change mixes point-estimate values, the counting term at the point
+estimate and the drop; the total change mixes log2(CPM+1) values and their
+Gibbs variance, the new covariates, and holding genotype PCs with the
+genotypes. Limits: 100 genes, nothing below 0.001, and the allelic channel in
+the 21 genes below 30 reads reads 0.061 / 0.019 / 0.009 on few donors.
+
 ## Built inputs
 
 All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
