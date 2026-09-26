@@ -127,7 +127,27 @@ On the 29 calibration genes:
 | Within-gene weight percentile of the zero-haplotype pairs in default mode | median 0.02 |
 | Their share of the gene's sum of weight x ratio^2 | median 0.118, max 0.591 |
 
-So the Gibbs weights mostly protect the default-mode slope, because these
+Transcriptome-wide it is much larger. Over all 34,457 cache genes, among the
+1,294,098 donor-gene pairs with haplotype-informative reads in the point
+estimate, the share with exactly one haplotype below 0.5 reads is below.
+The control is the same count on the Gibbs draw means for the same pairs:
+if the zeros were genuine monoallelic expression or low-count sampling, the
+draws would show them too.
+
+| Haplotype-informative reads | Point estimate | Gibbs draw mean |
+|---|---|---|
+| all | 36.10% | 1.66% |
+| 1 to 9 | 92.69% | 7.00% |
+| 10 to 99 | 46.06% | 0.01% |
+| 100 to 999 | 8.36% | 0.00% |
+| 1,000 or more | 2.26% | 0.00% |
+
+66,826 of these pairs have at least 50 reads on the other haplotype, so their
+ratio exceeds about 7 log2 units; 27,016 of 34,457 genes have at least one.
+The zeros come from the point estimator, not from the data the draws
+describe.
+
+So on the 29 calibration genes the Gibbs weights mostly protect the default-mode slope, because these
 pairs get the lowest weights, but their extreme values still inflate the
 fitted residual scale. mixQTL mode's published allelic cutoff (at least 50
 reads on each haplotype) excludes them. The unweighted and capped arms of the
