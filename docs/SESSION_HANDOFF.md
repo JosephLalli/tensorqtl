@@ -5,6 +5,33 @@ Read this first on resumption.
 
 ---
 
+## Where hapmixQTL development lives (2026-09-26)
+
+hapmixQTL development continues on **`mixqtl-replication`**
+(`origin/mixqtl-replication`; local worktree
+`/mnt/ssd/lalli/tensorqtl/.claude/worktrees/mixqtl-replication`). It descends
+from `claude/hapmixqtl-gibbs-uncertainty-IQ6Za` (section 1) through
+`hapmix-runbook-local`, 122 commits past the branch this file calls PR-ready,
+and is not merged into `master`. The "done and PR-ready" status in sections 0
+and 2 is historical.
+
+Read first on that branch:
+
+| Question | Document on `mixqtl-replication` |
+|---|---|
+| What exists, what was deprecated, where is each question answered? | `CLAUDE.md` |
+| Rules for values, units, gene filter and permutation (2026-09-25) | `docs/pipeline_rules.md` |
+| How a new session picks the work up | `docs/LOCAL_HANDOFF.md` |
+| What is implemented, validated and open | `docs/CURRENT_SCIENTIFIC_STATE.md` |
+
+A separate line, not containing that work: `pr/03-hapmixqtl` and
+`personal/all-features` (worktrees `/mnt/ssd/lalli/tensorqtl-pr-*` and
+`/mnt/ssd/lalli/tensorqtl-personal-all-features`; branch map in
+`INTEGRATION_BRANCH.md` on `personal/all-features`) are the upstream-PR
+extraction of 2026-07-26.
+
+---
+
 ## FINAL RESOLUTION (supersedes the running notes below)
 
 The knockoff-calibration investigation is **complete and validated on real data**.
@@ -54,6 +81,9 @@ Everything below is retained as the append-only investigation log.
 ---
 
 ## 1. Branch topology (IMPORTANT)
+
+Historical (2026-07). For hapmixQTL, see "Where hapmixQTL development lives"
+at the top of this file.
 
 ```
 master (origin)
