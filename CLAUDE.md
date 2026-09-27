@@ -800,22 +800,26 @@ GTEx overdispersion, depth and zero-inflation structure.
   heterozygous indels. Say "disagrees with alignment-based allele counts beyond
   counting error"; the mechanism is NOT identified and "artefact" is not a
   safe label. No influence diagnostic is reported at the lead.
-- For allelic-only runs (`keep_t_df` all False), `pval_nominal` is referred to
-  `F(1, N - 2 - max(n_cov, n_cov_a))` = F(1, 73) here rather than
-  `F(1, n_a - 1)` (45-88 on these genes): `dof = N - 2 - max(n_cov, n_cov_a)`
-  at `tensorqtl/hapmixqtl.py:1694` and `:1991` is one reference for the
-  combined statistic. Found by reading, 2026-09-25; no empirical p is affected.
-  MEASURED 2026-09-26, and it reaches the combined statistic too: a gene
-  with very few admitted allelic donors fits its allelic scale on almost
-  no residual df but is referred to about 73. RPL41 (2 allelic donors, 1
-  residual df) holds 991 of the split arm's 1,415 combined rejections at
-  0.001 on the benchmark anchor. Without it, the stored 200-permutation
-  combined rates at 0.001 fall from 0.0027 / 0.0028 / 0.0026 to 0.0011 /
-  0.0011 / 0.0010 for split / unit / 1/(v+1), and gibbs from 0.0054 to
-  0.0035. Record: `scripts/plasmode/score.py` and the benchmark report,
-  `brainvar_hapmix_deploy/plasmode_20260926/report/plasmode_report.html`.
-  Not fixed: the fix (a per-channel reference, or a minimum allelic donor
-  count) is a design decision.
+- FIXED 2026-09-27 (commit 8a06803): the one shared t reference of 73 df
+  is replaced in default mode by per-channel references, a
+  Welch-Satterthwaite reference for the combined p and a 15-donor allelic
+  admission floor; the combined rate at 0.001 on the stored 100-gene null
+  went from 0.0027 / 0.0028 / 0.0026 to 0.0012 / 0.0012 / 0.0011 for
+  split / unit / 1/(v+1) (gibbs 0.0054 to 0.0041), still above 0.001 for
+  the two reasons in the next entry. Rule: `docs/hapmixqtl_methods.md`
+  Section 4.5; record `brainvar_hapmix_deploy/allelic_df_fix_20260927/`.
+- **The Welch-Satterthwaite combined reference is anticonservative, and
+  whether to correct it is an open user decision** (2026-09-27). It treats
+  the channel weights as fixed although they are estimated from the same
+  residuals; at exactly 15 allelic donors under the exact model it rejects
+  at about 1.2x nominal at 0.05 and 1.4-1.55x at 0.001, and on the stored
+  null it raises admitted genes' combined rate at 0.001 by +0.00013 to
+  +0.00018 over the old 73 df. The unit-weighted total channel is
+  separately at 1.15x nominal at 0.001. Meier's first-order correction was
+  measured near nominal and NOT adopted in 8a06803, by user decision;
+  whether to correct the reference later stays open. Numbers and sources
+  (the Meier measurement has no record on disk):
+  `docs/hapmixqtl_methods.md` Sections 4.5 and 7.
 - RASQUAL agreement has now been re-measured under default mode (section
   below). The reuse traps recorded when that run was designed still hold for
   any future one: `--reuse-rasqual` carries the OBSERVED arm only and never

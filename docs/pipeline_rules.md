@@ -362,11 +362,57 @@ NOT tested: the gene-level `pval_perm`, observed data, anything below 0.001,
 genes outside the calibration filter. Not in the shipped code: both the drop
 and the total-channel unit weights exist only in these experiment scripts.
 
+**After the per-channel t references (2026-09-27, commit 8a06803).** Every
+nominal rate above and below in this section was measured with all three p
+referred to one shared t of 73 df. `scripts/allelic_df_null_check.py`
+re-ran the four configurations (split, unit, 1/(v+1), Gibbs in both) on the
+same 100 genes and 200 permutations under the fixed code
+(`brainvar_hapmix_deploy/allelic_df_fix_20260927/`, `summary.json` and
+`run.log`); slopes and standard errors are identical, only the references
+changed. Combined rate at 0.001, gene-clustered 95% intervals (the
+"before" intervals are recomputed on the same resampled genes as "after",
+so their last digit can differ from the stored summaries quoted above):
+
+| Combined at 0.001 | Before (73 df) | After | Before, without RPL41 | After, without RPL41 |
+|---|---|---|---|---|
+| Split weighting | 0.0027 [0.0009, 0.0063] | 0.0012 [0.0010, 0.0014] | 0.0011 [0.0009, 0.0013] | 0.0012 [0.0010, 0.0014] |
+| Unit weights | 0.0028 [0.0011, 0.0063] | 0.0012 [0.0012, 0.0013] | 0.0011 [0.0011, 0.0012] | 0.0012 [0.0012, 0.0013] |
+| 1/(v+1) | 0.0026 [0.0009, 0.0062] | 0.0011 [0.0010, 0.0011] | 0.0010 [0.0009, 0.0010] | 0.0011 [0.0010, 0.0011] |
+| Gibbs weights in both | 0.0054 [0.0028, 0.0097] | 0.0041 [0.0030, 0.0053] | 0.0035 [0.0026, 0.0045] | 0.0038 [0.0029, 0.0048] |
+
+RPL41 (2 allelic donors, below the 15-donor floor) goes from 0.2105 to
+0.0016 under split weighting. At 0.05 the combined rates move by less than
+0.001 (split 0.0512 to 0.0505, Gibbs in both 0.0719 to 0.0718). The rule
+stated before that run -- split, unit and 1/(v+1) within their
+gene-clustered intervals of 0.001 at 0.001, RPL41 included -- FAILED for
+all three (after-rates 0.00120 [0.00105, 0.00141], 0.00124 [0.00118,
+0.00130], 0.00108 [0.00102, 0.00114]), for two separate reasons. The
+Welch-Satterthwaite reference is more liberal than 73 df in admitted genes:
+in the 78 genes with at least 40 allelic donors the same statistics rose,
+paired, by +0.00018 [+0.00015, +0.00021] (split), +0.00015 (unit) and
++0.00013 (1/(v+1)) at 0.001, the direction the exact-model measurement of
+`docs/hapmixqtl_methods.md` Section 4.5 predicts. And the unit-weighted
+total channel, which the fix does not touch, is itself at 0.00115 [0.00110,
+0.00121]. A two-way resampling of genes and permutations (computed in the
+2026-09-27 review of that run, not stored) gives split [0.00103, 0.00143],
+unit [0.00116, 0.00132] and 1/(v+1) [0.00101, 0.00116]; the 1/(v+1)
+exclusion of 0.001 is marginal. Two limits of that record: the allelic
+before/after are not over identical tests (OST4's 611,400 allelic tests,
+1 donor, were p = 1 before and are NaN after); and draws 000 and 001 of all
+four configurations were written by an earlier run of the script, before
+its last edit, and kept by its skip-existing resume. They were checked
+afterwards against the stored runs (channel slopes, standard errors and
+`pval_t` identical; `pval_a` and `pval_nominal` equal to
+`2 t.sf(|t|, dof)` within 6e-8; the dof, admission and
+Welch-Satterthwaite rules hold), so no result is affected.
+
 **1/(v+1) in both channels** (`hybrid_weights_null.py --config=plus_one`,
 `summary_plus_one.json`), same genes and permutations. The combined statistic
 is calibrated, 0.0498 [0.0475, 0.0538] / 0.0112 / 0.0026, and so is each
 channel (allelic 0.0419 / 0.0095 / 0.0027, slightly conservative; total
-0.0503 / 0.0104 / 0.0012). Standard errors, stated over true and true spread
+0.0503 / 0.0104 / 0.0012). Measured under the shared 73-df reference; after
+2026-09-27 the combined rates are 0.0492 / 0.0100 / 0.0011 and the allelic
+0.0384 / 0.0070 / 0.0007 (table above). Standard errors, stated over true and true spread
 relative to Gibbs weights in both:
 
 | Channel | Stated / true, split | Stated / true, Gibbs in both | Stated / true, 1/(v+1) | True spread vs Gibbs in both, split | same, 1/(v+1) |
@@ -390,7 +436,9 @@ channels (`hybrid_weights_null.py --config=unit` / Gibbs `drop` arm /
 | Combined | 0.99 | 0.94 | 1.01 |
 
 Unit weights in both channels: combined 0.0529 / 0.0122 / 0.0028, allelic
-0.0546 / 0.0136 / 0.0034 at 0.05 / 0.01 / 0.001.
+0.0546 / 0.0136 / 0.0034 at 0.05 / 0.01 / 0.001 under the shared 73-df
+reference; after 2026-09-27, combined 0.0523 / 0.0110 / 0.0012 and allelic
+0.0510 / 0.0108 / 0.0013.
 
 Stated se, log2 units, over all tested variants and 200 permutations, finite
 values only (infinite: allelic 1.4%, total 0.1%, combined none; identical
@@ -447,7 +495,13 @@ Neither the zero-haplotype drop nor a total-channel weight override is wired
 into `tensorqtl/hapmixqtl.py` or the `scripts/run_hapmixqtl_from_salmon.py`
 CLI; both exist only in `scripts/hybrid_weights_null.py` and
 `scripts/drop_zero_haplotype_cost.py`. Choosing among these configurations —
-or leaving the shipped default as is — is a user decision.
+or leaving the shipped default as is — is a user decision. Since the
+per-channel t references of 2026-09-27 the three alternatives' combined
+rates at 0.001 are 0.0012 / 0.0012 / 0.0011 (split / unit / 1/(v+1)),
+above 0.001 for reasons shared by all three (the Welch-Satterthwaite
+reference and the total channel's own 1.15x); the shipped default's is
+0.0041 (see "After the per-channel t references" above,
+`brainvar_hapmix_deploy/allelic_df_fix_20260927/`).
 
 ## Open decision: the genotype-PC permutation rule interacts with the weights
 

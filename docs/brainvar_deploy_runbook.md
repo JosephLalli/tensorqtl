@@ -704,12 +704,23 @@ default, the previous behaviour), `None` for an intercept only, or the
 channel's own DataFrame. The driver's `--ase-covariates` defaults to `none`
 (`shared` reproduces the earlier runs); the CLI's `--ase_covariates` keeps
 `shared` as its default. `run_hapmixqtl_from_salmon.py` passes no
-covariates to either channel, so it is unaffected. The nominal p-value uses
-one t reference for both channels, `dof = N - 2 - max(n_cov, n_cov_a)`, and
-`map_cis` passes that dof to the permutation code, which used to take the
-allelic residualizer's (with an intercept-only allelic channel the two
-differ by the covariate count, and `map_cis` and `map_nominal` disagreed on
-the same pair by a factor of 3.5 in p).
+covariates to either channel, so it is unaffected. At the time the nominal
+p-value used one t reference for both channels,
+`dof = N - 2 - max(n_cov, n_cov_a)`, and `map_cis` passes that dof to the
+permutation code, which used to take the allelic residualizer's (with an
+intercept-only allelic channel the two differ by the covariate count, and
+`map_cis` and `map_nominal` disagreed on the same pair by a factor of 3.5 in
+p). CORRECTED 2026-09-27 (commit 8a06803): in default mode that shared dof
+now only maps `map_cis`'s scanned statistic to the correlation scale and
+seeds the Beta fit. `pval_a` is referred to the allelic channel's own
+`n_a - 1 - n_cov_a` df, `pval_t` to the total channel's own residual df,
+and `pval_nominal` to the Welch-Satterthwaite df of the combination; the
+allelic channel enters the combination only with at least 15 informative
+allelic donors (waived for allelic-only runs). The shared dof remains the
+reference of the deprecated known-variance and HC1 standard errors only.
+Specification and measured cost: `docs/hapmixqtl_methods.md` Section 4.5;
+columns `dof_nominal`, `dof_a`, `dof_t`, `allelic_admitted` in
+`docs/outputs.md`.
 
 Two rules travel with it. A channel with fewer informative samples
 (`v_inf > 1e-12`) than its design has columns plus two is switched off --

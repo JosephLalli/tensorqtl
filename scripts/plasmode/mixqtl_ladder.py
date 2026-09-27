@@ -43,8 +43,8 @@ mixQTL's count cutoffs as donor admission (hapmixqtl.count_cutoff_masks on the d
 point estimates, yT = pT, passed to map_nominal as keep_a_df / keep_t_df), at the published and the
 permissive settings; mixqtl and mixqtl_permissive from the committed results are the far ends.
 Also scored by the within-dataset AUC (score.ranking, score.main's bootstrap keys). A channel with
-no information at a variant comes back from map_nominal as slope 0, se inf, p 1; the rung files
-store it as NaN, the mixQTL arms' form of "no estimate".
+no information at a variant comes back from map_nominal as slope 0, se inf, p 1 (NaN where the
+whole channel is off); the rung files store it as NaN, the mixQTL arms' form of "no estimate".
 CAVEATS. The cutoffs change which GENES are estimable, not only which donors enter: the rung's total
 channel is map_nominal's joint design (intercept, n_cov = 17 covariates, genotype), with no residual
 degree of freedom at admitted trc donors <= 2 + n_cov = 19, while mixQTL's trc (intercept and x only)
@@ -52,12 +52,14 @@ estimates from 3; ESTIMABILITY prints the boundary as measured from the rung fil
 published cutoffs the rung is empty in 99 of 900 gene-datasets, all at <= 19 donors, 61 of them at
 3-19, where mixQTL's trc has a causal-variant slope in 52; permissive 5, all 5 estimated by
 mixQTL). mixQTL's own set keeps units the rung drops, and on the full run those carry most of
-mixQTL's own-set total squared error, which is why the common set is the headline. map_nominal
-refers every p to t with N - 2 - max(n_cov, n_cov_a) = 73 dof whatever the mask keeps
-(hapmixqtl.py:1873; its fitted scale counts only kept donors, _wls_regression's dof_f), so a rung's
-p, and so its AUC, is too small where the cutoffs leave few donors; the squared-error ratio uses no
-p. The allelic pipeline truth is the slope over the records allelic_kept admits without cutoffs, so
-a cutoff rung's allelic estimand is shifted by the admitted band, direction not fixed at published
+mixQTL's own-set total squared error, which is why the common set is the headline. Since commit
+8a06803 map_nominal refers each channel's p to that channel's own residual dof over the kept donors
+and the combined p to their Welch-Satterthwaite dof (stored as run_arms.DOF_COLS), and leaves the
+allelic channel out of the combination for genes with fewer than 15 kept allelic donors, which the
+published cutoffs make common; before it every p was referred to N - 2 - max(n_cov, n_cov_a) = 73
+dof whatever the mask kept, so a rung's p, and so its AUC, was too small where the cutoffs left few
+donors. The squared-error ratio uses no p. The allelic pipeline truth is the slope over the records
+allelic_kept admits without cutoffs, so a cutoff rung's allelic estimand is shifted by the admitted band, direction not fixed at published
 cutoffs ([50, 1000] drops both the most-attenuated low records and the least-attenuated high ones);
 admission itself depends on the injected effect (run_arms' asc_cap CAVEAT).
 
@@ -188,7 +190,7 @@ def run_rung(S, ds, cutoff, scratch):
              xL_df=S['xLdf'], xR_df=S['xRdf'], prefix='n', covariates_df=cov,
              genotype_covariates_df=S['I']['geno_cov_df'], window=CM.WIN, output_dir=str(scratch),
              verbose=False, ase_covariates_df=None, keep_a_df=frame(ka), keep_t_df=frame(kt))
-    df = pd.concat([pd.read_parquet(q, columns=SC.CNS.COLS) for q in sorted(scratch.glob('n*.parquet'))],
+    df = pd.concat([pd.read_parquet(q, columns=SC.CNS.COLS + RA.DOF_COLS) for q in sorted(scratch.glob('n*.parquet'))],
                    ignore_index=True)
     df['variant_id'] = df['variant_id'].astype(str)
     empty = []

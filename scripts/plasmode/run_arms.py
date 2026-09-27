@@ -24,7 +24,11 @@ hapmixQTL ARMS, per dataset:
      (ase_covariates_df=None), window CM.WIN, default mode. A is already
      swapped in the dataset (swapped records had pL and pR exchanged), so no
      sign is applied here. Stored as map_nominal writes it (p-values float64,
-     slopes and se float32, map_nominal's own dtypes).
+     slopes and se float32, map_nominal's own dtypes), with DOF_COLS: each
+     p's t reference and whether the gene's allelic channel entered the
+     combination (hapmixqtl.MIN_ALLELIC_DONORS = 15 informative allelic
+     donors; below it the combined slope, se and p are the total channel's).
+     The log line names the genes below that floor.
   GATE, per run: at each gene's causal variant, slope_a and slope_t equal
   null_permutation_instrument.fit_channels on the same arm inputs within
   GATE_TOL of the slope's se (corrected_null_store.py's gate; map_nominal
@@ -98,7 +102,9 @@ them, its slope equals map_nominal's at that variant within GATE_TOL of the
 se. Its pval_nominal against map_nominal's smallest is logged, not a stop:
 at a lead the p is so small that float32 rounding of the statistic moves it
 by up to 1.8e-3 relative (2026-09-26 full run, beta 0.2 rep 001) while the
-slopes agree to 7.4e-6 se.
+slopes agree to 7.4e-6 se; and since commit 8a06803 each pair's combined p
+has its own Welch-Satterthwaite dof, so the lead (largest |t|) need not hold
+the gene's smallest pval_nominal at all.
 
 mixQTL GENE-LEVEL p, under the TIMING RULE (user decision 2026-09-26).
 mixqtl_permutation_scan is CPU NumPy. On the first dataset the published arm
@@ -125,7 +131,7 @@ arms got no gene-level p; map_cis took 17.9-21.0 s per dataset per arm on
 one NVIDIA L4.
 
 Output: RESULTS/<scenario>/<arm>/nominal_repNNN.parquet (tested variants,
-COLS, plus `method` for mixQTL arms); cis_repNNN.parquet (hapmixQTL: CIS_COLS
+COLS, plus DOF_COLS for hapmixQTL arms and `method` for mixQTL arms); cis_repNNN.parquet (hapmixQTL: CIS_COLS
 from map_cis; mixQTL, when the timing rule admits it: MIXQTL_CIS_COLS);
 RESULTS/mixqtl_permutation.json. Parquet metadata: the sha256 of the dataset
 arrays and the arm (checked by score.py), and the slope unit. Every output is
@@ -185,6 +191,7 @@ CIS_COLS = ['phenotype_id', 'variant_id', 'num_var', 'pval_nominal', 'slope', 's
 MIXQTL_CIS_COLS = ['phenotype_id', 'variant_id', 'stat_obs', 'pval_perm', 'n_perm_finite']
 MIXQTL_PERM_JSON = 'mixqtl_permutation.json'
 MIXQTL_PERM_TIMED = MD.ROOT / 'results_smoke' / MIXQTL_PERM_JSON   # the timing behind MIXQTL_PERM = False
+DOF_COLS = ['dof_nominal', 'dof_a', 'dof_t', 'allelic_admitted']   # map_nominal's t references, since commit 8a06803
 
 
 def quiet(fn, *args, **kwargs):
@@ -272,7 +279,7 @@ def run_nominal(S, ds, arm, scratch):
           xL_df=S['xLdf'], xR_df=S['xRdf'], prefix='n', covariates_df=cov,
           genotype_covariates_df=S['I']['geno_cov_df'], window=CM.WIN,
           output_dir=str(scratch), verbose=False, ase_covariates_df=None)
-    df = pd.concat([pd.read_parquet(q, columns=CNS.COLS) for q in sorted(scratch.glob('n*.parquet'))],
+    df = pd.concat([pd.read_parquet(q, columns=CNS.COLS + DOF_COLS) for q in sorted(scratch.glob('n*.parquet'))],
                    ignore_index=True)
     df['variant_id'] = df['variant_id'].astype(str)
     n_exp = int(S['n_tested'].sum())
@@ -491,8 +498,10 @@ def main():
                     nominal, (worst, n_gate), n_zeroed = run_nominal(S, ds, arm, scratch)
                     secs.setdefault((arm, 'map_nominal'), []).append(time.perf_counter() - t0)
                     write_parquet(nominal, out / f'nominal_rep{r:03d}.parquet', sha, UNITS[arm])
+                    below = sorted(nominal.phenotype_id[~nominal.allelic_admitted].unique())
                     print(f'{tag} map_nominal {len(nominal):,} rows; allelic admission zeroed {n_zeroed} donor-gene '
-                          f'pairs; gate at causal variants {worst:.1e} se over {n_gate} genes; '
+                          f'pairs; genes with the allelic channel out of the combination {len(below)} {below}; '
+                          f'gate at causal variants {worst:.1e} se over {n_gate} genes; '
                           f'{secs[(arm, "map_nominal")][-1]:.1f} s', flush=True)
                     t0 = time.perf_counter()
                     cis, wb, wp = run_cis(S, ds, arm, nominal, seed)

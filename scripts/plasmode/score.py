@@ -36,9 +36,12 @@ pL + pR, corrected_null_store_20260925/gene_design.tsv, checked equal to
 truth.tsv) in BANDS, and over every gene but the ONE_DF genes (key NO_ONE_DF;
 gene list in the summary as one_df_genes): those with ONE_DF admitted allelic
 donors (gene_design.tsv n_allelic_keep), whose through-origin allelic fit has
-one residual degree of freedom but whose p is referred to t with
-N - 2 - max(n_cov, n_cov_a) = 73 df (hapmixqtl.py:1873). The anchor's stored
-rates at TAIL_ALPHA are also given without them (stored_without_one_df).
+one residual degree of freedom. Before commit 8a06803 their p was referred to
+t with N - 2 - max(n_cov, n_cov_a) = 73 df; since then pval_a is referred to
+its own 1 df and, below hapmixqtl.MIN_ALLELIC_DONORS = 15, the allelic
+channel is left out of the combined statistic. The anchor's stored rates at
+TAIL_ALPHA, from null runs made before that commit, are also given without
+them (stored_without_one_df).
 TReCASE's component tests (TRECASE_PARTS) are scored on the anchor's null
 genes like a channel (trecase_components), each over the tests where its p is
 finite. Channels are combined / allelic / total; for the mixQTL
@@ -67,8 +70,10 @@ per-gene sums, and the 2.5% and 97.5% quantiles are reported.
     count scale (beta for asc, the total truth for trc). The combined slope
     is exactly the inverse-variance combination of the two channel slopes at
     the unit's own stated se (w = 1/se^2; for mixQTL only the channel or
-    channels its `method` names), which is checked per unit to IVW_TOL of the
-    se, so its truth is the same combination of the two channel truths.
+    channels its `method` names; for hapmixQTL the total channel alone where
+    the gene's allelic_admitted is False), which is checked per unit to
+    IVW_TOL of the se, so its truth is the same combination of the two
+    channel truths.
     (2a) SE CALIBRATION: sd(z), ddof 1 about its mean, with
          z = (slope - truth) / se. It is 1 when the stated se equals the
          realized sd of the slope, above 1 when the stated se is too small.
@@ -102,8 +107,11 @@ per-gene sums, and the 2.5% and 97.5% quantiles are reported.
     non-finite p counts as not detected and is counted.
 (5) GENE RANKING BY LEAD NOMINAL p. Within each dataset, genes are ranked by
     the p of their lead (ties by |slope / se|; a gene with no finite p ranks
-    last). A within-dataset ranking uses no reference distribution, so it
-    does not depend on how well each arm's p values are calibrated. It is
+    last). A within-dataset ranking uses no threshold, so a miscalibration
+    shared by every gene does not move it; one specific to a gene does.
+    Since commit 8a06803 each hapmixQTL p has its own t reference (the
+    pair's Welch-Satterthwaite dof), so ranking by p is no longer ranking
+    by |t|, as it was under the shared 73 df. It is
     confounded by the number of tested variants (2,295 to 12,942 per gene),
     because a null gene with many variants has a smaller minimum p by
     chance; the gene set, and so that confounding, is shared by every arm.
@@ -137,11 +145,13 @@ per-gene sums, and the 2.5% and 97.5% quantiles are reported.
     interval carries only gene-to-gene spread within the one permutation and
     failed on the total channel of all four arms in the 2026-09-26 smoke,
     whose permutation sits at the 3rd percentile of the stored total-channel
-    rates (0.0739 gibbs, 0.0452 unit). The plumbing itself was checked
-    exactly the same day by a one-off script, not yet a committed check:
-    given the stored run's own permutation 0, the beta = 0 generator path
-    reproduces that run's draw 0 (unit and gibbs: no call at 0.05 differs
-    among 487,454 tests in any channel; slopes within 5.5e-6 se).
+    rates (0.0739 gibbs, 0.0452 unit). The plumbing itself is checked
+    exactly by check_generator.py check (d): given the stored run's own
+    permutation 0, the beta = 0 generator path reproduces that run's draw 0.
+    The stored null runs predate commit 8a06803, so their combined and
+    allelic p are referred to the old shared 73 df while this run's are
+    referred to each statistic's own dof (hapmixqtl.map_nominal): only the
+    total channel's anchor comparison is like for like.
 (7) GENE LEVEL: map_cis on every dataset for the hapmixQTL arms, and
     mixqtl_permutation_scan for the mixQTL arms when run_arms.py's timing
     rule admitted it (RESULTS/mixqtl_permutation.json, reported either way).
@@ -327,7 +337,8 @@ def causal_and_leads(results, U, sc, arm):
     """Causal-variant rows of the non-null genes (a joint arm's missing row left NaN), and every gene's lead, per
     dataset (log2 units)."""
     parts, leads = [], []
-    cols = (JOINT_COLS if arm in JOINT else CNS.COLS) + (['method'] if arm in RA.MIXQTL_ARMS else [])
+    cols = (JOINT_COLS if arm in JOINT else CNS.COLS) + (
+        ['method'] if arm in RA.MIXQTL_ARMS else [] if arm in JOINT else ['allelic_admitted'])
     for r, u in U[U.scenario == sc].groupby('rep'):
         d = read_results(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet', cols)
         nn = u[~u.is_null]
@@ -392,6 +403,8 @@ def channel_truths(C, arm, scale=None):
         wt = np.where(np.isfinite(st) & np.isfinite(set_), 1.0 / set_ ** 2, 0.0)
         if arm in RA.MIXQTL_ARMS:   # mixQTL's meta estimate is one channel alone unless `method` is 'meta'
             wa, wt = np.where(C.method == 'trc', 0.0, wa), np.where(C.method == 'asc', 0.0, wt)
+        else:                       # hapmixQTL: the total channel alone below the allelic admission floor
+            wa = np.where(C.allelic_admitted.astype(bool).values, wa, 0.0)
         w = wa + wt
         ivw = (np.where(wa > 0, wa * sa, 0.0) + np.where(wt > 0, wt * st, 0.0)) / w
         tc = (np.where(wa > 0, wa * ta, 0.0) + np.where(wt > 0, wt * tt, 0.0)) / w

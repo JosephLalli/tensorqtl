@@ -91,11 +91,54 @@ over beta (0.85-1.05) whose provenance was also not recorded.
 
 (d) EXACT REPRODUCTION OF A STORED NULL. Given the stored null runs' own
     permutation 0 and swap signs (corrected_null_store.OLD/permutations.npz),
-    the beta = 0 path (every factor 1) mapped through run_arms.run_nominal
-    must reproduce those runs' draw 0 for the gibbs and unit arms: no call at
-    REPRO_ALPHA differs in any channel among the 487,454 tests, and slopes agree
-    within REPRO_SLOPE_TOL of their se. This, not the beta = 0 anchor's rate
-    (one permutation), is the known-answer test of the plumbing.
+    the beta = 0 path (every factor 1) is mapped through run_arms.run_nominal
+    for the gibbs and unit arms and compared with those runs' draw 0 over the
+    487,454 tests. This, not the beta = 0 anchor's rate (one permutation), is
+    the known-answer test of the plumbing.
+    The stored draws were made before commit 8a06803, which changed the t
+    reference of every p but no slope or se except below the allelic floor:
+    the draws referred all three p's to t with OLD_DOF = N - 2 - n_cov = 73
+    (the allelic channel is through the origin, n_cov_a = 0); the commit
+    refers pval_a to dof_a = n_a - 1, pval_t to dof_t = n_t - 2 - n_cov,
+    pval_nominal to the per-pair Welch-Satterthwaite dof_nominal
+    (w_a + w_t)^2 / (w_a^2 / dof_a + w_t^2 / dof_t) with w = 1/se^2, and
+    leaves the allelic channel out of the combination for genes with fewer
+    than hapmixqtl.MIN_ALLELIC_DONORS = 15 informative allelic donors. So:
+    PINNED against the stored draw (what the commit does not touch):
+      slope_a, slope_t and, where the allelic channel is admitted, slope,
+      within REPRO_SLOPE_TOL of their se; slope_a_se, slope_t_se and, where
+      admitted, slope_se, within REPRO_SLOPE_TOL relative; pval_t, whose
+      reference is unchanged because dof_t = OLD_DOF in every gene (asserted:
+      every donor carries total-channel weight), no call at REPRO_ALPHAS
+      differs and p agrees within REPRO_P_RTOL relative. pval_nominal where
+      admitted is NOT pinned: its statistic slope / slope_se is (above), its
+      reference is not (dof_nominal equals 73 only by coincidence).
+    CHANGED, verified by recomputation:
+      dof_a = n_a - 1 and allelic_admitted = (n_a >= 15), with n_a the
+      gene's count of donors whose working allelic variance
+      (run_arms.arm_variances) exceeds make_datasets.EPS, which on this
+      unthinned path must also equal gene_design.tsv's n_allelic_drop (the
+      drop rule make_datasets.allelic_kept applies; n_allelic_keep counts
+      without it, e.g. PLK1 42 against 12); dof_a
+      is NaN, and so pval_a, exactly where n_a < 2 (channel off).
+      pval_a = 2 t.sf(|t_a|, dof_a) with t_a the STORED draw's float32
+      slope_a / slope_a_se (map_nominal's own construction), within
+      REPRO_P_RTOL and with no call at REPRO_ALPHAS differing.
+      Where admitted: dof_nominal equals the Welch-Satterthwaite formula
+      recomputed from slope_a_se, slope_t_se, dof_a, dof_t within DOF_RTOL,
+      and pval_nominal = 2 t.sf(|t|, dof_nominal) with t the stored draw's
+      slope / slope_se, within REPRO_P_RTOL and no call differing.
+      The stored draws' own p equal 2 t.sf(|t|, OLD_DOF) of their own
+      statistic within STORED_RTOL (confirms what they were referred to).
+      STORED_RTOL was raised post hoc from 1e-9 to 1e-6 after the first run
+      measured 6.0e-8 (one float32 rounding of t); 1e-6 still separates
+      adjacent degrees of freedom by orders of magnitude.
+    BELOW THE FLOOR (allelic_admitted False), where the total channel has an
+    estimate (slope_t_se finite): slope = slope_t, slope_se = slope_t_se,
+    dof_nominal = dof_t and pval_nominal = pval_t exactly (the code clones
+    the total channel); elsewhere in those genes pval_nominal is NaN.
+    For information: calls per channel and alpha that the new references
+    moved relative to the stored draw, and the below-floor genes.
 """
 import shutil
 import sys
@@ -111,7 +154,8 @@ import corrected_null_store as CNS                                # noqa: E402
 import make_datasets as MD                                        # noqa: E402
 import run_arms as RA                                             # noqa: E402
 from null_permutation_instrument import fit_channels             # noqa: E402
-from tensorqtl.hapmixqtl import LN2, summaries_from_point_estimates  # noqa: E402
+from tensorqtl.hapmixqtl import (LN2, MIN_ALLELIC_DONORS, get_t_pval,   # noqa: E402
+                                 summaries_from_point_estimates)
 
 OUT = MD.ROOT / 'checks'
 A_TOL, VA_RTOL = 1e-12, 1e-9          # provenance not recorded; measured 1.8e-15 / 7.6e-16
@@ -127,8 +171,13 @@ BANDS = ((1, 10), (10, 100), (100, 1000), (1000, np.inf))
 C_BANDS = ([0, 10, 100, 1000, np.inf], ['0-9', '10-99', '100-999', '1000+'])
 REPRO_DRAWS = {'gibbs': MD.D / 'corrected_null_store_20260925' / 'draws' / 'drop_000.parquet',
                'unit': MD.D / 'hybrid_weights_null_20260926' / 'draws' / 'unit_000.parquet'}
-REPRO_ALPHA = 0.05
+REPRO_ALPHAS = CNS.ALPHAS             # 0.05 / 0.01 / 0.001, the null-rate alphas (was 0.05 alone before 2026-09-27)
 REPRO_SLOPE_TOL = 1e-4                # stored draws are float32; a one-off run 2026-09-26 measured 5.5e-6
+REPRO_P_RTOL = 1e-3                   # set 2026-09-27 before its first run: p from two float32 statistics ~5.5e-6 se apart
+DOF_RTOL = 1e-5                       # set 2026-09-27 before its first run: Welch-Satterthwaite dof from float32 se
+STORED_RTOL = 1e-6                    # the stored p against its own statistic: 1e-9 before the first run, which measured
+                                      # 6.0e-8 (one float32 rounding of t); t(73) against t(n_a - 1) differs far more
+GENE_DESIGN = MD.D / 'corrected_null_store_20260925' / 'gene_design.tsv'   # n_allelic_drop of the unthinned records
 
 
 def band_name(lo, hi):
@@ -332,8 +381,53 @@ def check_recovery(I, R, tested):
     return ok, res
 
 
+def t_stat(d, s, se):
+    """map_nominal's statistic: float32 slope / se, 0 where se is not finite and positive; as float64."""
+    x, e = d[s].to_numpy(np.float32), d[se].to_numpy(np.float32)
+    ok = np.isfinite(e) & (e > 0)
+    return np.where(ok, x / np.where(ok, e, np.float32(1)), np.float32(0)).astype(np.float64)
+
+
+def p_agree(p, q, rtol, alphas=REPRO_ALPHAS):
+    """p against q: calls differing per alpha, max relative |p - q|; passed if NaN and zero patterns match too."""
+    fp, fq = np.isfinite(p), np.isfinite(q)
+    b = fp & fq
+    pos = b & (p > 0) & (q > 0)
+    rel = float(np.max(np.abs(p[pos] - q[pos]) / q[pos])) if pos.any() else 0.0
+    calls = {str(a): int(((p[b] < a) != (q[b] < a)).sum()) for a in alphas}
+    ok = bool((fp == fq).all() and ((p[b] == 0) == (q[b] == 0)).all() and rel <= rtol
+              and all(v == 0 for v in calls.values()))
+    return dict(calls_differ=calls, max_rel=rel, tests=int(b.sum()), passed=ok)
+
+
+def pinned(m, rows, s, se):
+    """Over rows: slope within REPRO_SLOPE_TOL of its se, se within REPRO_SLOPE_TOL relative, of the stored draw's."""
+    a, b = m[s].to_numpy(float)[rows], m[f'{s}_stored'].to_numpy(float)[rows]
+    e, f = m[se].to_numpy(float)[rows], m[f'{se}_stored'].to_numpy(float)[rows]
+    fin = np.isfinite(e) & (e > 0)
+    ds = float(np.max(np.abs(a[fin] - b[fin]) / e[fin])) if fin.any() else 0.0
+    de = float(np.max(np.abs(e[fin] - f[fin]) / f[fin])) if fin.any() else 0.0
+    same_rest = bool(np.array_equal(fin, np.isfinite(f) & (f > 0)) and np.array_equal(a[~fin], b[~fin], equal_nan=True))
+    return dict(max_slope_diff_se=ds, max_se_rel=de, finite=int(fin.sum()),
+                passed=bool(same_rest and ds <= REPRO_SLOPE_TOL and de <= REPRO_SLOPE_TOL))
+
+
+def satterthwaite(se_a, se_t, dof_a, dof_t):
+    """hapmixqtl._satterthwaite_dof in float64 from the stored se: weights 1/se^2, channel dof clamped at 1."""
+    with np.errstate(divide='ignore', invalid='ignore'):
+        wa = np.where(np.isfinite(se_a) & (se_a > 0), 1.0 / se_a ** 2, 0.0)
+        wt = np.where(np.isfinite(se_t) & (se_t > 0), 1.0 / se_t ** 2, 0.0)
+        nu_a = np.maximum(np.nan_to_num(dof_a, nan=1.0), 1.0)
+        nu_t = np.maximum(np.nan_to_num(dof_t, nan=1.0), 1.0)
+        nu = (wa + wt) ** 2 / (wa ** 2 / nu_a + wt ** 2 / nu_t)
+    nu = np.where(wt > 0, nu, nu_a)
+    nu = np.where(wa > 0, nu, nu_t)
+    return np.where(wa + wt > 0, nu, np.nan)
+
+
 def check_reproduction(I, R):
-    """(d) The beta = 0 path, given a stored null run's own permutation 0, reproduces that run's draw 0."""
+    """(d) The beta = 0 path, given a stored null run's own permutation 0, reproduces that run's draw 0 in everything
+    commit 8a06803 leaves alone, and its new t references recompute from the stored statistics (module docstring)."""
     old = np.load(CNS.OLD / 'permutations.npz')
     perm, swap = old['perms'][0], old['flips'][0].astype(np.int8)
     G, N = R['pL'].shape
@@ -342,6 +436,8 @@ def check_reproduction(I, R):
     S = RA.setup(I)
     ds = dict(A=g['A'], T=g['T'], Va=g['Va'], Vt=g['Vt'], pL=g['pL'], pR=g['pR'], perm=perm,
               causal_variant=np.array([min(S['tested'][x]) for x in S['genes']]))
+    old_dof = N - 2 - I['cov_df'].shape[1] - I['geno_cov_df'].shape[1]
+    keep_design = pd.read_csv(GENE_DESIGN, sep='\t').set_index('gene').n_allelic_drop.loc[S['genes']]
     ok, res = True, {}
     for arm, path in REPRO_DRAWS.items():
         df, _, _ = RA.run_nominal(S, ds, arm, OUT / 'scratch_reproduction')
@@ -349,16 +445,81 @@ def check_reproduction(I, R):
         m = df.merge(ref, on=['phenotype_id', 'variant_id'], suffixes=('', '_stored'))
         if len(m) != len(ref) or len(m) != len(df):
             raise SystemExit(f'(d) {arm}: {len(m):,} matched tests, {len(df):,} here, {len(ref):,} in {path}')
-        calls = {ch: int(((m[c] < REPRO_ALPHA) != (m[f'{c}_stored'] < REPRO_ALPHA)).sum())
-                 for ch, c in CNS.CHANNELS.items()}
-        slope = max(float(np.nanmax(np.abs(m[s] - m[f'{s}_stored']) / m[se]))
-                    for s, se in (('slope', 'slope_se'), ('slope_a', 'slope_a_se'), ('slope_t', 'slope_t_se')))
-        passed = all(v == 0 for v in calls.values()) and slope <= REPRO_SLOPE_TOL
+        col = lambda c: m[c].to_numpy(float)   # noqa: E731
+        # each gene's informative allelic donors, counted without map_nominal
+        n_a = pd.Series((RA.arm_variances(ds, arm)[0] > MD.EPS).sum(1), index=S['genes'])
+        na = n_a.loc[m.phenotype_id].to_numpy()
+        adm = m.allelic_admitted.to_numpy(bool)
+        structure = dict(n_a_equals_gene_design=bool((n_a == keep_design).all()),
+                         dof_a=bool(np.array_equal(col('dof_a'), np.where(na >= 2, na - 1.0, np.nan), equal_nan=True)),
+                         dof_t_all_old_dof=bool((col('dof_t') == old_dof).all()),
+                         allelic_admitted=bool(np.array_equal(adm, na >= MIN_ALLELIC_DONORS)))
+        # PINNED against the stored draw
+        every = np.ones(len(m), bool)
+        pin = dict(allelic=pinned(m, every, 'slope_a', 'slope_a_se'), total=pinned(m, every, 'slope_t', 'slope_t_se'),
+                   combined_admitted=pinned(m, adm, 'slope', 'slope_se'),
+                   pval_t=p_agree(col('pval_t'), col('pval_t_stored'), REPRO_P_RTOL))
+        # the stored draw's own p were referred to OLD_DOF
+        t_a, t_t, t_c = (t_stat(m, f'{s}_stored', f'{se}_stored')
+                         for s, se in (('slope_a', 'slope_a_se'), ('slope_t', 'slope_t_se'), ('slope', 'slope_se')))
+        stored_ref = {c: p_agree(col(f'{c}_stored'), get_t_pval(t, old_dof), STORED_RTOL, alphas=())
+                      for c, t in (('pval_a', t_a), ('pval_t', t_t), ('pval_nominal', t_c))}
+        # CHANGED, recomputed from the stored statistic with the new references
+        ws = satterthwaite(col('slope_a_se'), col('slope_t_se'), col('dof_a'), col('dof_t'))[adm]
+        dn = col('dof_nominal')[adm]
+        fin = np.isfinite(ws) & np.isfinite(dn)
+        dof_rel = float(np.max(np.abs(dn[fin] - ws[fin]) / ws[fin]))
+        changed = dict(
+            pval_a=p_agree(col('pval_a'), get_t_pval(t_a, col('dof_a')), REPRO_P_RTOL),
+            dof_nominal_admitted=dict(max_rel=dof_rel, range=[float(dn[fin].min()), float(dn[fin].max())],
+                                      passed=bool(np.array_equal(np.isfinite(ws), np.isfinite(dn)) and dof_rel <= DOF_RTOL)),
+            pval_nominal_admitted=p_agree(col('pval_nominal')[adm], get_t_pval(t_c[adm], dn), REPRO_P_RTOL))
+        # BELOW THE FLOOR the combination is the total channel, verbatim
+        b = ~adm
+        bt = b & np.isfinite(col('slope_t_se'))
+        eq = lambda x, y: bool(np.array_equal(col(x)[bt], col(y)[bt]))   # noqa: E731
+        below = dict(genes=sorted(m.phenotype_id[b].unique()), tests=int(b.sum()), with_total_estimate=int(bt.sum()),
+                     slope=eq('slope', 'slope_t'), slope_se=eq('slope_se', 'slope_t_se'),
+                     dof_nominal=eq('dof_nominal', 'dof_t'), pval_nominal=eq('pval_nominal', 'pval_t'),
+                     nan_without_total=bool(m.pval_nominal[b & ~bt].isna().all()))
+        # for information: calls the new references moved (NaN counts as not rejected)
+        moved = {ch: {str(a): int(((m[c].fillna(1.0) < a) != (m[f'{c}_stored'].fillna(1.0) < a)).sum())
+                      for a in REPRO_ALPHAS} for ch, c in CNS.CHANNELS.items()}
+        passed = bool(all(structure.values()) and all(x['passed'] for x in pin.values())
+                      and all(x['passed'] for x in stored_ref.values()) and all(x['passed'] for x in changed.values())
+                      and all(below[k] for k in ('slope', 'slope_se', 'dof_nominal', 'pval_nominal', 'nan_without_total')))
         ok &= passed
-        res[arm] = dict(stored=str(path), tests=len(m), call_differences=calls, max_slope_diff_se=slope, passed=passed)
-        print(f'(d) {arm}: stored permutation 0 vs {path.name}: {len(m):,} tests; calls at {REPRO_ALPHA} that differ '
-              f'{calls}; max |slope diff| / se {slope:.1e} (tol {REPRO_SLOPE_TOL:g})  {"PASS" if passed else "FAIL"}',
-              flush=True)
+        res[arm] = dict(stored=str(path), tests=len(m), old_dof=old_dof, structure=structure, pinned=pin,
+                        stored_reference=stored_ref, changed=changed, below_floor=below, calls_moved=moved, passed=passed)
+        P = lambda d: 'PASS' if d['passed'] else 'FAIL'   # noqa: E731
+        print(f'(d) {arm}: stored permutation 0 vs {path.name}: {len(m):,} tests; call alphas {REPRO_ALPHAS}')
+        print(f'    structure: n_a = gene_design n_allelic_drop {structure["n_a_equals_gene_design"]}; dof_a = n_a - 1 '
+              f'(NaN at n_a < 2) {structure["dof_a"]}; dof_t = {old_dof} everywhere {structure["dof_t_all_old_dof"]}; '
+              f'allelic_admitted = (n_a >= {MIN_ALLELIC_DONORS}) {structure["allelic_admitted"]}')
+        for k, x in pin.items():
+            if 'max_slope_diff_se' in x:
+                print(f'    pinned {k:17s} max |slope diff| / se {x["max_slope_diff_se"]:.1e}, max |se diff| / se '
+                      f'{x["max_se_rel"]:.1e} over {x["finite"]:,} finite se (tol {REPRO_SLOPE_TOL:g})  {P(x)}')
+            else:
+                print(f'    pinned {k:17s} calls that differ {x["calls_differ"]}; max relative |p diff| '
+                      f'{x["max_rel"]:.1e} (tol {REPRO_P_RTOL:g}) over {x["tests"]:,}  {P(x)}')
+        print(f'    stored draw referred to t({old_dof}): ' + '; '.join(
+            f'{c} max relative {x["max_rel"]:.1e} {P(x)}' for c, x in stored_ref.items()) + f' (tol {STORED_RTOL:g})')
+        x = changed['pval_a']
+        print(f'    changed pval_a vs 2 t.sf(|stored t_a|, dof_a): calls that differ {x["calls_differ"]}; max relative '
+              f'{x["max_rel"]:.1e} (tol {REPRO_P_RTOL:g}) over {x["tests"]:,}  {P(x)}')
+        x = changed['dof_nominal_admitted']
+        print(f'    changed dof_nominal (admitted) vs Welch-Satterthwaite from the se: max relative {x["max_rel"]:.1e} '
+              f'(tol {DOF_RTOL:g}); range [{x["range"][0]:.1f}, {x["range"][1]:.1f}]  {P(x)}')
+        x = changed['pval_nominal_admitted']
+        print(f'    changed pval_nominal (admitted) vs 2 t.sf(|stored t|, dof_nominal): calls that differ '
+              f'{x["calls_differ"]}; max relative {x["max_rel"]:.1e} (tol {REPRO_P_RTOL:g}) over {x["tests"]:,}  {P(x)}')
+        print(f'    below the floor: {below["genes"]} ({below["tests"]:,} tests, {below["with_total_estimate"]:,} with a '
+              f'total estimate): slope = slope_t {below["slope"]}, slope_se = slope_t_se {below["slope_se"]}, '
+              f'dof_nominal = dof_t {below["dof_nominal"]}, pval_nominal = pval_t {below["pval_nominal"]}; NaN without '
+              f'a total estimate {below["nan_without_total"]}')
+        print(f'    for information, calls the new references moved against the stored draw: {moved}')
+        print(f'    {"PASS" if passed else "FAIL"}', flush=True)
     shutil.rmtree(OUT / 'scratch_reproduction')
     return ok, res
 
