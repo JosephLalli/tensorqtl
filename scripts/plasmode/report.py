@@ -52,6 +52,7 @@ REF_GENES = SC.MD.GENE_SETS[INTERPRETED_SET]['gene_dir'] / 'genes.txt'
 SELECT_LOG = SC.MD.SET['gene_dir'] / 'select_stratum_genes.log'   # a stratum set's selection counts (select_stratum_genes.py)
 POOL = SC.MD.SET['gene_dir'] / 'pool_stratum.tsv'                 # every eQTL-filter gene's median admitted reads (select_stratum_genes.py)
 STRATA = SC.MD.D / 'coupling_reach_20260925' / 'b_strata.tsv'      # transcriptome-wide allelic null rate by coverage stratum, pre-correction pipeline
+HALF_DEPTH = SC.MD.D / 'salmon_half_depth_20260927' / 'summary.json'   # scripts/salmon_half_depth_check.py: the thinning rule against Salmon at half depth
 
 ARMS = ('gibbs', 'split', 'unit', 'plus_one', 'mixqtl', 'mixqtl_permissive')
 HAPMIX = ARMS[:4]
@@ -866,8 +867,15 @@ def stratum_facts():
     if len(own) != 1 or len(ref) != 100:
         raise SystemExit(f'{STRATA}: {len(own)} coverage strata named {lo}-{hi}; {REF_GENES}: {len(ref)} genes')
     other = [float(c['direct_0.05']) for c in cov if c is not own[0]]
-    print(f'stratum facts: {SELECT_LOG}, {POOL}, {STRATA}', flush=True)
-    return dict(pool=pool, lo=int(lo), hi=int(hi), cand=cand, floor=floor, seed=seed, adm=adm,
+    hd = json.loads(HALF_DEPTH.read_text())
+    band = f'{lo}-{int(hi) - 1}'
+    if band not in hd['bands']:
+        raise SystemExit(f'{HALF_DEPTH}: no band {band} among {sorted(hd["bands"])}')
+    h = hd['bands'][band]
+    half = dict(band=band, f=hd['f'], failed=band in hd['failed_bands'], pass_band=hd['pass_band'], va=h['va_meas_over_pred'],
+                exponent=h['exponent'], became_one_sided=h['became_one_sided'], two_sided=h['two_sided_full'], attenuation=h['attenuation'])
+    print(f'stratum facts: {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH} (band {band})', flush=True)
+    return dict(pool=pool, lo=int(lo), hi=int(hi), cand=cand, floor=floor, seed=seed, adm=adm, half=half,
                 ref_in=sum(int(lo) <= x < int(hi) for x in ref), ref_above=sum(x >= int(hi) for x in ref),
                 ref_below=sum(x < int(lo) for x in ref), ref_median=float(np.median(ref)), strata=len(cov),
                 own={k: float(own[0][k]) for k in ('direct_0.05', 'direct_0.05_lo', 'direct_0.05_hi', 'n_genes')},
@@ -892,7 +900,7 @@ def sec_head(S, SF):
                 f'allelic floor; units log2 aFC (beta = 1 is a twofold effect). The '
                 f'section "This stratum against the 100-gene run", after section 1, sets it against the 100-gene run '
                 f'({REF_RUN}), each run with its own intervals. Made by '
-                f'scripts/plasmode/report.py from {SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {CHECK_GEN}, '
+                f'scripts/plasmode/report.py from {SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, {CHECK_GEN}, '
                 f'{CHECK_PREMISE}, {RUN_ARMS_LOG.name}, {MAKE_LOG.name}, {RASQUAL_LOG} and {TRECASE_SUMMARY}; figures '
                 f'also written as PNG in {OUT}. The interpretation paragraphs of section 3 and sections 4 to 6 were '
                 f'written for the {INTERPRETED_SET} run and are not made for this set; that contrast section carries '
@@ -1414,6 +1422,22 @@ def sec_contrast(S, SF):
         '<p>On the count-scale truth unit weights\' squared error contains their own attenuation of the total slope '
         '(section 3.3), which grows with |beta|, so a ratio there is squared error, not precision; the anchor\'s null '
         'genes, where the truth is 0, are the comparison free of that (table above).</p>')
+    H = SF['half']
+    limit = (f'<p><b>Limit, from the Salmon half-depth test.</b> This stratum is the {H["band"]}-read band of the test of the '
+             f'thinning rule against Salmon itself (donor 100 re-quantified from a fraction f = {H["f"]} of its reads; {HALF_DEPTH}), '
+             f'the band where the rule was least faithful'
+             f'{" and failed its pass band " + str(H["pass_band"]) if H["failed"] else ""}: the allelic Gibbs variance Salmon '
+             f'produced was {H["va"]["median"]:.2f} of what the rule predicts (median over {H["va"]["n"]:,} donor-gene pairs; 95% '
+             f'interval of the median {H["va"]["median_ci95"][0]:.2f} to {H["va"]["median_ci95"][1]:.2f}); the Gibbs variance grew '
+             f'with depth to the power {H["exponent"]["median"]:.2f} (median over {H["exponent"]["n"]:,} pairs) rather than 1; '
+             f'{H["became_one_sided"]["half"]} of {H["two_sided"]:,} two-sided pairs became one-sided at half depth against '
+             f'{H["became_one_sided"]["thinned"]} under thinning; and the half-depth allelic ratio regressed on the full-depth ratio '
+             f'with slope {H["attenuation"]["half"]["slope"]:.2f} against {H["attenuation"]["thinned"]["slope"]:.2f} under thinning. '
+             f'The thinned records of these datasets therefore carry more allelic Gibbs variance, fewer zero-haplotype records and less '
+             f'attenuated allelic ratios than Salmon would produce at the same depths, most for the haplotypes thinned hardest '
+             f'(f = 2<sup>-{max(BETAS, key=float)}</sup> = {2 ** -float(max(BETAS, key=float)):.2f}), so every arm\'s allelic-channel '
+             f'precision and calibration here are optimistic relative to real data of this stratum by an amount this run does not '
+             f'measure. The comparison among arms, which share the same thinned input, is affected less than any arm\'s absolute figures.</p>')
     return f'''
 <h2>This stratum against the 100-gene run</h2>
 <p>Every gene of each run, each value with its own run's interval (the two runs hold different genes and are
@@ -1443,7 +1467,8 @@ gene units discovered by Benjamini-Hochberg at 5% on map_cis pval_beta (hapmixQT
 gene-level p here), with the gene-clustered interval.</p>
 {t_rank}
 {t_gene}
-{joint}'''
+{joint}
+{limit}'''
 
 
 def interp_joint(S, part, JF):
