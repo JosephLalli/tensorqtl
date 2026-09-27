@@ -37,10 +37,8 @@ GATES on draw 0, per config, before any draw is stored:
 INTERVALS: gene-clustered: resample the genes with replacement 2,000 times and
 recompute the pooled rate (rejections over tests); 2.5 and 97.5 percentiles.
 after - before differences use the same resampled genes. They resample genes
-only, while all genes share the same 200 permutations; a two-way resampling
-(genes x permutations) in the 2026-09-27 review widened them (split after at
-0.001 [0.00103, 0.00143], unit [0.00116, 0.00132], plus_one [0.00101,
-0.00116]; the plus_one exclusion of 0.001 is marginal) and is not computed here.
+only, while all genes share the same 200 permutations, so they are somewhat
+narrow; a resampling of genes and permutations together is not computed here.
 
 RECORD NOTES (2026-09-27 run, allelic_df_fix_20260927):
   - The rule FAILED for split, unit and plus_one. RPL41 is not the cause

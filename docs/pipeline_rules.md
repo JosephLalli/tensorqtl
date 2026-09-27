@@ -393,10 +393,9 @@ paired, by +0.00018 [+0.00015, +0.00021] (split), +0.00015 (unit) and
 +0.00013 (1/(v+1)) at 0.001, the direction the exact-model measurement of
 `docs/hapmixqtl_methods.md` Section 4.5 predicts. And the unit-weighted
 total channel, which the fix does not touch, is itself at 0.00115 [0.00110,
-0.00121]. A two-way resampling of genes and permutations (computed in the
-2026-09-27 review of that run, not stored) gives split [0.00103, 0.00143],
-unit [0.00116, 0.00132] and 1/(v+1) [0.00101, 0.00116]; the 1/(v+1)
-exclusion of 0.001 is marginal. Two limits of that record: the allelic
+0.00121]. The intervals resample genes only, while all genes share the same
+200 permutations, so they are somewhat narrow; the 1/(v+1) exclusion of 0.001
+is marginal. Two limits of that record: the allelic
 before/after are not over identical tests (OST4's 611,400 allelic tests,
 1 donor, were p = 1 before and are NaN after); and draws 000 and 001 of all
 four configurations were written by an earlier run of the script, before
