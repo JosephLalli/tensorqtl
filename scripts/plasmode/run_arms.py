@@ -173,6 +173,7 @@ NPERM = 1000                  # map_cis on every dataset (user decision 2026-09-
 PERM_SCHEME = 'records_signflip'
 MIXQTL_NPERM = 1000           # user decision 2026-09-26: as map_cis
 MIXQTL_PERM_BUDGET = 300.0    # s per dataset, user decision 2026-09-26: above it the mixQTL arms get no gene-level p
+MIXQTL_PERM = False           # timed 2026-09-26 on the smoke (results_smoke/mixqtl_permutation.json): 307 s for 24 of 100 genes, ~1,305 s per dataset, over the budget; None re-times on the first dataset
 GATE_TOL = 1e-3               # corrected_null_store.py gate, max |diff| / se
 LEAD_P_RTOL = 1e-3            # map_cis gate: relative p, map_cis lead vs map_nominal minimum
 IDENTITY_RTOL = 1e-9          # tests/test_mixqtl_replication.py: identity permutation vs observed maximum
@@ -182,6 +183,7 @@ CIS_COLS = ['phenotype_id', 'variant_id', 'num_var', 'pval_nominal', 'slope', 's
             'beta_shape1', 'beta_shape2', 'true_df']
 MIXQTL_CIS_COLS = ['phenotype_id', 'variant_id', 'stat_obs', 'pval_perm', 'n_perm_finite']
 MIXQTL_PERM_JSON = 'mixqtl_permutation.json'
+MIXQTL_PERM_TIMED = MD.ROOT / 'results_smoke' / MIXQTL_PERM_JSON   # the timing behind MIXQTL_PERM = False
 
 
 def quiet(fn, *args, **kwargs):
@@ -468,7 +470,10 @@ def main():
     results.mkdir(parents=True, exist_ok=True)
     scratch = results / 'scratch'
     secs = {}
-    mixqtl_perm = None        # decided on the first dataset by the timing rule
+    mixqtl_perm = MIXQTL_PERM
+    if mixqtl_perm is False:
+        rec = dict(json.loads(MIXQTL_PERM_TIMED.read_text()), source=str(MIXQTL_PERM_TIMED))
+        MD.write_atomic(results / MIXQTL_PERM_JSON, lambda fh: fh.write(MD.dumps(rec)), 'w')
     n_var = int(S['n_tested'].sum())
     for sc, _ in scenarios:
         for f in files[sc]:
