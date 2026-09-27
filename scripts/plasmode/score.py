@@ -3,6 +3,26 @@ the injected effects (four hapmixQTL weightings and mixQTL mode at two cutoff
 settings), the precision and stated standard error of their slopes, the
 nominal-p rate on the null genes, and the gene-level permutation results.
 
+JOINT ARMS: RASQUAL (run_rasqual.py) and TReCASE (asSeq, run_trecase_asseq.py),
+nominal only, read from their own results directories (JOINT). Each gives one
+test per variant, scored as the combined channel only. Their slope is the log2
+aFC ALT over REF as the runners store it: RASQUAL log2(pi / (1 - pi)), pi the
+ALT allele's expected share (nbem.c:1058: expression 2(1 - pi), 1, 2 pi at ALT
+dosage 0, 1, 2); TReCASE b / ln 2 of the statistic final_Pvalue used (joint,
+or TReC when the cis/trans test rejects or the joint fit failed). Both models
+put the total mean at 1, (1 + kappa)/2, kappa (asSeq glmNBlog's offsets,
+glm.c:1577 and trecase.c:1049; RASQUAL's K0), which is the generator's
+expected total fold averaged over donors, so the estimand of every joint-arm
+slope, TReC fallback included, is log2 kappa = beta: its truth is beta. Exception not identifiable per row: where glmNBlog
+fails asSeq refits TReC with linear dosage (run_trecase_asseq.py, counted
+there as trec_linear_dosage). Their slope_se is DERIVED, |slope| / sqrt(chisq),
+so for them z = slope / se is +-sqrt(chisq) under truth 0 and sd(z) measures the
+likelihood-ratio test's calibration, not a reported se. A test with no row
+(RASQUAL non-converged; TReCASE constant ALT dosage, including TPPP's causal
+variant in rep 002) is counted (missing_causal; null_excluded no_row) and left
+out: a causal unit without a row is excluded from detection, and is non-finite
+in bias and precision.
+
 DATASETS (user decision 2026-09-26): one beta = 0 anchor dataset (every gene
 null, no thinning) and 3 datasets at each of |beta| = 0.2 / 0.4 / 0.8, half
 the genes null. At these counts a gene is non-null in about 1.5 datasets per
@@ -13,7 +33,15 @@ UNITS. A causal unit is one (dataset, non-null gene) at its causal variant; a
 gene unit is one (dataset, gene). Every statistic is reported overall and by
 the gene's REAL median haplotype-informative reads over donors (median of
 pL + pR, corrected_null_store_20260925/gene_design.tsv, checked equal to
-truth.tsv) in BANDS. Channels are combined / allelic / total; for the mixQTL
+truth.tsv) in BANDS, and over every gene but the ONE_DF genes (key NO_ONE_DF;
+gene list in the summary as one_df_genes): those with ONE_DF admitted allelic
+donors (gene_design.tsv n_allelic_keep), whose through-origin allelic fit has
+one residual degree of freedom but whose p is referred to t with
+N - 2 - max(n_cov, n_cov_a) = 73 df (hapmixqtl.py:1873). The anchor's stored
+rates at TAIL_ALPHA are also given without them (stored_without_one_df).
+TReCASE's component tests (TRECASE_PARTS) are scored on the anchor's null
+genes like a channel (trecase_components), each over the tests where its p is
+finite. Channels are combined / allelic / total; for the mixQTL
 arms these are meta / asc / trc. mixQTL's slopes and se are stored in natural
 log (its response is natural log by design) and are divided by ln 2 on
 reading, so every slope and se below is in log2 units.
@@ -55,6 +83,9 @@ per-gene sums, and the 2.5% and 97.5% quantiles are reported.
          genes' tested variants finite under both. Below 1 means more precise
          than unit weights. 'split' and 'unit' share the total channel's
          weights (all 1), so their total-channel ratio is 1 by construction.
+         ratio_vs_unit_count (non-null): the same with the count-scale truth
+         for the arm and unit alike (combined: its inverse-variance
+         combination, beta for the joint arms), the cross-method comparison.
     Both are computed for the beta = 0 anchor too (null form only): the one
     place with no thinning, on the real records as they are.
 (3) LEAD-VARIANT RECOVERY, per non-null gene unit. Lead = the tested variant
@@ -170,6 +201,21 @@ TRUTH = {'count': {'combined': 'allelic_truth', 'allelic': 'allelic_truth', 'tot
          'pipeline': {'allelic': 'allelic_truth_pipeline', 'total': 'total_truth_pipeline'}}
 NULL_COLS = ['phenotype_id', 'variant_id', 'slope', 'slope_se', 'slope_a', 'slope_a_se', 'slope_t', 'slope_t_se']
 GENE_BOOT_KEY, DATASET_BOOT_KEY, AUC_BOOT_KEY = 30, 31, 33
+JOINT = {'rasqual': MD.ROOT / 'results_rasqual', 'trecase': MD.ROOT / 'results_trecase_asseq'}
+JOINT_COLS = CNS.COLS[:5]     # phenotype_id, variant_id, pval_nominal, slope, slope_se
+TRECASE_PARTS = {'trec': 'pval_t', 'joint': 'pval_joint', 'ase': 'pval_a'}   # run_trecase_asseq.py OUTPUT
+ONE_DF = 2                    # admitted allelic donors at which the through-origin allelic fit has 1 residual df (review 2026-09-27)
+NO_ONE_DF = 'without one-df genes'
+TAIL_ALPHA = 0.001
+
+
+def arm_dir(results, sc, arm):
+    return (JOINT[arm] if arm in JOINT else results) / sc / arm
+
+
+def channels(arm, d):
+    """The channels scored for an arm: a joint arm's one test per variant is its combined channel."""
+    return {'combined': d['combined']} if arm in JOINT else d
 
 
 def boot(key, n, size=None):
@@ -198,9 +244,9 @@ def load_units(datasets, results):
             raise SystemExit(f'{datasets / sc}: {len(fs)} datasets, meta.json says {meta["n_datasets"][str(b)]}')
         for f in fs:
             r, ds = int(f.stem[3:]), dict(np.load(f))
-            for arm in RA.ARMS:
+            for arm in RA.ARMS + tuple(JOINT):
                 for prefix in ('nominal', 'cis'):
-                    p = results / sc / arm / f'{prefix}_rep{r:03d}.parquet'
+                    p = arm_dir(results, sc, arm) / f'{prefix}_rep{r:03d}.parquet'
                     expected = prefix == 'nominal' or arm in gene_level_arms
                     if p.exists() != expected:
                         raise SystemExit(f'{p} {"is missing" if expected else "exists, but " + RA.MIXQTL_PERM_JSON + " says the mixQTL permutation scan did not run"}')
@@ -259,16 +305,16 @@ def pooled(K, n, gsel, bidx, ridx=None):
     return out
 
 
-def null_calibration(results, U, sc, arm, genes, bsel, bidx):
+def null_calibration(results, U, sc, arm, genes, bsel, bidx, cols=None):
     reps = sorted(U[U.scenario == sc].rep.unique())
     ridx = boot((DATASET_BOOT_KEY,), len(reps)) if len(reps) > 1 else None
     res = {}
-    for ch, col in PVAL.items():
+    for ch, col in (cols or channels(arm, PVAL)).items():
         K = {al: np.zeros((len(reps), len(genes))) for al in ALPHAS}
         n = np.zeros((len(reps), len(genes)))
         for i, r in enumerate(reps):
             nulls = U[(U.scenario == sc) & (U.rep == r) & U.is_null].gene.tolist()
-            k, n[i] = CNS.rates_by_gene([results / sc / arm / f'nominal_rep{r:03d}.parquet'], genes, col,
+            k, n[i] = CNS.rates_by_gene([arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet'], genes, col,
                                         gene_filter=nulls)
             for al in ALPHAS:
                 K[al][i] = k[al]
@@ -278,11 +324,12 @@ def null_calibration(results, U, sc, arm, genes, bsel, bidx):
 
 
 def causal_and_leads(results, U, sc, arm):
-    """Causal-variant rows of the non-null genes, and every gene's lead, per dataset (log2 units)."""
+    """Causal-variant rows of the non-null genes (a joint arm's missing row left NaN), and every gene's lead, per
+    dataset (log2 units)."""
     parts, leads = [], []
-    cols = CNS.COLS + (['method'] if arm in RA.MIXQTL_ARMS else [])
+    cols = (JOINT_COLS if arm in JOINT else CNS.COLS) + (['method'] if arm in RA.MIXQTL_ARMS else [])
     for r, u in U[U.scenario == sc].groupby('rep'):
-        d = read_results(results / sc / arm / f'nominal_rep{r:03d}.parquet', cols)
+        d = read_results(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet', cols)
         nn = u[~u.is_null]
         parts.append(nn.merge(d, left_on=['gene', 'causal_variant'], right_on=['phenotype_id', 'variant_id'],
                               how='left'))
@@ -297,7 +344,7 @@ def causal_and_leads(results, U, sc, arm):
         leads.append(L.rename(columns={'variant_id': 'lead_variant', 'p': 'lead_p', 'absstat': 'lead_absstat'})
                      .reset_index())
     C = pd.concat(parts, ignore_index=True)
-    if C.variant_id.isna().any():
+    if C.variant_id.isna().any() and arm not in JOINT:
         raise SystemExit(f'{sc} {arm}: {int(C.variant_id.isna().sum())} causal variants have no result row')
     return C, pd.concat(leads, ignore_index=True)
 
@@ -322,7 +369,7 @@ def ratio_block(ratio, C, genes, bsel, bidx):
 
 def recovery(C, arm, genes, bsel, bidx):
     res = {}
-    for ch in SLOPE:
+    for ch in channels(arm, SLOPE):
         res[ch] = dict(bias_count=ratio_block(C[SLOPE[ch][0]].astype(float) / C[TRUTH['count'][ch]],
                                               C, genes, bsel, bidx))
         if arm in RA.HAPMIX_ARMS and ch in TRUTH['pipeline']:
@@ -331,9 +378,12 @@ def recovery(C, arm, genes, bsel, bidx):
     return res
 
 
-def channel_truths(C, arm):
-    """Per causal unit, the estimand of each channel's slope; checks the combined slope is the IVW of the channels'."""
-    scale = 'pipeline' if arm in RA.HAPMIX_ARMS else 'count'
+def channel_truths(C, arm, scale=None):
+    """Per causal unit, the estimand of each channel's slope (scale None: the arm's own); checks the combined slope
+    is the IVW of the channels'. A joint arm's one slope has estimand beta (module docstring)."""
+    if arm in JOINT:
+        return {'combined': C[TRUTH['count']['combined']].values}
+    scale = scale or ('pipeline' if arm in RA.HAPMIX_ARMS else 'count')
     ta, tt = C[TRUTH[scale]['allelic']].values, C[TRUTH[scale]['total']].values
     sa, sea = C.slope_a.astype(float).values, C.slope_a_se.astype(float).values
     st, set_ = C.slope_t.astype(float).values, C.slope_t_se.astype(float).values
@@ -362,42 +412,49 @@ def gene_sums(g, n_genes, ok, *values):
 
 
 def nonnull_precision(C, Cu, arm, genes):
-    """Per channel, per-gene [n, sum z, sum z^2, pairs, sum err^2 arm, sum err^2 unit] at the causal variants."""
+    """Per channel, per-gene [n, sum z, sum z^2, pairs, sum err^2 arm, sum err^2 unit] at the causal variants, each
+    arm against its own truth, then [pairs, sum err^2 arm, sum err^2 unit] with the count-scale truth for both."""
     if not (np.array_equal(C.rep.values, Cu.rep.values) and np.array_equal(C.gene.values, Cu.gene.values)):
         raise SystemExit(f'{arm}: causal units are not in the order of the unit arm\'s')
     g = pd.Index(genes).get_indexer(C.gene)
     T, Tu = channel_truths(C, arm), channel_truths(Cu, 'unit')
+    Tc, Tuc = channel_truths(C, arm, 'count'), channel_truths(Cu, 'unit', 'count')
     acc, excluded = {}, {}
-    for ch, (b, s) in SLOPE.items():
-        e, eu = C[b].astype(float).values - T[ch], Cu[b].astype(float).values - Tu[ch]
+    for ch, (b, s) in channels(arm, SLOPE).items():
+        x, xu = C[b].astype(float).values, Cu[b].astype(float).values
+        e, eu, ec, euc = x - T[ch], xu - Tu[ch], x - Tc[ch], xu - Tuc[ch]
         with np.errstate(divide='ignore', invalid='ignore'):
             z = e / C[s].astype(float).values
-        okz, pair = np.isfinite(z), np.isfinite(e) & np.isfinite(eu)
+        okz, pair, pc = np.isfinite(z), np.isfinite(e) & np.isfinite(eu), np.isfinite(ec) & np.isfinite(euc)
         n, s1, s2 = gene_sums(g, len(genes), okz, z, z ** 2)
         m, a, u = gene_sums(g, len(genes), pair, e ** 2, eu ** 2)
-        acc[ch] = np.vstack([n, s1, s2, m, a, u])
+        acc[ch] = np.vstack([n, s1, s2, m, a, u] + gene_sums(g, len(genes), pc, ec ** 2, euc ** 2))
         excluded[ch] = dict(nonfinite_z=int((~okz).sum()), unpaired=int((~pair).sum()), units=len(z))
     return acc, excluded
 
 
 def null_rows(results, sc, arm, r, nulls):
-    d = read_results(results / sc / arm / f'nominal_rep{r:03d}.parquet', NULL_COLS)
+    d = read_results(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet',
+                     NULL_COLS[:4] if arm in JOINT else NULL_COLS)
     return (d[d.phenotype_id.isin(nulls)].sort_values(['phenotype_id', 'variant_id'], kind='stable')
             .reset_index(drop=True))
 
 
 def null_precision(results, U, sc, arm, genes):
     """Per channel, per-gene [n, sum z, sum z^2, pairs, sum slope^2 arm, sum slope^2 unit] over null genes' variants."""
-    acc = {ch: np.zeros((6, len(genes))) for ch in SLOPE}
-    excluded = {ch: dict(nonfinite_z=0, unpaired=0, tests=0) for ch in SLOPE}
+    acc = {ch: np.zeros((6, len(genes))) for ch in channels(arm, SLOPE)}
+    excluded = {ch: dict(nonfinite_z=0, unpaired=0, tests=0, no_row=0) for ch in channels(arm, SLOPE)}
     for r in sorted(U[U.scenario == sc].rep.unique()):
         nulls = set(U[(U.scenario == sc) & (U.rep == r) & U.is_null].gene)
         d = null_rows(results, sc, arm, r, nulls)
         du = null_rows(results, sc, 'unit', r, nulls)
+        no_row = len(du) - len(d)
+        if arm in JOINT:   # tests without a joint-arm row are left out, counted as no_row
+            du = d[['phenotype_id', 'variant_id']].merge(du, how='left')
         if not (d.phenotype_id.equals(du.phenotype_id) and d.variant_id.equals(du.variant_id)):
             raise SystemExit(f'{sc} rep {r}: {arm} and unit differ in their null-gene tested variants')
         g = pd.Index(genes).get_indexer(d.phenotype_id)
-        for ch, (b, s) in SLOPE.items():
+        for ch, (b, s) in channels(arm, SLOPE).items():
             x, xu = d[b].astype(float).values, du[b].astype(float).values
             with np.errstate(divide='ignore', invalid='ignore'):
                 z = x / d[s].astype(float).values
@@ -406,6 +463,7 @@ def null_precision(results, U, sc, arm, genes):
             excluded[ch]['nonfinite_z'] += int((~okz).sum())
             excluded[ch]['unpaired'] += int((~pair).sum())
             excluded[ch]['tests'] += len(z)
+            excluded[ch]['no_row'] += no_row
     return acc, excluded
 
 
@@ -427,30 +485,35 @@ def boot_stat(parts, gs, bi, fn):
 
 
 def summarize(acc, bsel, bidx):
-    n, s1, s2, m, a, u = acc
-    out = {'sd_z': {}, 'ratio_vs_unit': {}}
+    n, s1, s2 = acc[:3]
+    ratios = {'ratio_vs_unit': acc[3:6]}
+    if len(acc) > 6:   # non-null: also on the count-scale truth (nonnull_precision)
+        ratios['ratio_vs_unit_count'] = acc[6:9]
+    out = {'sd_z': {}, **{k: {} for k in ratios}}
     for bn, gs in bsel.items():
         if n[gs].sum() > 1:
             out['sd_z'][bn] = dict(**boot_stat((n, s1, s2), gs, bidx[bn], sd_pooled), units=int(n[gs].sum()),
                                    genes=int((n[gs] > 0).sum()))
-        if m[gs].sum() > 0:
-            out['ratio_vs_unit'][bn] = dict(**boot_stat((a, u), gs, bidx[bn], sum_ratio), units=int(m[gs].sum()))
+        for k, (m, a, u) in ratios.items():
+            if m[gs].sum() > 0:
+                out[k][bn] = dict(**boot_stat((a, u), gs, bidx[bn], sum_ratio), units=int(m[gs].sum()))
     return out
 
 
 def precision(results, U, sc, arm, genes, bsel, bidx, CL):
     nacc, nexc = null_precision(results, U, sc, arm, genes)
-    res = {ch: dict(null=summarize(nacc[ch], bsel, bidx), null_excluded=nexc[ch]) for ch in SLOPE}
+    res = {ch: dict(null=summarize(nacc[ch], bsel, bidx), null_excluded=nexc[ch]) for ch in channels(arm, SLOPE)}
     if CL is not None:
         acc, exc = nonnull_precision(CL[arm][0], CL['unit'][0], arm, genes)
-        for ch in SLOPE:
+        for ch in channels(arm, SLOPE):
             res[ch].update(nonnull=summarize(acc[ch], bsel, bidx), nonnull_excluded=exc[ch])
     return res
 
 
-def detection(C):
+def detection(C, arm):
+    C = C[C.variant_id.notna()]   # a joint arm's causal unit without a row is excluded (missing_causal)
     res = {}
-    for ch, col in PVAL.items():
+    for ch, col in channels(arm, PVAL).items():
         p = C[col].astype(float)
         res[ch] = {'nonfinite_p': int((~np.isfinite(p)).sum())}
         for bn, lo, hi in BANDS:
@@ -577,26 +640,30 @@ def gene_level(results, U, sc, arm, genes, bsel, bidx):
     return res
 
 
-def stored_rates(path, prefix):
-    """Per-permutation rate at ANCHOR_ALPHA of each channel in a stored null run's draws."""
+def stored_rates(path, prefix, drop):
+    """Per-permutation rate at ANCHOR_ALPHA of each channel in a stored null run's draws, and the mean over
+    permutations of the rate at TAIL_ALPHA without the genes in drop."""
     files = sorted((path.parent / 'draws').glob(f'{prefix}_*.parquet'))
     if len(files) != ANCHOR_N_PERM:
         raise SystemExit(f'{path.parent}/draws: {len(files)} {prefix} draws, expected {ANCHOR_N_PERM}')
-    out = {ch: [] for ch in PVAL}
+    out, tail = {ch: [] for ch in PVAL}, {ch: [] for ch in PVAL}
     for f in files:
-        x = pd.read_parquet(f, columns=list(PVAL.values()))
+        x = pd.read_parquet(f, columns=['phenotype_id'] + list(PVAL.values()))
+        keep = ~x.phenotype_id.isin(drop).values
         for ch, col in PVAL.items():
             v = x[col].values
-            out[ch].append(float(np.mean(v[np.isfinite(v)] < ANCHOR_ALPHA)))
-    return {ch: np.array(v) for ch, v in out.items()}
+            ok = np.isfinite(v)
+            out[ch].append(float(np.mean(v[ok] < ANCHOR_ALPHA)))
+            tail[ch].append(float(np.mean(v[ok & keep] < TAIL_ALPHA)))
+    return {ch: np.array(v) for ch, v in out.items()}, {ch: float(np.mean(v)) for ch, v in tail.items()}
 
 
-def anchor(null0):
+def anchor(null0, drop):
     res, ok = {}, True
     q_lo, q_hi = (1 - ANCHOR_CENTRAL) / 2, (1 + ANCHOR_CENTRAL) / 2
     for arm, (path, prefix) in ANCHOR.items():
         stored = json.loads(path.read_text())
-        per_perm = stored_rates(path, prefix)
+        per_perm, tail = stored_rates(path, prefix, drop)
         print(f'anchor reference: {arm} per-permutation rates from {ANCHOR_N_PERM} {prefix} draws in {path.parent}')
         res[arm] = {}
         for ch in PVAL:
@@ -611,6 +678,8 @@ def anchor(null0):
                                percentile=float(100 * np.mean(r <= m['rate'])))
                     row['passed'] = bool(row['perm_lo'] <= m['rate'] <= row['perm_hi'])
                     ok &= row['passed']
+                if float(al) == TAIL_ALPHA:
+                    row['stored_without_one_df'] = tail[ch]
                 res[arm][ch][al] = row
     return res, ok
 
@@ -632,7 +701,7 @@ def bands_of(d, key, f='{:.3f}'):
 
 
 def report(S):
-    arms = S['arms']
+    arms = S['arms'] + S['joint_arms']
     if S['anchor'] is not None:
         print(f'\nANCHOR (beta = 0, one dataset = one record permutation) at {ANCHOR_ALPHA}: this run\'s rate against '
               f'the stored run\'s {ANCHOR_N_PERM} per-permutation rates (mean; central {ANCHOR_CENTRAL:.0%}; '
@@ -645,12 +714,14 @@ def report(S):
         print(f'  anchor {"inside the stored central range in every arm and channel" if S["anchor_passed"] else "OUTSIDE the stored central range in at least one arm and channel"}; '
               f'descriptive only: one permutation cannot test plumbing sharply, the exact reproduction of a stored '
               f'permutation (check_generator.py check (d)) does')
+    print('\nJOINT ARMS: causal units without a row (excluded from detection; non-finite in bias and precision): '
+          + '; '.join(f'{sc} {a} {n}' for sc, v in S['missing_causal'].items() for a, n in v.items()))
     print('\n(1) BIAS at the causal variant: mean slope / truth [gene-clustered 95%] (<100 / 100-999 / >=1000 '
           'reads); count scale, then pipeline scale (hapmixQTL arms). Channels combined/allelic/total = '
           'mixQTL meta/asc/trc')
     for sc, v in S['recovery'].items():
         for arm in arms:
-            for ch in SLOPE:
+            for ch in channels(arm, SLOPE):
                 r = v[arm][ch]
                 bc = r['bias_count']
                 bp = r['bias_pipeline'] if 'bias_pipeline' in r else None   # hapmixQTL arms only
@@ -663,20 +734,22 @@ def report(S):
     for title, key in (('(2a) SE CALIBRATION: sd of z = (slope - truth) / se, pooled [gene-clustered 95%]; 1 when '
                         'the stated se equals the realized sd, above 1 when it is too small', 'sd_z'),
                        ('(2b) EFFICIENCY vs unit: sum of squared error under the arm / under unit, paired '
-                        '[gene-clustered 95%]; below 1 = more precise than unit weights', 'ratio_vs_unit')):
-        print(f'\n{title}. non-null: causal variant (hapmixQTL pipeline-scale truth, mixQTL count-scale; '
-              f'combined = IVW of the channel truths); null: every tested variant of the null genes, truth 0. '
+                        '[gene-clustered 95%]; below 1 = more precise than unit weights', 'ratio_vs_unit'),
+                       ('(2c) EFFICIENCY vs unit on the count-scale truth for the arm and unit alike (the '
+                        'cross-method comparison); null as (2b)', 'ratio_vs_unit_count')):
+        print(f'\n{title}. non-null: causal variant (hapmixQTL pipeline-scale truth, mixQTL count-scale, joint arms '
+              f'beta; combined = IVW of the channel truths); null: every tested variant of the null genes, truth 0. '
               f'(<100 / 100-999 / >=1000 reads)')
         for sc, v in S['precision'].items():
             for arm in arms:
-                for ch in SLOPE:
+                for ch in channels(arm, SLOPE):
                     r = v[arm][ch]
                     line = f'  {sc:7s} {arm:17s} {ch:8s} '
                     if 'nonnull' in r:
                         d = r['nonnull'][key]
                         line += (f'non-null {fmtv(d["all"] if "all" in d else None)} '
                                  f'({d["all"]["units"] if "all" in d else 0} units; {bands_of(d, "value")})  ')
-                    d = r['null'][key]
+                    d = r['null'][key if key in r['null'] else 'ratio_vs_unit']
                     line += (f'null {fmtv(d["all"] if "all" in d else None)} '
                              f'({d["all"]["units"] if "all" in d else 0:,} tests; {bands_of(d, "value")})')
                     print(line)
@@ -693,7 +766,7 @@ def report(S):
           f'{" / ".join(map(str, DETECT_ALPHAS))} (all genes); at 1e-3 by band (<100 / 100-999 / >=1000)')
     for sc, v in S['detection'].items():
         for arm in arms:
-            for ch in PVAL:
+            for ch in channels(arm, PVAL):
                 r = v[arm][ch]
                 print(f'  {sc:7s} {arm:17s} {ch:8s} ' + ' / '.join(f'{r["all"][str(al)]:.3f}' for al in DETECT_ALPHAS)
                       + f'  (1e-3: {bands_of(r, "0.001")})  non-finite p {r["nonfinite_p"]}')
@@ -714,7 +787,7 @@ def report(S):
                 f'{ch[:3]} {fmtr(v[arm][ch]["all"]["0.05"])} ('
                 + '/'.join(f'{v[arm][ch][bn]["0.05"]["rate"]:.3f}' if bn in v[arm][ch] else 'n/a'
                            for bn, _, _ in BANDS[1:]) + ')'
-                for ch in PVAL))
+                for ch in channels(arm, PVAL)))
     print(f'\n(7) GENE LEVEL: null-gene rate of gene-level p < {GENE_LEVEL_ALPHA} [gene-clustered 95%] (null gene '
           f'units); power = share of non-null gene units discovered by Benjamini-Hochberg at FDR {FDR} within '
           f'dataset (hapmixQTL on pval_beta, mixQTL on pval_perm)')
@@ -744,29 +817,37 @@ def main():
         raise SystemExit('loader genes differ from meta.json')
     rows = {str(v): i for i, v in enumerate(I['vdf'].index)}
     bsel = band_genes(genes, U)
+    keep_a = pd.read_csv(GENE_DESIGN, sep='\t').set_index('gene').n_allelic_keep.loc[genes].values
+    one_df = [g for g, k in zip(genes, keep_a) if k == ONE_DF]
+    bsel[NO_ONE_DF] = np.flatnonzero(keep_a != ONE_DF)   # last, so the bands' interval streams are unchanged
     bidx = {bn: boot((GENE_BOOT_KEY, b), len(g)) for b, (bn, g) in enumerate(bsel.items())}
     scen = [f'beta{b}' for b in meta['betas']]
     gl_arms = RA.HAPMIX_ARMS + (tuple(RA.MIXQTL_ARMS) if perm['included'] else ())
+    arms = RA.ARMS + tuple(JOINT)
     S = dict(datasets=str(datasets), results=str(results), n_datasets=meta['n_datasets'],
-             arms=list(RA.ARMS), bands=[b[0] for b in BANDS], n_boot=N_BOOT, seed=SEED, fdr=FDR,
-             cannot_answer=MD.CANNOT_ANSWER, units='log2 (mixQTL slopes and se / ln 2)', mixqtl_permutation=perm,
+             arms=list(RA.ARMS), joint_arms=list(JOINT), joint_results={a: str(p) for a, p in JOINT.items()},
+             bands=[b[0] for b in BANDS], n_boot=N_BOOT, seed=SEED, fdr=FDR,
+             cannot_answer=MD.CANNOT_ANSWER, units='log2 aFC (mixQTL slopes and se / ln 2; joint arms as stored)',
+             mixqtl_permutation=perm, missing_causal={}, one_df_genes=one_df,
              null={}, precision={}, recovery={}, lead={}, detection={}, ranking={}, gene_level={})
     for i, sc in enumerate(scen):
-        S['null'][sc] = {arm: null_calibration(results, U, sc, arm, genes, bsel, bidx) for arm in RA.ARMS}
+        S['null'][sc] = {arm: null_calibration(results, U, sc, arm, genes, bsel, bidx) for arm in arms}
         CL = None
         if (~U[U.scenario == sc].is_null).any():
-            CL = {arm: causal_and_leads(results, U, sc, arm) for arm in RA.ARMS}
-            S['recovery'][sc] = {arm: recovery(CL[arm][0], arm, genes, bsel, bidx) for arm in RA.ARMS}
-            S['lead'][sc] = {arm: lead_recovery(CL[arm][1], I['dos'], rows) for arm in RA.ARMS}
-            S['detection'][sc] = {arm: detection(CL[arm][0]) for arm in RA.ARMS}
-            S['ranking'][sc] = {arm: ranking(CL[arm][1], (AUC_BOOT_KEY, i)) for arm in RA.ARMS}
-        S['precision'][sc] = {arm: precision(results, U, sc, arm, genes, bsel, bidx, CL) for arm in RA.ARMS}
+            CL = {arm: causal_and_leads(results, U, sc, arm) for arm in arms}
+            S['missing_causal'][sc] = {arm: int(CL[arm][0].variant_id.isna().sum()) for arm in JOINT}
+            S['recovery'][sc] = {arm: recovery(CL[arm][0], arm, genes, bsel, bidx) for arm in arms}
+            S['lead'][sc] = {arm: lead_recovery(CL[arm][1], I['dos'], rows) for arm in arms}
+            S['detection'][sc] = {arm: detection(CL[arm][0], arm) for arm in arms}
+            S['ranking'][sc] = {arm: ranking(CL[arm][1], (AUC_BOOT_KEY, i)) for arm in arms}
+        S['precision'][sc] = {arm: precision(results, U, sc, arm, genes, bsel, bidx, CL) for arm in arms}
         S['gene_level'][sc] = {arm: gene_level(results, U, sc, arm, genes, bsel, bidx) for arm in gl_arms}
         print(f'scored {sc}', flush=True)
     if 'beta0.0' in S['null']:
-        S['anchor'], S['anchor_passed'] = anchor(S['null']['beta0.0'])
+        S['anchor'], S['anchor_passed'] = anchor(S['null']['beta0.0'], one_df)
+        S['trecase_components'] = null_calibration(results, U, 'beta0.0', 'trecase', genes, bsel, bidx, TRECASE_PARTS)
     else:
-        S['anchor'], S['anchor_passed'] = None, None
+        S['anchor'], S['anchor_passed'], S['trecase_components'] = None, None, None
     MD.write_atomic(out, lambda fh: fh.write(MD.dumps(S)), 'w')
     report(S)
     print(f'\nwrote {out}')
