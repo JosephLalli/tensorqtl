@@ -181,7 +181,7 @@ NPERM = 1000                  # map_cis on every dataset (user decision 2026-09-
 PERM_SCHEME = 'records_signflip'
 MIXQTL_NPERM = 1000           # user decision 2026-09-26: as map_cis
 MIXQTL_PERM_BUDGET = 300.0    # s per dataset, user decision 2026-09-26: above it the mixQTL arms get no gene-level p
-MIXQTL_PERM = False           # timed 2026-09-26 on the smoke (results_smoke/mixqtl_permutation.json): 307 s for 24 of 100 genes, ~1,305 s per dataset, over the budget; None re-times on the first dataset
+MIXQTL_PERM = False if MD.GENE_SET == 'corrected_null_store' else None   # False: timed 2026-09-26 on that set's smoke (results_smoke/mixqtl_permutation.json): 307 s for 24 of 100 genes, ~1,305 s per dataset, over the budget; None (every other gene set) re-times on the first dataset
 GATE_TOL = 1e-3               # corrected_null_store.py gate, max |diff| / se
 IDENTITY_RTOL = 1e-9          # tests/test_mixqtl_replication.py: identity permutation vs observed maximum
 META_KEY, UNIT_KEY = b'plasmode_input_sha256', b'plasmode_slope_unit'

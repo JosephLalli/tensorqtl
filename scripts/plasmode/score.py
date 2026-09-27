@@ -24,16 +24,19 @@ out: a causal unit without a row is excluded from detection, and is non-finite
 in bias and precision.
 
 DATASETS (user decision 2026-09-26): one beta = 0 anchor dataset (every gene
-null, no thinning) and 3 datasets at each of |beta| = 0.2 / 0.4 / 0.8, half
-the genes null. At these counts a gene is non-null in about 1.5 datasets per
-scenario, so every statistic below is POOLED over gene-dataset units, with a
-gene-clustered interval, rather than computed per gene.
+null, no thinning) and make_datasets.N_DATASETS datasets at each of |beta| =
+0.2 / 0.4 / 0.8 (3 for the corrected_null_store set, 6 for the 30-100-read
+set), half the genes null. At these counts a gene is non-null in about half
+the datasets of a scenario, so every statistic below is POOLED over
+gene-dataset units, with a gene-clustered interval, rather than computed per
+gene.
 
 UNITS. A causal unit is one (dataset, non-null gene) at its causal variant; a
 gene unit is one (dataset, gene). Every statistic is reported overall and by
 the gene's REAL median haplotype-informative reads over donors (median of
-pL + pR, corrected_null_store_20260925/gene_design.tsv, checked equal to
-truth.tsv) in BANDS, and over every gene but the ONE_DF genes (key NO_ONE_DF;
+pL + pR, make_datasets.GENE_DESIGN's median_allele_resolved_reads, checked
+equal to truth.tsv) in BANDS, whose cut points depend on the gene set
+(BANDS_BY_SET), and over every gene but the ONE_DF genes (key NO_ONE_DF;
 gene list in the summary as one_df_genes): those with ONE_DF admitted allelic
 donors (gene_design.tsv n_allelic_keep), whose through-origin allelic fit has
 one residual degree of freedom. Before commit 8a06803 their p was referred to
@@ -136,7 +139,10 @@ per-gene sums, and the 2.5% and 97.5% quantiles are reported.
     coupling on the thinned records, so the beta > 0 rates are not a
     calibration result (make_datasets.CANNOT_ANSWER).
     ANCHOR (beta = 0): each hapmixQTL arm's rate at ANCHOR_ALPHA against the
-    same arm's stored 100-gene x 200-permutation null run. The anchor is one
+    same arm's stored 100-gene x 200-permutation null run. Those runs exist
+    for the corrected_null_store set only (make_datasets.GENE_SETS[...]
+    ['stored_null']); for any other set the comparison is skipped with a
+    printed line and `anchor` is null in the summary. The anchor is one
     dataset, i.e. ONE record permutation, so the reference is the stored
     run's permutation-to-permutation spread: it passes inside the central
     ANCHOR_CENTRAL of the stored per-permutation rates, reported, never a
@@ -185,8 +191,8 @@ import run_arms as RA                        # noqa: E402
 from tensorqtl.hapmixqtl import LN2          # noqa: E402
 
 SUMMARY = MD.ROOT / 'summary.json'
-GENE_DESIGN = MD.D / 'corrected_null_store_20260925' / 'gene_design.tsv'
-ANCHOR = {   # arm: (stored summary, its key prefix); the 100-gene x 200-permutation null runs
+GENE_DESIGN = MD.GENE_DESIGN
+ANCHOR = {   # arm: (stored summary, its key prefix); the 100-gene x 200-permutation null runs of the corrected_null_store set
     'gibbs': (MD.D / 'corrected_null_store_20260925' / 'summary.json', 'drop'),
     'split': (MD.D / 'hybrid_weights_null_20260926' / 'summary.json', 'hybrid'),
     'unit': (MD.D / 'hybrid_weights_null_20260926' / 'summary_unit.json', 'unit'),
@@ -203,7 +209,12 @@ FDR = 0.05                    # user decision 2026-09-26 (task E.5): power where
 GENE_LEVEL_ALPHA = 0.05       # gene-level null-gene rate
 R2_HIGH = 0.8                 # user decision 2026-09-26 (task E.3)
 IVW_TOL = 1e-4                # combined slope vs inverse-variance combination of the channel slopes, / se; smoke 2026-09-26 max 2.6e-6 (float32)
-BANDS = (('all', 0, np.inf), ('<100', 0, 100), ('100-999', 100, 1000), ('>=1000', 1000, np.inf))  # user decision 2026-09-26
+BANDS_BY_SET = {   # (name, lo, hi) on the gene's median haplotype-informative reads over all donors; the first band is every gene
+    'corrected_null_store': (('all', 0, np.inf), ('<100', 0, 100), ('100-999', 100, 1000), ('>=1000', 1000, np.inf)),  # user decision 2026-09-26
+    'stratum30_100': (('all', 0, np.inf), ('<30', 0, 30), ('30-50', 30, 50), ('50-100', 50, 100)),   # set 2026-09-27 before scoring: the set's all-donor medians are 0-78 reads (its stratum is defined on the admitted-donor median, 30-100; select_stratum_genes.py)
+}
+BANDS = BANDS_BY_SET[MD.GENE_SET]
+BAND_HDR = ' / '.join(b[0] for b in BANDS[1:])   # printed table headers
 SLOPE = {'combined': ('slope', 'slope_se'), 'allelic': ('slope_a', 'slope_a_se'),
          'total': ('slope_t', 'slope_t_se')}
 PVAL = CNS.CHANNELS
@@ -729,7 +740,7 @@ def report(S):
               f'permutation (check_generator.py check (d)) does')
     print('\nJOINT ARMS: causal units without a row (excluded from detection; non-finite in bias and precision): '
           + '; '.join(f'{sc} {a} {n}' for sc, v in S['missing_causal'].items() for a, n in v.items()))
-    print('\n(1) BIAS at the causal variant: mean slope / truth [gene-clustered 95%] (<100 / 100-999 / >=1000 '
+    print(f'\n(1) BIAS at the causal variant: mean slope / truth [gene-clustered 95%] ({BAND_HDR} '
           'reads); count scale, then pipeline scale (hapmixQTL arms). Channels combined/allelic/total = '
           'mixQTL meta/asc/trc')
     for sc, v in S['recovery'].items():
@@ -752,7 +763,7 @@ def report(S):
                         'cross-method comparison); null as (2b)', 'ratio_vs_unit_count')):
         print(f'\n{title}. non-null: causal variant (hapmixQTL pipeline-scale truth, mixQTL count-scale, joint arms '
               f'beta; combined = IVW of the channel truths); null: every tested variant of the null genes, truth 0. '
-              f'(<100 / 100-999 / >=1000 reads)')
+              f'({BAND_HDR} reads)')
         for sc, v in S['precision'].items():
             for arm in arms:
                 for ch in channels(arm, SLOPE):
@@ -767,7 +778,7 @@ def report(S):
                              f'({d["all"]["units"] if "all" in d else 0:,} tests; {bands_of(d, "value")})')
                     print(line)
     print(f'\n(3) LEAD RECOVERY (combined / meta): lead = causal, r^2 >= {R2_HIGH}, median r^2 '
-          f'(<100 / 100-999 / >=1000 for r^2 >= {R2_HIGH})')
+          f'({BAND_HDR} for r^2 >= {R2_HIGH})')
     for sc, v in S['lead'].items():
         for arm in arms:
             r = v[arm]
@@ -776,7 +787,7 @@ def report(S):
                   f'({bands_of(r, "r2_high")})  median r2 {a["median_r2"]:.3f} ({a["r2_defined"]} defined)  '
                   f'units {a["units"]}, no finite p {r["no_finite_p"]}, r2 undefined {r["r2_undefined"]}')
     print(f'\n(4) CAUSAL DETECTION: share of non-null units with p at the causal variant < '
-          f'{" / ".join(map(str, DETECT_ALPHAS))} (all genes); at 1e-3 by band (<100 / 100-999 / >=1000)')
+          f'{" / ".join(map(str, DETECT_ALPHAS))} (all genes); at 1e-3 by band ({BAND_HDR})')
     for sc, v in S['detection'].items():
         for arm in arms:
             for ch in channels(arm, PVAL):
@@ -784,7 +795,7 @@ def report(S):
                 print(f'  {sc:7s} {arm:17s} {ch:8s} ' + ' / '.join(f'{r["all"][str(al)]:.3f}' for al in DETECT_ALPHAS)
                       + f'  (1e-3: {bands_of(r, "0.001")})  non-finite p {r["nonfinite_p"]}')
     print(f'\n(5) GENE RANKING by lead p within dataset: AUC mean over datasets [dataset-bootstrap 95%] '
-          f'(<100 / 100-999 / >=1000); power at pooled realized FDP <= {FDR}')
+          f'({BAND_HDR}); power at pooled realized FDP <= {FDR}')
     for sc, v in S['ranking'].items():
         for arm in arms:
             r = v[arm]
@@ -793,7 +804,7 @@ def report(S):
                   f'{f["all"]["power"]:.3f} ({bands_of(f, "power")}) at {f["discoveries"]} discoveries, '
                   f'{f["false"]} false, lead p <= {f["p_threshold"]:.2e}')
     print('\n(6) NULL-GENE NOMINAL-P RATE at 0.05, tested variants of null genes: rate [gene-clustered 95%] '
-          '(<100 / 100-999 / >=1000)')
+          f'({BAND_HDR})')
     for sc, v in S['null'].items():
         for arm in arms:
             print(f'  {sc:7s} {arm:17s} ' + '  '.join(
@@ -837,7 +848,7 @@ def main():
     scen = [f'beta{b}' for b in meta['betas']]
     gl_arms = RA.HAPMIX_ARMS + (tuple(RA.MIXQTL_ARMS) if perm['included'] else ())
     arms = RA.ARMS + tuple(JOINT)
-    S = dict(datasets=str(datasets), results=str(results), n_datasets=meta['n_datasets'],
+    S = dict(gene_set=MD.GENE_SET, datasets=str(datasets), results=str(results), n_datasets=meta['n_datasets'],
              arms=list(RA.ARMS), joint_arms=list(JOINT), joint_results={a: str(p) for a, p in JOINT.items()},
              bands=[b[0] for b in BANDS], n_boot=N_BOOT, seed=SEED, fdr=FDR,
              cannot_answer=MD.CANNOT_ANSWER, units='log2 aFC (mixQTL slopes and se / ln 2; joint arms as stored)',
@@ -856,11 +867,14 @@ def main():
         S['precision'][sc] = {arm: precision(results, U, sc, arm, genes, bsel, bidx, CL) for arm in arms}
         S['gene_level'][sc] = {arm: gene_level(results, U, sc, arm, genes, bsel, bidx) for arm in gl_arms}
         print(f'scored {sc}', flush=True)
+    S['anchor'], S['anchor_passed'], S['trecase_components'] = None, None, None
     if 'beta0.0' in S['null']:
-        S['anchor'], S['anchor_passed'] = anchor(S['null']['beta0.0'], one_df)
         S['trecase_components'] = null_calibration(results, U, 'beta0.0', 'trecase', genes, bsel, bidx, TRECASE_PARTS)
-    else:
-        S['anchor'], S['anchor_passed'], S['trecase_components'] = None, None, None
+        if MD.SET['stored_null']:
+            S['anchor'], S['anchor_passed'] = anchor(S['null']['beta0.0'], one_df)
+        else:
+            print(f'anchor comparison skipped: gene set {MD.GENE_SET} has no stored null runs '
+                  f'(make_datasets.GENE_SETS[{MD.GENE_SET!r}][\'stored_null\'] is False)', flush=True)
     MD.write_atomic(out, lambda fh: fh.write(MD.dumps(S)), 'w')
     report(S)
     print(f'\nwrote {out}')

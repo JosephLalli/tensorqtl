@@ -1,7 +1,12 @@
 """Known-answer checks of the plasmode generator (make_datasets.py).
 
 Exits non-zero if any check fails. Inputs are make_datasets' own: the 100
-genes of corrected_null_store_20260925, loaded once.
+genes of the gene set make_datasets.GENE_SET names, loaded once. Check (d)
+compares with stored null runs that exist only for the corrected_null_store
+set (make_datasets.GENE_SETS[...]['stored_null']); for any other set it is
+skipped with a printed line and the check file has no `reproduction` key.
+Check (c)'s primary set is the genes at or above C_MIN_READS, which depends
+on the set (below).
 
 (a) IDENTITY. With every thinning factor 1, perm the identity and no swap,
     the generator's A, T, Va, Vt equal summaries_from_point_estimates on the
@@ -49,6 +54,11 @@ genes of corrected_null_store_20260925, loaded once.
       1/Va_real, vs beta       weights from the record's unthinned Va, which
                                does not depend on s (same records)
       unit, vs beta            weights 1 (same records)
+      unit no drop, vs beta    weights 1 over every record with Va' > EPS,
+                               the zero-haplotype drop not applied (added
+                               2026-09-27 for the 30-100-read set, to measure
+                               the drop rule's part of the low-depth
+                               shortfall named below; no pass rule)
       unit, vs pipeline truth  the PASS RULE
       1/Va', vs pipeline truth
     Measured 2026-09-26 (>= 100 reads, gene-clustered se in brackets):
@@ -163,7 +173,9 @@ F_B = 0.5                             # provenance not recorded; deeper than the
 MIN_PAIRS = 1000                      # provenance not recorded; exempts the 1-9 read band (364 thinned pairs)
 FANO_BAND = (0.95, 1.02)              # provenance not recorded
 RULE_RTOL = 1e-9                      # provenance not recorded; measured 3.8e-15
-C_BETA, C_N, C_MIN_READS = 0.4, 20, 100   # provenance not recorded
+C_BETA, C_N = 0.4, 20                 # provenance not recorded
+C_MIN_READS = {'corrected_null_store': 100,   # provenance not recorded (the committed set)
+               'stratum30_100': 0}[MD.GENE_SET]   # every gene of the 30-100-read set (all-donor medians 0-78 reads); set 2026-09-27 before its first run
 C_SE_MULT = 3                         # set 2026-09-26 before the rule's first run
 PREV_RECOVERY = dict(mean=0.992, gene_clustered_se=0.013)   # earlier generator (per-draw thinning of the
                                                             # allelic draws), 1/Va no drop, >= 100 reads (task record)
@@ -177,7 +189,7 @@ REPRO_P_RTOL = 1e-3                   # set 2026-09-27 before its first run: p f
 DOF_RTOL = 1e-5                       # set 2026-09-27 before its first run: Welch-Satterthwaite dof from float32 se
 STORED_RTOL = 1e-6                    # the stored p against its own statistic: 1e-9 before the first run, which measured
                                       # 6.0e-8 (one float32 rounding of t); t(73) against t(n_a - 1) differs far more
-GENE_DESIGN = MD.D / 'corrected_null_store_20260925' / 'gene_design.tsv'   # n_allelic_drop of the unthinned records
+GENE_DESIGN = MD.GENE_DESIGN          # n_allelic_drop of the unthinned records
 
 
 def band_name(lo, hi):
@@ -301,7 +313,7 @@ def check_thinning(I, R):
 
 ESTIMATES = (('inv_va_nodrop_beta', "1/Va' no drop, vs beta"), ('inv_va_beta', "1/Va', vs beta"),
              ('inv_va_exp_beta', '1/Va_exp, vs beta'), ('inv_va_real_beta', '1/Va_real, vs beta'),
-             ('unit_beta', 'unit, vs beta'),
+             ('unit_beta', 'unit, vs beta'), ('unit_nodrop_beta', 'unit no drop, vs beta'),
              ('unit_pipeline', 'unit, vs pipeline truth'), ('inv_va_pipeline', "1/Va', vs pipeline truth"))
 
 
@@ -322,7 +334,7 @@ def check_recovery(I, R, tested):
             kept = ds['kept'][k]
             va = {'inv_va_nodrop': ds['Va'][k], 'inv_va': np.where(kept, ds['Va'][k], 0.0),
                   'inv_va_exp': np.where(kept, va_exp[k], 0.0), 'inv_va_real': np.where(kept, va_real[k], 0.0),
-                  'unit': kept.astype(float)}
+                  'unit': kept.astype(float), 'unit_nodrop': (ds['Va'][k] > MD.EPS).astype(float)}
             fc = {w: fit_channels(ds['A'][k], s, v, ds['T'][k], I['dos'][j].astype(float) / 2.0, ds['Vt'][k], Cg)
                   for w, v in va.items()}
             if any(x is None for x in fc.values()):
@@ -332,7 +344,7 @@ def check_recovery(I, R, tested):
             recs.append(dict(rep=r, gene=genes[k], hap_real=hap_real[k],
                              inv_va_nodrop_beta=fc['inv_va_nodrop']['ba'] / b, inv_va_beta=fc['inv_va']['ba'] / b,
                              inv_va_exp_beta=fc['inv_va_exp']['ba'] / b, inv_va_real_beta=fc['inv_va_real']['ba'] / b,
-                             unit_beta=fc['unit']['ba'] / b,
+                             unit_beta=fc['unit']['ba'] / b, unit_nodrop_beta=fc['unit_nodrop']['ba'] / b,
                              unit_pipeline=fc['unit']['ba'] / bp, inv_va_pipeline=fc['inv_va']['ba'] / bp))
         if r == 0:
             gate = RA.run_nominal(RA.setup(I), ds, 'gibbs', OUT / 'scratch_map_nominal')[1]
@@ -530,8 +542,13 @@ def main():
     oka, ra = check_identity(I, R)
     okb, rb = check_thinning(I, R)
     okc, rc = check_recovery(I, R, tested)
-    okd, rd = check_reproduction(I, R)
-    res = dict(identity=ra, thinning=rb, recovery=rc, reproduction=rd)
+    res = dict(identity=ra, thinning=rb, recovery=rc)
+    okd = True
+    if MD.SET['stored_null']:
+        okd, res['reproduction'] = check_reproduction(I, R)
+    else:
+        print(f'(d) skipped: gene set {MD.GENE_SET} has no stored null runs to reproduce '
+              f'(make_datasets.GENE_SETS[{MD.GENE_SET!r}][\'stored_null\'] is False)', flush=True)
     MD.write_atomic(OUT / 'check_generator.json', lambda fh: fh.write(MD.dumps(res)), 'w')
     print(f'wrote {OUT / "check_generator.json"}')
     if not (oka and okb and okc and okd):

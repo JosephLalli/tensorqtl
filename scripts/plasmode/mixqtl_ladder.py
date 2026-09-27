@@ -67,6 +67,9 @@ SMOKE = True: one dataset, SMOKE_GENES of its genes, loaded through a gene list 
 written under LADDER/smoke (the tested set then excludes only those genes' bodies, a superset of the
 full run's; causal-variant metrics are unaffected). Output: LADDER/<scenario>/<rung>/
 nominal_repNNN.parquet, LADDER/total_channel_units.tsv, LADDER/ladder.json (atomic, NaN as null).
+The ladder is run only for a gene set whose make_datasets.GENE_SETS entry has ladder True (the
+committed corrected_null_store set); for any other set this script stops with a printed line and
+run_all.sh skips the step (report.py says so in section 3.8).
 """
 import shutil
 import sys
@@ -342,6 +345,9 @@ def report(R):
 
 
 def main():
+    if not MD.SET['ladder']:
+        raise SystemExit(f'the mixQTL ladder is not run for gene set {MD.GENE_SET} '
+                         f'(make_datasets.GENE_SETS[{MD.GENE_SET!r}][\'ladder\'] is False); nothing written')
     meta, S, U = load()
     genes = S['genes']
     scen = [f'beta{b}' for b in meta['betas']]

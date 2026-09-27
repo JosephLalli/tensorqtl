@@ -28,12 +28,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import matplotlib.ticker  # noqa: E402
 
+import check_generator as CGN  # noqa: E402  (C_MIN_READS, the primary set of check (c))
 import score as SC  # noqa: E402  (stored_rates and the anchor constants, for the like-for-like anchor)
 
-ROOT = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_20260926')
+ROOT = SC.MD.ROOT                              # the gene set's root (make_datasets.GENE_SET)
 SUMMARY = ROOT / 'summary.json'
-BEFORE = ROOT / 'summary_before_df_fix.json'   # score.py's summary of the arms run before commit 8a06803
-DF_FIX = SC.MD.D / 'allelic_df_fix_20260927' / 'summary.json'   # the stored null re-run under 8a06803 (allelic_df_null_check.py)
+INTERPRETED_SET = 'corrected_null_store'       # the gene set whose results the interpretation prose (sections 3.x prose, 4, 5, 6) was written for and is guarded against; for any other set those parts are skipped with a printed line and a note on the page
+INTERPRETED = SC.MD.GENE_SET == INTERPRETED_SET
+BEFORE = ROOT / 'summary_before_df_fix.json' if SC.MD.SET['before_df_fix'] else None   # score.py's summary of the arms run before commit 8a06803 (corrected_null_store set only)
+DF_FIX = SC.MD.D / 'allelic_df_fix_20260927' / 'summary.json' if SC.MD.SET['stored_null'] else None   # the stored null re-run under 8a06803 (allelic_df_null_check.py; corrected_null_store set only)
 SCORE_LOG = ROOT / 'score.log'
 RUN_ARMS_LOG = ROOT / 'run_arms.log'
 MAKE_LOG = ROOT / 'make_datasets.log'
@@ -41,7 +44,7 @@ CHECK_GEN = ROOT / 'checks' / 'check_generator.json'
 CHECK_PREMISE = ROOT / 'checks' / 'salmon_premise.json'
 RASQUAL_LOG = ROOT / 'results_rasqual' / 'run_rasqual.log'
 TRECASE_SUMMARY = ROOT / 'results_trecase_asseq' / 'summary.json'
-LADDER = ROOT / 'ladder' / 'ladder.json'
+LADDER = ROOT / 'ladder' / 'ladder.json' if SC.MD.SET['ladder'] else None   # mixqtl_ladder.py's output (corrected_null_store set only)
 OUT = ROOT / 'report'
 PAGE = OUT / 'plasmode_report.html'
 
@@ -59,7 +62,8 @@ COLOR = dict(zip(ALL, ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#
 MARKER = dict(zip(ALL, 'osD^vPXh'))
 BETA_COLOR = {'0.2': '#86b6ef', '0.4': '#2a78d6', '0.8': '#104281'}   # dataviz blue ramp, ordinal steps 250/450/650
 BETAS = ('0.2', '0.4', '0.8')
-BANDS = ('all', '<100', '100-999', '>=1000')
+BANDS = tuple(b[0] for b in SC.BANDS)   # score.py's read bands for this gene set
+BAND_HTML = ' / '.join(b.replace('>=', '&ge;').replace('<', '&lt;') for b in BANDS[1:])   # table headers and prose
 NO_ONE_DF = 'without one-df genes'   # score.py's gene set without the one-residual-df allelic gene (RPL41 alone)
 FLOOR = 15                          # hapmixqtl.MIN_ALLELIC_DONORS, the allelic admission floor of commit 8a06803
 CHANNELS = ('combined', 'allelic', 'total')
@@ -76,22 +80,41 @@ def write_atomic(path, data):
     os.replace(tmp, path)
 
 
+def skipped(what, flag):
+    print(f'{what} skipped: gene set {SC.MD.GENE_SET} has none (make_datasets.GENE_SETS[{SC.MD.GENE_SET!r}][{flag!r}] '
+          f'is False)', flush=True)
+    return None
+
+
+def note(what):
+    """The page's line where a part written for the INTERPRETED_SET run is not made for this gene set."""
+    return (f'<p class="box">{html.escape(what)}: not written for gene set {SC.MD.GENE_SET} (scripts/plasmode/report.py '
+            f'wrote it for the {INTERPRETED_SET} run, INTERPRETED_SET).</p>')
+
+
 def load():
     last = SCORE_LOG.read_text().rstrip().splitlines()[-1]
     if not last.startswith('wrote') or str(SUMMARY) not in last:
         raise SystemExit(f'{SCORE_LOG} does not end with "wrote {SUMMARY}": {last!r}')
-    S, SB = json.loads(SUMMARY.read_text()), json.loads(BEFORE.read_text())
+    S = json.loads(SUMMARY.read_text())
+    SB = json.loads(BEFORE.read_text()) if BEFORE else skipped('the before/after comparison of commit 8a06803', 'before_df_fix')
     for path, X in ((SUMMARY, S), (BEFORE, SB)):
-        if tuple(X['arms']) != ARMS or tuple(X['joint_arms']) != JOINT or tuple(X['bands']) != BANDS:
+        if X is not None and (tuple(X['arms']) != ARMS or tuple(X['joint_arms']) != JOINT or tuple(X['bands']) != BANDS):
             raise SystemExit(f'{path}: arms {X["arms"]} + {X["joint_arms"]} / bands {X["bands"]} differ from this script\'s')
-    if S['one_df_genes'] != SB['one_df_genes']:
+    if S.get('gene_set', INTERPRETED_SET) != SC.MD.GENE_SET:   # summaries written before 2026-09-27 carry no gene_set key
+        raise SystemExit(f'{SUMMARY}: gene set {S.get("gene_set")!r} is not {SC.MD.GENE_SET!r}')
+    if SB is not None and S['one_df_genes'] != SB['one_df_genes']:
         raise SystemExit(f'one-df genes differ: {SUMMARY} {S["one_df_genes"]}, {BEFORE} {SB["one_df_genes"]}')
-    FX = json.loads(DF_FIX.read_text())
-    if FX['floor'] != FLOOR or set(HAPMIX) - set(FX['rates']):
+    FX = json.loads(DF_FIX.read_text()) if DF_FIX else skipped('the stored null re-run under 8a06803 (anchor percentiles, tail rates)', 'stored_null')
+    if FX is not None and (FX['floor'] != FLOOR or set(HAPMIX) - set(FX['rates'])):
         raise SystemExit(f'{DF_FIX}: floor {FX["floor"]} or configurations {list(FX["rates"])} differ from this script\'s')
+    LD = json.loads(LADDER.read_text()) if LADDER else skipped('the mixQTL ladder (section 3.8)', 'ladder')
+    if not INTERPRETED:
+        print(f'interpretation prose skipped: it was written for the {INTERPRETED_SET} run, not gene set '
+              f'{SC.MD.GENE_SET}; the page carries the tables and figures with a note in each section', flush=True)
     return (S, SB, FX, json.loads(CHECK_GEN.read_text()), json.loads(CHECK_PREMISE.read_text()),
             RUN_ARMS_LOG.read_text(), MAKE_LOG.read_text(), RASQUAL_LOG.read_text(),
-            json.loads(TRECASE_SUMMARY.read_text()), json.loads(LADDER.read_text()))
+            json.loads(TRECASE_SUMMARY.read_text()), LD)
 
 
 def f(x, d=3):
@@ -273,11 +296,11 @@ def log_facts(run_log, make_log):
     floor = set(re.findall(r'genes with the allelic channel out of the combination (\d+) \[([^\]]*)\]', run_log))
     if not zeroed or set(mix) != {'mixqtl', 'mixqtl_permissive'}:
         raise SystemExit(f'{RUN_ARMS_LOG}: admission or mixQTL lines not found')
-    if len(floor) != 1:
+    if INTERPRETED and len(floor) != 1:   # the interpretation names one set of genes below the floor
         raise SystemExit(f'{RUN_ARMS_LOG}: the genes below the allelic floor differ between datasets or arms: {floor}')
-    (n_floor, names), = floor
+    sets = sorted((int(n), [x.strip(" '") for x in names.split(',')]) for n, names in floor)
     return dict(zeroed=(min(zeroed), max(zeroed)), mix=mix, pairs=pairs, tested=tested, expr=expr,
-                floor=(int(n_floor), [x.strip(" '") for x in names.split(',')]))
+                floor=sets[0] if len(sets) == 1 else None, floor_sets=sets)
 
 
 def joint_facts(S, rq_log, TS):
@@ -332,9 +355,11 @@ def fx(FX, a, ch, when, al, subset='all'):
     return FX['rates'][a][ch][subset][when][al]
 
 
-def fixed_anchor(S):
+def fixed_anchor(S, FX):
     """The anchor's rate at score.ANCHOR_ALPHA against the per-permutation rates of DF_FIX's draws, per arm and
-    channel, as score.anchor computes it against its own (pre-8a06803) reference."""
+    channel, as score.anchor computes it against its own (pre-8a06803) reference; None without DF_FIX."""
+    if FX is None:
+        return None
     q_lo, q_hi = (1 - SC.ANCHOR_CENTRAL) / 2, (1 + SC.ANCHOR_CENTRAL) / 2
     out = {}
     for a in HAPMIX:
@@ -348,7 +373,9 @@ def fixed_anchor(S):
 
 
 def sec_run(S, FX, CG, CP, LF, JF):
-    one_df = one_df_gene(S)
+    one_df = one_df_gene(S) if INTERPRETED else None
+    n_genes = S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z']['all']['genes']
+    mp = S['mixqtl_permutation']
     th, idn, rc = CG['thinning'], CG['identity'], CG['recovery']
     pr = rc['primary']
     tn, rl = th['thinned'], th['real']
@@ -390,6 +417,10 @@ def sec_run(S, FX, CG, CP, LF, JF):
                  f'(section 3.7) found the same exact pairing with the stored draw 0 for all of '
                  f'{", ".join(gates)} (channel slopes and standard errors, admitted combined statistic, total channel '
                  f'below the floor, the floor and dof_a all identical).')
+    elif not SC.MD.SET['stored_null']:
+        repro = (f'Check (d), exact reproduction of a stored null permutation, needs the stored 200-permutation null '
+                 f'runs, which exist for the {INTERPRETED_SET} gene set only; it was skipped for this set '
+                 f'({CHECK_GEN.name} has no reproduction entry).')
     else:
         repro = (f'Check (d), exact reproduction of a stored null permutation, is NOT in {CHECK_GEN.name}: that file '
                  'was written before the check was added to check_generator.py, and the committed check has not '
@@ -400,16 +431,89 @@ def sec_run(S, FX, CG, CP, LF, JF):
                  'from a check file.')
     prem_by_s = '; '.join(f's in {k}: {f(v["ratio_median"], 2)} ({v["genes"]:,} genes)'
                           for k, v in CP['by_ambiguous_share'].items())
-    b10 = rc['by_band']['10-99']
     n_ds = S['n_datasets']
     mix = LF['mix']
     rng = lambda arm, i: '-'.join(dict.fromkeys(str(g(x[i] for x in mix[arm])) for g in (min, max)))
     rq, tr = JF['rasqual'], JF['trecase']
     miss = lambda a: ' / '.join(str(S['missing_causal'][f'beta{b}'][a]) for b in BETAS)
+    set_desc = ('the 100 genes of the corrected null store' if INTERPRETED
+                else f'the {n_genes} genes of the {SC.MD.GENE_SET} gene set ({SC.MD.GENES})')
+    band_desc = ('fewer than 100, 100-999, at least 1,000' if INTERPRETED
+                 else ', '.join(b.replace('>=', '&ge;').replace('<', '&lt;') for b in BANDS[1:]))
+    if LF['floor'] and LF['floor'][0] == 0:
+        floor_txt = 'No gene falls below it in any dataset or arm (run_arms.log).'
+    elif LF['floor']:
+        floor_txt = (f'In every\ndataset and arm the same {LF["floor"][0]} genes fall below it '
+                     f'({", ".join(LF["floor"][1])}; run_arms.log).')
+    else:
+        ns = [n for n, _ in LF['floor_sets']]
+        floor_txt = (f'Between {min(ns)} and {max(ns)} genes fall below it, the set differing between datasets and arms '
+                     f'as thinning moves genes across the floor (run_arms.log).')
+    if INTERPRETED:
+        mix_perm_txt = f'''mixQTL's own permutation scan was timed in the smoke run, on the first dataset
+({S["mixqtl_permutation"]["timed_on"]}), with the host loaded (load about 100, run_arms.py docstring): it took
+{S["mixqtl_permutation"]["seconds"]:.0f} s for {S["mixqtl_permutation"]["genes_done"]} of
+{S["mixqtl_permutation"]["genes"]} genes ({S["mixqtl_permutation"]["tested_variants_done"]:,} of
+{S["mixqtl_permutation"]["tested_variants"]:,} tested variants). Extrapolated in proportion to tested variants,
+that is about {S["mixqtl_permutation"]["seconds_per_dataset_extrapolated"]:,.0f} s per dataset against a
+{S["mixqtl_permutation"]["budget_s"]:.0f} s budget, so the timing rule excluded it for this run too. The exclusion
+rests on that one loaded measurement. mixQTL is therefore compared only on the within-dataset measures that need no
+gene-level p.'''
+    else:
+        mix_perm_txt = (f"mixQTL's own permutation scan was timed on this run's first dataset ({mp['timed_on']}): it took "
+                        f"{mp['seconds']:.0f} s for {mp['genes_done']} of {mp['genes']} genes ({mp['tested_variants_done']:,} "
+                        f"of {mp['tested_variants']:,} tested variants), about {mp['seconds_per_dataset_extrapolated']:,.0f} s "
+                        f"per dataset in proportion to tested variants against a {mp['budget_s']:.0f} s budget, so the timing "
+                        f"rule {'admitted it, and both mixQTL arms have a gene-level p' if mp['included'] else 'excluded it, and mixQTL is compared only on the within-dataset measures that need no gene-level p'}.")
+    if INTERPRETED:
+        no_fsnp_txt = f'''In one gene, {one_df}, in every dataset
+({rq["no_fsnp"]} gene-datasets), RASQUAL did not admit the pseudo feature SNP and fitted the total counts alone; it is
+the gene with two allelic donors discussed in section 3.7.'''
+        constant_txt = f'''TReCASE has no row for the
+{"/".join(f"{x:,}" for x in tr["constant"])} tested pairs per dataset whose ALT dosage is the same in every donor, among
+them TPPP's causal variant in dataset 2 of each |beta| &gt; 0 scenario.'''
+    else:
+        no_fsnp_txt = (f'RASQUAL did not admit the pseudo feature SNP, and fitted the total counts alone, in '
+                       f'{rq["no_fsnp"]} gene-datasets.')
+        constant_txt = (f'TReCASE has no row for the {"/".join(f"{x:,}" for x in tr["constant"])} tested pairs per dataset '
+                        f'whose ALT dosage is the same in every donor.')
+    min_reads_txt = f' with at least {CGN.C_MIN_READS} reads' if CGN.C_MIN_READS else ''
+    if INTERPRETED:
+        b10 = rc['by_band']['10-99']
+        rec_txt = f'''Write Va for the allelic Gibbs variance of an unthinned record
+and Va' for that of a thinned record. The 1/Va' weights the arms use recover
+{f(pr["inv_va_beta"]["mean"])} of beta, against {f(pr["inv_va_real_beta"]["mean"])} when the weights come from the
+unthinned record's Va. Almost all of that shortfall appears when the weights are evaluated at the expected thinned
+counts ({f(pr["inv_va_exp_beta"]["mean"])}), before any binomial noise. On one truth, the pipeline scale, 1/Va'
+weights recover {f(pr["inv_va_pipeline"]["mean"])} (gene-clustered se {f(pr["inv_va_pipeline"]["gene_clustered_se"])})
+against {f(pr["unit_pipeline"]["mean"])} ({f(pr["unit_pipeline"]["gene_clustered_se"])}) for unit weights. So 1/v
+weights that follow the thinned counts attenuate the allelic slope by about 5%, and unit weights do not. One
+explanation, consistent with these numbers but not tested separately: a donor whose effect thinned its already
+smaller haplotype gets a larger v and a smaller weight, and it is the donor whose allelic ratio already lay in the
+effect's direction before thinning; down-weighting those donors leaves the weighted mean of their pre-existing
+imbalances pointing against the effect. The attenuation is a property of 1/v weighting when v tracks the counts,
+which the premise check says Salmon's Gibbs variance does, not a generator defect; it applies to the allelic
+channel of gibbs, split and plus_one below. In the 10-99 read band both weightings fall short of the
+pipeline-scale truth: {f(b10["inv_va_pipeline"]["mean"])} (gene-clustered se
+{f(b10["inv_va_pipeline"]["gene_clustered_se"])}) for 1/Va' and {f(b10["unit_pipeline"]["mean"])}
+({f(b10["unit_pipeline"]["gene_clustered_se"])}) for unit weights, over {b10["unit_pipeline"]["genes"]} genes.
+That shortfall is not decomposed; check_generator.py names one untested candidate, the zero-haplotype admission
+rule, which conditions on the thinned outcome.'''
+    else:
+        nd = pr.get('unit_nodrop_beta')
+        rec_txt = (f"Write Va for the allelic Gibbs variance of an unthinned record and Va' for that of a thinned record. "
+                   f"The 1/Va' weights the arms use recover {f(pr['inv_va_beta']['mean'])} of beta (gene-clustered se "
+                   f"{f(pr['inv_va_beta']['gene_clustered_se'])}), against {f(pr['inv_va_real_beta']['mean'])} when the "
+                   f"weights come from the unthinned record's Va and {f(pr['inv_va_exp_beta']['mean'])} at the expected "
+                   f"thinned counts; on the pipeline scale 1/Va' weights recover {f(pr['inv_va_pipeline']['mean'])} "
+                   f"({f(pr['inv_va_pipeline']['gene_clustered_se'])}) against {f(pr['unit_pipeline']['mean'])} "
+                   f"({f(pr['unit_pipeline']['gene_clustered_se'])}) for unit weights."
+                   + (f" Unit weights over every record with allelic information, the zero-haplotype drop not applied, "
+                      f"recover {f(nd['mean'])} ({f(nd['gene_clustered_se'])}) of beta." if nd else ''))
     return f'''
 <h2>2. What was run</h2>
 <p><b>Generator.</b> Each dataset starts from the real cohort's Salmon output for the {LF["pairs"][0]} donor-gene
-pairs of the 100 genes of the corrected null store (92 donors; {LF["pairs"][1]} pairs have
+pairs of {set_desc} (92 donors; {LF["pairs"][1]} pairs have
 haplotype-informative reads). Three steps turn it into a dataset with a known answer. First, the real
 associations are broken: donor records are permuted against fixed genotypes. A record's point estimates,
 Gibbs draws, library size and RNA-tied covariates move together; the genotype principal components stay with
@@ -428,12 +532,12 @@ read from Salmon 1.10.3's Gibbs sampler (CollapsedGibbsSampler.cpp lines 149, 25
 both haplotypes carry no allelic information, so the allelic Gibbs variance scales with one over the
 haplotype-specific reads, and thinning scales those reads by f.</p>
 <p><b>Datasets.</b> {n_ds["0.0"]} beta = 0 anchor dataset (every gene null, no thinning) and
-{n_ds["0.2"]} / {n_ds["0.4"]} / {n_ds["0.8"]} datasets at |beta| = 0.2 / 0.4 / 0.8, each with 50 of the 100 genes
+{n_ds["0.2"]} / {n_ds["0.4"]} / {n_ds["0.8"]} datasets at |beta| = 0.2 / 0.4 / 0.8, each with {n_genes // 2} of the {n_genes} genes
 non-null. Dataset r uses the same permutation, causal variants, signs and null genes at every |beta|, so the
-effect sizes are paired, not independent replicates. A gene is non-null in about 1.5 of the 3 datasets of a scenario, so every statistic below is pooled
+effect sizes are paired, not independent replicates. A gene is non-null in about {n_ds["0.4"] / 2:g} of the {n_ds["0.4"]} datasets of a scenario, so every statistic below is pooled
 over gene-dataset units (a <i>causal unit</i> is one non-null gene in one dataset, at its causal variant).
 Genes are grouped into three <i>read bands</i> by their real median haplotype-informative reads over donors
-(fewer than 100, 100-999, at least 1,000). Among heterozygous donor-gene pairs of non-null genes, a share of
+({band_desc}). Among heterozygous donor-gene pairs of non-null genes, a share of
 {LF["expr"][0]} had both haplotypes at 0.5 reads or more before thinning. Reads removed per donor, as a fraction
 of the cohort's median effective library size, were at most {float(LF["expr"][2]):.1e} (median
 {float(LF["expr"][1]):.1e}), so library sizes were left unchanged.</p>
@@ -450,8 +554,7 @@ moments match those of a fixed weighted sum of independent variance estimates, h
 (w<sub>a</sub> + w<sub>t</sub>)<sup>2</sup> / (w<sub>a</sub><sup>2</sup>/&nu;<sub>a</sub> +
 w<sub>t</sub><sup>2</sup>/&nu;<sub>t</sub>) with w = 1/se<sup>2</sup> and &nu; each channel's degrees of freedom. The
 allelic channel enters the combined statistic only for a gene with at least {FLOOR} informative allelic donors, mixQTL's
-own cutoff for combining its two channels; below that the combined slope, se and p are the total channel's. In every
-dataset and arm the same {LF["floor"][0]} genes fall below it ({", ".join(LF["floor"][1])}; run_arms.log). Before that
+own cutoff for combining its two channels; below that the combined slope, se and p are the total channel's. {floor_txt} Before that
 commit every hapmixQTL p was referred to t with 73 degrees of freedom (N &minus; 2 &minus; 17 covariates); section 3.7
 compares the two (docs/hapmixqtl_methods.md, Section 4.5, has the derivation and the reference's measured cost).
 Two mixQTL-mode arms run on the thinned point estimates, never
@@ -460,20 +563,12 @@ on the draws: <b>published cutoffs</b> (total reads 100, allelic reads 50 to 1,0
 admitted donors, at most 9 with 92 donors, so the two weight-cap settings act identically and only the count
 cutoffs differ between the mixQTL arms. mixQTL's combined estimate, its <i>meta statistic</i>, is the
 inverse-variance combination of its allelic (asc) and total (trc) estimates. Its natural-log slopes and standard
-errors are divided by ln 2. Under the published cutoffs {rng("mixqtl", 0)} of 100 genes had at least 15 allelic
+errors are divided by ln 2. Under the published cutoffs {rng("mixqtl", 0)} of {n_genes} genes had at least 15 allelic
 donors per dataset (median allelic donors per gene {rng("mixqtl", 2)}); under the permissive cutoffs
 {rng("mixqtl_permissive", 0)} (median {rng("mixqtl_permissive", 2)}). The hapmixQTL arms were also run through
 map_cis for gene-level p (1,000 permutations of donor records with haplotype-label swaps, GPU), with the Beta
 approximation: a Beta distribution fitted to the permuted minimum p values, used to smooth the gene-level p
-(section 3.2). mixQTL's own permutation scan was timed in the smoke run, on the first dataset
-({S["mixqtl_permutation"]["timed_on"]}), with the host loaded (load about 100, run_arms.py docstring): it took
-{S["mixqtl_permutation"]["seconds"]:.0f} s for {S["mixqtl_permutation"]["genes_done"]} of
-{S["mixqtl_permutation"]["genes"]} genes ({S["mixqtl_permutation"]["tested_variants_done"]:,} of
-{S["mixqtl_permutation"]["tested_variants"]:,} tested variants). Extrapolated in proportion to tested variants,
-that is about {S["mixqtl_permutation"]["seconds_per_dataset_extrapolated"]:,.0f} s per dataset against a
-{S["mixqtl_permutation"]["budget_s"]:.0f} s budget, so the timing rule excluded it for this run too. The exclusion
-rests on that one loaded measurement. mixQTL is therefore compared only on the within-dataset measures that need no
-gene-level p.</p>
+(section 3.2). {mix_perm_txt}</p>
 <p><b>Joint models.</b> Two published methods that fit the total and allele-specific counts in one likelihood were
 run on every dataset, nominal only (no gene-level p). Each gives one test per variant, scored here as its combined
 channel; their allelic and total rows read n/a. <b>RASQUAL</b> models total counts as negative binomial and
@@ -519,11 +614,7 @@ causal variants is not known.</p>
 <p><b>Missing rows.</b> RASQUAL's rows where its fit did not converge are left out: {rq["nonconv"]:,} of {rq["tests"]:,}
 tests ({rq["nonconv_range"][0]:,} to {rq["nonconv_range"][1]:,} per dataset). Another {rq["chisq_le0"]:,} rows have
 &chi;<sup>2</sup> &le; 0 (p = 1), whose derived standard error is undefined: they are left out of the standard-error
-statistics only, and stay in the ranking, the null rates and squared error. In one gene, {one_df}, in every dataset
-({rq["no_fsnp"]} gene-datasets), RASQUAL did not admit the pseudo feature SNP and fitted the total counts alone; it is
-the gene with two allelic donors discussed in section 3.7. TReCASE has no row for the
-{"/".join(f"{x:,}" for x in tr["constant"])} tested pairs per dataset whose ALT dosage is the same in every donor, among
-them TPPP's causal variant in dataset 2 of each |beta| &gt; 0 scenario. Causal
+statistics only, and stay in the ranking, the null rates and squared error. {no_fsnp_txt} {constant_txt} Causal
 units without a row, at |beta| = 0.2 / 0.4 / 0.8 (of {S['lead']['beta0.4']['gibbs']['all']['units']} each): RASQUAL
 {miss('rasqual')}, TReCASE {miss('trecase')}. They are left out of that arm's causal-variant detection shares, and in
 bias and precision they are non-finite and so excluded and counted like any other non-finite unit.</p>
@@ -547,29 +638,11 @@ holds to {th["allelic_rule"]["max_rel_dev"]:.1e} relative over {th["allelic_rule
 records:</p>
 {fano}
 <p>Check (c), recovery of an injected |beta| = {rc["beta"]} over {rc["n_datasets"]} all-non-null datasets
-({pr["unit_pipeline"]["genes"]} genes with at least 100 reads, {pr["unit_pipeline"]["units"]:,} units). Unit weights
+({pr["unit_pipeline"]["genes"]} genes{min_reads_txt}, {pr["unit_pipeline"]["units"]:,} units). Unit weights
 recover the pipeline-scale truth ({f(pr["unit_pipeline"]["mean"])}, gene-clustered se
 {f(pr["unit_pipeline"]["gene_clustered_se"])}), which is the pass rule. Here the gene-clustered se is the standard
 deviation of the per-gene means over the square root of the number of genes, as check_generator.py computes it; it is
-not the resampling interval used in section 3. Write Va for the allelic Gibbs variance of an unthinned record
-and Va' for that of a thinned record. The 1/Va' weights the arms use recover
-{f(pr["inv_va_beta"]["mean"])} of beta, against {f(pr["inv_va_real_beta"]["mean"])} when the weights come from the
-unthinned record's Va. Almost all of that shortfall appears when the weights are evaluated at the expected thinned
-counts ({f(pr["inv_va_exp_beta"]["mean"])}), before any binomial noise. On one truth, the pipeline scale, 1/Va'
-weights recover {f(pr["inv_va_pipeline"]["mean"])} (gene-clustered se {f(pr["inv_va_pipeline"]["gene_clustered_se"])})
-against {f(pr["unit_pipeline"]["mean"])} ({f(pr["unit_pipeline"]["gene_clustered_se"])}) for unit weights. So 1/v
-weights that follow the thinned counts attenuate the allelic slope by about 5%, and unit weights do not. One
-explanation, consistent with these numbers but not tested separately: a donor whose effect thinned its already
-smaller haplotype gets a larger v and a smaller weight, and it is the donor whose allelic ratio already lay in the
-effect's direction before thinning; down-weighting those donors leaves the weighted mean of their pre-existing
-imbalances pointing against the effect. The attenuation is a property of 1/v weighting when v tracks the counts,
-which the premise check says Salmon's Gibbs variance does, not a generator defect; it applies to the allelic
-channel of gibbs, split and plus_one below. In the 10-99 read band both weightings fall short of the
-pipeline-scale truth: {f(b10["inv_va_pipeline"]["mean"])} (gene-clustered se
-{f(b10["inv_va_pipeline"]["gene_clustered_se"])}) for 1/Va' and {f(b10["unit_pipeline"]["mean"])}
-({f(b10["unit_pipeline"]["gene_clustered_se"])}) for unit weights, over {b10["unit_pipeline"]["genes"]} genes.
-That shortfall is not decomposed; check_generator.py names one untested candidate, the zero-haplotype admission
-rule, which conditions on the thinned outcome.</p>
+not the resampling interval used in section 3. {rec_txt}</p>
 {rec}
 <p>{repro}</p>'''
 
@@ -587,7 +660,7 @@ def tab_ranking(S):
 def tab_bands(S, block, key):
     """Per arm and |beta|, the value in the three read bands, '<100 / 100-999 / >=1000'."""
     rows = [[LABEL[a]] + [' / '.join(f(block(S, b, a)[bn][key], 2) for bn in BANDS[1:]) for b in BETAS] for a in ALL]
-    return table(['arm'] + [f'|beta| {b}: &lt;100 / 100-999 / &ge;1000' for b in BETAS], rows)
+    return table(['arm'] + [f'|beta| {b}: {BAND_HTML}' for b in BETAS], rows)
 
 
 def tab_gene_level(S):
@@ -758,6 +831,15 @@ figcaption { color: var(--ink2); font-size: 13px; max-width: 900px; }
 
 
 def sec_head(S):
+    if not INTERPRETED:
+        n_genes = S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z']['all']['genes']
+        return ('<h1>Plasmode eQTL benchmark: recovering known cis effects</h1>'
+                '<p class="sub">hapmixQTL weightings, mixQTL mode, RASQUAL and TReCASE on the BrainVar cohort\'s own '
+                f'Salmon output with injected effects; {n_genes} genes x 92 donors of the {SC.MD.GENE_SET} gene set '
+                f'({SC.MD.GENES}); units log2 aFC (beta = 1 is a twofold effect). Made by scripts/plasmode/report.py from '
+                f'{SUMMARY}, {CHECK_GEN}, {CHECK_PREMISE}, {RUN_ARMS_LOG.name}, {MAKE_LOG.name}, {RASQUAL_LOG} and '
+                f'{TRECASE_SUMMARY}; figures also written as PNG in {OUT}. The interpretation sections were written for '
+                f'the {INTERPRETED_SET} run and are not made for this set.</p>')
     return ('<h1>Plasmode eQTL benchmark: recovering known cis effects</h1>'
             '<p class="sub">hapmixQTL weightings, mixQTL mode, RASQUAL and TReCASE on the BrainVar cohort\'s own '
             'Salmon output with '
@@ -789,8 +871,8 @@ of which weighting ships (docs/pipeline_rules.md, "Open decision: which weightin
 so far rests on null calibration alone.</p>
 <p>mixQTL is one published way to use allele-specific and total counts together. RASQUAL and TReCASE are two others,
 which fit both kinds of count in one likelihood; they were run on the same datasets as further comparators, with every
-method's effect put on one scale. And because mixQTL trails the unit-weight arm, a separate run took the two apart one
-change at a time (section 3.8).</p>'''
+method's effect put on one scale.''' + (''' And because mixQTL trails the unit-weight arm, a separate run took the two apart one
+change at a time (section 3.8).</p>''' if INTERPRETED else '</p>')
 
 
 def auc(S, b, a, bn='all'):
@@ -1337,36 +1419,68 @@ INTERP = dict(ranking=interp_ranking, gene_level=interp_gene_level, bias=interp_
 
 
 def sec_results(S, SB, FX, FA, CG, figs, LD, JF):
-    off = [g for g, v in FX['below_floor_genes'].items() if v['gibbs']['allelic']['after']['n_tests'] == 0]
-    n_old, n_new = (X['null']['beta0.0']['gibbs']['allelic']['all']['0.05']['tests'] for X in (SB, S))
-    if len(off) != 1 or n_old - n_new != FX['below_floor_genes'][off[0]]['gibbs']['allelic']['before']['n_tests'] // FX['n_draw']:
-        raise SystemExit(f'{DF_FIX}: allelic channel off in {off}, anchor allelic tests {n_old} -> {n_new}; reword section 3.4')
+    interp = lambda name, *args: INTERP[name](*args) if INTERPRETED else note(f'Interpretation ({name})')
+    joint = lambda part: interp_joint(S, part, JF) if INTERPRETED else ''
+    genes = {bn: S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z'][bn]['genes'] for bn in BANDS}
+    n_rep = S['n_datasets']['0.4']
+    if INTERPRETED:
+        off = [g for g, v in FX['below_floor_genes'].items() if v['gibbs']['allelic']['after']['n_tests'] == 0]
+        n_old, n_new = (X['null']['beta0.0']['gibbs']['allelic']['all']['0.05']['tests'] for X in (SB, S))
+        if len(off) != 1 or n_old - n_new != FX['below_floor_genes'][off[0]]['gibbs']['allelic']['before']['n_tests'] // FX['n_draw']:
+            raise SystemExit(f'{DF_FIX}: allelic channel off in {off}, anchor allelic tests {n_old} -> {n_new}; reword section 3.4')
+        exc_txt = f'''One exception since commit 8a06803: a gene whose allelic channel
+is switched off altogether ({", ".join(off)}, one informative allelic donor) has a NaN allelic p and leaves the allelic
+null rate ({n_old - n_new:,} tests on the anchor), where before it counted at p = 1; that alone raises an allelic null
+rate by the factor {n_old:,} / {n_new:,} = {f(n_old / n_new, 4)}. The stored null re-run under that commit, against
+which section 3.7 compares, uses the same convention.'''
+        auc_txt = f'''It is computed
+per dataset and averaged over the 3 datasets. Its interval is the range of the three per-dataset AUCs: with
+three datasets, the 2.5% and 97.5% quantiles of the mean over datasets resampled with replacement are the smallest
+and largest dataset values. It is not a 95% interval, and it carries no gene-to-gene variation, because the three
+datasets hold the same 100 genes.'''
+        fig1_bar = 'range of the three per-dataset AUCs, not a 95% interval'
+        anchor_txt = f'''For the
+four hapmixQTL arms its rate is compared with the stored 100-gene, 200-permutation null runs of the same arms, as
+made before commit 8a06803 (score.py's reference) and as re-run under it (like for like; below): the
+percentile of this dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their
+central 99%. This is descriptive: one permutation cannot test the plumbing.'''
+        anchor_tab = f'''<p>The anchor against the stored null runs (hapmixQTL arms only):</p>
+{tab_anchor(S, FX, FA)}'''
+    else:
+        exc_txt = ('Since commit 8a06803 a gene whose allelic channel is switched off altogether (fewer than two '
+                   'informative allelic donors) has a NaN allelic p and leaves the allelic null rate.')
+        auc_txt = (f'It is computed per dataset and averaged over the {n_rep} datasets. Its interval is the 2.5% and 97.5% '
+                   f'quantiles of the mean over datasets resampled with replacement ({n_rep} datasets); it carries no '
+                   f'gene-to-gene variation, because every dataset holds the same {genes["all"]} genes.')
+        fig1_bar = 'interval of the mean over datasets resampled with replacement'
+        anchor_txt = ('No stored 200-permutation null run exists for this gene set, so where its one permutation falls '
+                      'among permutations is not known.')
+        anchor_tab = note('The anchor against the stored null runs')
+    ladder = sec_ladder(S, LD) if LD is not None else f'''
+<h3>3.8 Why mixQTL trails unit weights</h3>
+<p>The mixQTL ladder (scripts/plasmode/mixqtl_ladder.py) was not run for gene set {SC.MD.GENE_SET}; this section is
+written from its output for the {INTERPRETED_SET} run only.</p>'''
     auc_bands = tab_bands(S, lambda S, b, a: S['ranking'][f'beta{b}'][a]['auc'], 'mean')
     pow_bands = tab_bands(S, lambda S, b, a: S['ranking'][f'beta{b}'][a]['fdp_matched'], 'power')
     lead_bands = tab_bands(S, lambda S, b, a: S['lead'][f'beta{b}'][a], 'r2_high')
-    genes = {bn: S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z'][bn]['genes'] for bn in BANDS}
     return f'''
 <h2>3. Results</h2>
 <p><b>How to read the intervals.</b> Unless stated, an interval is a <i>gene-clustered 95% interval</i>: the
 genes are resampled with replacement {S["n_boot"]:,} times, each gene carrying all its units from the
 scenario's datasets, the statistic is recomputed each time, and the 2.5% and 97.5% quantiles are reported. It
 carries gene-to-gene spread, the main source of uncertainty when the same genes recur across datasets. The
-read bands hold {genes["<100"]} / {genes["100-999"]} / {genes[">=1000"]} of the {genes["all"]} genes. All arms were
+read bands hold {" / ".join(str(genes[b]) for b in BANDS[1:])} of the {genes["all"]} genes. All arms were
 run on the same datasets, so their errors are correlated, and the summary carries no interval for the
 difference between two arms: a gap between arms is read against each arm's own interval. Separated intervals
 are then good evidence of a difference; overlapping ones do not show that two arms are equal.</p>
 
 <h3>3.1 Gene ranking: AUC and power at a realized false-discovery proportion</h3>
-<p>Within each dataset the 100 genes are ordered by the nominal p of their <i>lead variant</i> (the tested
+<p>Within each dataset the {genes["all"]} genes are ordered by the nominal p of their <i>lead variant</i> (the tested
 variant with the smallest p; the combined statistic for hapmixQTL, the meta statistic for mixQTL, the one joint test
 for RASQUAL and TReCASE). The
 <b>AUC</b> (area under the receiver operating characteristic curve) is the probability that a randomly chosen
-non-null gene ranks above a randomly chosen null gene: 0.5 is chance, 1 is perfect separation. It is computed
-per dataset and averaged over the 3 datasets. Its interval is the range of the three per-dataset AUCs: with
-three datasets, the 2.5% and 97.5% quantiles of the mean over datasets resampled with replacement are the smallest
-and largest dataset values. It is not a 95% interval, and it carries no gene-to-gene variation, because the three
-datasets hold the same 100 genes. <b>Power at 5% realized
-false-discovery proportion</b>: the gene units of the 3 datasets are pooled and walked down the ranking; the
+non-null gene ranks above a randomly chosen null gene: 0.5 is chance, 1 is perfect separation. {auc_txt} <b>Power at 5% realized
+false-discovery proportion</b>: the gene units of the {n_rep} datasets are pooled and walked down the ranking; the
 realized false-discovery proportion (FDP) at depth k is the share of the top k that are truly null, known here
 from the truth; the walk stops at the deepest k with FDP &le; 0.05, and power is the share of non-null gene
 units above that point. The summary gives it no interval. A within-dataset ranking uses no threshold, so a
@@ -1374,13 +1488,13 @@ miscalibration shared by every gene does not move it, but one specific to a gene
 hapmixQTL pair has its own t reference (section 2), so ranking hapmixQTL genes by lead p is no longer the same as
 ranking them by |t|. The ranking is also confounded by the number of tested variants per gene (a null gene with many
 variants has a smaller lead p by chance), a confounding every arm shares.</p>
-{INTERP['ranking'](S, SB)}
-{interp_joint(S, 'ranking', JF)}
+{interp('ranking', S, SB)}
+{joint('ranking')}
 {tab_ranking(S)}
-<p>By read band (&lt;100 / 100-999 / &ge;1000 reads), AUC and then power at 5% FDP:</p>
+<p>By read band ({BAND_HTML} reads), AUC and then power at 5% FDP:</p>
 {auc_bands}{pow_bands}
-{img(figs['ranking'], 'Figure 1. A: AUC of the within-dataset gene ranking by lead nominal p (bar: range of the '
-     'three per-dataset AUCs, not a 95% interval). B: share of non-null gene units called at the deepest point of the pooled '
+{img(figs['ranking'], 'Figure 1. A: AUC of the within-dataset gene ranking by lead nominal p (bar: '
+     + fig1_bar + '). B: share of non-null gene units called at the deepest point of the pooled '
      'ranking where at most 5% of calls are null genes. C: share of non-null gene units discovered by '
      'Benjamini-Hochberg at 5% on map_cis pval_beta, hapmixQTL arms only (gene-clustered interval); RASQUAL and '
      'TReCASE, like mixQTL, have no gene-level p. Points are offset sideways within each |beta| so that intervals '
@@ -1392,11 +1506,11 @@ smallest p of each of 1,000 permutations of donor records (with L/R swaps) under
 the comparison is smoothed by fitting a Beta distribution to those permuted minima. Because each arm is
 referred to its own permutation null, pval_beta absorbs whatever miscalibration of that arm's nominal p the
 permutation reproduces. The <b>Benjamini-Hochberg</b> procedure at 5% then calls genes within each dataset:
-the 100 gene-level p are sorted and the k smallest are called, k being the largest rank with
-p<sub>(k)</sub> &le; 0.05 k / 100; with valid p values the expected share of null genes among the calls is at
+the {genes["all"]} gene-level p are sorted and the k smallest are called, k being the largest rank with
+p<sub>(k)</sub> &le; 0.05 k / {genes["all"]}; with valid p values the expected share of null genes among the calls is at
 most 5%. Power is the share of non-null gene units called. The last four columns count null gene units with
 pval_beta below 0.05 (a gene-level false-positive rate before any multiple-testing correction).</p>
-{INTERP['gene_level'](S)}
+{interp('gene_level', S)}
 {tab_gene_level(S)}
 
 <h3>3.3 Bias at the causal variant</h3>
@@ -1416,8 +1530,8 @@ slope 0 with an infinite standard error; its count-scale ratio 0 / beta is finit
 mean as 0, while its pipeline-scale truth is undefined and it is excluded there. In the table the first line is
 the count scale, the second (grey) the pipeline scale, each followed by (units / excluded). The figure draws every
 arm against the count-scale truth; the table's grey line carries the pipeline-scale diagnostic for hapmixQTL.</p>
-{INTERP['bias'](S, CG, LD)}
-{interp_joint(S, 'bias', JF)}
+{interp('bias', S, CG, LD)}
+{joint('bias')}
 {tab_bias(S)}
 {img(figs['bias'], 'Figure 2. Bias ratio (mean slope / truth at the causal variant, gene-clustered interval) by '
      'arm and read band, for the allelic and total channels (combined slope not drawn), every arm against the '
@@ -1437,11 +1551,7 @@ combined: the same inverse-variance combination of the two channel truths); in t
 allelic data (section 3.3). Null units use every tested variant of the null genes, with truth 0. In the allelic
 channel these include variants of null genes with no admitted heterozygous donor, whose output is p = 1 and
 z = 0: they cannot reject and enter sd(z) as zeros, which lowers both the allelic null rate (section 3.7) and the
-allelic null sd(z). The summary does not count them. One exception since commit 8a06803: a gene whose allelic channel
-is switched off altogether ({", ".join(off)}, one informative allelic donor) has a NaN allelic p and leaves the allelic
-null rate ({n_old - n_new:,} tests on the anchor), where before it counted at p = 1; that alone raises an allelic null
-rate by the factor {n_old:,} / {n_new:,} = {f(n_old / n_new, 4)}. The stored null re-run under that commit, against
-which section 3.7 compares, uses the same convention. The <b>mean squared error ratio against unit weights</b>
+allelic null sd(z). The summary does not count them. {exc_txt} The <b>mean squared error ratio against unit weights</b>
 (efficiency) is the sum of squared
 errors under the arm divided by the same sum under unit weights, over the same units; below 1 means more
 precise than unit weights. split and unit share the total channel's weights, so split's total-channel ratio is
@@ -1451,8 +1561,8 @@ different donor set (its count cutoffs; under the published allelic cap of 1,000
 on the injected effect, because thinning pulls records down into the band), so its ratio mixes weighting with
 admission. For mixQTL, RASQUAL and TReCASE the ratio at the causal variant holds the arm and unit weights both to the
 count-scale truth, so no method is ranked on the pipeline scale.</p>
-{INTERP['precision'](S, SB)}
-{interp_joint(S, 'precision', JF)}
+{interp('precision', S, SB)}
+{joint('precision')}
 <p>sd(z), realized over stated standard error:</p>
 {tab_precision(S, 'sd_z')}
 <p>Mean squared error ratio against unit weights. At the causal variant the hapmixQTL rows hold the arm and unit
@@ -1479,8 +1589,8 @@ squared Pearson correlation (the ordinary correlation coefficient) of ALT allele
 the same variant). Reported: the share of units whose lead is the causal variant, the share with
 r<sup>2</sup> &ge; 0.8, and the median r<sup>2</sup>. A unit without a finite p counts as not recovered. No
 interval is given in the summary; each share is over {S['lead']['beta0.4']['gibbs']['all']['units']} gene units per |beta|.</p>
-{INTERP['lead'](S)}
-{interp_joint(S, 'lead', JF)}
+{interp('lead', S)}
+{joint('lead')}
 {tab_lead(S)}
 <p>Share with r<sup>2</sup> &ge; 0.8 by read band:</p>
 {lead_bands}
@@ -1491,8 +1601,8 @@ interval is given in the summary; each share is over {S['lead']['beta0.4']['gibb
 <p>The share of non-null gene units whose nominal p at the causal variant falls below 0.05, 1e-3 and 1e-5, per
 channel. This is power at a fixed nominal threshold, so it rewards an arm whose p values are too small; read it
 together with the null rates in 3.7.</p>
-{INTERP['detection'](S, FX)}
-{interp_joint(S, 'detection', JF)}
+{interp('detection', S, FX)}
+{joint('detection')}
 {tab_detection(S)}
 
 <h3>3.7 Null genes and the beta = 0 anchor</h3>
@@ -1500,18 +1610,13 @@ together with the null rates in 3.7.</p>
 (0.05 in the first table). In the allelic channel it includes the tests with no allelic data (p = 1; section 3.4),
 which cannot reject. At |beta| &gt; 0 the null genes are thinned too, which adds binomial noise of the model's own
 kind and is expected to dilute the real data's coupling between weights and residuals, so those rates are not
-calibration results. The beta = 0 anchor is one dataset, that is ONE record permutation, with no thinning. For the
-four hapmixQTL arms its rate is compared with the stored 100-gene, 200-permutation null runs of the same arms, as
-made before commit 8a06803 (score.py's reference) and as re-run under it (like for like; below): the
-percentile of this dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their
-central 99%. This is descriptive: one permutation cannot test the plumbing.</p>
-{INTERP['null'](S, SB, CG, FX, FA)}
-{interp_joint(S, 'null', JF)}
+calibration results. The beta = 0 anchor is one dataset, that is ONE record permutation, with no thinning. {anchor_txt}</p>
+{interp('null', S, SB, CG, FX, FA)}
+{joint('null')}
 <p>Null-gene rate at 0.05 (gene-clustered interval):</p>
 {tab_null(S)}
-<p>The anchor against the stored null runs (hapmixQTL arms only):</p>
-{tab_anchor(S, FX, FA)}
-{sec_ladder(S, LD)}'''
+{anchor_tab}
+{ladder}'''
 
 
 def sec_ladder(S, LD):
@@ -1899,12 +2004,18 @@ def page(body):
 def main():
     S, SB, FX, CG, CP, run_log, make_log, rq_log, TS, LD = load()
     OUT.mkdir(exist_ok=True)
-    LF, JF, FA = log_facts(run_log, make_log), joint_facts(S, rq_log, TS), fixed_anchor(S)
-    if LF['floor'][1] != sorted(FX['below_floor_genes']):
+    LF, JF, FA = log_facts(run_log, make_log), joint_facts(S, rq_log, TS), fixed_anchor(S, FX)
+    if FX is not None and LF['floor'][1] != sorted(FX['below_floor_genes']):
         raise SystemExit(f'{RUN_ARMS_LOG} below-floor genes {LF["floor"][1]} differ from {DF_FIX} {sorted(FX["below_floor_genes"])}')
     figs = dict(ranking=fig_ranking(S), bias=fig_bias(S), lead=fig_lead(S), efficiency=fig_efficiency(S))
-    body = '\n'.join((sec_head(S), sec_why(), sec_run(S, FX, CG, CP, LF, JF), sec_results(S, SB, FX, FA, CG, figs, LD, JF),
-                      sec_critique(S), sec_meaning(S, FX, CG, JF, LD), sec_limits(S, CG, JF)))
+    if INTERPRETED:
+        tail = (sec_critique(S), sec_meaning(S, FX, CG, JF, LD), sec_limits(S, CG, JF))
+    else:
+        tail = tuple(f'<h2>{h}</h2>{note("Its text")}' for h in (
+            '4. The strongest critique, and what it changed', '5. What it means for the open decisions',
+            '6. Limits: what this analysis cannot establish'))
+    body = '\n'.join((sec_head(S), sec_why(), sec_run(S, FX, CG, CP, LF, JF), sec_results(S, SB, FX, FA, CG, figs, LD, JF))
+                     + tail)
     write_atomic(PAGE, page(body).encode())
     print(f'wrote {PAGE} ({PAGE.stat().st_size:,} bytes) and {", ".join(p.name for p in figs.values())} in {OUT}')
 

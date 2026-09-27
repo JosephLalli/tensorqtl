@@ -145,7 +145,7 @@ ARM = 'trecase'
 R_RUNNER = Path(__file__).resolve().with_name('run_trecase_asseq.R')
 R_ENV = {'R_LD_LIBRARY_PATH': '/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu',
          'LD_LIBRARY_PATH': '/usr/local/cuda/lib64'}   # CLAUDE.md, "R's BLAS crash is an environment clash"
-JOBS = 48                      # Rscript processes at once on the shared 256-core host: 48 alongside RASQUAL's 64 kept load near 215 on 2026-09-27; 32 projected 3.8-4.3 h
+JOBS = 32                      # Rscript processes at once: the shared-host cap for asSeq (2026-09-27); the committed set ran at 48 (results_trecase_asseq/summary.json 'jobs')
 TRANS_TEST_P = 0.05            # asSeq transTestP default (R/trecase.R), the rule at trecase.c:1311
 TRANS_BORDER = '5.00e-02'      # %.2e of a trans p in [0.04995, 0.05005): either side of TRANS_TEST_P
 MIN_AS_READS = 5               # asSeq min.AS.reads default (on Y1 + Y2, trecase.c:615-617); here only for counts

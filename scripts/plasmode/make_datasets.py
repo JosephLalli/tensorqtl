@@ -3,7 +3,11 @@
 User decision 2026-09-26: no Salmon simulation beyond the simplest
 assumptions, and the rule for the Gibbs variance is read from Salmon's own
 code. A dataset is the BrainVar cohort's own Salmon quantification (point
-estimates and 200 Gibbs draws, 100 genes of corrected_null_store_20260925)
+estimates and 200 Gibbs draws, the 100 genes of the gene set GENE_SET names:
+the committed corrected_null_store_20260925 set by default, or the
+30-100-read stratum set of select_stratum_genes.py with PLASMODE_GENE_SET=
+stratum30_100 in the environment; GENE_SETS lists each set's root, gene
+files, datasets per effect size and which set-specific records exist)
 with the genotype association broken and a known cis effect injected. This is
 the plasmode approach of Gerard 2020, "Data-based RNA-seq simulations by
 binomial thinning", BMC Bioinformatics: real counts are thinned binomially so
@@ -175,13 +179,28 @@ import compare_mixqtl_replication as CM                             # noqa: E402
 from tensorqtl.hapmixqtl import LN2, summaries_from_point_estimates  # noqa: E402
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
-ROOT = D / 'plasmode_20260926'          # every output of this benchmark
-GENES = D / 'corrected_null_store_20260925' / 'genes.txt'
-REGIONS = D / 'corrected_null_store_20260925' / 'regions.bed'
+GENE_SET = os.environ.get('PLASMODE_GENE_SET', 'corrected_null_store')   # the gene set every plasmode script runs on; the committed 100-gene run is the default
+GENE_SETS = {   # per set: root (every output), gene_dir (genes.txt, regions.bed, gene_design.tsv), datasets per |beta|, and which set-specific records exist
+    'corrected_null_store': dict(   # the 100 genes of corrected_null_store_20260925, 67% at >= 700 reads (plasmode_20260926)
+        root=D / 'plasmode_20260926', gene_dir=D / 'corrected_null_store_20260925',
+        n_datasets={0.0: 1, 0.2: 3, 0.4: 3, 0.8: 3},   # user decision 2026-09-26: one anchor dataset, 3 per effect size
+        stored_null=True,       # 100-gene x 200-permutation null runs of the four weightings exist (score.ANCHOR, check (d), report's anchor sections)
+        before_df_fix=True,     # the arms were also run before commit 8a06803 (summary_before_df_fix.json; report compares before and after)
+        ladder=True),           # mixqtl_ladder.py was run (report section 3.8)
+    'stratum30_100': dict(          # 100 genes at 30-100 median haplotype-informative reads over admitted allelic donors (select_stratum_genes.py)
+        root=D / 'plasmode_stratum30_100_20260927', gene_dir=D / 'plasmode_stratum30_100_20260927' / 'gene_set',
+        n_datasets={0.0: 1, 0.2: 3, 0.4: 3, 0.8: 3},   # user decision 2026-09-27: 3 per effect size, more added only if the TReCASE head-to-head stays unresolved
+        stored_null=False, before_df_fix=False, ladder=False),
+}
+SET = GENE_SETS[GENE_SET]
+ROOT = SET['root']                      # every output of this benchmark
+GENES = SET['gene_dir'] / 'genes.txt'
+REGIONS = SET['gene_dir'] / 'regions.bed'
+GENE_DESIGN = SET['gene_dir'] / 'gene_design.tsv'   # per gene: tested variants, allelic donors, median allele-resolved reads (score.py's bands)
 OUT = ROOT / 'datasets'
 SEED = 42
 BETAS = (0.0, 0.2, 0.4, 0.8)   # user decision 2026-09-26; 0.0 is the null anchor
-N_DATASETS = {0.0: 1, 0.2: 3, 0.4: 3, 0.8: 3}   # user decision 2026-09-26: one anchor dataset, 3 per effect size
+N_DATASETS = SET['n_datasets']
 NULL_FRACTION = 0.5            # user decision 2026-09-26, for beta > 0
 KAPPA = 0.5                    # summaries_from_point_estimates' default pseudocount
 EXPRESSIBLE_MIN = 0.5          # reads; the pipeline's zero-haplotype rule (docs/pipeline_rules.md)
@@ -214,7 +233,7 @@ def load():
     tested = [I['idx'][CM.gene_variant_index(I, g)] for g in I['genes']]
     nt = np.array([len(t) for t in tested])
     G, N = R['pL'].shape
-    print(f'read {G} genes x {N} donors x {R["YL"].shape[2]} Gibbs draws from {GENES}; '
+    print(f'gene set {GENE_SET}: read {G} genes x {N} donors x {R["YL"].shape[2]} Gibbs draws from {GENES}; '
           f'{len(I["vdf"]):,} variants read, {len(I["idx"]):,} pass the tested filter; '
           f'tested variants per gene min {nt.min()} / median {int(np.median(nt))} / max {nt.max()}',
           flush=True)
@@ -454,7 +473,7 @@ def main():
     write_atomic(out / 'truth.tsv', lambda fh: truth.to_csv(fh, sep='\t', index=False), 'w')
     removed = np.concatenate(removed) if removed else None
     meta = dict(
-        genes=list(I['genes']), donors=list(I['order']), gene_list=str(GENES), regions=str(REGIONS),
+        gene_set=GENE_SET, genes=list(I['genes']), donors=list(I['order']), gene_list=str(GENES), regions=str(REGIONS),
         n_genes=G, n_donors=N, n_datasets={str(b): counts[b] for b in BETAS}, betas=list(BETAS),
         null_fraction={str(b): (1.0 if b == 0 else NULL_FRACTION) for b in BETAS},
         seed=SEED, streams={'perm and swap': f'SeedSequence({SEED}, spawn_key=({PERM_KEY}, r))',
