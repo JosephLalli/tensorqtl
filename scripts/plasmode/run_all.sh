@@ -53,3 +53,4 @@ step check_generator scripts/plasmode/check_generator.py
 step make_datasets scripts/plasmode/make_datasets.py
 step run_arms scripts/plasmode/run_arms.py
 step score scripts/plasmode/score.py
+step report scripts/plasmode/report.py

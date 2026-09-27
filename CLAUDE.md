@@ -147,7 +147,8 @@ status as current practice is.
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
-| How is the simulation benchmark to be built, and against which commit? | `docs/simulation_benchmark_spec.md` |
+| How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/` docstrings (run order `run_all.sh`); report `brainvar_hapmix_deploy/plasmode_20260926/report/plasmode_report.html` |
+| What was the superseded Salmon-emulator design? | `docs/simulation_benchmark_spec.md` (marked superseded; its real-data calibration appendices still hold) |
 | What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html` |
 
 ## Pipeline rules, 2026-09-25 (user decisions, standing)

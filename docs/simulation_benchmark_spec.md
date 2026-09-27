@@ -1,5 +1,19 @@
 # Simulation benchmark for hapmixQTL: implementation specification
 
+> **SUPERSEDED 2026-09-26 (user decision): the Salmon emulator described
+> below will not be built.** Rerunning or emulating Salmon per dataset was
+> judged too slow. The benchmark that exists instead builds datasets from the
+> cohort's own Salmon point estimates and Gibbs draws: donor records are
+> permuted against fixed genotypes with a random L/R swap, and known cis
+> effects are injected by binomial thinning of the haplotype carrying the
+> lower-expressed allele. Code, design and checks: the docstrings of
+> `scripts/plasmode/` (`make_datasets.py`, `check_salmon_premise.py`,
+> `check_generator.py`, `run_arms.py`, `score.py`, `report.py`; run order in
+> `run_all.sh`). Results:
+> `/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_20260926/report/plasmode_report.html`.
+> The calibration measurements of the real data in the appendices below remain
+> valid as measurements; the emulator layers and the build plan do not apply.
+
 Date: 2026-09-26, revised the same day after two review passes. Status:
 specification only; nothing in it is implemented.
 Audience: the engineer who builds the simulator and the benchmark driver.
