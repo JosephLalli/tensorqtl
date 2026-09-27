@@ -642,9 +642,9 @@ def report(S):
                 a = r[str(ANCHOR_ALPHA)]
                 print(f'  {arm:8s} {ch:8s} {a["rate"]:.4f} vs {a["stored"]:.4f} [{a["perm_lo"]:.4f}, {a["perm_hi"]:.4f}] '
                       f'at {a["percentile"]:.1f}%  {"PASS" if a["passed"] else "FAIL"}')
-        print(f'  anchor {"inside" if S["anchor_passed"] else "OUTSIDE"} the stored central range in every arm and '
-              f'channel; descriptive only: one permutation cannot test plumbing sharply, the exact reproduction of '
-              f'a stored permutation (check_generator.py check (d)) does')
+        print(f'  anchor {"inside the stored central range in every arm and channel" if S["anchor_passed"] else "OUTSIDE the stored central range in at least one arm and channel"}; '
+              f'descriptive only: one permutation cannot test plumbing sharply, the exact reproduction of a stored '
+              f'permutation (check_generator.py check (d)) does')
     print('\n(1) BIAS at the causal variant: mean slope / truth [gene-clustered 95%] (<100 / 100-999 / >=1000 '
           'reads); count scale, then pipeline scale (hapmixQTL arms). Channels combined/allelic/total = '
           'mixQTL meta/asc/trc')
