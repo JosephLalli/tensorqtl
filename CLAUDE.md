@@ -456,21 +456,27 @@ experiment.
   3-6 (chrom/pos/ref/alt), 11 (chi2), 12 (pi), 14 (phi) and 23 (convergence),
   plus field 2 to detect `SKIPPED`.
 
-- **The mixed-BLAS crash blocks any limma path that fits a linear model.** The
-  BLAS is Debian's openblas-pthread `libblas.so.3` while the LAPACK is a
-  Homebrew openblas. Tested function by function, each in its own R process, so
-  one crash could not hide another. CRASHES: `limma::lmFit` (segfaults even
-  UNWEIGHTED), `limma::arrayWeights`, and therefore `vooma`, `voomaLmFit` and
-  `voomWithQualityWeights`. RUNS: the whole closed-form empirical-Bayes
-  moderation family — `squeezeVar`, `fitFDist`, `fitFDistRobustly`,
-  `fitFDistUnequalDF1`. Also `libR.so` links `libblas.so.3` and
-  `libopenblas.so.0` together, so `lm()`, `%*%` and `crossprod()` segfault,
-  `tensorA`/`glmnet` are absent, and there is no sudo — which is why **no
-  cross-language check of the mixQTL port exists and none is possible here.**
-  The port's algebra is validated per variant against `numpy.linalg.lstsq` to
-  1e-10 and every cutoff/cap/dof rule is pinned to the R source line it
-  encodes (23 tests). Exact reproduction of the published code is NOT claimed.
-  Installed: limma 3.64.3, edgeR 4.6.3 (a release behind upstream devel).
+- **R's BLAS crash is an environment clash, fixed per command (2026-09-26).**
+  The shell exports `R_LD_LIBRARY_PATH` and `LD_LIBRARY_PATH` containing
+  `~/.linuxbrew/lib`, so R loaded Homebrew's OpenBLAS 0.3.30 and gfortran 15
+  next to Debian's `libblas.so.3` (OpenBLAS 0.3.26), and `lm()`, `%*%`,
+  `crossprod()` and `limma::lmFit` segfaulted. Run R as
+  `R_LD_LIBRARY_PATH=/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu
+  LD_LIBRARY_PATH=/usr/local/cuda/lib64 Rscript ...`: all of them then run
+  (verified). The shell profile was NOT changed, because `~/.R/Makevars`
+  builds packages with a Homebrew rpath. `~/.Rprofile` drops site
+  libraries, so a script needing Bioconductor packages from `.Library.site`
+  (DESeq2) must add them to `.libPaths()`. The old consequence -- that no
+  cross-language check of the mixQTL port is possible here -- no longer
+  holds; none has been run yet. The port's algebra is validated per variant
+  against `numpy.linalg.lstsq` to 1e-10 and every cutoff/cap/dof rule is
+  pinned to the R source line it encodes (23 tests). Installed: limma
+  3.64.3, edgeR 4.6.3; asSeq 0.99.501 (TReCASE, Sun-lab GitHub master) and
+  MatrixEQTL in `~/usr/local/lib/R/library`, built with
+  `~/usr/local/src/Makevars.asseq` (`-DCalloc=R_Calloc -DFree=R_Free
+  -DRealloc=R_Realloc` for R 4.5, and `-include R_ext/BLAS.h` because
+  `lbfgsb1.c`'s BLAS prototypes are commented out, which made `ddot` return
+  garbage and every allelic fit fail) with `INSTALL_opts = "--preclean"`.
   DEVEL ONLY, not installed: `catchSalmonGene`, `binQLFit`, `PCList`,
   `sampleWeights`.
 
