@@ -805,6 +805,17 @@ GTEx overdispersion, depth and zero-inflation structure.
   `F(1, n_a - 1)` (45-88 on these genes): `dof = N - 2 - max(n_cov, n_cov_a)`
   at `tensorqtl/hapmixqtl.py:1694` and `:1991` is one reference for the
   combined statistic. Found by reading, 2026-09-25; no empirical p is affected.
+  MEASURED 2026-09-26, and it reaches the combined statistic too: a gene
+  with very few admitted allelic donors fits its allelic scale on almost
+  no residual df but is referred to about 73. RPL41 (2 allelic donors, 1
+  residual df) holds 991 of the split arm's 1,415 combined rejections at
+  0.001 on the benchmark anchor. Without it, the stored 200-permutation
+  combined rates at 0.001 fall from 0.0027 / 0.0028 / 0.0026 to 0.0011 /
+  0.0011 / 0.0010 for split / unit / 1/(v+1), and gibbs from 0.0054 to
+  0.0035. Record: `scripts/plasmode/score.py` and the benchmark report,
+  `brainvar_hapmix_deploy/plasmode_20260926/report/plasmode_report.html`.
+  Not fixed: the fix (a per-channel reference, or a minimum allelic donor
+  count) is a design decision.
 - RASQUAL agreement has now been re-measured under default mode (section
   below). The reuse traps recorded when that run was designed still hold for
   any future one: `--reuse-rasqual` carries the OBSERVED arm only and never
