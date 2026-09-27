@@ -769,11 +769,10 @@ def _wls_regression(y_star_t, x_star_t, residualizer, robust=False, fitted=False
             # contribute nothing to rss (y* and x* are both 0 there), so
             # charging them degrees of freedom would shrink sigma2_hat and
             # understate the SE. residualizer.dof is N-1-ncol over all rows,
-            # which is wrong here for exactly that reason.
+            # which is wrong here for exactly that reason (_channel_dof).
             e = y_res - slope.unsqueeze(1) * x_res
             rss = (e * e).sum(1)
-            n_eff = int((residualizer.sqrt_w_t != 0).sum())
-            dof_f = max(n_eff - 1 - residualizer.Q_t.shape[1], 1)
+            dof_f = _channel_dof(residualizer)
             slope_se[valid] = torch.sqrt(rss[valid] / dof_f / xx[valid])
         elif not robust:
             # Known-variance GLS: Var(beta_hat) = 1 / xx (weights are absolute
@@ -806,6 +805,117 @@ def _min_informative(covariates_t, extra=2, intercept=True):
     degrees of freedom."""
     n_cov = 0 if covariates_t is None else covariates_t.shape[1]
     return int(intercept) + n_cov + extra
+
+
+# Default mode's allelic admission floor: the allelic channel enters the
+# combined statistic only for genes with at least this many informative
+# allelic donors. It is mixQTL's META_N_CUTOFF (meta_analyze combines only when
+# both channels have n >= 15; rlib_meta.R:34-110 via mixqtl_replication.py).
+MIN_ALLELIC_DONORS = 15
+
+
+def _residual_dof(residualizer):
+    """Residual degrees of freedom of one channel's fitted scale
+    (se_mode='fitted'), and so the t reference of that channel's statistic.
+
+    Counts INFORMATIVE donors, not rows: a zero-weight donor contributes
+    nothing to the residual sum of squares, so charging it a degree of
+    freedom would shrink the scale and inflate the statistic. One for the
+    slope and one per column the residualizer projects out: n_a - 1 - n_cov_a
+    for the allelic channel (through-origin by default, so n_a - 1), and
+    n_t - 2 - n_cov for the total channel. At least 1 for every channel that
+    is on (the sparse-channel rule of _channel_weights switches off a channel
+    with fewer informative donors than design columns plus two), so it is
+    below 1 exactly when the channel is off.
+    """
+    n_eff = int((residualizer.sqrt_w_t != 0).sum())
+    return n_eff - 1 - residualizer.Q_t.shape[1]
+
+
+def _channel_dof(residualizer):
+    """_residual_dof clamped at 1, so a channel without residual degrees of
+    freedom never divides by zero. The single definition used by the standard
+    error (_wls_regression), the permutation scan
+    (calculate_hapmixqtl_permutations) and the combination's reference
+    (_satterthwaite_dof)."""
+    return max(_residual_dof(residualizer), 1)
+
+
+def _reported_dof(residualizer):
+    """_residual_dof for the output columns: NaN, not the clamp, when the
+    channel is off, so its p-value is NaN rather than a zero statistic's 1."""
+    dof = _residual_dof(residualizer)
+    return float(dof) if dof >= 1 else float('nan')
+
+
+def _allelic_admitted(residualizer_a, residualizer_t, min_allelic_donors, fitted):
+    """Whether the allelic channel enters the combined statistic: the gene's
+    count of informative allelic donors against MIN_ALLELIC_DONORS (a
+    gene-level count; it does not check that a given variant has heterozygous
+    informative donors, or that phase was supplied).
+
+    The floor applies in default mode only, and only when the total channel
+    is on. When it is off, e.g. in an allelic-only run (keep_t_df all False),
+    there is no combination to protect and the allelic channel is the
+    statistic whenever it is on, as mixQTL's meta_analyze falls back to the
+    channel it has. Under the known-variance and HC1 standard errors any
+    informative allelic donor admits it, as before."""
+    n_a = int((residualizer_a.sqrt_w_t != 0).sum())
+    if not fitted:
+        return n_a >= 1
+    if _residual_dof(residualizer_t) < 1:
+        return _residual_dof(residualizer_a) >= 1
+    return n_a >= min_allelic_donors
+
+
+def _satterthwaite_dof(w_a, w_t, dof_a, dof_t):
+    """Welch-Satterthwaite degrees of freedom of the combined statistic.
+
+    The combination is sum_k c_k beta_k with c_k = w_k / sum w and
+    w_k = 1/se_k^2, its variance estimate is sum_k c_k^2 se_k^2 = 1/sum w,
+    and for a FIXED linear combination of independent variance estimates
+    the Welch-Satterthwaite degrees of freedom are
+
+        (sum_k c_k^2 se_k^2)^2 / sum_k (c_k^2 se_k^2)^2 / nu_k
+            = (w_a + w_t)^2 / (w_a^2 / nu_a + w_t^2 / nu_t)
+
+    with nu_k the channel's _channel_dof. The value lies between
+    min(nu_a, nu_t) and nu_a + nu_t, varies per variant because the weights
+    do, is exactly nu_a where the total channel carries no weight (e.g. an
+    allelic-only run) and exactly nu_t where the allelic channel carries none
+    (below the admission floor, or no heterozygous informative donor), and is
+    NaN where neither does (no statistic, so no p-value). Computed in float64
+    on the weight shares, so large weights cannot overflow.
+
+    The weights are treated as fixed, although they are estimated from the
+    same residuals, and that costs calibration where both channels carry
+    weight: a chance-small se_a both inflates |t_a| and raises the allelic
+    share (the Graybill-Deal effect). Measured 2026-09-27 under the exact
+    model (normal errors at known weights, N = 75, median allelic share 0.50,
+    20,000 null genes per arm, map_nominal): at n_a = 15 the combined p
+    rejects at 0.0592 / 0.01355 / 0.00155 at 0.05 / 0.01 / 0.001, about
+    1.2x / 1.35x / 1.5x nominal, while each channel alone is nominal on its
+    own dof (the old shared N - 2 reference gave 0.0627 / 0.0163 / 0.0024);
+    0.0598 / 0.01245 / 0.00115 at n_a = 20 and 0.0547 / 0.0104 / 0.00155 at
+    n_a = 40; an independent seed gives 0.0587 / 0.01205 / 0.0014 at
+    n_a = 15. Below the floor it is worse (n_a = 3: 0.116 at 0.05), which is
+    what MIN_ALLELIC_DONORS excludes. No correction is applied.
+
+    Args:
+        w_a, w_t: [V] per-variant channel weights 1/se^2 (0 where absent)
+        dof_a, dof_t: the channels' residual degrees of freedom
+    Returns:
+        [V] float64 tensor
+    """
+    w_a = w_a.to(torch.float64)
+    w_t = w_t.to(torch.float64)
+    total = w_a + w_t
+    f_a = torch.where(total > 0, w_a / total.clamp(min=1e-300), torch.zeros_like(total))
+    f_t = 1.0 - f_a
+    nu = 1.0 / (f_a * f_a / dof_a + f_t * f_t / dof_t)
+    nu = torch.where(w_t > 0, nu, torch.full_like(nu, float(dof_a)))
+    nu = torch.where(w_a > 0, nu, torch.full_like(nu, float(dof_t)))
+    return torch.where(total > 0, nu, torch.full_like(nu, float('nan')))
 
 
 def _fitted_variance():
@@ -1133,7 +1243,9 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
 def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
                                  sqrt_wa_t, sqrt_wt_t,
                                  residualizer_a, residualizer_t,
-                                 robust=False, fitted=False):
+                                 robust=False, fitted=False,
+                                 min_allelic_donors=MIN_ALLELIC_DONORS,
+                                 return_info=False):
     """
     hapmixQTL association test for all variants in a cis window (Method A).
 
@@ -1141,6 +1253,15 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
     combines via inverse-variance meta-analysis. Using g/2 as the total
     channel predictor makes its slope estimate the same quantity as the
     ASE channel slope: the full log allelic fold change (log aFC).
+
+    With ``fitted=True`` (default mode) the allelic channel enters the
+    combination only when the gene has at least ``min_allelic_donors``
+    informative allelic donors (MIN_ALLELIC_DONORS; _allelic_admitted, which
+    waives it when there is no total channel); below that the combined slope,
+    SE and statistic ARE the total channel's, while the allelic slope and SE
+    are still returned. Under the known-variance and HC1 standard errors
+    there is no fitted scale, so the info dict's dof entries are None and the
+    caller keeps its single reference.
 
     The scalar meta-analysis treats the two channel estimators as
     independent and deliberately ignores Cat (the a-t inferential
@@ -1162,6 +1283,8 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
         residualizer_t: WeightedResidualizer for total channel
         robust: if True use sandwich SEs
         fitted: if True use estimated-dispersion SEs (takes precedence)
+        min_allelic_donors: the allelic admission floor (fitted only)
+        return_info: if True also return the info dict below
 
     Returns:
         tstat_t:      [V] combined t-statistic
@@ -1171,6 +1294,10 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
         slope_a_se_t: [V] ASE channel SE
         slope_tc_t:   [V] total channel slope
         slope_tc_se_t:[V] total channel SE
+        info:         (only with return_info) dict of each statistic's t
+                      reference: ``dof_a``/``dof_t`` (_reported_dof, NaN for
+                      a channel that is off), ``dof_nominal`` [V]
+                      (_satterthwaite_dof) and ``allelic_admitted``
     """
     # ASE channel: a = beta * s + covariates + error
     a_star = (a_t * sqrt_wa_t).unsqueeze(0)
@@ -1196,20 +1323,36 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
         torch.zeros_like(se_tc),
     )
 
-    total_inv_var = inv_var_a + inv_var_t
-    slope_combined = torch.where(
-        total_inv_var > 0,
-        (slope_a * inv_var_a + slope_tc * inv_var_t) / total_inv_var,
-        torch.zeros_like(slope_a),
-    )
-    se_combined = torch.where(
-        total_inv_var > 0,
-        torch.sqrt(1.0 / total_inv_var),
-        torch.full_like(slope_a, float('inf')),
-    )
+    admitted = _allelic_admitted(residualizer_a, residualizer_t, min_allelic_donors, fitted)
+    if admitted or not fitted:
+        total_inv_var = inv_var_a + inv_var_t
+        slope_combined = torch.where(
+            total_inv_var > 0,
+            (slope_a * inv_var_a + slope_tc * inv_var_t) / total_inv_var,
+            torch.zeros_like(slope_a),
+        )
+        se_combined = torch.where(
+            total_inv_var > 0,
+            torch.sqrt(1.0 / total_inv_var),
+            torch.full_like(slope_a, float('inf')),
+        )
+    else:
+        # below the allelic admission floor the combination IS the total
+        # channel, taken verbatim so no rounding separates the two
+        inv_var_a = torch.zeros_like(inv_var_a)
+        slope_combined, se_combined = slope_tc.clone(), se_tc.clone()
     tstat_combined = slope_combined / se_combined
 
-    return tstat_combined, slope_combined, se_combined, slope_a, se_a, slope_tc, se_tc
+    out = (tstat_combined, slope_combined, se_combined, slope_a, se_a, slope_tc, se_tc)
+    if not return_info:
+        return out
+    info = dict(dof_a=None, dof_t=None, dof_nominal=None, allelic_admitted=admitted)
+    if fitted:
+        info.update(dof_a=_reported_dof(residualizer_a), dof_t=_reported_dof(residualizer_t),
+                    dof_nominal=_satterthwaite_dof(inv_var_a, inv_var_t,
+                                                   _channel_dof(residualizer_a),
+                                                   _channel_dof(residualizer_t)))
+    return out + (info,)
 
 
 def _leverage_standardized(res_t, residualizer):
@@ -1357,7 +1500,8 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
                                       sqrt_wa_t, sqrt_wt_t,
                                       residualizer_a, residualizer_t,
                                       permutation_ix_t, dof=None, perm_scheme=DEFAULT_PERM_SCHEME,
-                                      fitted=False, flip_t=None):
+                                      fitted=False, flip_t=None,
+                                      min_allelic_donors=MIN_ALLELIC_DONORS, return_info=False):
     """
     Compute nominal and permutation statistics for hapmixQTL.
 
@@ -1367,6 +1511,17 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     r_nominal does. Default: the smaller of the two channels' residualizer
     dof, which with per-channel covariates is the total channel's (the
     larger design). map_cis passes its own N - 2 - n_cov so both agree.
+
+    With ``fitted=True`` the mapping constant is no longer the lead's t
+    reference: that is the Welch-Satterthwaite dof of its combination
+    (_satterthwaite_dof), returned with ``return_info=True`` as a sixth item,
+    a dict with ``dof_nominal`` (None when not fitted; the caller keeps
+    ``dof``) and ``allelic_admitted``. The allelic admission floor
+    (``min_allelic_donors``, MIN_ALLELIC_DONORS) is applied to the observed
+    scan and to every permutation alike: the informative allelic donors are
+    the same set under every permutation, because each donor's weight moves
+    with its record, so the gene-level null is built from the statistic that
+    was observed.
 
     The permutation null. ``perm_scheme='records'`` permutes donor records:
     for each permutation every donor receives another donor's whitened
@@ -1444,15 +1599,14 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     """
     if dof is None:
         dof = min(residualizer_a.dof, residualizer_t.dof)
-    # Per-channel degrees of freedom for the fitted residual scale. Counts
-    # INFORMATIVE donors, not rows: a zero-weight donor contributes nothing
-    # to the residual sum of squares, so charging it dof would shrink the
-    # scale and inflate the statistic (same rule as _wls_regression).
-    dof_a = max(int((residualizer_a.sqrt_w_t != 0).sum())
-                - 1 - residualizer_a.Q_t.shape[1], 1)
-    dof_t = max(int((residualizer_t.sqrt_w_t != 0).sum())
-                - 1 - residualizer_t.Q_t.shape[1], 1)
-    _fit = dict(fitted=fitted, dof_a=dof_a, dof_t=dof_t)
+    # Per-channel degrees of freedom for the fitted residual scale, counting
+    # INFORMATIVE donors (_channel_dof, the rule _wls_regression uses), and
+    # the allelic admission floor. Both are per gene: a permutation moves
+    # weights with their records and so changes neither.
+    dof_a = _channel_dof(residualizer_a)
+    dof_t = _channel_dof(residualizer_t)
+    admitted = _allelic_admitted(residualizer_a, residualizer_t, min_allelic_donors, fitted)
+    _fit = dict(fitted=fitted, dof_a=dof_a, dof_t=dof_t, allelic=admitted)
 
     # --- Pre-transform and residualize fixed predictors ---
     # ASE
@@ -1476,20 +1630,17 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     xy_t_nom = (g_half_star_res * t_star_res).sum(1)
     yy_t_nom = (t_star_res * t_star_res).sum()
 
-    tstat2_nom = _combined_tstat2(xy_a_nom, xx_a, yy_a_nom,
-                                  xy_t_nom, xx_t, yy_t_nom, dof, **_fit)
+    # The statistic, the combined slope and its t reference from ONE call.
+    # The slope was previously a second, hand-inlined known-variance copy,
+    # which silently disagreed with map_nominal the moment a fitted residual
+    # scale was allowed; a test caught it.
+    tstat2_nom, slope_all, dof_all = _combined_tstat2(
+        xy_a_nom, xx_a, yy_a_nom, xy_t_nom, xx_t, yy_t_nom, dof,
+        return_slope=True, return_dof=True, **_fit)
 
     tstat2_nom_clean = tstat2_nom.clone()
     tstat2_nom_clean[torch.isnan(tstat2_nom_clean)] = -1
     best_ix = tstat2_nom_clean.argmax()
-
-    # Combined slope for the best variant, taken from the SAME routine that
-    # produced the statistic. This was previously a second, hand-inlined
-    # known-variance copy, which silently disagreed with map_nominal the
-    # moment a fitted residual scale was allowed; a test caught it.
-    _, slope_all = _combined_tstat2(xy_a_nom, xx_a, yy_a_nom,
-                                    xy_t_nom, xx_t, yy_t_nom, dof,
-                                    return_slope=True, **_fit)
     slope_nom = slope_all[best_ix]
 
     # Map the combined statistic to a correlation-like r for the empirical
@@ -1551,12 +1702,19 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     r2_perm = tstat2_perm / (tstat2_perm + dof)
     max_r2_perm, _ = r2_perm.max(0)
 
-    return r_nominal, std_ratio, best_ix, max_r2_perm, genotypes_t[best_ix]
+    out = (r_nominal, std_ratio, best_ix, max_r2_perm, genotypes_t[best_ix])
+    if not return_info:
+        return out
+    # the lead's own t reference (None without a fitted scale, as in
+    # calculate_hapmixqtl_nominal; the caller then keeps `dof`)
+    info = dict(dof_nominal=float(dof_all[best_ix]) if fitted else None,
+                allelic_admitted=admitted)
+    return out + (info,)
 
 
 def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
                      fitted=False, dof_a=None, dof_t=None,
-                     return_slope=False):
+                     return_slope=False, allelic=True, return_dof=False):
     """
     Compute combined (known-variance) statistic squared from dot-product
     summaries, matching the inverse-variance meta-analysis in
@@ -1581,6 +1739,13 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
     ``inv_var = xx/s2`` and the meta numerator is ``xy/s2``, which collapses
     to ``xy_a + xy_t`` when both scales are 1. ``dof_a``/``dof_t`` must count
     INFORMATIVE donors per channel, for the reason given in _wls_regression.
+
+    ``allelic=False`` (fitted form only) leaves the allelic channel out of the
+    combination: the gene is below the allelic admission floor
+    (MIN_ALLELIC_DONORS). Returns ``tstat2``, then the combined slope if
+    ``return_slope``, then if ``return_dof`` the combination's
+    Welch-Satterthwaite dof (_satterthwaite_dof), which exists only in the
+    fitted form and is None otherwise.
 
     Works for both scalar (nominal) and 2D (permutation) ``xy`` by
     broadcasting.
@@ -1630,6 +1795,10 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
                                torch.zeros_like(xy_a_eff))
         xy_t_eff = torch.where(good_t, xy_t_eff / s2_t.clamp(min=1e-300),
                                torch.zeros_like(xy_t_eff))
+        if not allelic:
+            # below the allelic admission floor: the total channel alone
+            inv_var_a = torch.zeros_like(inv_var_a)
+            xy_a_eff = torch.zeros_like(xy_a_eff)
 
     total_inv = inv_var_a + inv_var_t
     # beta_c * total_inv = slope_a*inv_var_a + slope_t*inv_var_t
@@ -1642,12 +1811,16 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
         torch.zeros_like(numer),
     )
     tstat2 = slope_comb * slope_comb * total_inv
+    out = (tstat2,)
     if return_slope:
-        return tstat2, slope_comb
-    return tstat2
+        out += (slope_comb,)
+    if return_dof:
+        # inv_var_k is xx_k / s2_k = 1/se_k^2, the weight of the combination
+        out += (_satterthwaite_dof(inv_var_a, inv_var_t, dof_a, dof_t) if fitted else None,)
+    return out if len(out) > 1 else tstat2
 
 
-def cis_trans_diagnostic(slope_a, se_a, slope_t, se_t, dof):
+def cis_trans_diagnostic(slope_a, se_a, slope_t, se_t, dof, dof_a=None, dof_t=None):
     """
     Per-variant test of the assumption the meta-analysis rests on: that the
     ASE and total channels estimate the SAME effect, i.e. a pure cis effect.
@@ -1669,18 +1842,26 @@ def cis_trans_diagnostic(slope_a, se_a, slope_t, se_t, dof):
     reported effect should not be read as a cis log aFC. It is a screen for
     gross violations (detection 92% at alpha = 0, 12% at alpha = 0.75).
 
+    ``dof`` is the shared t reference of the known-variance and HC1 standard
+    errors. In default mode the caller passes each channel's residual dof as
+    ``dof_a``/``dof_t`` instead, and z is referred to the Welch-Satterthwaite
+    dof of the difference, (se_a^2 + se_t^2)^2 / (se_a^4/dof_a + se_t^4/dof_t),
+    the construction of _satterthwaite_dof with coefficients +1 and -1.
+
     Returns:
         alpha_cis:      slope_a / slope_t (NaN when slope_t ~ 0 or a channel
                         has no finite SE)
-        pval_cis_trans: two-sided p on the same t reference (dof) as the other
-                        p-values; NaN when a channel is unavailable, e.g. no
-                        phase -> no ASE channel -> nothing to compare
+        pval_cis_trans: two-sided p; NaN when a channel is unavailable, e.g.
+                        no phase -> no ASE channel -> nothing to compare
     """
     slope_a = np.atleast_1d(np.asarray(slope_a, float)); se_a = np.atleast_1d(np.asarray(se_a, float))
     slope_t = np.atleast_1d(np.asarray(slope_t, float)); se_t = np.atleast_1d(np.asarray(se_t, float))
     ok = np.isfinite(se_a) & (se_a > 0) & np.isfinite(se_t) & (se_t > 0)
     z = np.full(slope_a.shape, np.nan)
     z[ok] = (slope_a[ok] - slope_t[ok]) / np.sqrt(se_a[ok] ** 2 + se_t[ok] ** 2)
+    if dof_a is not None and dof_t is not None:
+        va, vt = se_a[ok] ** 2, se_t[ok] ** 2
+        dof = (va + vt) ** 2 / (va ** 2 / dof_a + vt ** 2 / dof_t)
     pval = np.full(slope_a.shape, np.nan)
     pval[ok] = 2 * stats.t.sf(np.abs(z[ok]), dof)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -1700,7 +1881,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 ase_covariates_df=None, variance_model='additive',
                 library_factor=None, variance_prior=None,
                 keep_a_df=None, keep_t_df=None,
-                total_variance_model='additive', genotype_covariates_df=None):
+                total_variance_model='additive', genotype_covariates_df=None,
+                min_allelic_donors=MIN_ALLELIC_DONORS):
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
@@ -1708,6 +1890,24 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     ``covariates_df`` does; the split exists for map_cis's permutation, where
     genotype-tied covariates stay with the genotypes. Pass it here too so the
     nominal and permutation runs use the same design.
+
+    t references (default mode, se_mode='fitted'). Each p-value is referred
+    to the degrees of freedom of the scale its standard error was fitted
+    with: ``pval_a`` to ``dof_a`` = n_a - 1 - n_cov_a and ``pval_t`` to
+    ``dof_t`` = n_t - 2 - n_cov, counting informative donors (_residual_dof;
+    NaN, and so a NaN p, for a channel that is switched off), and
+    ``pval_nominal`` to ``dof_nominal``, the per-pair Welch-Satterthwaite dof
+    of the combination (_satterthwaite_dof; NaN where neither channel carries
+    weight, e.g. a monomorphic variant). ``pval_cis_trans`` is referred to the
+    Welch-Satterthwaite dof of the difference (cis_trans_diagnostic). The
+    allelic channel enters the combination only for genes with at least
+    ``min_allelic_donors`` informative allelic donors (MIN_ALLELIC_DONORS,
+    mixQTL's own cutoff; waived when the gene has no total channel, as in an
+    allelic-only run); ``allelic_admitted`` records that gene-level count
+    test, and below the floor the combined slope, SE and p are the total
+    channel's while ``pval_a`` is still reported. The known-variance and HC1
+    standard errors keep the single reference N - 2 - max(n_cov, n_cov_a),
+    which the dof columns then carry, and no floor.
 
     Writes per-chromosome parquet files in the format:
         <output_dir>/<prefix>.hapmixqtl_pairs.<chr>.parquet
@@ -1869,11 +2069,15 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     ase_covariates_t, n_cov_a = _resolve_ase_covariates(
         ase_covariates_df, covariates_df, samples, device, logger)
-    # one t reference for the combined statistic: the larger design's
+    # One t reference, the larger design's, for the known-variance and HC1
+    # standard errors. Default mode refers each p-value to its own channel's
+    # dof instead (see the docstring).
     dof = N - 2 - max(n_cov, n_cov_a)
     library_factor_t = _library_factor_tensor(library_factor, samples, device)
     _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
     logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
+    if fitted:
+        logger.write(f'  * allelic channel enters the combination at >= {min_allelic_donors} informative donors')
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -1886,6 +2090,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     start_time = time.time()
     k = 0
+    n_below_floor = 0
     logger.write('  * Computing associations')
     for chrom in igc.chrs:
         logger.write(f'    Mapping chromosome {chrom}')
@@ -1915,6 +2120,10 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         chr_res['slope_t'] = np.empty(n, dtype=np.float32)
         chr_res['slope_t_se'] = np.empty(n, dtype=np.float32)
         chr_res['pval_cis_trans'] = np.empty(n, dtype=np.float64)
+        chr_res['dof_nominal'] = np.empty(n, dtype=np.float64)
+        chr_res['dof_a'] = np.empty(n, dtype=np.float64)
+        chr_res['dof_t'] = np.empty(n, dtype=np.float64)
+        chr_res['allelic_admitted'] = np.empty(n, dtype=bool)
 
         start = 0
         for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
@@ -1981,9 +2190,20 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 sqrt_wa_t, sqrt_wt_t,
                 residualizer_a, residualizer_tc,
                 robust=robust, fitted=fitted,
+                min_allelic_donors=min_allelic_donors, return_info=True,
             )
             (tstat, slope, slope_se, slope_a, se_a,
-             slope_tc, se_tc) = [r.cpu().numpy() for r in res]
+             slope_tc, se_tc) = [r.cpu().numpy() for r in res[:7]]
+            ref = res[7]
+            if fitted:
+                dof_nominal = ref['dof_nominal'].cpu().numpy()
+                dof_a, dof_t = ref['dof_a'], ref['dof_t']
+                ct_dof = dict(dof_a=dof_a, dof_t=dof_t)
+                n_below_floor += (not ref['allelic_admitted']
+                                  and bool((residualizer_a.sqrt_w_t != 0).any()))
+            else:
+                dof_nominal, dof_a, dof_t = np.float64(dof), dof, dof
+                ct_dof = {}
 
             tstat_a = np.where(np.isfinite(se_a) & (se_a > 0),
                                slope_a / se_a, 0.0)
@@ -2014,7 +2234,11 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             chr_res['slope_t'][start:start + nv] = slope_tc
             chr_res['slope_t_se'][start:start + nv] = se_tc
             chr_res['pval_cis_trans'][start:start + nv] = cis_trans_diagnostic(
-                slope_a, se_a, slope_tc, se_tc, dof)[1]
+                slope_a, se_a, slope_tc, se_tc, dof, **ct_dof)[1]
+            chr_res['dof_nominal'][start:start + nv] = dof_nominal
+            chr_res['dof_a'][start:start + nv] = dof_a
+            chr_res['dof_t'][start:start + nv] = dof_t
+            chr_res['allelic_admitted'][start:start + nv] = ref['allelic_admitted']
             start += nv
 
         logger.write(f'    time elapsed: {(time.time() - start_time) / 60:.2f} min')
@@ -2029,20 +2253,25 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         chr_res_df = pd.DataFrame(chr_res)
         m = chr_res_df['pval_nominal'].notnull()
         m = m[m].index
+        # each statistic on its own reference (the dof columns; see docstring)
         chr_res_df.loc[m, 'pval_nominal'] = get_t_pval(
-            chr_res_df.loc[m, 'pval_nominal'], dof
+            chr_res_df.loc[m, 'pval_nominal'], chr_res_df.loc[m, 'dof_nominal']
         )
         chr_res_df.loc[m, 'pval_a'] = get_t_pval(
-            chr_res_df.loc[m, 'pval_a'], dof
+            chr_res_df.loc[m, 'pval_a'], chr_res_df.loc[m, 'dof_a']
         )
         chr_res_df.loc[m, 'pval_t'] = get_t_pval(
-            chr_res_df.loc[m, 'pval_t'], dof
+            chr_res_df.loc[m, 'pval_t'], chr_res_df.loc[m, 'dof_t']
         )
         print('    * writing output')
         chr_res_df.to_parquet(
             os.path.join(output_dir, f'{prefix}.hapmixqtl_pairs.{chrom}.parquet')
         )
 
+    if n_below_floor:
+        logger.write(f'  * {n_below_floor} phenotypes had informative allelic donors but fewer than '
+                     f'{min_allelic_donors}: allelic channel left out of the combined statistic '
+                     f'(allelic_admitted False; pval_a still reported)')
     logger.write('done.')
 
 
@@ -2058,7 +2287,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ase_covariates_df=None, tau_refit=False, variance_model='additive',
             library_factor=None, variance_prior=None,
             perm_scheme=DEFAULT_PERM_SCHEME, keep_a_df=None, keep_t_df=None,
-            genotype_covariates_df=None):
+            genotype_covariates_df=None, min_allelic_donors=MIN_ALLELIC_DONORS):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
 
@@ -2097,8 +2326,27 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     ``ase_covariates_df`` is the allelic channel's covariate design (see
     map_nominal): None for through-origin (the default), SAME_COVARIATES for
-    the total channel's set, or its own DataFrame. The nominal p-value uses one t reference for both channels,
-    dof = N - 2 - max(n_cov, n_cov_a).
+    the total channel's set, or its own DataFrame.
+
+    t references. In default mode (se_mode='fitted') the lead's
+    ``pval_nominal`` is referred to ``dof_nominal``, the Welch-Satterthwaite
+    dof of its combination, exactly as map_nominal refers that pair; the
+    allelic channel enters the scanned statistic only for genes with at least
+    ``min_allelic_donors`` informative allelic donors (``allelic_admitted``;
+    MIN_ALLELIC_DONORS, waived without a total channel), in the observed scan
+    and in every permutation alike. The lead is the variant with the largest
+    combined |t|; with a per-variant dof its ``pval_nominal`` need not be the
+    gene's smallest pval_nominal in map_nominal. Its per-channel slopes and
+    SEs, ``alpha_cis`` and ``pval_cis_trans`` are on the scan's fitted scale,
+    as in map_nominal. A gene in which neither channel carries weight has
+    NaN ``pval_nominal``, ``pval_perm`` and ``dof_nominal``: it was not
+    tested. The constant dof = N - 2 - max(n_cov, n_cov_a) still maps the
+    scanned statistic to the correlation scale shared by the observed lead
+    and the permutations, and seeds the Beta approximation's fit of
+    ``true_df``; being one monotone map per gene it leaves the lead,
+    ``pval_perm`` and ``pval_beta`` exactly as the statistic determines them.
+    Under se_mode='model' it is also the t reference of ``pval_nominal``, and
+    ``dof_nominal`` reports it.
 
     For each phenotype, finds the best cis variant and computes empirical
     p-values from ``nperm`` permutations shared across genes. The default
@@ -2175,13 +2423,17 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     ase_covariates_t, n_cov_a = _resolve_ase_covariates(
         ase_covariates_df, covariates_df, samples, device, logger)
-    # one t reference for the combined statistic: the larger design's
+    # the larger design's dof: the correlation-scale map of the scan and the
+    # Beta approximation's starting true_df in every mode, and the lead's t
+    # reference only under se_mode='model' (see the docstring)
     dof = N - 2 - max(n_cov, n_cov_a)
     library_factor_t = _library_factor_tensor(library_factor, samples, device)
     if perm_scheme not in PERM_SCHEMES:
         raise ValueError(f'perm_scheme must be one of {PERM_SCHEMES}, got {perm_scheme!r}')
     _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior)
     logger.write(f'  * variance model: {variance_model}' + (' with empirical-Bayes prior' if variance_prior is not None else ''))
+    if se_mode == 'fitted':
+        logger.write(f'  * allelic channel enters the combination at >= {min_allelic_donors} informative donors')
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in samples])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -2213,6 +2465,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     pheno_ix = {pid: i for i, pid in enumerate(A_df.index)}
 
     res_df = []
+    n_below_floor = 0
     start_time = time.time()
     logger.write('  * computing permutations')
     for k, (_, genotypes, genotype_range, phenotype_id) in enumerate(
@@ -2285,21 +2538,31 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             residualizer_a, residualizer_tc,
             permutation_ix_t, dof=dof, perm_scheme=perm_scheme,
             fitted=(se_mode == 'fitted'), flip_t=flip_t,
+            min_allelic_donors=min_allelic_donors, return_info=True,
         )
-        r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res]
+        lead_ref = res[5]
+        r_nominal, std_ratio, var_ix, r2_perm, g = [i.cpu().numpy() for i in res[:5]]
         best_local = int(var_ix)
         var_ix = genotype_range[var_ix]
 
-        # the lead on the scan scale: per-channel slopes for the cis/trans diagnostic
+        # the lead on the scan scale (fitted SEs and the floor in default
+        # mode): per-channel slopes for the cis/trans diagnostic
         g_lead = genotypes_t[best_local:best_local + 1]
         s_lead = sign_t[best_local:best_local + 1]
-        lead_stat = calculate_hapmixqtl_nominal(
-            g_lead, s_lead, a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc)
+        *lead_stat, lead_info = calculate_hapmixqtl_nominal(
+            g_lead, s_lead, a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a, residualizer_tc,
+            fitted=(se_mode == 'fitted'), min_allelic_donors=min_allelic_donors,
+            return_info=True)
+        ct_dof = (dict(dof_a=lead_info['dof_a'], dof_t=lead_info['dof_t'])
+                  if se_mode == 'fitted' else {})
         tau_used = dict(tau_a=tau_info['tau_a'], tau_t=tau_info['tau_t'], refit=False,
                         c_a=tau_info['c_a'])
         if tau_refit and tau_mode == 'estimate':
             # tau (and c) with the lead's predictor in the model; the
-            # residualizers still project out the null design only
+            # residualizers still project out the null design only. The
+            # refit (deprecated tau_mode='estimate' only) is known-variance,
+            # so it has no per-channel dof and the allelic floor does not
+            # reach it; allelic_admitted still describes the scan.
             wa_r, wt_r, res_a_r, res_t_r, info_r = _prepare_channels(
                 a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
                 ase_covariates_t=ase_covariates_t, return_info=True,
@@ -2308,13 +2571,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                 keep_a_t=keep_a_t, keep_t_t=keep_t_t)
             lead_stat = calculate_hapmixqtl_nominal(
                 g_lead, s_lead, a_t, t_t, wa_r, wt_r, res_a_r, res_t_r)
+            ct_dof = {}
             tau_used = dict(tau_a=info_r['tau_a'], tau_t=info_r['tau_t'],
                             refit=bool(info_r['refit_a'] or info_r['refit_t']),
                             c_a=info_r['c_a'])
         (lead_tstat, lead_slope, lead_slope_se, lead_a, lead_a_se, lead_t, lead_t_se) = [
             float(x.cpu().numpy()[0]) for x in lead_stat]
         alpha_cis, pval_cis_trans = cis_trans_diagnostic(
-            lead_a, lead_a_se, lead_t, lead_t_se, dof)
+            lead_a, lead_a_se, lead_t, lead_t_se, dof, **ct_dof)
 
         variant_id = variant_df.index[var_ix]
         start_distance = variant_df['pos'].values[var_ix] - igc.phenotype_start[phenotype_id]
@@ -2325,13 +2589,24 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         pval_perm = (np.sum(r2_perm >= r2_nominal) + 1) / (nperm + 1)
 
         if tau_used['refit']:
+            # the refit's statistic is known-variance: the shared reference
+            dof_nominal = dof
             slope, slope_se = lead_slope, lead_slope_se
             pval_nominal = float(get_t_pval(lead_tstat, dof)) if np.isfinite(lead_tstat) else np.nan
         else:
+            # the lead's t, recovered from the correlation scale, referred to
+            # the lead's own reference (dof itself unless se_mode='fitted');
+            # NaN when neither channel carries weight, so the gene was not
+            # tested and its pval_perm (every statistic 0) is not a p-value
+            dof_nominal = dof if lead_ref['dof_nominal'] is None else lead_ref['dof_nominal']
             slope = r_nominal * std_ratio
             tstat2 = dof * r2_nominal / (1 - r2_nominal) if r2_nominal < 1 else np.inf
             slope_se = np.abs(slope) / np.sqrt(tstat2) if tstat2 > 0 else np.inf
-            pval_nominal = pval_from_corr(r2_nominal, dof)
+            pval_nominal = get_t_pval(np.sqrt(tstat2), dof_nominal)
+            if not np.isfinite(dof_nominal):
+                pval_perm = np.nan
+        n_below_floor += (not lead_ref['allelic_admitted']
+                          and bool((residualizer_a.sqrt_w_t != 0).any()))
 
         n2 = 2 * len(g)
         af = np.sum(g) / n2
@@ -2380,9 +2655,11 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('variance_model', variance_model),
             ('perm_scheme', perm_scheme),
             ('n_genotype_covariates', n_genotype_cov),
+            ('dof_nominal', float(dof_nominal)),
+            ('allelic_admitted', bool(lead_ref['allelic_admitted'])),
         ]), name=phenotype_id)
 
-        if beta_approx:
+        if beta_approx and np.isfinite(pval_perm):
             try:
                 res_s[['pval_beta', 'beta_shape1', 'beta_shape2',
                        'true_df', 'pval_true_df']] = \
@@ -2394,6 +2671,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     res_df = pd.concat(res_df, axis=1, sort=False).T
     res_df.index.name = 'phenotype_id'
+    if n_below_floor:
+        logger.write(f'  * {n_below_floor} of {len(res_df)} phenotypes had informative allelic donors but '
+                     f'fewer than {min_allelic_donors}: allelic channel left out of the scan and '
+                     f'every permutation (allelic_admitted False)')
+    n_untested = int(res_df['pval_perm'].isna().sum())
+    if n_untested:
+        logger.write(f'  * WARNING: {n_untested} of {len(res_df)} phenotypes have no channel carrying '
+                     f'weight and were not tested (pval_perm NaN)')
     n_floored = int(res_df['c_a_floored'].astype(bool).sum())
     if n_floored:
         logger.write(f'  * {n_floored} of {len(res_df)} phenotypes had c or tau clamped at zero in the allelic fit (c_a_floored)')

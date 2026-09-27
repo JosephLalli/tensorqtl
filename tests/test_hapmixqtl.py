@@ -1172,8 +1172,9 @@ class TestPerChannelCovariates:
     def test_map_cis_and_map_nominal_share_the_dof_rule(self, tmp_path):
         """With a through-origin allelic channel the two residualizers have
         different dof; the nominal p-value must use one rule in both mapping
-        functions (N - 2 - max(n_cov, n_cov_a)), so map_cis's pval_nominal at
-        the lead equals map_nominal's for that pair."""
+        functions (in default mode the pair's Welch-Satterthwaite dof_nominal,
+        since 2026-09-27; tests/test_hapmixqtl_allelic_df.py), so map_cis's
+        pval_nominal at the lead equals map_nominal's for that pair."""
         d = _make_dataset(seed=105, n_samples=60)
         rng = np.random.RandomState(9)
         cov_df = pd.DataFrame(rng.normal(size=(60, 4)), index=d['A_df'].columns,
