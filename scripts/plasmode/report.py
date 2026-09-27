@@ -758,7 +758,12 @@ For gibbs at |beta| 0.2 no depth of the pooled ranking kept the null share at or
 top of its ranking, so it called nothing. At 0.4 and 0.8 its cut fell at a lead p of {thr('0.4', 'gibbs')}
 and {thr('0.8', 'gibbs')}, where split's fell at {thr('0.4', 'split')} and {thr('0.8', 'split')}: null genes' lead p
 reached below split's cut, so to keep them out gibbs had to stop at smaller p. Section 4 takes up whether that
-reflects null p values that are too small.</p>"""
+reflects null p values that are too small.</p>
+<p>The ranking comparison between method families is conservative for the four hapmixQTL arms. In
+{one_df_gene(S)} their allelic p is too small (section 3.4); mixQTL, RASQUAL and TReCASE all leave that gene's allelic
+channel out. When {one_df_gene(S)} is a null gene, it can therefore sit near the top of only the hapmixQTL rankings
+and tighten their realized-FDP cut. The ranking and its power were not recomputed without it, so the hapmixQTL power
+at 5% realized FDP is a lower bound in the comparison with the other methods.</p>"""
 
 
 def interp_gene_level(S):
@@ -1117,7 +1122,13 @@ RASQUAL's interval is {ci(bias(S, '0.8', 'rasqual', 'combined', 'bias_count'), '
 {ci(bias(S, '0.8', 'trecase', 'combined', 'bias_count'), 'mean')}. TReCASE's intervals include 1 at every |beta|,
 the only combined slope here of which that is true (the hapmixQTL combined slopes, which mix two estimands and the
 transforms' attenuation, read {hm_lo} to {hm_hi} against beta); RASQUAL's exclude 1 at every |beta|, the shortfall largest
-below 100 reads. What causes RASQUAL's shortfall is not decomposed here.</p>""",
+below 100 reads. What causes RASQUAL's shortfall is not decomposed here. Two candidates are named from its source,
+neither tested: (i) RASQUAL fits the covariates once, in a negative-binomial model under the null without the
+genotype, and passes the fitted covariate effect as a fixed per-sample offset into every variant's fit
+(rasqual_src/src/main.c:631 and :641-643; nbem.c:297 and :334). That is the same two-step structure whose
+attenuation section 3.8 measures exactly for mixQTL, here inside a count likelihood and mixed with a covariate-free
+allelic part. (ii) RASQUAL fits a reference-mapping bias phi below 0.5 at the pseudo feature SNP, where no mapping
+bias can exist; a phi below 0.5 absorbs part of the allelic imbalance.</p>""",
         precision=f"""
 <p><b>The joint models.</b> For RASQUAL and TReCASE the standard error is derived by the Wald inversion of
 &chi;<sup>2</sup> (section 2). On null genes z = &plusmn;&radic;&chi;<sup>2</sup>, so sd(z)<sup>2</sup> is, up to the
@@ -1393,7 +1404,8 @@ log(total reads / 2 / library size), is regressed on the 17 covariates without t
 statistic exceeds 2 in absolute value are kept (the <i>selected covariates</i>, median {"-".join(map(str, nsel))} of 17
 per gene and dataset) and the regression is refitted on them. Second, the offset is subtracted from the response and
 the result is regressed on x = (h1 + h2)/2, half the ALT dosage, without first removing from x the part that the
-selected covariates explain. The <b>Frisch-Waugh-Lovell identity</b> states that in a least-squares fit of y on an
+selected covariates explain (mixQTL's own R code: the offset in rlib_covariate.R:27-40, the genotype regression on
+the residual in rlib_matrix_ls.R:26-46; ported as covariate_offset and trc_channel). The <b>Frisch-Waugh-Lovell identity</b> states that in a least-squares fit of y on an
 intercept, x and covariates C, the slope on x equals the slope of y on x after x is replaced by its residual from a
 regression on the intercept and C. It follows that when both steps use the same donors, mixQTL's slope is
 (1 &minus; R<sup>2</sup>) times the <i>one-step</i> slope, the slope on x when y is regressed on the intercept, x and
