@@ -6,8 +6,8 @@
 # the 30-100-read set of select_stratum_genes.py, run first for that set).
 # Steps, in order: the Salmon premise check; the generator's known-answer
 # checks; the datasets (make_datasets.BETAS = 0 / 0.2 / 0.4 / 0.8 with
-# N_DATASETS per gene set, 1 / 3 / 3 / 3 for the committed set, user decision
-# 2026-09-26, and 1 / 6 / 6 / 6 for the stratum set, user decision 2026-09-27;
+# N_DATASETS per gene set in make_datasets.GENE_SETS, 1 / 3 / 3 / 3 for both
+# sets as run (user decisions 2026-09-26 and 2026-09-27);
 # beta = 0 is the null anchor); run_arms.py (per dataset map_nominal and GPU
 # map_cis under four hapmixQTL weightings, mixqtl_scan under two mixQTL cutoff
 # settings; the mixQTL permutation scan is off for the committed set and

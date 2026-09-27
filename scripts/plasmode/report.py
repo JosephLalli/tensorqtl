@@ -47,6 +47,11 @@ TRECASE_SUMMARY = ROOT / 'results_trecase_asseq' / 'summary.json'
 LADDER = ROOT / 'ladder' / 'ladder.json' if SC.MD.SET['ladder'] else None   # mixqtl_ladder.py's output (corrected_null_store set only)
 OUT = ROOT / 'report'
 PAGE = OUT / 'plasmode_report.html'
+REF_RUN = SC.MD.GENE_SETS[INTERPRETED_SET]['root'] / 'summary.json'   # the 100-gene run: the contrast on any other gene set's page (task spec 2026-09-27)
+REF_GENES = SC.MD.GENE_SETS[INTERPRETED_SET]['gene_dir'] / 'genes.txt'
+SELECT_LOG = SC.MD.SET['gene_dir'] / 'select_stratum_genes.log'   # a stratum set's selection counts (select_stratum_genes.py)
+POOL = SC.MD.SET['gene_dir'] / 'pool_stratum.tsv'                 # every eQTL-filter gene's median admitted reads (select_stratum_genes.py)
+STRATA = SC.MD.D / 'coupling_reach_20260925' / 'b_strata.tsv'      # transcriptome-wide allelic null rate by coverage stratum, pre-correction pipeline
 
 ARMS = ('gibbs', 'split', 'unit', 'plus_one', 'mixqtl', 'mixqtl_permissive')
 HAPMIX = ARMS[:4]
@@ -279,8 +284,14 @@ def img(path, caption):
             f'{base64.b64encode(path.read_bytes()).decode()}"><figcaption>{alt}</figcaption></figure>')
 
 
-def log_facts(run_log, make_log):
-    zeroed = [int(x) for x in re.findall(r'allelic admission zeroed (\d+) donor-gene pairs', run_log)]
+def log_facts(run_log, make_log, n_ds):
+    # only the datasets the summary scores: run_arms.log can hold datasets later dropped (stratum30_100 ran 19, scored 10)
+    tagged = [(re.match(r'beta(\S+) rep (\d+) ', x), x) for x in run_log.splitlines()]
+    used = [x for m, x in tagged if m and int(m.group(2)) < n_ds[m.group(1)]]
+    print(f'{RUN_ARMS_LOG.name}: {sum(m is not None for m, _ in tagged)} dataset lines, {len(used)} of them from the '
+          f'{sum(n_ds.values())} scored datasets used', flush=True)
+    run_log = '\n'.join(used)
+    zeroed =[int(x) for x in re.findall(r'allelic admission zeroed (\d+) donor-gene pairs', run_log)]
     mix = {}
     for arm, na, nt, med in re.findall(r' (mixqtl\S*) +mixqtl_scan [\d,]+ rows; genes with allelic samples >= 15: '
                                        r'(\d+), total samples >= 15: (\d+); allelic samples per gene median (\d+)',
@@ -381,9 +392,11 @@ def sec_run(S, FX, CG, CP, LF, JF):
     tn, rl = th['thinned'], th['real']
     fano = table(['haplotype-informative reads (pL + pR)', 'donor-gene pairs, thinned (real)',
                   'median Fano factor, thinned', 'median Fano factor, real'],
-                 [[b, f'{tn[b]["pairs"]:,} ({rl[b]["pairs"]:,})', f(tn[b]['fano']), f(rl[b]['fano'])]
+                 [[b, f'{tn[b]["pairs"]:,} ({rl[b]["pairs"]:,})'] + ['n/a (no pairs)' if x is None else f(x)
+                                                                     for x in (tn[b]['fano'], rl[b]['fano'])]
                   for b in ('1-9', '10-99', '100-999', '1000+')])
-    rec = table(['allelic slope estimate (genes >= 100 reads)', 'mean slope / truth', 'gene-clustered se'],
+    rec = table([f'allelic slope estimate ({f"genes >= {CGN.C_MIN_READS} reads" if CGN.C_MIN_READS else "every gene"})',
+                 'mean slope / truth', 'gene-clustered se'],
                 [[name, f(pr[k]['mean']), f(pr[k]['gene_clustered_se'])] for name, k in (
                     ('weights 1/Va from the unthinned record (do not depend on the effect)', 'inv_va_real_beta'),
                     ('weights 1/Va at the expected thinned counts', 'inv_va_exp_beta'),
@@ -555,8 +568,9 @@ moments match those of a fixed weighted sum of independent variance estimates, h
 w<sub>t</sub><sup>2</sup>/&nu;<sub>t</sub>) with w = 1/se<sup>2</sup> and &nu; each channel's degrees of freedom. The
 allelic channel enters the combined statistic only for a gene with at least {FLOOR} informative allelic donors, mixQTL's
 own cutoff for combining its two channels; below that the combined slope, se and p are the total channel's. {floor_txt} Before that
-commit every hapmixQTL p was referred to t with 73 degrees of freedom (N &minus; 2 &minus; 17 covariates); section 3.7
-compares the two (docs/hapmixqtl_methods.md, Section 4.5, has the derivation and the reference's measured cost).
+commit every hapmixQTL p was referred to t with 73 degrees of freedom (N &minus; 2 &minus; 17 covariates){
+'; section 3.7 compares the two' if BEFORE else ''} (docs/hapmixqtl_methods.md, Section 4.5, has the derivation and the
+reference's measured cost).
 Two mixQTL-mode arms run on the thinned point estimates, never
 on the draws: <b>published cutoffs</b> (total reads 100, allelic reads 50 to 1,000, weight cap 10) and
 <b>permissive cutoffs</b> (20, 5 to 5,000, cap 100). The realized fold cap is min(weight cap, floor(n/10)) for n
@@ -739,7 +753,7 @@ def cross_note(S):
     return f"""
 <p>The choice of truth matters for gibbs. On this count-scale truth its combined squared error at the causal variant is
 {' / '.join(ci(d, 'value', 2) for d in c)} of unit weights' at |beta| = 0.2 / 0.4 / 0.8, with intervals that include 1
-at {at_betas(inc)}; on the pipeline-scale truth (next table and section 4) it is
+at {at_betas(inc)}; on the pipeline-scale truth (the table above{' and section 4' if INTERPRETED else ''}) it is
 {' / '.join(ci(prec(S, f'beta{b}', 'gibbs', 'combined', 'nonnull', 'ratio_vs_unit'), 'value', 2) for b in BETAS)}.
 On the count-scale truth unit weights' error contains the attenuation of log2(CPM + 1): their total slope recovers
 {B('unit')} of the count-scale total truth, gibbs's {B('gibbs')} (section 3.3), which is consistent with the smaller
@@ -830,16 +844,59 @@ figcaption { color: var(--ink2); font-size: 13px; max-width: 900px; }
 '''
 
 
-def sec_head(S):
+def stratum_facts():
+    """A stratum set's selection (SELECT_LOG), where the 100-gene run's genes sit on the same read measure (POOL), and
+    the transcriptome-wide allelic null rate of the stratum it was chosen for (STRATA); None for INTERPRETED_SET."""
+    if INTERPRETED:
+        return None
+    log = SELECT_LOG.read_text()
+    pool, lo, hi, cand, floor = re.search(
+        r'([\d,]+) pass the eQTL gene filter .*?; [\d,]+ with median haplotype-informative reads over admitted donors in '
+        r'\[(\d+), (\d+)\); ([\d,]+) of them with >= (\d+) admitted donors', log).groups()
+    seed = re.search(r'genes selected from [\d,]+ candidates \((SeedSequence\(.*?\))\);', log).group(1)
+    adm = re.search(r'median admitted reads per gene min ([\d.]+) / median ([\d.]+) / max ([\d.]+); median over all '
+                    r'donors min ([\d.]+) / median ([\d.]+) / max ([\d.]+); admitted donors per gene min (\d+) / median '
+                    r'(\d+) / max (\d+)', log).groups()
+    rows = [x.split('\t') for x in POOL.read_text().splitlines()]
+    reads = {r[0]: float(r[rows[0].index('median_admitted_reads')] or 'nan') for r in rows[1:]}   # empty: no admitted donor
+    ref = [reads[g] for g in REF_GENES.read_text().split()]
+    rows = [x.split('\t') for x in STRATA.read_text().splitlines()]
+    cov = [dict(zip(rows[0], r)) for r in rows[1:] if r[0] == 'cov_bin']
+    own = [c for c in cov if c['bin'].startswith(f'{lo}-{hi} ')]
+    if len(own) != 1 or len(ref) != 100:
+        raise SystemExit(f'{STRATA}: {len(own)} coverage strata named {lo}-{hi}; {REF_GENES}: {len(ref)} genes')
+    other = [float(c['direct_0.05']) for c in cov if c is not own[0]]
+    print(f'stratum facts: {SELECT_LOG}, {POOL}, {STRATA}', flush=True)
+    return dict(pool=pool, lo=int(lo), hi=int(hi), cand=cand, floor=floor, seed=seed, adm=adm,
+                ref_in=sum(int(lo) <= x < int(hi) for x in ref), ref_above=sum(x >= int(hi) for x in ref),
+                ref_below=sum(x < int(lo) for x in ref), ref_median=float(np.median(ref)), strata=len(cov),
+                own={k: float(own[0][k]) for k in ('direct_0.05', 'direct_0.05_lo', 'direct_0.05_hi', 'n_genes')},
+                other=(min(other), max(other)))
+
+
+def sec_head(S, SF):
     if not INTERPRETED:
         n_genes = S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z']['all']['genes']
-        return ('<h1>Plasmode eQTL benchmark: recovering known cis effects</h1>'
-                '<p class="sub">hapmixQTL weightings, mixQTL mode, RASQUAL and TReCASE on the BrainVar cohort\'s own '
-                f'Salmon output with injected effects; {n_genes} genes x 92 donors of the {SC.MD.GENE_SET} gene set '
-                f'({SC.MD.GENES}); units log2 aFC (beta = 1 is a twofold effect). Made by scripts/plasmode/report.py from '
-                f'{SUMMARY}, {CHECK_GEN}, {CHECK_PREMISE}, {RUN_ARMS_LOG.name}, {MAKE_LOG.name}, {RASQUAL_LOG} and '
-                f'{TRECASE_SUMMARY}; figures also written as PNG in {OUT}. The interpretation sections were written for '
-                f'the {INTERPRETED_SET} run and are not made for this set.</p>')
+        n_ds = S['n_datasets']
+        return (f'<h1>Plasmode eQTL benchmark: the {SF["lo"]}-{SF["hi"]}-read stratum</h1>'
+                f'<p class="sub">This page is the {SF["lo"]}-{SF["hi"]}-read stratum: {n_genes} genes drawn at random '
+                f'({SF["seed"]}) from the {SF["cand"]} of {SF["pool"]} eQTL-filter genes whose median haplotype-informative '
+                f'reads over admitted allelic donors lie in [{SF["lo"]}, {SF["hi"]}) and that have at least {SF["floor"]} '
+                f'admitted allelic donors (median admitted reads per gene {SF["adm"][0]} to {SF["adm"][2]}, median '
+                f'{SF["adm"][1]}; admitted allelic donors {SF["adm"][6]} to {SF["adm"][8]}, median {SF["adm"][7]}). It '
+                f'holds {n_ds["0.0"]} beta = 0 anchor dataset and {n_ds["0.2"]} / {n_ds["0.4"]} / {n_ds["0.8"]} replicate '
+                f'datasets at |beta| = 0.2 / 0.4 / 0.8, each with half the genes non-null, so every effect-size '
+                f'comparison rests on {n_ds["0.4"]} replicates. hapmixQTL weightings, mixQTL mode, RASQUAL and TReCASE on '
+                f'the BrainVar cohort\'s own Salmon output with injected effects, {n_genes} genes x 92 donors '
+                f'({SC.MD.GENES}); hapmixQTL arms with commit 8a06803\'s per-channel t references and {FLOOR}-donor '
+                f'allelic floor; units log2 aFC (beta = 1 is a twofold effect). The '
+                f'section "This stratum against the 100-gene run", after section 1, sets it against the 100-gene run '
+                f'({REF_RUN}), each run with its own intervals. Made by '
+                f'scripts/plasmode/report.py from {SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {CHECK_GEN}, '
+                f'{CHECK_PREMISE}, {RUN_ARMS_LOG.name}, {MAKE_LOG.name}, {RASQUAL_LOG} and {TRECASE_SUMMARY}; figures '
+                f'also written as PNG in {OUT}. The interpretation paragraphs of section 3 and sections 4 to 6 were '
+                f'written for the {INTERPRETED_SET} run and are not made for this set; that contrast section carries '
+                f'this set\'s comparisons.</p>')
     return ('<h1>Plasmode eQTL benchmark: recovering known cis effects</h1>'
             '<p class="sub">hapmixQTL weightings, mixQTL mode, RASQUAL and TReCASE on the BrainVar cohort\'s own '
             'Salmon output with '
@@ -853,22 +910,34 @@ def sec_head(S):
             f'written as PNG in {OUT}.</p>')
 
 
-def sec_why():
-    return '''
-<h2>1. Why the analysis was needed</h2>
+def sec_why(SF):
+    first = '''
 <p>Until now the hapmixQTL weightings had been judged on null calibration only: whether the nominal p is
 uniform when donor records are permuted against genotypes (the stored 100-gene, 200-permutation null runs).
 A null says whether an arm's p values can be trusted. It cannot say how well an arm finds a real effect, how
 close its slope comes to the true slope, or how much the Gibbs variance buys in precision, because real data
 carry no known effect. No dataset with known cis effects existed. Simulating Salmon itself was rejected as
 too slow, and datasets were built instead from the cohort's own Salmon output, keeping its depth, noise and
-donor structure and adding a known effect.</p>
+donor structure and adding a known effect.</p>''' if SF is None else f'''
+<p>The first plasmode run ({REF_RUN.parent.name}) built datasets with known cis effects from the cohort's own Salmon
+output on 100 genes that are mostly deeper than this stratum: on the read measure that defines it (median
+haplotype-informative reads over admitted allelic donors) {SF["ref_in"]} of those genes lie in [{SF["lo"]},
+{SF["hi"]}), {SF["ref_below"]} below and {SF["ref_above"]} above it, median {SF["ref_median"]:.0f} reads
+({POOL.name}). Transcriptome-wide, on the pre-correction pipeline (natural-log Gibbs-mean phenotype, synthetic
+Hardy-Weinberg variants, records permutation), the {SF["lo"]}-{SF["hi"]}-read coverage stratum had the highest
+allelic nominal-p rate at 0.05 of {SF["strata"]} coverage strata: {SF["own"]["direct_0.05"]:.4f}
+[{SF["own"]["direct_0.05_lo"]:.4f}, {SF["own"]["direct_0.05_hi"]:.4f}] over {SF["own"]["n_genes"]:,.0f} genes, against
+{SF["other"][0]:.4f} to {SF["other"][1]:.4f} in the others ({STRATA.parent.name}/{STRATA.name}). The choice of
+weighting therefore rested on genes where that rate was lower. This run repeats the benchmark, unchanged, on genes
+of that stratum.</p>'''
+    return '''
+<h2>1. Why the analysis was needed</h2>''' + first + '''
 <p>The question: on data with the real cohort's structure, how well do the four hapmixQTL weightings, and
 mixQTL mode (the published estimator, which never sees the Gibbs draws), rank non-null genes above null ones,
 discover them at a controlled false-discovery rate, estimate the injected slope without bias, state their
 standard error correctly, and place the lead variant on the causal one? The answers bear on the open decision
 of which weighting ships (docs/pipeline_rules.md, "Open decision: which weighting configuration ships"), which
-so far rests on null calibration alone.</p>
+so far rests on ''' + ('null calibration alone' if SF is None else 'null calibration and the 100-gene run') + '''.</p>
 <p>mixQTL is one published way to use allele-specific and total counts together. RASQUAL and TReCASE are two others,
 which fit both kinds of count in one likelihood; they were run on the same datasets as further comparators, with every
 method's effect put on one scale.''' + (''' And because mixQTL trails the unit-weight arm, a separate run took the two apart one
@@ -1288,6 +1357,93 @@ def overlap(S, a, b):
 
 def at_betas(bs):
     return 'no |beta|' if not bs else 'every |beta|' if len(bs) == len(BETAS) else '|beta| ' + ' and '.join(bs)
+
+
+def where(d, x):
+    """Where an interval d lies against x."""
+    return 'above' if d['lo'] > x else 'below' if d['hi'] < x else 'includes'
+
+
+def sec_contrast(S, SF):
+    """This gene set against the 100-gene run (REF_RUN): every gene, each run with its own interval."""
+    R = json.loads(REF_RUN.read_text())
+    if (R.get('gene_set', INTERPRETED_SET) != INTERPRETED_SET or tuple(R['arms']) != ARMS
+            or tuple(R['joint_arms']) != JOINT or R['n_boot'] != S['n_boot']):
+        raise SystemExit(f'{REF_RUN}: not the {INTERPRETED_SET} run, scored as {SUMMARY} is')
+    runs = (('stratum', S), ('100-gene', R))
+    n_rep = {n: X['n_datasets']['0.4'] for n, X in runs}
+    null = lambda X, a, al: X['null']['beta0.0'][a]['combined']['all'][al]
+    t_null = table(['arm, combined statistic'] + [f'{n}, {al}' for n, _ in runs for al in ALPHAS],
+                   [[LABEL[a]] + [ci(null(X, a, al), 'rate', 4) for _, X in runs for al in ALPHAS] for a in ALL])
+    lst = lambda X, al, w: ', '.join(SHORT[a] for a in ALL if where(null(X, a, al), float(al)) == w) or 'none'
+    cal = '; '.join(f'at {al}, the interval lies above {al} for {lst(S, al, "above")} in the stratum and for '
+                    f'{lst(R, al, "above")} in the 100-gene run, and below it for {lst(S, al, "below")} in the stratum '
+                    f'and {lst(R, al, "below")} in the 100-gene run' for al in ALPHAS)
+    P = lambda X, sc, a, ch, part, k: X['precision'][sc][a][ch][part][k]['all']
+    rows = [(a, ch) for a in ('gibbs', 'split', 'plus_one') for ch in CHANNELS if (a, ch) != ('split', 'total')]
+    rows += [(a, 'combined') for a in ('mixqtl', 'mixqtl_permissive') + JOINT]
+    t_prec = table(['arm', 'channel'] + [f'{n}, {c}' for n, _ in runs for c in (
+        'causal variant, |beta| 0.4', 'null genes, beta 0 anchor')],
+                   [[LABEL[a], ch_name(a, ch)] + [x for _, X in runs for x in (
+                       ci(P(X, 'beta0.4', a, ch, 'nonnull', rkey(a)), 'value', 2),
+                       ci(P(X, 'beta0.0', a, ch, 'null', 'ratio_vs_unit'), 'value', 2))] for a, ch in rows])
+    sp = lambda X, sc, part, k: P(X, sc, 'split', 'combined', part, k)
+    t_rank = table(['arm'] + [f'{n}, |beta| {b}' for n, _ in runs for b in BETAS],
+                   [[LABEL[a]] + [f'{ci(auc(X, b, a), "mean")}<br>{f(fdp(X, b, a)["all"]["power"])}'
+                                  for _, X in runs for b in BETAS] for a in ALL])
+    t_gene = table(['arm'] + [f'{n}, |beta| {b}' for n, _ in runs for b in BETAS],
+                   [[LABEL[a]] + [ci(bh(X, b, a)['power_bh']['all'], 'rate') for _, X in runs for b in BETAS]
+                    for a in HAPMIX])
+    auc_iv = ('the 2.5% and 97.5% quantiles of the mean over the datasets resampled with replacement'
+              + (', which with three datasets are the smallest and largest of the three per-dataset values, not a 95% '
+                 'interval' if set(n_rep.values()) == {3} else ''))
+
+    def h2h(a, X):
+        vs = lambda al: f'{ci(null(X, a, al), "rate", 4)} against {ci(null(X, "split", al), "rate", 4)}'
+        sep = lambda al: ('separated' if null(X, a, al)['lo'] > null(X, 'split', al)['hi']
+                          or null(X, a, al)['hi'] < null(X, 'split', al)['lo'] else 'overlapping')
+        return (f'AUC {per_beta(lambda b: auc(X, b, a)["mean"])} against split\'s '
+                f'{per_beta(lambda b: auc(X, b, "split")["mean"])}, the per-dataset AUC ranges overlapping at '
+                f'{at_betas(overlap(X, a, "split"))}; power at 5% realized FDP {per_beta(lambda b: fdp(X, b, a)["all"]["power"])} '
+                f'against {per_beta(lambda b: fdp(X, b, "split")["all"]["power"])} (no interval); squared error against unit '
+                f'weights on the count-scale truth at |beta| 0.8 {ci(P(X, "beta0.8", a, "combined", "nonnull", "ratio_vs_unit_count"), "value", 2)} '
+                f'against split\'s {ci(sp(X, "beta0.8", "nonnull", "ratio_vs_unit_count"), "value", 2)}; anchor null rate at '
+                f'0.05 {vs("0.05")} ({sep("0.05")}) and at 0.001 {vs("0.001")} ({sep("0.001")})')
+    joint = ''.join(f'<p><b>{LABEL[a]} against split.</b> In the stratum: {h2h(a, S)}. In the 100-gene run: {h2h(a, R)}.</p>'
+                    for a in JOINT) + (
+        '<p>On the count-scale truth unit weights\' squared error contains their own attenuation of the total slope '
+        '(section 3.3), which grows with |beta|, so a ratio there is squared error, not precision; the anchor\'s null '
+        'genes, where the truth is 0, are the comparison free of that (table above).</p>')
+    return f'''
+<h2>This stratum against the 100-gene run</h2>
+<p>Every gene of each run, each value with its own run's interval (the two runs hold different genes and are
+independent, so intervals that do not overlap are evidence of a difference between the gene sets; no interval of the
+difference is computed). The 100-gene run is {REF_RUN}, the same benchmark on the {INTERPRETED_SET} genes, scored by the
+same score.py with {n_rep["100-gene"]} datasets per |beta|; this stratum has {n_rep["stratum"]}. Section 3 defines every
+statistic and gives this stratum's values by read band.</p>
+<p><b>Calibration of the nominal p on the beta = 0 anchor.</b> The null-gene rate is the share of the null genes'
+tested variants whose combined nominal p falls below the threshold. The anchor is one dataset, that is ONE record
+permutation with no thinning, so its interval is gene-clustered only (genes resampled with replacement) and carries no
+permutation-to-permutation spread; the thinned null genes of the |beta| &gt; 0 datasets are in section 3.7. By the
+intervals: {cal}.</p>
+{t_null}
+<p><b>Precision against unit weights.</b> Squared error under the arm over squared error under unit weights, paired,
+with the gene-clustered interval; below 1 is more precise than unit weights. At the causal variant the hapmixQTL rows
+use their pipeline-scale truth and every other row the count-scale truth for the arm and unit alike; on the anchor's
+null genes the truth is 0 for every arm. split's combined ratio is
+{ci(sp(S, 'beta0.4', 'nonnull', 'ratio_vs_unit'), 'value', 2)} at the causal variant (|beta| 0.4) and
+{ci(sp(S, 'beta0.0', 'null', 'ratio_vs_unit'), 'value', 2)} on the anchor in the stratum, against
+{ci(sp(R, 'beta0.4', 'nonnull', 'ratio_vs_unit'), 'value', 2)} and {ci(sp(R, 'beta0.0', 'null', 'ratio_vs_unit'), 'value', 2)}
+in the 100-gene run. The other effect sizes are in section 3.4.</p>
+{t_prec}
+<p><b>Ranking and gene-level power.</b> Each first line is the AUC of the within-dataset gene ranking by lead nominal p
+(the probability that a non-null gene outranks a null one; interval {auc_iv}); each second line is power at 5% realized
+false-discovery proportion over the pooled datasets, which has no interval. The second table is the share of non-null
+gene units discovered by Benjamini-Hochberg at 5% on map_cis pval_beta (hapmixQTL arms only; the other methods have no
+gene-level p here), with the gene-clustered interval.</p>
+{t_rank}
+{t_gene}
+{joint}'''
 
 
 def interp_joint(S, part, JF):
@@ -2004,7 +2160,7 @@ def page(body):
 def main():
     S, SB, FX, CG, CP, run_log, make_log, rq_log, TS, LD = load()
     OUT.mkdir(exist_ok=True)
-    LF, JF, FA = log_facts(run_log, make_log), joint_facts(S, rq_log, TS), fixed_anchor(S, FX)
+    LF, JF, FA = log_facts(run_log, make_log, S['n_datasets']), joint_facts(S, rq_log, TS), fixed_anchor(S, FX)
     if FX is not None and LF['floor'][1] != sorted(FX['below_floor_genes']):
         raise SystemExit(f'{RUN_ARMS_LOG} below-floor genes {LF["floor"][1]} differ from {DF_FIX} {sorted(FX["below_floor_genes"])}')
     figs = dict(ranking=fig_ranking(S), bias=fig_bias(S), lead=fig_lead(S), efficiency=fig_efficiency(S))
@@ -2014,8 +2170,9 @@ def main():
         tail = tuple(f'<h2>{h}</h2>{note("Its text")}' for h in (
             '4. The strongest critique, and what it changed', '5. What it means for the open decisions',
             '6. Limits: what this analysis cannot establish'))
-    body = '\n'.join((sec_head(S), sec_why(), sec_run(S, FX, CG, CP, LF, JF), sec_results(S, SB, FX, FA, CG, figs, LD, JF))
-                     + tail)
+    SF = stratum_facts()
+    head = (sec_head(S, SF), sec_why(SF)) + (() if SF is None else (sec_contrast(S, SF),))
+    body = '\n'.join(head + (sec_run(S, FX, CG, CP, LF, JF), sec_results(S, SB, FX, FA, CG, figs, LD, JF)) + tail)
     write_atomic(PAGE, page(body).encode())
     print(f'wrote {PAGE} ({PAGE.stat().st_size:,} bytes) and {", ".join(p.name for p in figs.values())} in {OUT}')
 

@@ -25,8 +25,8 @@ in bias and precision.
 
 DATASETS (user decision 2026-09-26): one beta = 0 anchor dataset (every gene
 null, no thinning) and make_datasets.N_DATASETS datasets at each of |beta| =
-0.2 / 0.4 / 0.8 (3 for the corrected_null_store set, 6 for the 30-100-read
-set), half the genes null. At these counts a gene is non-null in about half
+0.2 / 0.4 / 0.8 (per gene set in make_datasets.GENE_SETS; 3 for both sets
+as run), half the genes null. At these counts a gene is non-null in about half
 the datasets of a scenario, so every statistic below is POOLED over
 gene-dataset units, with a gene-clustered interval, rather than computed per
 gene.
