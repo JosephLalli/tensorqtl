@@ -88,7 +88,16 @@ did not record whether before or after their first results, so they are not
 pre-registered. C_SE_MULT and the check (c) pass rule were set on 2026-09-26
 before the rule's first run; they replace a range rule on the 1/Va' slope
 over beta (0.85-1.05) whose provenance was also not recorded.
+
+(d) EXACT REPRODUCTION OF A STORED NULL. Given the stored null runs' own
+    permutation 0 and swap signs (corrected_null_store.OLD/permutations.npz),
+    the beta = 0 path (every factor 1) mapped through run_arms.run_nominal
+    must reproduce those runs' draw 0 for the gibbs and unit arms: no call at
+    REPRO_ALPHA differs in any channel among the 487,454 tests, and slopes agree
+    within REPRO_SLOPE_TOL of their se. This, not the beta = 0 anchor's rate
+    (one permutation), is the known-answer test of the plumbing.
 """
+import shutil
 import sys
 from pathlib import Path
 
@@ -98,6 +107,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import corrected_null_store as CNS                                # noqa: E402
 import make_datasets as MD                                        # noqa: E402
 import run_arms as RA                                             # noqa: E402
 from null_permutation_instrument import fit_channels             # noqa: E402
@@ -115,6 +125,10 @@ PREV_RECOVERY = dict(mean=0.992, gene_clustered_se=0.013)   # earlier generator 
                                                             # allelic draws), 1/Va no drop, >= 100 reads (task record)
 BANDS = ((1, 10), (10, 100), (100, 1000), (1000, np.inf))
 C_BANDS = ([0, 10, 100, 1000, np.inf], ['0-9', '10-99', '100-999', '1000+'])
+REPRO_DRAWS = {'gibbs': MD.D / 'corrected_null_store_20260925' / 'draws' / 'drop_000.parquet',
+               'unit': MD.D / 'hybrid_weights_null_20260926' / 'draws' / 'unit_000.parquet'}
+REPRO_ALPHA = 0.05
+REPRO_SLOPE_TOL = 1e-4                # stored draws are float32; a one-off run 2026-09-26 measured 5.5e-6
 
 
 def band_name(lo, hi):
@@ -318,17 +332,49 @@ def check_recovery(I, R, tested):
     return ok, res
 
 
+def check_reproduction(I, R):
+    """(d) The beta = 0 path, given a stored null run's own permutation 0, reproduces that run's draw 0."""
+    old = np.load(CNS.OLD / 'permutations.npz')
+    perm, swap = old['perms'][0], old['flips'][0].astype(np.int8)
+    G, N = R['pL'].shape
+    ones = np.ones((G, N))
+    g = MD.generate(R, perm, swap, ones, ones, np.random.default_rng(np.random.SeedSequence(MD.SEED, spawn_key=(13,))))
+    S = RA.setup(I)
+    ds = dict(A=g['A'], T=g['T'], Va=g['Va'], Vt=g['Vt'], pL=g['pL'], pR=g['pR'], perm=perm,
+              causal_variant=np.array([min(S['tested'][x]) for x in S['genes']]))
+    ok, res = True, {}
+    for arm, path in REPRO_DRAWS.items():
+        df, _, _ = RA.run_nominal(S, ds, arm, OUT / 'scratch_reproduction')
+        ref = pd.read_parquet(path)
+        m = df.merge(ref, on=['phenotype_id', 'variant_id'], suffixes=('', '_stored'))
+        if len(m) != len(ref) or len(m) != len(df):
+            raise SystemExit(f'(d) {arm}: {len(m):,} matched tests, {len(df):,} here, {len(ref):,} in {path}')
+        calls = {ch: int(((m[c] < REPRO_ALPHA) != (m[f'{c}_stored'] < REPRO_ALPHA)).sum())
+                 for ch, c in CNS.CHANNELS.items()}
+        slope = max(float(np.nanmax(np.abs(m[s] - m[f'{s}_stored']) / m[se]))
+                    for s, se in (('slope', 'slope_se'), ('slope_a', 'slope_a_se'), ('slope_t', 'slope_t_se')))
+        passed = all(v == 0 for v in calls.values()) and slope <= REPRO_SLOPE_TOL
+        ok &= passed
+        res[arm] = dict(stored=str(path), tests=len(m), call_differences=calls, max_slope_diff_se=slope, passed=passed)
+        print(f'(d) {arm}: stored permutation 0 vs {path.name}: {len(m):,} tests; calls at {REPRO_ALPHA} that differ '
+              f'{calls}; max |slope diff| / se {slope:.1e} (tol {REPRO_SLOPE_TOL:g})  {"PASS" if passed else "FAIL"}',
+              flush=True)
+    shutil.rmtree(OUT / 'scratch_reproduction')
+    return ok, res
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     I, R, tested = MD.load()
     oka, ra = check_identity(I, R)
     okb, rb = check_thinning(I, R)
     okc, rc = check_recovery(I, R, tested)
-    res = dict(identity=ra, thinning=rb, recovery=rc)
+    okd, rd = check_reproduction(I, R)
+    res = dict(identity=ra, thinning=rb, recovery=rc, reproduction=rd)
     MD.write_atomic(OUT / 'check_generator.json', lambda fh: fh.write(MD.dumps(res)), 'w')
     print(f'wrote {OUT / "check_generator.json"}')
-    if not (oka and okb and okc):
-        raise SystemExit(f'FAILED: identity {oka}, thinning {okb}, recovery {okc}')
+    if not (oka and okb and okc and okd):
+        raise SystemExit(f'FAILED: identity {oka}, thinning {okb}, recovery {okc}, reproduction {okd}')
     print('ALL CHECKS PASS')
 
 
