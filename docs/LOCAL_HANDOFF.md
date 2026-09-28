@@ -68,6 +68,11 @@ Those are not a floor. On 2026-09-13 the hapmixQTL suite
 numpy 1.26.4, scipy 1.16.2, pandas 2.2.3, torch 2.7.0, pandas-plink 2.3.2,
 h5py 3.13.0, qtl 0.1.10, pysam 0.24.0.
 
+SUPERSEDED 2026-09-26: the crash below is an environment clash
+(`R_LD_LIBRARY_PATH` loading Homebrew's OpenBLAS beside Debian's), fixed per
+command; `lm()`, `crossprod()` and `limma::lmFit` then run. The recipe is
+CLAUDE.md's "R's BLAS crash" entry. The paragraph is the 2026-09-18 record.
+
 **The mixed-BLAS install on this machine crashes any limma path that fits a
 linear model, tested function by function on 2026-09-18.** The BLAS is
 Debian's `/usr/lib/x86_64-linux-gnu/openblas-pthread/libblas.so.3` while the
@@ -106,7 +111,8 @@ python3 scripts/extract_gtex_phaser.py \
 git clone <repo> && cd tensorqtl
 git checkout claude/hapmixqtl-gibbs-uncertainty-IQ6Za
 # install as above
-pytest tests/test_hapmixqtl.py -q          # expect 54 passed
+# the hapmixQTL surface: the pytest command in CLAUDE.md, "Self-tests"
+# (215 tests as of 2026-09-27; the old "54 passed" for test_hapmixqtl.py alone is stale)
 ./scripts/build_rasqual.sh                 # optional; real RASQUAL
 claude                                     # start a session in the repo
 ```
@@ -208,3 +214,18 @@ and Salmon point estimates that put one haplotype at exactly zero — plus
 which weighting configuration ships and how the genotype-PC permutation tie
 interacts with the weights, both added after the corrected-pipeline null and
 its before/after decomposition were run that week).
+
+## 7. State as of 2026-09-27
+
+Read `docs/CURRENT_SCIENTIFIC_STATE.md`, section "Reference degrees of
+freedom, Meier's correction and the known-effect benchmark (2026-09-27)".
+It names what was implemented that day (each channel's p on its own
+degrees of freedom, the combined p on a Welch-Satterthwaite reference
+(degrees of freedom matched to the first two moments of the combined
+variance estimate) with Meier's first-order correction of the combined
+standard error for weights estimated from the same residuals, and a
+15-donor allelic floor; rule in
+`docs/hapmixqtl_methods.md` Section 4.5), the benchmark code
+(`scripts/plasmode/README.md`), the result pages, what was running (nothing)
+and what is open, including the weighting decision, for which the two
+benchmark pages are now the known-effect evidence.

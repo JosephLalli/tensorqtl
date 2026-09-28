@@ -12,7 +12,7 @@ estimate the injected slope, state its standard error, and place the lead varian
 The hapmixQTL arms carry Meier's correction of the combined standard error (commit a1b2ef4). It bears on which weighting ships
 (`docs/pipeline_rules.md`, "Open decision: which weighting configuration ships").
 
-This directory is the analysis-tier rewrite (2026-09-27) of `scripts/plasmode/`: the same design,
+This directory is the analysis-tier rewrite (2026-09-27) of the previous benchmark code, the twelve scripts that lived here until commit fc238df: the same design,
 about 2,600 lines of pipeline code (common.py and scripts 01-07, run_trecase.R) plus a report script of
 about 2,400 lines and the acceptance test, one check script, no per-dataset re-validation, no
 command-line options; `select_stratum_genes.py` made the 30-100-read gene set once.

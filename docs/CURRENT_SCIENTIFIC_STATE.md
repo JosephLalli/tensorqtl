@@ -1,7 +1,9 @@
 # Current scientific state: hapmixQTL
 
-Reconciled 2026-09-16, updated 2026-09-18. A router to the current state:
-what is implemented, what was measured, and what is open.
+Reconciled 2026-09-16, updated 2026-09-18; dated sections for 2026-09-25 and
+2026-09-27 added since (the latest state is the last dated section). A router
+to the current state: what is implemented, what was measured, and what is
+open.
 
 > **SUPERSEDED IN PART, 2026-09-23.** hapmixQTL now ships exactly **two modes**:
 > **mixQTL mode** (the published estimator on posterior-mean counts, no draws,
@@ -38,7 +40,9 @@ what is implemented, what was measured, and what is open.
   median |change| in the lead statistic 0.42, one borderline call (TCF4) added.
 - **Current source behavior:** Gibbs summaries use natural logs and add an
   extra Poisson q term when `count_noise=True`; runtime migration to log2 is
-  pending. It computes cross-channel Gibbs covariance `Cat` but the scan does
+  pending. (SUPERSEDED 2026-09-25 for the default-mode runner, whose phenotype
+  is `summaries_from_point_estimates` in log2 units; see "Pipeline
+  correction, 2026-09-25" below.) It computes cross-channel Gibbs covariance `Cat` but the scan does
   not use it. See `tensorqtl/hapmixqtl.py:349` (`compute_summaries_from_gibbs`;
   CORRECTED 2026-09-18 from a stale `:325`, which is inside
   `orient_haplotypes`) and the method map in `docs/hapmixqtl_methods.md`.
@@ -426,6 +430,97 @@ from the draws, and mixQTL mode now takes point estimates.
   the weights to move the total channel's calibration.
 - **Pre-correction:** every calibration number recorded on or before
   2026-09-25, and the stored null in `protein_coding_null_store_20260925/`.
+
+## Reference degrees of freedom, Meier's correction and the known-effect benchmark (2026-09-27)
+
+Commits 8a06803 to cf488c2 on branch `simulation-benchmark`. This section
+routes; the numbers live in the documents and pages it names, all result
+paths under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
+
+- **Implemented and committed, library.** Commit 8a06803: in default mode
+  `pval_a` and `pval_t` are referred to t on each channel's own residual
+  degrees of freedom (informative donors minus fitted columns),
+  `pval_nominal` to the Welch-Satterthwaite degrees of freedom of the
+  inverse-variance combination (the value that matches the first two moments
+  of the combined variance estimate to a scaled chi-square, with the channel
+  weights treated as fixed), and the allelic channel enters the combined
+  statistic only for a gene with at least 15 informative allelic donors
+  (`MIN_ALLELIC_DONORS`, mixQTL's own cutoff for combining its channels;
+  waived in an allelic-only run). New columns `dof_nominal`, `dof_a`,
+  `dof_t`, `allelic_admitted`; an off channel's p is NaN rather than 1.
+  Commit a1b2ef4 (user decision): Meier's first-order correction, which
+  multiplies the combined standard error by
+  `sqrt(1 + 4 f_a f_t (1/dof_a + 1/dof_t))`, `f` the channels' weight shares,
+  because weights estimated from the same residuals they combine make the
+  plug-in variance too small; applied in `map_nominal`, in `map_cis`'s
+  observed scan and every permutation, and at the lead (`_meier_factor`).
+  Rule and derivation: `docs/hapmixqtl_methods.md` Section 4.5; columns:
+  `docs/outputs.md`. Tests `tests/test_hapmixqtl_allelic_df.py` and
+  `tests/test_hapmixqtl_meier.py`; the surface is 215 tests (`CLAUDE.md`,
+  "Self-tests").
+- **Implemented and committed, benchmark and checks.** `scripts/plasmode/` is
+  the numbered benchmark pipeline (`README.md` there; run order `run_all.sh`;
+  acceptance `99_acceptance.py`, which writes only into its own acceptance
+  roots); the previous twelve scripts were removed in commit fc238df. Two gene
+  sets: the deep set (the 100 genes of `corrected_null_store_20260925`) and
+  the low-coverage set (`stratum30_100`: 100 genes whose median
+  haplotype-informative reads over admitted allelic donors lie in [30, 100),
+  each with at least 15 admitted allelic donors, drawn once by
+  `scripts/plasmode/select_stratum_genes.py`). One-off scripts beside it:
+  `scripts/allelic_df_null_check.py`, `scripts/combined_reference_exact_model.py`,
+  `scripts/salmon_half_depth_check.py`, `scripts/rasqual_read_level.py`.
+- **Validated results.**
+  - The per-channel references on the stored 100-gene null
+    (`allelic_df_fix_20260927/`): `docs/pipeline_rules.md`, "After the
+    per-channel t references", and `docs/hapmixqtl_methods.md` Section 7.
+    Measured before Meier's correction.
+  - The combined reference under the exact model, with and without Meier's
+    correction (`combined_reference_exact_model_20260927/`): Section 4.5. The
+    correction removes most of the reference's excess; a residual remains,
+    largest at 0.001 with 15 to 30 allelic donors under split weighting.
+  - The known-effect benchmark on the current library, nine arms: four
+    hapmixQTL weightings (gibbs, split, unit, plus_one), mixQTL mode at its
+    published and permissive cutoffs, each with its own permutation p,
+    RASQUAL, asSeq TReCASE and total-only tensorQTL. Gene-level power is
+    scored by each arm's permutation p where it has one and by eigenMT's p for
+    every arm (eigenMT: the gene's smallest nominal p times an effective
+    number of independent tests counted from the eigenvalues of the tested
+    variants' genotype correlation matrix; at 92 donors that count is set by
+    the matrix's shrinkage rather than by linkage disequilibrium, which both
+    pages state). Deep set `plasmode_meier_20260927/report/plasmode_report.html`;
+    low-coverage set `plasmode_lowcov_meier_20260927/report/plasmode_report.html`.
+    Their RASQUAL and TReCASE results are staged from the earlier runs, which
+    the correction does not touch.
+  - The thinning rule against Salmon itself
+    (`salmon_half_depth_20260927/salmon_half_depth.html`; donor 100
+    re-quantified at half depth): the rule over-predicts the allelic Gibbs
+    variance below 1,000 haplotype reads (measured over predicted, median 0.80
+    at 30-99 reads; pre-registered verdict FAIL), and Salmon at half depth
+    makes far more one-sided records than thinning and attenuates the allelic
+    ratio. The low-coverage page states this as its limit.
+  - RASQUAL on native per-SNP allele counts against the benchmark's pseudo
+    feature SNP, 30 observed genes (`rasqual_read_level_20260927/report.html`):
+    native's excess of p < 0.05 at random variants of null genes persists under
+    the records permutation and under records plus haplotype swap, so it is an
+    offset of its statistic, not association; the pseudo construction's share
+    has 95% intervals that include 0.05 under records, records plus swap and
+    RASQUAL's own `-r`.
+- **Run state.** Nothing of this project was running when this section was
+  written (2026-09-27). Current benchmark roots: `plasmode_meier_20260927`,
+  `plasmode_lowcov_meier_20260927`. Earlier runs kept as records:
+  `plasmode_20260926` (deep set, rerun under 8a06803, before Meier's
+  correction) and `plasmode_stratum30_100_20260927` (low-coverage set, before
+  Meier's correction). `plasmode2_acceptance_20260927` and
+  `plasmode2_stratum_acceptance_20260927` are acceptance roots, not results.
+- **Open.** Which weighting ships (`docs/pipeline_rules.md`, "Open decision:
+  which weighting configuration ships"); the two benchmark pages are now its
+  known-effect evidence. The residual of the corrected reference in the tail,
+  and the unit-weighted total channel's own excess at 0.001, which the
+  correction does not touch (`docs/hapmixqtl_methods.md` Sections 4.5 and 7;
+  `CLAUDE.md`, "Known and unfixed").
+  Deferred, not done: re-running the stored nulls under Meier's correction;
+  every stored-null rate, including the bands in section 3.7 of the deep-set
+  page, predates it.
 
 ## Routing and run state
 

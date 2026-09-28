@@ -6,11 +6,16 @@
 > cohort's own Salmon point estimates and Gibbs draws: donor records are
 > permuted against fixed genotypes with a random L/R swap, and known cis
 > effects are injected by binomial thinning of the haplotype carrying the
-> lower-expressed allele. Code, design and checks: the docstrings of
-> `scripts/plasmode/` (`make_datasets.py`, `check_salmon_premise.py`,
-> `check_generator.py`, `run_arms.py`, `score.py`, `report.py`; run order in
-> `run_all.sh`). Results:
-> `/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_20260926/report/plasmode_report.html`.
+> lower-expressed allele. Code, design and checks: `scripts/plasmode/README.md`
+> and the numbered scripts it describes (run order in `run_all.sh`); the
+> scripts this box first named were replaced by that numbered pipeline on
+> 2026-09-27 (commit fc238df). Results, `<root>/report/plasmode_report.html` under
+> `/mnt/ssd/lalli/brainvar_hapmix_deploy/`: `plasmode_meier_20260927` (deep
+> set) and `plasmode_lowcov_meier_20260927` (low-coverage set) on the current
+> library; `plasmode_20260926` and `plasmode_stratum30_100_20260927` are the
+> earlier runs, made before Meier's correction of the combined standard error
+> (its first-order inflation for channel weights estimated from the same
+> residuals they combine; commit a1b2ef4).
 > The calibration measurements of the real data in the appendices below remain
 > valid as measurements; the emulator layers and the build plan do not apply.
 
@@ -253,12 +258,21 @@ genes `filterByExpr` dropped.
    (`hapmixqtl.py:1988-1991`); the combined standard error is infinite only
    when both channels are off (`hapmixqtl.py:1188-1209`). The metric
    *Nominal-p calibration* accounts for this explicitly.
+   SUPERSEDED IN PART 2026-09-27 (commit 8a06803): in default mode a
+   switched-off channel's p is NaN (its `dof_a` or `dof_t` is NaN), and the
+   combined p is NaN where neither channel carries weight (`docs/outputs.md`).
 7. **One reference distribution for all three p-values.** `pval_a`, `pval_t`
    and `pval_nominal` are all referred to `t` with
    `dof = N - 2 - max(n_cov, n_cov_a)` (`hapmixqtl.py:1873`), 73 at N = 92
    with 17 covariates, while the allelic scale is fitted on its own informative
    count. The simulator reports allelic calibration by informative-donor count
    so that this property is visible (section 5.4, *Nominal-p calibration*).
+   SUPERSEDED 2026-09-27 (commits 8a06803, a1b2ef4): in default mode each
+   channel's p is on its own residual degrees of freedom and the combined p on
+   the Welch-Satterthwaite degrees of freedom (matched to the first two
+   moments of the combined variance estimate, weights treated as fixed), with
+   Meier's correction and a 15-donor allelic floor;
+   `docs/hapmixqtl_methods.md` Section 4.5.
 8. **Genotype-tied covariates go last** (`_combine_covariates`) and stay fixed
    under permutation (`WeightedResidualizer.n_fixed_cov`).
 9. **The gene universe** of the real cache is the set of genes with at least

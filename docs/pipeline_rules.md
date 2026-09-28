@@ -366,7 +366,10 @@ and the total-channel unit weights exist only in these experiment scripts.
 nominal rate above and below in this section was measured with all three p
 referred to one shared t of 73 df, and every rate in this section, this
 paragraph's included, without Meier's correction of the combined standard
-error, shipped later the same day (`docs/hapmixqtl_methods.md` Section 4.5). `scripts/allelic_df_null_check.py`
+error (the standard error multiplied by the first-order factor
+`sqrt(1 + 4 f_a f_t (1/dof_a + 1/dof_t))`, `f` the channels' weight shares,
+because the weights are estimated from the same residuals they combine),
+shipped later the same day (`docs/hapmixqtl_methods.md` Section 4.5). `scripts/allelic_df_null_check.py`
 re-ran the four configurations (split, unit, 1/(v+1), Gibbs in both) on the
 same 100 genes and 200 permutations under the fixed code
 (`brainvar_hapmix_deploy/allelic_df_fix_20260927/`, `summary.json` and
@@ -389,7 +392,10 @@ stated before that run -- split, unit and 1/(v+1) within their
 gene-clustered intervals of 0.001 at 0.001, RPL41 included -- FAILED for
 all three (after-rates 0.00120 [0.00105, 0.00141], 0.00124 [0.00118,
 0.00130], 0.00108 [0.00102, 0.00114]), for two separate reasons. The
-Welch-Satterthwaite reference is more liberal than 73 df in admitted genes:
+Welch-Satterthwaite reference (the degrees of freedom that match the first
+two moments of the combined variance estimate, `1/(w_a + w_t)`, to a scaled
+chi-square with the channel weights treated as fixed) is more liberal than
+73 df in admitted genes:
 in the 78 genes with at least 40 allelic donors the same statistics rose,
 paired, by +0.00018 [+0.00015, +0.00021] (split), +0.00015 (unit) and
 +0.00013 (1/(v+1)) at 0.001, the direction the exact-model measurement of
@@ -502,7 +508,39 @@ rates at 0.001 are 0.0012 / 0.0012 / 0.0011 (split / unit / 1/(v+1)),
 above 0.001 for reasons shared by all three (the Welch-Satterthwaite
 reference and the total channel's own 1.15x); the shipped default's is
 0.0041 (see "After the per-channel t references" above,
-`brainvar_hapmix_deploy/allelic_df_fix_20260927/`).
+`brainvar_hapmix_deploy/allelic_df_fix_20260927/`). Those rates were
+measured before Meier's correction, which acts on the first of the two
+reasons and not the second; the stored nulls have not been re-run under it
+(deferred).
+
+**Known-effect evidence, 2026-09-27.** The null runs above are no longer the
+only evidence. The benchmark in `scripts/plasmode/` (its `README.md`) builds
+datasets with injected cis effects from the cohort's own Salmon output and
+scores the four weightings (Gibbs in both channels, the shipped default;
+split; unit; 1/(v+1)) beside mixQTL mode, total-only tensorQTL, RASQUAL and
+TReCASE; its precision ratios are taken against unit weights. Two pages,
+both on the current library (per-channel t references, the 15-donor allelic
+floor and Meier's correction, commit a1b2ef4), under
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/`:
+
+- `plasmode_meier_20260927/report/plasmode_report.html`, the deep set (the
+  100 genes of `corrected_null_store_20260925`). Its section 5, "What it means
+  for the open decisions", states what the benchmark adds to this decision;
+  its section 3.7 says the stored-null bands it compares against predate
+  Meier's correction.
+- `plasmode_lowcov_meier_20260927/report/plasmode_report.html`, the
+  low-coverage set (100 genes whose median haplotype-informative reads over
+  admitted allelic donors lie in [30, 100), each with at least 15 admitted
+  allelic donors; `scripts/plasmode/select_stratum_genes.py`), set
+  against the deep set in its section "The low-coverage set against the deep
+  set". That section states the benchmark's limit at this depth, from the
+  test of the thinning rule against Salmon itself
+  (`salmon_half_depth_20260927/salmon_half_depth.html`).
+
+These pages are evidence for the decision, not the decision; the choice
+remains the user's. User decision 2026-09-27: the candidates are Gibbs
+variance in both channels (the shipped default), split and 1/(v+1); unit
+weights stay as the reference of the efficiency ratios only.
 
 ## Open decision: the genotype-PC permutation rule interacts with the weights
 

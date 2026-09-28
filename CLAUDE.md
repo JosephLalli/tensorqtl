@@ -147,9 +147,9 @@ status as current practice is.
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
-| How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/` docstrings (run order `run_all.sh`); report `brainvar_hapmix_deploy/plasmode_20260926/report/plasmode_report.html` |
+| How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/README.md` (run order `run_all.sh`, acceptance `99_acceptance.py`). Pages `<root>/report/plasmode_report.html` under `brainvar_hapmix_deploy/`: current library (commit a1b2ef4) `plasmode_meier_20260927` (deep set) and `plasmode_lowcov_meier_20260927` (low-coverage set, 30-100 reads); earlier code and library `plasmode_20260926`, `plasmode_stratum30_100_20260927`. The thinning rule against Salmon itself: `salmon_half_depth_20260927/salmon_half_depth.html` |
 | What was the superseded Salmon-emulator design? | `docs/simulation_benchmark_spec.md` (marked superseded; its real-data calibration appendices still hold) |
-| What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html` |
+| What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`; RASQUAL on native per-SNP allele counts against the benchmark's pseudo feature SNP, with a permutation control: `brainvar_hapmix_deploy/rasqual_read_level_20260927/report.html` |
 
 ## Pipeline rules, 2026-09-25 (user decisions, standing)
 
@@ -166,7 +166,9 @@ put one haplotype at exactly zero (rate depends on the gene set — see the
 page, do not quote a single percentage); which weighting configuration ships
 (2026-09-26: the shipped Gibbs-both-channels default is anticonservative on
 the corrected pipeline's total channel; unit/1/v split weighting and
-`1/(v+1)` both calibrate, at different costs); and why tying genotype PCs to
+`1/(v+1)` both calibrate, at different costs; since 2026-09-27 the two
+benchmark pages in the table above add known-effect evidence; the decision
+is still open); and why tying genotype PCs to
 the genotypes under permutation interacts with the weights. Every
 calibration number in this file dated on or before 2026-09-25 was measured on
 the pre-correction pipeline.
@@ -802,7 +804,9 @@ GTEx overdispersion, depth and zero-inflation structure.
   safe label. No influence diagnostic is reported at the lead.
 - FIXED 2026-09-27 (commit 8a06803): the one shared t reference of 73 df
   is replaced in default mode by per-channel references, a
-  Welch-Satterthwaite reference for the combined p and a 15-donor allelic
+  Welch-Satterthwaite reference for the combined p (degrees of freedom
+  matched to the first two moments of the combined variance estimate, the
+  channel weights treated as fixed) and a 15-donor allelic
   admission floor; the combined rate at 0.001 on the stored 100-gene null
   went from 0.0027 / 0.0028 / 0.0026 to 0.0012 / 0.0012 / 0.0011 for
   split / unit / 1/(v+1) (gibbs 0.0054 to 0.0041), still above 0.001 for
