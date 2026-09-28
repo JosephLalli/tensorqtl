@@ -16,8 +16,8 @@ Pins, all known-answer and run through the shipped entry points:
   (b) dof_nominal is dof_a when the total channel is off (where the floor
       is waived), dof_t below the floor, NaN where no channel is on, and the
       Welch-Satterthwaite closed form on a two-channel gene whose channel SEs
-      are recomputed here from the data; the combined rate at the floor is
-      pinned at its measured, known excess over nominal;
+      are recomputed here from the data, the combined SE and p corrected
+      by Meier's factor from the same SEs;
   (c) below the floor the combined slope, SE and p ARE the total channel's,
       and map_cis gives exactly what it gives with the allelic channel absent
       (observed scan and every permutation), its lead on the fitted scale;
@@ -199,28 +199,6 @@ def test_a_gene_with_no_channel_is_reported_untested(tmp_path):
         assert cis[col].astype(float).isna().all(), col
 
 
-@pytest.mark.slow
-def test_combined_rate_at_the_floor_is_the_measured_welch_satterthwaite_cost(tmp_path):
-    """Pins a KNOWN miscalibration so that a correction has to move it. With
-    the channel weights estimated from the same residuals the combined
-    statistic is heavier-tailed than t on its Welch-Satterthwaite dof (the
-    Graybill-Deal effect; _satterthwaite_dof): at n_a = 15, 20,000 null genes
-    per seed gave 0.0592 and 0.0587 at nominal 0.05 on two seeds. At the
-    6,000 genes run here (Monte Carlo se 0.003) the rate must lie in
-    [0.05, 0.075], the old shared N - 2 must reject more on the same
-    statistics, and the conservative min(dof_a, dof_t) less."""
-    R, N, alpha = 6000, 75, 0.05
-    d = _bank(SEED + 12, N=N, V=1, R=R, n_a=MIN_ALLELIC_DONORS)
-    res = _nominal(d, tmp_path)
-    assert res['allelic_admitted'].all() and (res['dof_a'] == MIN_ALLELIC_DONORS - 1).all()
-    t = res['slope'].astype(float) / res['slope_se'].astype(float)
-    rate = float((res['pval_nominal'] < alpha).mean())
-    old = float((get_t_pval(t, N - 2) < alpha).mean())
-    conservative = float((get_t_pval(t, np.minimum(res['dof_a'], res['dof_t'])) < alpha).mean())
-    assert alpha <= rate <= 0.075, rate
-    assert conservative < rate < old, (conservative, rate, old)
-
-
 def test_dof_nominal_matches_channel_ses_recomputed_by_hand(tmp_path):
     """Both channels admitted, the total with covariates. Each channel's
     fitted SE is recomputed here in float64 from the data -- through-origin
@@ -228,7 +206,8 @@ def test_dof_nominal_matches_channel_ses_recomputed_by_hand(tmp_path):
     intercept and covariates for the total -- and the Welch-Satterthwaite
     closed form of those SEs is map_nominal's dof_nominal, which lies
     strictly between min(nu_a, nu_t) and nu_a + nu_t; pval_nominal is the
-    combined t referred to it."""
+    combined t, divided by the square root of Meier's factor
+    1 + 4 f_a f_t (1/nu_a + 1/nu_t) built from the same SEs, referred to it."""
     N, n_a, n_cov = 60, 20, 4
     d = _bank(SEED + 3, N=N, V=4, n_a=n_a, n_cov=n_cov)
     res = _nominal(d, tmp_path).set_index('variant_id')
@@ -252,13 +231,16 @@ def test_dof_nominal_matches_channel_ses_recomputed_by_hand(tmp_path):
         se_t = np.sqrt(s2_t * np.linalg.inv(XtWX)[-1, -1])
         w_a, w_t = 1 / se_a ** 2, 1 / se_t ** 2
         nu_c = (w_a + w_t) ** 2 / (w_a ** 2 / nu_a + w_t ** 2 / nu_t)
+        f_a = w_a / (w_a + w_t)
+        meier = 1 + 4 * f_a * (1 - f_a) * (1 / nu_a + 1 / nu_t)
         row = res.loc[vid]
         assert np.isclose(row['slope_a_se'], se_a, rtol=1e-4) and np.isclose(row['slope_t_se'], se_t, rtol=1e-4)
         assert row['dof_a'] == nu_a and row['dof_t'] == nu_t
         assert np.isclose(row['dof_nominal'], nu_c, rtol=1e-4), (vid, row['dof_nominal'], nu_c)
         assert min(nu_a, nu_t) < row['dof_nominal'] < nu_a + nu_t
         b_c = (w_a * b_a + w_t * beta[-1]) / (w_a + w_t)
-        p_c = 2 * stats.t.sf(abs(b_c) * np.sqrt(w_a + w_t), nu_c)
+        assert np.isclose(row['slope_se'], np.sqrt(meier / (w_a + w_t)), rtol=1e-4)
+        p_c = 2 * stats.t.sf(abs(b_c) * np.sqrt((w_a + w_t) / meier), nu_c)
         assert np.isclose(row['pval_nominal'], p_c, rtol=1e-3), (vid, row['pval_nominal'], p_c)
 
 

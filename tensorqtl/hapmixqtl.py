@@ -899,7 +899,9 @@ def _satterthwaite_dof(w_a, w_t, dof_a, dof_t):
     0.0598 / 0.01245 / 0.00115 at n_a = 20 and 0.0547 / 0.0104 / 0.00155 at
     n_a = 40; an independent seed gives 0.0587 / 0.01205 / 0.0014 at
     n_a = 15. Below the floor it is worse (n_a = 3: 0.116 at 0.05), which is
-    what MIN_ALLELIC_DONORS excludes. No correction is applied.
+    what MIN_ALLELIC_DONORS excludes. Since 2026-09-27 (user decision) the
+    combined standard error carries Meier's first-order correction for that
+    effect (_meier_factor); the dof here is unchanged.
 
     Args:
         w_a, w_t: [V] per-variant channel weights 1/se^2 (0 where absent)
@@ -916,6 +918,49 @@ def _satterthwaite_dof(w_a, w_t, dof_a, dof_t):
     nu = torch.where(w_t > 0, nu, torch.full_like(nu, float(dof_a)))
     nu = torch.where(w_a > 0, nu, torch.full_like(nu, float(dof_t)))
     return torch.where(total > 0, nu, torch.full_like(nu, float('nan')))
+
+
+def _meier_factor(w_a, w_t, dof_a, dof_t):
+    """Meier's first-order inflation of the combined statistic's variance for
+    channel weights estimated from the same residuals (default mode; user
+    decision 2026-09-27).
+
+    The combination is the inverse-variance weighted mean of the two channel
+    slopes with weights w_k = 1/se_k^2 ESTIMATED from the residuals it
+    combines: a Graybill-Deal mean (Graybill and Deal 1959), whose plug-in
+    variance 1/W, W = w_a + w_t, is too small because a chance-small se_k is
+    at once a chance-large weight and a chance-large |t_k|. Meier (1953,
+    Biometrics 9:59-73, "Variance of a weighted mean") gives, to first order
+    in 1/nu_k with f_k = w_k/W the weight shares and nu_k the channels'
+    residual degrees of freedom, a true variance (1/W)[1 + 2 S] against an
+    expected reported variance (1/W)[1 - 2 S], S = sum_k f_k (1 - f_k)/nu_k;
+    the ratio is 1 + 4 S, and with two channels f_a (1 - f_a) = f_t (1 - f_t)
+    = f_a f_t, so
+
+        M = 1 + 4 f_a f_t (1/nu_a + 1/nu_t)
+
+    per variant, from the fitted channel weights and the same _channel_dof
+    as _satterthwaite_dof. The combined SE becomes se_c sqrt(M) and the
+    combined t falls by sqrt(M), referred to the unchanged Welch-Satterthwaite
+    dof. M is exactly 1 wherever fewer than two channels carry weight: with
+    one channel absent, below the admission floor or without a heterozygous
+    informative donor the combination IS the other channel, whose t is exact
+    on its own dof, and with neither the zero statistic stays zero (the
+    info dict reports NaN there, like dof_nominal). Evaluated at the
+    estimated shares, in float64 like _satterthwaite_dof. Its measured
+    effect is in docs/hapmixqtl_methods.md, Section 4.5.
+
+    Args:
+        w_a, w_t: [V] or [V, nperm] channel weights 1/se^2 (0 where absent)
+        dof_a, dof_t: the channels' residual degrees of freedom
+    Returns:
+        float64 tensor of w_a's shape
+    """
+    w_a = w_a.to(torch.float64)
+    w_t = w_t.to(torch.float64)
+    f_a = w_a / (w_a + w_t).clamp(min=1e-300)
+    m = 1.0 + 4.0 * (1.0 / dof_a + 1.0 / dof_t) * f_a * (1.0 - f_a)
+    return torch.where((w_a > 0) & (w_t > 0), m, torch.ones_like(m))
 
 
 def _fitted_variance():
@@ -1263,6 +1308,14 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
     there is no fitted scale, so the info dict's dof entries are None and the
     caller keeps its single reference.
 
+    With ``fitted=True`` the combined SE is se_c sqrt(M), M the Meier factor
+    of _meier_factor for channel weights estimated from the same residuals,
+    wherever both channels carry weight
+    (exactly se_c elsewhere); the combined t falls by sqrt(M) and is referred
+    to the unchanged ``dof_nominal``. ``slope_se_t`` carries the corrected
+    value and ``meier_factor`` in the info dict is M (1.0 where it does not
+    apply, NaN where no channel carries weight).
+
     The scalar meta-analysis treats the two channel estimators as
     independent and deliberately ignores Cat (the a-t inferential
     covariance). That is correct, not an omission: s = xL - xR is orthogonal
@@ -1297,7 +1350,9 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
         info:         (only with return_info) dict of each statistic's t
                       reference: ``dof_a``/``dof_t`` (_reported_dof, NaN for
                       a channel that is off), ``dof_nominal`` [V]
-                      (_satterthwaite_dof) and ``allelic_admitted``
+                      (_satterthwaite_dof), ``meier_factor`` [V] float64
+                      (_meier_factor; None without a fitted scale) and
+                      ``allelic_admitted``
     """
     # ASE channel: a = beta * s + covariates + error
     a_star = (a_t * sqrt_wa_t).unsqueeze(0)
@@ -1341,17 +1396,28 @@ def calculate_hapmixqtl_nominal(genotypes_t, sign_t, a_t, t_t,
         # channel, taken verbatim so no rounding separates the two
         inv_var_a = torch.zeros_like(inv_var_a)
         slope_combined, se_combined = slope_tc.clone(), se_tc.clone()
+    if fitted:
+        # the weights are estimated from the same residuals: Meier's
+        # first-order inflation of the combined SE (_meier_factor), exactly
+        # 1 wherever fewer than two channels carry weight
+        meier = _meier_factor(inv_var_a, inv_var_t,
+                              _channel_dof(residualizer_a), _channel_dof(residualizer_t))
+        se_combined = se_combined * torch.sqrt(meier).to(se_combined.dtype)
     tstat_combined = slope_combined / se_combined
 
     out = (tstat_combined, slope_combined, se_combined, slope_a, se_a, slope_tc, se_tc)
     if not return_info:
         return out
-    info = dict(dof_a=None, dof_t=None, dof_nominal=None, allelic_admitted=admitted)
+    info = dict(dof_a=None, dof_t=None, dof_nominal=None, meier_factor=None,
+                allelic_admitted=admitted)
     if fitted:
+        dof_nominal = _satterthwaite_dof(inv_var_a, inv_var_t,
+                                         _channel_dof(residualizer_a),
+                                         _channel_dof(residualizer_t))
         info.update(dof_a=_reported_dof(residualizer_a), dof_t=_reported_dof(residualizer_t),
-                    dof_nominal=_satterthwaite_dof(inv_var_a, inv_var_t,
-                                                   _channel_dof(residualizer_a),
-                                                   _channel_dof(residualizer_t)))
+                    dof_nominal=dof_nominal,
+                    # NaN exactly where dof_nominal is: no channel carries weight
+                    meier_factor=torch.where(torch.isnan(dof_nominal), dof_nominal, meier))
     return out + (info,)
 
 
@@ -1522,6 +1588,18 @@ def calculate_hapmixqtl_permutations(genotypes_t, sign_t, a_t, t_t,
     the same set under every permutation, because each donor's weight moves
     with its record, so the gene-level null is built from the statistic that
     was observed.
+
+    Meier's correction (_meier_factor) is part of that
+    statistic in default mode: every combined tstat2, observed and permuted,
+    is divided by M computed from the channel weights refitted for that
+    variant and that permutation (_combined_tstat2). The observed scan and
+    every permutation are therefore ONE statistic, the records null keeps its
+    exchangeability, the empirical p remains the rank of the observed maximum
+    among permuted maxima of the same statistic, and the Beta approximation
+    is fitted to those permuted maxima, so both stay valid; a correction
+    applied to the observed scan alone would bias pval_perm. Because M
+    varies per variant and per permutation it is NOT a monotone per-gene map
+    and can re-rank the lead against the uncorrected scan.
 
     The permutation null. ``perm_scheme='records'`` permutes donor records:
     for each permutation every donor receives another donor's whitened
@@ -1745,7 +1823,10 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
     (MIN_ALLELIC_DONORS). Returns ``tstat2``, then the combined slope if
     ``return_slope``, then if ``return_dof`` the combination's
     Welch-Satterthwaite dof (_satterthwaite_dof), which exists only in the
-    fitted form and is None otherwise.
+    fitted form and is None otherwise. The fitted form divides ``tstat2`` by
+    Meier's factor (_meier_factor), under permutation recomputed from each
+    permutation's refitted weights, so the permuted statistic is the
+    observed one (calculate_hapmixqtl_permutations).
 
     Works for both scalar (nominal) and 2D (permutation) ``xy`` by
     broadcasting.
@@ -1811,6 +1892,12 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
         torch.zeros_like(numer),
     )
     tstat2 = slope_comb * slope_comb * total_inv
+    if fitted:
+        # Meier's inflation of the combined variance for weights estimated
+        # from the same residuals (_meier_factor), from the scales refit
+        # above; exactly 1 wherever fewer than two channels carry weight
+        meier = _meier_factor(inv_var_a, inv_var_t, dof_a, dof_t)
+        tstat2 = tstat2 / meier.to(tstat2.dtype)
     out = (tstat2,)
     if return_slope:
         out += (slope_comb,)
@@ -1905,9 +1992,13 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     mixQTL's own cutoff; waived when the gene has no total channel, as in an
     allelic-only run); ``allelic_admitted`` records that gene-level count
     test, and below the floor the combined slope, SE and p are the total
-    channel's while ``pval_a`` is still reported. The known-variance and HC1
-    standard errors keep the single reference N - 2 - max(n_cov, n_cov_a),
-    which the dof columns then carry, and no floor.
+    channel's while ``pval_a`` is still reported. Where both channels carry
+    weight, ``slope_se`` is the combined SE times sqrt(M), M Meier's
+    first-order factor for channel weights estimated from the same residuals
+    (_meier_factor), and ``pval_nominal`` is the correspondingly smaller t on
+    the unchanged ``dof_nominal``. The known-variance and HC1 standard
+    errors keep the single reference N - 2 - max(n_cov, n_cov_a), which the
+    dof columns then carry, no floor and no correction.
 
     Writes per-chromosome parquet files in the format:
         <output_dir>/<prefix>.hapmixqtl_pairs.<chr>.parquet
@@ -2346,7 +2437,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     ``true_df``; being one monotone map per gene it leaves the lead,
     ``pval_perm`` and ``pval_beta`` exactly as the statistic determines them.
     Under se_mode='model' it is also the t reference of ``pval_nominal``, and
-    ``dof_nominal`` reports it.
+    ``dof_nominal`` reports it. In default mode the scanned statistic carries
+    Meier's correction for estimated channel weights (_meier_factor) in the
+    observed scan and in every permutation alike, so ``pval_perm`` and
+    ``pval_beta`` are built from the corrected statistic
+    (calculate_hapmixqtl_permutations); the lead's ``slope_se`` is the
+    combined SE times sqrt(M), M the factor at the lead (1 where it does not
+    apply), and its ``pval_nominal`` is the corrected t on ``dof_nominal``,
+    as map_nominal reports that pair.
 
     For each phenotype, finds the best cis variant and computes empirical
     p-values from ``nperm`` permutations shared across genes. The default
@@ -2597,7 +2695,9 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             # the lead's t, recovered from the correlation scale, referred to
             # the lead's own reference (dof itself unless se_mode='fitted');
             # NaN when neither channel carries weight, so the gene was not
-            # tested and its pval_perm (every statistic 0) is not a p-value
+            # tested and its pval_perm (every statistic 0) is not a p-value.
+            # In default mode tstat2 already carries the Meier factor of the
+            # scan, so slope_se below is the combined SE times sqrt(M).
             dof_nominal = dof if lead_ref['dof_nominal'] is None else lead_ref['dof_nominal']
             slope = r_nominal * std_ratio
             tstat2 = dof * r2_nominal / (1 - r2_nominal) if r2_nominal < 1 else np.inf

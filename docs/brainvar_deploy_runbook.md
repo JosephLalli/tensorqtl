@@ -718,9 +718,11 @@ and `pval_nominal` to the Welch-Satterthwaite df of the combination; the
 allelic channel enters the combination only with at least 15 informative
 allelic donors (waived for allelic-only runs). The shared dof remains the
 reference of the deprecated known-variance and HC1 standard errors only.
-Specification and measured cost: `docs/hapmixqtl_methods.md` Section 4.5;
-columns `dof_nominal`, `dof_a`, `dof_t`, `allelic_admitted` in
-`docs/outputs.md`.
+Since the same day the combined standard error also carries Meier's
+first-order correction for its estimated channel weights, in the scan and
+every permutation alike. Specification and measured
+cost: `docs/hapmixqtl_methods.md` Section 4.5; columns `dof_nominal`,
+`dof_a`, `dof_t`, `allelic_admitted` in `docs/outputs.md`.
 
 Two rules travel with it. A channel with fewer informative samples
 (`v_inf > 1e-12`) than its design has columns plus two is switched off --

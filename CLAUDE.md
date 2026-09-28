@@ -808,18 +808,26 @@ GTEx overdispersion, depth and zero-inflation structure.
   split / unit / 1/(v+1) (gibbs 0.0054 to 0.0041), still above 0.001 for
   the two reasons in the next entry. Rule: `docs/hapmixqtl_methods.md`
   Section 4.5; record `brainvar_hapmix_deploy/allelic_df_fix_20260927/`.
-- **The Welch-Satterthwaite combined reference is anticonservative, and
-  whether to correct it is an open user decision** (2026-09-27). It treats
-  the channel weights as fixed although they are estimated from the same
-  residuals; at exactly 15 allelic donors under the exact model it rejects
-  at about 1.2x nominal at 0.05 and 1.4-1.55x at 0.001, and on the stored
-  null it raises admitted genes' combined rate at 0.001 by +0.00013 to
-  +0.00018 over the old 73 df. The unit-weighted total channel is
-  separately at 1.15x nominal at 0.001. Meier's first-order correction was
-  measured near nominal and NOT adopted in 8a06803, by user decision;
-  whether to correct the reference later stays open. Numbers and sources
-  (the Meier measurement has no record on disk):
-  `docs/hapmixqtl_methods.md` Sections 4.5 and 7.
+- **SHIPPED 2026-09-27 (user decision, after 8a06803): Meier's correction
+  of the combined standard error for estimated channel weights**, in
+  default mode (`_meier_factor`; `slope_se` is the corrected value,
+  `dof_nominal` unchanged), applied in
+  `map_nominal`, `map_cis`'s scan, every permutation and the lead alike.
+  Rule and derivation: `docs/hapmixqtl_methods.md` Section 4.5 (16c);
+  columns: `docs/outputs.md`. Residual, exact model on the 100-gene
+  corrected null store (`scripts/combined_reference_exact_model.py`,
+  `brainvar_hapmix_deploy/combined_reference_exact_model_20260927`): split
+  weighting at 15 allelic donors 1.017x / 1.047x / 1.123x nominal at 0.05 /
+  0.01 / 0.001 (uncorrected 1.087x / 1.164x / 1.331x), all donors 1.005x /
+  1.022x / 1.031x (1.050x / 1.093x / 1.149x); over all ten (weighting,
+  donor level) pairs 1.004-1.017x / 1.007-1.047x / 1.014-1.123x, at 0.001
+  1.04-1.12x at 15-30 donors (split) and 1.01-1.04x at 40 and all; 18 of
+  30 pre-registered checks fail against 30 uncorrected and 3 for the exact
+  per-channel p. The unit-weighted total channel's own 1.15x at 0.001 on
+  the stored null is separate and untouched. Every rate on the stored null
+  recorded before this entry was measured without the correction; the
+  stored exact-model run itself was made under the uncorrected code and is
+  the known answer of `tests/test_hapmixqtl_meier.py`.
 - RASQUAL agreement has now been re-measured under default mode (section
   below). The reuse traps recorded when that run was designed still hold for
   any future one: `--reuse-rasqual` carries the OBSERVED arm only and never
@@ -1031,11 +1039,15 @@ above the model 95th percentile), not converted to a rate.
 ## Self-tests
 
 ```bash
-# the hapmixQTL/mixQTL surface: 190 tests, all passing as of 2026-09-25
+# the hapmixQTL/mixQTL surface: 215 tests, all passing as of 2026-09-27
+# (test_hapmixqtl_allelic_df: the per-channel t references of 8a06803;
+# test_hapmixqtl_meier: Meier's correction, its known answer needs the GPU
+# and /mnt/ssd/lalli/brainvar_hapmix_deploy, else it skips)
 pytest tests/test_hapmixqtl.py tests/test_hapmixqtl_calibration.py \
        tests/test_hapmixqtl_perm_scheme.py tests/test_hapmixqtl_point_estimates.py \
        tests/test_fitted_variance_quarantine.py \
-       tests/fitted_variance/ tests/test_cli.py tests/test_mixqtl_replication.py -q
+       tests/fitted_variance/ tests/test_cli.py tests/test_mixqtl_replication.py \
+       tests/test_hapmixqtl_allelic_df.py tests/test_hapmixqtl_meier.py -q
 
 python3 scripts/run_hapmixqtl_from_salmon.py --selftest
 RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest

@@ -116,8 +116,8 @@ the needed df sits, never a reference judged by the rule.
 
 GATES: (1) before the main loop, replicate 0 at n = 15 for every gene through
 map_nominal equals the direct call (channel and combined slopes and SEs within
-1e-4 se, dof_nominal within 1e-6 relative, pval_nominal within 1e-6 of the WS
-p); (2) every call admits the allelic channel, dof_a = n - 1, dof_t = 73;
+1e-4 se, dof_nominal within 1e-6 relative, pval_nominal within 1e-6 of the direct
+call's t on nu_WS); (2) every call admits the allelic channel, dof_a = n - 1, dof_t = 73;
 (3) nu_WS recomputed from the stored f_a equals the shipped dof_nominal within
 1e-4 relative.
 
@@ -127,6 +127,17 @@ mismatch stops the run; summarize() also stops if the current source no
 longer matches it); gate.json; sigma_one_probe.json; summary.json.
 Usage: CUDA_VISIBLE_DEVICES=0 combined_reference_exact_model.py
            [--summarize-only | --sigma-one-probe]
+
+SHIPPED 2026-09-27 (user decision, after this run): hapmixqtl.py applies the
+Meier arm's factor to the combined SE in default mode. fit() returns the
+shipped, corrected statistic, which the map_nominal gate compares like for
+like; uncorrected() recovers t = t_M sqrt(M) and SE = SE_M / sqrt(M) from the
+factor M that calculate_hapmixqtl_nominal returns in its info dict, and every
+reference here is defined on that uncorrected t. The stored 2026-09-27 run
+was made under the uncorrected code, its fingerprint covers that
+hapmixqtl.py, and it cannot be re-summarised under the shipped source
+(tests/test_hapmixqtl_meier.py reads its gene files directly as the known
+answer and checks that uncorrected() reproduces their t).
 """
 import contextlib
 import hashlib
@@ -251,6 +262,16 @@ def fit(S, G_t, X_t, a, t, va, vt):
     return torch.stack(out[:7]).cpu().numpy().astype(np.float64), out[7]
 
 
+def uncorrected(o, info):
+    """fit()'s output with the combined t and SE without Meier's factor: t sqrt(M) and SE / sqrt(M), M from
+    the info dict (NaN where no channel carries weight, where the SE was not scaled)."""
+    m = np.sqrt(np.nan_to_num(info['meier_factor'].cpu().numpy(), nan=1.0))
+    o = o.copy()
+    o[0] *= m
+    o[2] /= m
+    return o, info
+
+
 def simulate_gene(S, k):
     I, g = S['I'], S['genes'][k]
     sel = S['variants'][g]
@@ -266,7 +287,7 @@ def simulate_gene(S, k):
         z_a, z_t, perm = draw(k, r, inf, len(I['order']))
         for ci, c in enumerate(CONFIGS):
             for j, n in lev:
-                o, info = fit(S, G_t, X_t, *inputs(S, k, c, n, z_a, z_t, perm))
+                o, info = uncorrected(*fit(S, G_t, X_t, *inputs(S, k, c, n, z_a, z_t, perm)))
                 with np.errstate(divide='ignore', invalid='ignore'):
                     ok_a = np.isfinite(o[4]) & (o[4] > 0)
                     w_a = np.where(ok_a, 1.0 / o[4] ** 2, 0.0)
@@ -458,7 +479,7 @@ def sigma_one_probe(S):
             z_a, z_t, perm = draw(k, r, inf, len(I['order']))
             for ci, c in enumerate(CONFIGS):
                 for j, n in levels_for(len(inf)):
-                    o, info = fit(S1, G_t, X_t, *inputs(S1, k, c, n, z_a, z_t, perm))
+                    o, info = uncorrected(*fit(S1, G_t, X_t, *inputs(S1, k, c, n, z_a, z_t, perm)))
                     if not (info['allelic_admitted'] and info['dof_a'] == n - 1 and info['dof_t'] == OLD_DOF):
                         raise SystemExit(f'GATE FAILED probe {g}: admission or channel dof at n = {n}')
                     with np.errstate(divide='ignore', invalid='ignore'):

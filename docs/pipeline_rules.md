@@ -364,7 +364,9 @@ and the total-channel unit weights exist only in these experiment scripts.
 
 **After the per-channel t references (2026-09-27, commit 8a06803).** Every
 nominal rate above and below in this section was measured with all three p
-referred to one shared t of 73 df. `scripts/allelic_df_null_check.py`
+referred to one shared t of 73 df, and every rate in this section, this
+paragraph's included, without Meier's correction of the combined standard
+error, shipped later the same day (`docs/hapmixqtl_methods.md` Section 4.5). `scripts/allelic_df_null_check.py`
 re-ran the four configurations (split, unit, 1/(v+1), Gibbs in both) on the
 same 100 genes and 200 permutations under the fixed code
 (`brainvar_hapmix_deploy/allelic_df_fix_20260927/`, `summary.json` and

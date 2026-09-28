@@ -1192,7 +1192,13 @@ class TestPerChannelCovariates:
             pair = pairs[(pairs['phenotype_id'] == pid) & (pairs['variant_id'] == row['variant_id'])]
             assert len(pair) == 1
             pn, pc = float(pair['pval_nominal'].iloc[0]), float(row['pval_nominal'])
-            assert np.isclose(pn, pc, rtol=1e-4, atol=0), (pid, pn, pc)
+            # the planted gene sits at p ~ 1e-69, where the scan's float32
+            # correlation-scale round trip (a few 1e-6 in t) is ~1e-4 in p;
+            # the statistic itself agrees to 1e-5
+            tn = float(pair['slope'].iloc[0]) / float(pair['slope_se'].iloc[0])
+            tc = float(row['slope']) / float(row['slope_se'])
+            assert np.isclose(tn, tc, rtol=1e-5, atol=0), (pid, tn, tc)
+            assert np.isclose(pn, pc, rtol=1e-3, atol=0), (pid, pn, pc)
             assert np.isclose(float(pair['slope'].iloc[0]), float(row['slope']), rtol=1e-4, atol=0)
 
 
