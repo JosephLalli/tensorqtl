@@ -55,7 +55,9 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   `corrected_null_store.OLD`).
 
 Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
-`plasmode_lowcov_meier_20260927` for `stratum30_100`).
+`plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `PLASMODE_ACCEPTANCE=1` before
+importing `common`, which makes `common.ROOT` the gene set's `acceptance_root` (`plasmode2_acceptance_20260927`,
+`plasmode2_stratum_acceptance_20260927`) for it and every step it runs, so the acceptance never writes into those two.
 
 ## Generator (02_make_datasets.py)
 
@@ -96,7 +98,7 @@ unweighted fit only).
 `run_all.sh` prints the versions (`common.versions`, also written to `ROOT/versions.log`) and runs the
 numbered scripts in order into `common.ROOT`; each step logs to `ROOT/<step>.log` and stops the run on
 failure. With the argument `staged` (`run_all.sh staged`) the gene set's committed RASQUAL and TReCASE results
-(`common.stage_joint_results`, also used by `99_acceptance.py`) replace steps 4 and 5. Measured 2026-09-27 on the shared 256-core host at load 120-220, one NVIDIA L4, at most 16
+(`common.stage_joint_results`, also used by `99_acceptance.py`; logged to `ROOT/stage_joint_results.log`) replace steps 4 and 5. Measured 2026-09-27 on the shared 256-core host at load 120-220, one NVIDIA L4, at most 16
 processes (~100 s of each Python step is loading the cache):
 
 | step | script | what it writes | runtime |
@@ -140,6 +142,7 @@ only) and 08; then 01, once check d had been made Meier-aware, into each root's 
 
 ## Acceptance test (99_acceptance.py)
 
+`ROOT` in this section is the gene set's acceptance root (`common.GENE_SETS` `acceptance_root`), never a delivered run.
 Against the gene set's committed run (`common.GENE_SETS` `committed`):
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_20260926` (the previous code, commit 3aac315) for the
 default set. For `stratum30_100` it is `plasmode_stratum30_100_20260927` and the test runs items 1-4
@@ -149,7 +152,7 @@ committed RASQUAL and TReCASE results into `ROOT` (their
 `summary.json` derived from the old run's log for RASQUAL), runs steps 1-3 and 6-8 into `ROOT`, and,
 only when run as `python3 99_acceptance.py joint`, runs steps 4 and 5 on ONE dataset (`beta0.8` rep
 000) into `ROOT/joint_check` alongside the GPU steps, with `JOINT_JOBS` 5 RASQUAL and 4 TReCASE jobs
-(the recorded pass, `ROOT/acceptance_df76f3b.log`, used these values and took 97 and 136 min). Without
+(the recorded pass, `plasmode2_acceptance_20260927/acceptance_df76f3b.log` (`JOINT_PASS`), used these values and took 97 and 136 min). Without
 `joint` each joint arm prints a SKIP naming that recorded PASS line and the files among 04 / 05, their
 imports and `common.py` whose sha256 differs from that run's header, and the SKIP is not a failure:
 the rerun costs hours and its stamp includes `common.py`, which changes more often than anything 04

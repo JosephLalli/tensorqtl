@@ -840,11 +840,13 @@ def sec_head():
                 f'section "The {THIS_SET} against the {REF_SET}", after section 1, sets it against the {REF_SET}, this '
                 f'code\'s run on the {REF_SET} ({REF_RUN}), each set with its own intervals. The read bands of sections 2 and 3 use each gene\'s median '
                 f'over all donors, on which {SF["below"]} of these genes fall below {SF["lo"]} reads; the set\'s own measure is '
-                f'the median over admitted donors. {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
-                f'datasets: the hapmixQTL and mixQTL arms first ran on {(ran - n_ds["0.0"]) // (len(n_ds) - 1)} replicates '
+                f'the median over admitted donors. In {C.COMMITTED.name}, the committed run whose RASQUAL and TReCASE results '
+                f'are reused here, {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
+                f'datasets: its hapmixQTL and mixQTL arms first ran on {(ran - n_ds["0.0"]) // (len(n_ds) - 1)} replicates '
                 f'per |beta|, the datasets were then regenerated at {n_ds["0.4"]} (user decision 2026-09-27; every generator '
-                f'stream is keyed on the replicate index, so the kept replicates are unchanged), and the joint arms and the '
-                f'scoring used those {sum(n_ds.values())}; the page reads their {SF["lines"][1]} blocks. Made by '
+                f'stream is keyed on the replicate index, so the kept replicates are unchanged), and its joint arms and '
+                f'scoring used those {sum(n_ds.values())}. This run\'s hapmixQTL, mixQTL and tensorQTL arms ran once, on its own '
+                f'{sum(n_ds.values())} datasets ({C.DATASETS}). Made by '
                 f'scripts/plasmode/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
                 f'{COMMITTED_RUN_LOG}, the check files that 01_check_inputs.py wrote into {C.CHECKS} on this run '
                 f'({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, and the '
@@ -1104,8 +1106,8 @@ weights estimated from the residuals they combine: the plug-in variance 1/(w<sub
 multiplied by M = 1 + 4 f<sub>a</sub> f<sub>t</sub> (1/&nu;<sub>a</sub> + 1/&nu;<sub>t</sub>), f being each
 channel's share of the weight, so the combined t falls by &radic;M on the same Welch-Satterthwaite degrees of
 freedom; M is 1 wherever one channel carries all the weight, and slopes and per-channel statistics are unchanged. It
-applies in map_nominal and in map_cis's scan and every permutation alike. Before that
-commit every hapmixQTL p was referred to t with 73 degrees of freedom (N &minus; 2 &minus; 17 covariates){
+applies in map_nominal and in map_cis's scan and every permutation alike. Before commit
+8a06803 every hapmixQTL p was referred to t with 73 degrees of freedom (N &minus; 2 &minus; 17 covariates){
 '; section 3.7 compares the two' if BEFORE else ''} (docs/hapmixqtl_methods.md, Section 4.5, has the derivation and the
 reference's measured cost).
 Two mixQTL-mode arms run on the thinned point estimates, never
@@ -1614,7 +1616,24 @@ def sec_contrast():
     t_rank = table(['arm'] + [f'{n}, |beta| {b}' for n, _ in runs for b in BETAS],
                    [[LABEL[a]] + [f'{ci(au(X, b, a), "mean")}<br>{f(fd(X, b, a)["all"]["power"])}'
                                   for _, X in runs for b in BETAS] for a in ALL])
-    gl = lambda X, k, b, a: ci(X[k][f'beta{b}'][a]['power_bh']['all'], 'rate') if a in X[k][f'beta{b}'] else 'n/a'   # noqa: E731
+    def gl(X, k, b, a):   # a gene-level power entry; an eigenMT entry also with its calls and the null gene units among them
+        d = X[k][f'beta{b}'].get(a)
+        if d is None:
+            return 'n/a'
+        return ci(d['power_bh']['all'], 'rate') + (f' ({d["discoveries"]} called, {d["false_discoveries"]} null)'
+                                                   if k == 'gene_level_eigenmt' else '')
+    efd = lambda X, a: X['gene_level_eigenmt']['beta0.4'][a]   # noqa: E731
+    fdp_e = lambda X, a: efd(X, a)['false_discoveries'] / efd(X, a)['discoveries']   # noqa: E731  realized FDP of the eigenMT calls
+    fdp_txt = lambda X, a: f'{f(fdp_e(X, a), 2)} ({efd(X, a)["false_discoveries"]} of {efd(X, a)["discoveries"]})'   # noqa: E731
+    high = ('gibbs', 'mixqtl', 'mixqtl_permissive', 'rasqual', 'trecase')   # the arms whose eigenMT calls carry a high null share (review 2026-09-27)
+    other = lambda X: max((a for a in ALL if a not in high), key=lambda a: fdp_e(X, a))   # noqa: E731
+    fdp_sentence = (' Benjamini-Hochberg at 5% bounds the expected false-discovery proportion by 5% only when the gene-level '
+                    'p is not anticonservative: at |beta| 0.4 the realized false-discovery proportion of the eigenMT calls '
+                    '(null gene units among the gene units called, over the datasets) is '
+                    + ', '.join(f'{SHORT[a]} {fdp_txt(S, a)}' for a in high) + f' in the {THIS_SET} and '
+                    + ', '.join(f'{SHORT[a]} {fdp_txt(R, a)}' for a in high) + f' in the {REF_SET}, against at most '
+                    f'{fdp_txt(S, other(S))} and {fdp_txt(R, other(R))} for the other arms; the eigenMT entries of the '
+                    f'second table give the calls and null gene units at every |beta|.')
     t_gene = table(['arm'] + [f'{n}, |beta| {b}, {c}' for n, _ in runs for b in BETAS for c in ('permutation p', 'eigenMT p')],
                    [[LABEL[a]] + [gl(X, k, b, a) for _, X in runs for b in BETAS for k in ('gene_level', 'gene_level_eigenmt')]
                     for a in ALL])
@@ -1761,7 +1780,7 @@ the permutation p (section 2 measures by how much on this set). <b>Benjamini-Hoc
 dataset for the largest k with p<sub>(k)</sub> &le; 0.05 k / (genes tested); <b>gene-level power</b> is the share of
 non-null gene units so discovered, with the gene-clustered interval. In the first table each first line is the AUC and
 each second line the power at 5% realized false-discovery proportion; the second table is the gene-level power, a
-permutation-p column and an eigenMT column per effect size.</p>
+permutation-p column and an eigenMT column per effect size.{fdp_sentence}</p>
 {t_rank}
 {t_gene}
 {img(fc['rank'], f'Contrast figure C. The ranking and power tables as points, {THIS_SET} left and {REF_SET} right, arm colours '

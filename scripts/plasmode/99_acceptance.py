@@ -2,7 +2,9 @@
 'committed': the 100-gene run of 2026-09-26 by default, the 30-100-read run of 2026-09-27 with
 PLASMODE_GENE_SET=stratum30_100) (README).
 
-Runs the pipeline into common.ROOT and checks:
+Runs the pipeline into common.ROOT, which in this process and the steps it runs is the gene set's
+acceptance_root (common.GENE_SETS; PLASMODE_ACCEPTANCE set below, before common is imported), never a
+delivered run, and checks:
  (1) every dataset array bit for bit (datasets/*.npz, all keys; the same number of files);
  (2) map_nominal outputs of the four hapmixQTL arms and both mixQTL arms bit for bit (dtype and
      bytes) on the columns 06_score.py reads, on the same (phenotype_id, variant_id) row set;
@@ -56,13 +58,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-import common as C
+os.environ['PLASMODE_ACCEPTANCE'] = '1'   # before common is imported: ROOT here and in every step run below is the set's acceptance_root
+import common as C   # noqa: E402
 
 OLD = C.COMMITTED                       # the committed run of the previous code (scripts/plasmode/ before f0c0b07)
 OLD_JOINT = C.COMMITTED_JOINT
 JOINT_CHECK = {'corrected_null_store_20260925': ('beta0.8', 0),   # the one dataset 04 and 05 are rerun on
                'stratum30_100': None}[C.GENE_SET]                 # None: the committed joint results are staged and scored only (task 2026-09-27)
-JOINT_PASS = C.ROOT / 'acceptance_df76f3b.log'   # the last recorded pass of the one-dataset joint rerun (default set, 2026-09-27 14:42-16:59)
+JOINT_PASS = C.D / 'plasmode2_acceptance_20260927' / 'acceptance_df76f3b.log'   # the last recorded pass of the one-dataset joint rerun (default set, 2026-09-27 14:42-16:59)
 JOINT_JOBS = {'rasqual': 5, 'trecase': 4}   # alongside the GPU steps: 5 RASQUAL + 4 x (Rscript + R) + this process + one pipeline step = 15 live processes, under the host's cap of 16
 GPU = '1'                                # CUDA_VISIBLE_DEVICES for map_nominal / map_cis (shared host, 2026-09-27)
 RTOL = 1e-9
@@ -89,8 +92,8 @@ JOINT_KEYS = {   # per-dataset counts of the joint summaries that 08_report.join
                 'joint_na_by_trace/theta_fail_abs_gradient_max', 'final_joint', 'final_trec', 'final_na', 'final_df_not_1', 'causal_not_run',
                 'causal_nonnull', 'causal_joint_na', 'causal_final_joint', 'causal_final_trec', 'causal_final_na')}
 SKIPPED = []
-if OLD == C.ROOT:
-    raise SystemExit(f'common.ROOT is the committed run {OLD}')
+if C.ROOT in (OLD, C.D / C.GS['root']):
+    raise SystemExit(f'common.ROOT {C.ROOT} is the committed run or the delivered run of gene set {C.GENE_SET}')
 
 
 def sha(path):

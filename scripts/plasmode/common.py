@@ -33,13 +33,15 @@ from tensorqtl.hapmixqtl import map_nominal                  # noqa: E402
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
 GENE_SET = os.environ.get('PLASMODE_GENE_SET', 'corrected_null_store_20260925')   # the gene set this run uses: a key of GENE_SETS
+ACCEPTANCE = os.environ.get('PLASMODE_ACCEPTANCE') == '1'   # set by 99_acceptance.py for itself and the steps it runs: ROOT is then the set's acceptance_root
 GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, gene_design.tsv; for the default set also its stored
-                # 200-permutation gibbs null run), this pipeline's output directory, the committed run of the previous code (scripts/plasmode/ before f0c0b07) that
+                # 200-permutation gibbs null run), this pipeline's output directory, 99_acceptance.py's output directory, the committed run of the previous code (scripts/plasmode/ before f0c0b07) that
                 # 99_acceptance.py compares with and whose RASQUAL and TReCASE results stage_joint_results copies, and the stored runs of that
                 # gene set the scripts read (None: the set has none, and each reader prints a skip); a new gene set adds an entry
     'corrected_null_store_20260925': dict(
         gene_dir='corrected_null_store_20260925',
-        root='plasmode_meier_20260927',                                    # every output: the one directory this pipeline may write (task of 2026-09-27, Meier's correction)
+        root='plasmode_meier_20260927',                                    # every output: the one directory this pipeline may write outside 99_acceptance.py (task of 2026-09-27, Meier's correction)
+        acceptance_root='plasmode2_acceptance_20260927',                   # ROOT under 99_acceptance.py, so the acceptance never writes into a delivered run
         committed='plasmode_20260926',                                     # the previous code at commit 3aac315
         hybrid_null='hybrid_weights_null_20260926',                        # the stored split / unit / plus_one null runs, with the gibbs run in gene_dir (06 ANCHOR, 01 REPRO_DRAWS)
         before_df_fix='plasmode_20260926/summary_before_df_fix.json',      # the arms scored before commit 8a06803 (08 BEFORE; a record, not regenerable)
@@ -49,13 +51,15 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
     'stratum30_100': dict(   # 100 genes at 30-100 median haplotype-informative reads over admitted allelic donors (select_stratum_genes.py)
         gene_dir='plasmode_stratum30_100_20260927/gene_set',
         root='plasmode_lowcov_meier_20260927',
+        acceptance_root='plasmode2_stratum_acceptance_20260927',
         committed='plasmode_stratum30_100_20260927',                       # the previous code, commits 15aac90 to d3247e0
         hybrid_null=None, before_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None)}
 GS = GENE_SETS[GENE_SET]
 GENE_DIR = D / GS['gene_dir']
 GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', GENE_DIR / 'gene_design.tsv'
 ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
-    D / GS[k] if GS[k] else None for k in ('root', 'hybrid_null', 'before_df_fix', 'df_fix', 'trecase_smoke', 'committed'))
+    D / GS[k] if GS[k] else None for k in ('acceptance_root' if ACCEPTANCE else 'root', 'hybrid_null', 'before_df_fix', 'df_fix',
+                                           'trecase_smoke', 'committed'))
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
 COMMITTED_JOINT = {'rasqual': COMMITTED / 'results_rasqual', 'trecase': COMMITTED / 'results_trecase_asseq'}

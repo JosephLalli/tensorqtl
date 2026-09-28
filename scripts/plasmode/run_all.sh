@@ -15,7 +15,7 @@ export CUDA_VISIBLE_DEVICES=1
 
 joint=(04_run_rasqual.py 05_run_trecase.py)
 if [[ "${1:-}" == staged ]]; then
-  (cd "$HERE" && python3 -c 'import common; common.stage_joint_results()')
+  (cd "$HERE" && python3 -c 'import common; common.stage_joint_results()') 2>&1 | tee "$ROOT/stage_joint_results.log"
   joint=()
 elif [[ $# -gt 0 ]]; then
   echo "usage: $0 [staged]" >&2

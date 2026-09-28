@@ -50,7 +50,7 @@ CAL = Path(CM.PE) / 'edger' / 'calibration_genes.txt'   # the eQTL gene filter l
 GENES_TSV = C.D / 'annot' / 'genes.tsv'         # gene, chr, start, end, pos (TSS); no header
 STRATUM_LO, STRATUM_HI = 30, 100                # reads; the transcriptome-wide stratum of coupling_reach.py (task, 2026-09-27)
 N_GENES = 100                                   # as the committed set (task, 2026-09-27)
-SEED, SELECT_KEY = C.SEED, 6                    # spawn key 6 is used by no other script here (02: 1-3, 03: 4, 01: 10-13, 06: 30, 33)
+SEED, SELECT_KEY = C.SEED, 6                    # spawn key 6 is used by no other script here (02: 1-3; 03: 4, 5; 01: 10-13; 06: 30, 33)
 
 
 def load_pool():

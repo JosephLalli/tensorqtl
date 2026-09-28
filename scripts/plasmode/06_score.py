@@ -76,7 +76,7 @@ BANDS = {   # (name, lo, hi) on the gene's median haplotype-informative reads ov
 }[C.GENE_SET]
 ONE_DF = 2                    # admitted allelic donors at which the through-origin allelic fit has 1 residual df (review 2026-09-27)
 NO_ONE_DF = 'without one-df genes'
-GENE_BOOT_KEY, AUC_BOOT_KEY = 30, 33   # spawn keys after 02's 1 / 2 / 3 and 03's 4; 31 and 32 belonged to interval streams no longer computed
+GENE_BOOT_KEY, AUC_BOOT_KEY = 30, 33   # spawn keys after 02's 1 / 2 / 3 and 03's 4 / 5; 31 and 32 belonged to interval streams no longer computed
 SLOPE = {'combined': ('slope', 'slope_se'), 'allelic': ('slope_a', 'slope_a_se'), 'total': ('slope_t', 'slope_t_se')}
 PVAL = C.CHANNELS
 TRUTH = {'count': {'combined': 'allelic_truth', 'allelic': 'allelic_truth', 'total': 'total_truth'},
