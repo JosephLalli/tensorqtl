@@ -119,15 +119,23 @@ STAGES
                those of the unshifted construction (OUT/smoke_unshifted/).
   --control  The permutation control for the level at random variants: both RASQUAL arms at
              the N_RANDOM random variants of each of the 10 null genes, N_RUNS runs per gene
-             under each of two nulls, one thread per job, at most JOBS at once, every
+             under each of three nulls, one thread per job, at most JOBS at once, every
              (null, run, arm, gene) checkpointed under OUT/control/<null>/run_NN/<arm>/.
        records   The project's records null: one donor order perm per (gene, run),
                  SeedSequence(SEED, spawn_key=(7, gene index, run)); column i of Y, K, the
                  RNA-tied covariates and every fSNP's GT:AS entry (native: all fSNPs
                  together; pseudo: the one pseudo entry) is donor perm[i]'s; rSNP genotypes
                  and genotype PCs stay (run_rasqual.write_bins with ds['perm']). No haplotype
-                 swap: pooled calibration is the same with and without it (CLAUDE.md,
-                 0.0690 vs 0.0692 at 0.05).
+                 swap.
+       records_swap  records plus the project's haplotype label swap (user decision
+                 2026-09-27): the same perm and, drawn right after it from the same
+                 generator, a flag per column with probability one half
+                 (make_datasets.record_permutation's convention, swapped where the draw is 0);
+                 in a swapped column every fSNP entry of the record (native: all fSNPs;
+                 pseudo: the pseudo entry) has its phased GT reversed (0|1 <-> 1|0,
+                 homozygous entries unchanged) with AS left as ref,alt, which moves the ref
+                 count to the other haplotype. Y, K, covariates and rSNP genotypes as in
+                 records.
        rasqual_r RASQUAL's own -r on the observed inputs. One -r run (nbem.c:2346-2400)
                  draws a new donor order for EACH fSNP and permutes that fSNP's genotype
                  probabilities, AS counts and offsets by it (2365), with no haplotype swap
@@ -147,7 +155,11 @@ STAGES
              order writes Y, K and X byte-identical to OUT/rasqual_inputs and reproduces the
              observed rows' model fields at every random variant in both arms; a seeded -r
              run repeated with the same seed is byte-identical, differs under another seed
-             and differs from the unpermuted fit.
+             and differs from the unpermuted fit; records_swap's Y, K and X for run 00 are
+             byte-identical to the records run's, its lines with every swap flag false are
+             byte-identical to records', and with run 00's flags every heterozygous fSNP
+             entry in a swapped column has its GT reversed and its AS unchanged while every
+             other entry and every rSNP line is unchanged.
   --report   Per gene: each arm's lead (RASQUAL: largest chisq; hapmixQTL: smallest
              pval_nominal, since each pair's p has its own dof), its chi-square (for
              hapmixQTL the 1-df chi-square with the same p, chi2.isf(p, 1), derived from
@@ -244,10 +256,11 @@ TOP_K, N_RANDOM = 20, 80      # native subset per gene: top TOP_K variants of ea
 MODEL_FIELDS = ['chisq', 'effect_size_pi', 'error_rate_delta', 'ref_mapping_bias_phi', 'overdispersion_theta',
                 'n_feature_snps', ITER_FIELD, 'convergence', 'r2_prior_posterior_fsnps', 'r2_prior_posterior_rsnp']
 CONTROL = OUT / 'control'
-NULLS = ('records', 'rasqual_r')
-NULL_LABEL = {'records': 'records permutation', 'rasqual_r': 'RASQUAL -r'}
-N_RUNS = 15                   # runs per null gene, arm and null: ~80 CPU-min per native run of the 10 null genes (arms.log scaled to 80 rSNPs), 2 x 15 runs ~ 40 CPU-h
-CONTROL_KEY = {'records': 7, 'rasqual_r': 8}   # SeedSequence(SEED, spawn_key=(key, gene index, run))
+NULLS = ('records', 'records_swap', 'rasqual_r')
+NULL_LABEL = {'records': 'records permutation', 'records_swap': 'records permutation with haplotype swap',
+              'rasqual_r': 'RASQUAL -r'}
+N_RUNS = 15                   # runs per null gene, arm and null: ~80 CPU-min per native run of the 10 null genes (arms.log scaled to 80 rSNPs), 3 x 15 runs ~ 40 CPU-h
+CONTROL_KEY = {'records': 7, 'records_swap': 7, 'rasqual_r': 8}   # SeedSequence(SEED, spawn_key=(key, gene index, run)); records_swap shares records' perm
 GATE_KEY, RESAMPLE_KEY = 10, 9   # seeds of the -r determinism gate and of the gene-resampling intervals
 N_RESAMPLE = 10_000           # gene-resampling draws per interval (genes drawn with replacement)
 GATE_GENE = 'TRMT9B'          # the cheapest null gene in the native arm, 3.2 min at 113 rSNPs (arms.log)
@@ -636,9 +649,16 @@ def variant_key(vdf):
                                                                        vdf.ref.values, vdf.alt.values))}
 
 
-def exonic_lines(S, z, ex, g, vkey, perm=None):
+def swap_haplotypes(entries, swap):
+    """GT:AS entries with the phased GT of each column where swap is true reversed (0|1 <-> 1|0, homozygous entries
+    unchanged) and AS left as ref,alt, so the ref count moves to the other haplotype (the records_swap null)."""
+    return [e[2::-1] + e[3:] if s else e for e, s in zip(entries, swap, strict=True)]
+
+
+def exonic_lines(S, z, ex, g, vkey, perm=None, swap=None):
     """The gene's fSNP lines (docstring, native arm) and how many exonic sites the loader did not carry; with perm,
-    column i carries donor perm[i]'s GT:AS entry (the records null, docstring --control)."""
+    column i carries donor perm[i]'s GT:AS entry (the records null, docstring --control), and with swap its GT is
+    reversed where swap[i] is true (records_swap)."""
     I, vdf = S['I'], S['I']['vdf']
     chrom = S['gp'].loc[g, 'chr']
     lines, missing = [], 0
@@ -656,6 +676,8 @@ def exonic_lines(S, z, ex, g, vkey, perm=None):
         entries = [f'{gt}:{r},{a}' for gt, r, a in zip(GTS[xL * 2 + xR], z['ref_count'][i], z['alt_count'][i])]
         if perm is not None:
             entries = [entries[p] for p in perm]
+        if swap is not None:
+            entries = swap_haplotypes(entries, swap)
         lines.append(f'{chrom}\t{pos + FSNP_OFFSET}\t{vdf.index[j]}\t{z["ref"][i]}\t{z["alt"][i]}\t.\tPASS\t.\tGT:AS\t'
                      + '\t'.join(entries) + '\n')
     return lines, missing
@@ -792,10 +814,10 @@ def rsnp_subset(S, g, ids):
     return RR.rsnp_text(dict(S, tested_rows={g: rows[keep]}), g)
 
 
-def native_job(S, z, ex, g, bins, threads, ids, vkey, perm=None):
+def native_job(S, z, ex, g, bins, threads, ids, vkey, perm=None, swap=None):
     """(gene, threads, cmd, text) for one native gene over the rSNP ids given, and its line counts."""
     k = S['genes'].index(g)
-    fs, missing = exonic_lines(S, z, ex, g, vkey, perm)
+    fs, missing = exonic_lines(S, z, ex, g, vkey, perm, swap)
     text = ''.join(fs) + rsnp_subset(S, g, ids)
     starts = ','.join(str(a + FSNP_OFFSET) for a, _ in ex[g])
     ends = ','.join(str(b + FSNP_OFFSET) for _, b in ex[g])
@@ -997,15 +1019,28 @@ def records_bins(S, ds, perm, d):
     return RR.write_bins(S, dict(ds, pT=ds['pT'][:, perm], eff_lib=ds['eff_lib'][perm], perm=perm), d)[0]
 
 
-def control_job(S, ds, kept, z, ex, vkey, g, ids, perm, bins, arm):
-    """(cmd, text) for one RASQUAL arm of one gene over the rSNP ids given, allelic entries in the order perm."""
+def control_job(S, ds, kept, z, ex, vkey, g, ids, perm, bins, arm, swap=None):
+    """(cmd, text) for one RASQUAL arm of one gene over the rSNP ids given, allelic entries in the order perm and,
+    with swap, their GT reversed where swap is true."""
     k, n = S['genes'].index(g), len(S['order'])
     if arm == 'native':
-        job = native_job(S, z, ex, g, bins, 1, ids, vkey, perm)[0]
+        job = native_job(S, z, ex, g, bins, 1, ids, vkey, perm, swap)[0]
         return job[2], job[3]
     site = RR.pseudo_site(S, g)
-    text = RR.pseudo_line(g, site, ds['pL'][k][perm], ds['pR'][k][perm], kept[k][perm]) + rsnp_subset(S, g, ids)
+    line = RR.pseudo_line(g, site, ds['pL'][k][perm], ds['pR'][k][perm], kept[k][perm])
+    if swap is not None:
+        f = line.rstrip('\n').split('\t')
+        line = '\t'.join(f[:9] + swap_haplotypes(f[9:], swap)) + '\n'
+    text = line + rsnp_subset(S, g, ids)
     return pseudo_cmd(k, g, site, text.count('\n'), bins, n), text
+
+
+def records_draw(k, r, n, swap):
+    """The records null's donor order for (gene index k, run r) and, for records_swap, the swap flags drawn right
+    after it from the same generator: true where make_datasets.record_permutation's swap is -1 (the draw is 0)."""
+    rng = np.random.default_rng(np.random.SeedSequence(SEED, spawn_key=(CONTROL_KEY['records'], k, r)))
+    perm = rng.permutation(n)
+    return perm, (rng.integers(0, 2, n) == 0 if swap else None)
 
 
 def seeded(cmd, shim, seed):
@@ -1058,13 +1093,42 @@ def control_gates(S, ds, kept, z, ex, vkey, bins, sub, shim):
         log(f'gate: {g} {arm} -r on {len(gate_ids)} rSNPs: same seed byte-identical {a == a2}, other seed differs '
             f'{a != c}, rows whose chisq differs from the unpermuted fit {moved} of {len(perm_chi)}')
         ok &= a == a2 and a != c and moved > 0
+    perm, flags = records_draw(S['genes'].index(g), 0, n, True)
+    perm0, _ = records_draw(S['genes'].index(g), 0, n, False)
+    rb, rb0 = records_bins(S, ds, perm, d / 'swap_inputs'), records_bins(S, ds, perm0, d / 'records_inputs')
+    same = {m: Path(rb[m]).read_bytes() == Path(rb0[m]).read_bytes() for m in rb}
+    log(f'gate: records_swap inputs for {g} run 00 byte-identical to the records draw\'s: {same}; columns swapped '
+        f'{int(flags.sum())} of {n}')
+    ok &= all(same.values())
+    for arm in ('native', 'pseudo'):
+        rec = control_job(S, ds, kept, z, ex, vkey, g, ids, perm, bins, arm)
+        off = control_job(S, ds, kept, z, ex, vkey, g, ids, perm, bins, arm, np.zeros(n, bool))
+        cmd, text = control_job(S, ds, kept, z, ex, vkey, g, ids, perm, bins, arm, flags)
+        n_fs = int(rec[0][rec[0].index('-m') + 1])
+        a, b = rec[1].splitlines(), text.splitlines()
+        cnt = dict(het_reversed=0, hom_kept=0, unswapped_kept=0, wrong=0)
+        for fa, fb in ((x.split('\t'), y.split('\t')) for x, y in zip(a[:n_fs], b[:n_fs])):
+            cnt['wrong'] += fa[:9] != fb[:9]
+            for s, ea, eb in zip(flags, fa[9:], fb[9:], strict=True):
+                (ga, xa), (gb, xb) = ea.split(':'), eb.split(':')
+                key = ('het_reversed' if ga[0] != ga[2] else 'hom_kept') if s else 'unswapped_kept'
+                good = xa == xb and gb == (ga[::-1] if s else ga) and (gb != ga) == (key == 'het_reversed')
+                cnt[key if good else 'wrong'] += 1
+        rsnp_same = a[n_fs:] == b[n_fs:] and cmd == rec[0] and len(a) == len(b)
+        log(f'gate: {g} {arm} records_swap, swap flags all false: command and lines byte-identical to records '
+            f'{off == rec}; with run 00\'s flags over {n_fs} fSNP line(s): heterozygous entries in swapped columns with '
+            f'GT reversed and AS unchanged {cnt["het_reversed"]}, homozygous entries in swapped columns unchanged '
+            f'{cnt["hom_kept"]}, entries in unswapped columns unchanged {cnt["unswapped_kept"]}, otherwise {cnt["wrong"]} '
+            f'(want 0); command and rSNP lines identical {rsnp_same}')
+        ok &= off == rec and cnt['wrong'] == 0 and cnt['het_reversed'] > 0 and rsnp_same
     if not ok:
         raise SystemExit('control gates failed; see the lines above')
     log('control gates passed')
 
 
 def control():
-    """Both RASQUAL arms under the records null and RASQUAL's -r at the null genes' random variants (docstring)."""
+    """Both RASQUAL arms under the records null, records with a haplotype swap and RASQUAL's -r at the null genes'
+    random variants (docstring)."""
     genes, S = load_setup()
     ds, kept = observed(S)
     CONTROL.mkdir(parents=True, exist_ok=True)
@@ -1087,16 +1151,16 @@ def control():
                 done += 2 - len(todo)
                 if not todo:
                     continue
-                ss = np.random.SeedSequence(SEED, spawn_key=(CONTROL_KEY[null], k, r))
-                if null == 'records':
-                    perm = np.random.default_rng(ss).permutation(n)
+                if null in ('records', 'records_swap'):
+                    perm, swap = records_draw(k, r, n, null == 'records_swap')
                     b = records_bins(S, ds, perm, CONTROL / null / 'inputs' / f'run_{r:02d}' / g)
                 else:
-                    perm, b, seed = np.arange(n), bins, int(ss.generate_state(1)[0])
+                    ss = np.random.SeedSequence(SEED, spawn_key=(CONTROL_KEY[null], k, r))
+                    perm, swap, b, seed = np.arange(n), None, bins, int(ss.generate_state(1)[0])
                 ids = list(sub.variant_id[(sub.gene == g) & sub.random])
                 for arm in todo:
                     (CONTROL / null / f'run_{r:02d}' / arm).mkdir(parents=True, exist_ok=True)
-                    cmd, text = control_job(S, ds, kept, z, ex, vkey, g, ids, perm, b, arm)
+                    cmd, text = control_job(S, ds, kept, z, ex, vkey, g, ids, perm, b, arm, swap)
                     if null == 'rasqual_r':
                         cmd = seeded(cmd, shim, seed)
                     units = (int(gt.loc[g, 'n_covered_sites']) + 1) * len(ids) if arm == 'native' else 0
@@ -1403,8 +1467,9 @@ def control_summary(genes, arms, sub, pg):
                            observed_minus_permuted=gene_interval(df.loc[ok, f'observed_{arm}'] - df.loc[ok, f'{null}_{arm}']),
                            genes_perm_p_min=int((df.loc[ok, f'{null}_{arm}_perm_p'] <= 1 / (1 + N_RUNS)).sum()),
                            nonconv_rate_median=float(df.loc[ok, f'{null}_{arm}_nonconv_rate'].median()) if ok.any() else None)
-        both = df[f'records_{arm}'].notna() & df[f'rasqual_r_{arm}'].notna()
-        d['records_minus_rasqual_r'] = gene_interval(df.loc[both, f'records_{arm}'] - df.loc[both, f'rasqual_r_{arm}'])
+        for a, b in (('records', 'rasqual_r'), ('records_swap', 'records')):
+            both = df[f'{a}_{arm}'].notna() & df[f'{b}_{arm}'].notna()
+            d[f'{a}_minus_{b}'] = gene_interval(df.loc[both, f'{a}_{arm}'] - df.loc[both, f'{b}_{arm}'])
         pooled[arm] = d
     return df, pooled
 
@@ -1535,6 +1600,8 @@ def report():
                      nulls={n: NULL_LABEL[n] for n in NULLS}, runs_per_gene=N_RUNS,
                      variants_per_run=f'the {N_RANDOM} random tested variants of each null gene (native_subset.tsv)',
                      seeds=dict(records=f'SeedSequence({SEED}, spawn_key=({CONTROL_KEY["records"]}, gene index, run))',
+                                records_swap=f'the records perm, then swap flags integers(0, 2) == 0 from the same '
+                                             f'generator',
                                 rasqual_r=f'RASQUAL_SEED = SeedSequence({SEED}, spawn_key=({CONTROL_KEY["rasqual_r"]}, '
                                           f'gene index, run)).generate_state(1)[0] through the LD_PRELOAD time() shim'),
                      interval=f'95% gene-resampling interval: the 10 null genes drawn with replacement, {N_RESAMPLE} '
@@ -1619,7 +1686,8 @@ def control_rows(cg, cpool):
                'split allelic p at its lead': fmt(r.p_a_split)}
         for arm in ('native', 'pseudo'):
             row[f'{arm}: observed'] = fmt(r[f'observed_{arm}'])
-            row[f'{arm}: records (perm p)'] = f"{fmt(r[f'records_{arm}'])} ({fmt(r[f'records_{arm}_perm_p'])})"
+            for null in ('records', 'records_swap'):
+                row[f'{arm}: {null} (perm p)'] = f"{fmt(r[f'{null}_{arm}'])} ({fmt(r[f'{null}_{arm}_perm_p'])})"
             row[f'{arm}: -r'] = fmt(r[f'rasqual_r_{arm}'])
         rows.append(row)
     blank = {'split lead p x tested variants': '', 'split allelic p at its lead': ''}
@@ -1628,8 +1696,10 @@ def control_rows(cg, cpool):
     for arm in ('native', 'pseudo'):
         c = cpool[arm]
         mean.update({f'{arm}: observed': ci(c['observed']), f'{arm}: records (perm p)': ci(c['records']['permuted']),
+                     f'{arm}: records_swap (perm p)': ci(c['records_swap']['permuted']),
                      f'{arm}: -r': ci(c['rasqual_r']['permuted'])})
         diff.update({f'{arm}: observed': '', f'{arm}: records (perm p)': ci(c['records']['observed_minus_permuted']),
+                     f'{arm}: records_swap (perm p)': ci(c['records_swap']['observed_minus_permuted']),
                      f'{arm}: -r': ci(c['rasqual_r']['observed_minus_permuted'])})
     return pd.DataFrame(rows + [mean, diff])
 
@@ -1691,6 +1761,21 @@ def reading(rs_summ, summ, excl, pg, at_leads, genes, cg, cpool):
                    'level. '))
     ctl += (f'The pseudo arm reads {ci(psd["records"]["permuted"])} under records and '
             f'{ci(psd["rasqual_r"]["permuted"])} under -r. ')
+    if nat['records_swap']['permuted'] is not None and psd['records_swap']['permuted'] is not None:
+        word = {'offset': 'an offset', 'signal': 'association', 'both': 'part offset, part association',
+                'below': 'below the permuted level', 'unresolved': 'unresolved'}
+        def moved(arm, c):
+            d, v2 = c['records_swap_minus_records'], verdict(dict(c, records=c['records_swap']))
+            return (f'{arm} {ci(c["records_swap"]["permuted"])} (records_swap minus records {ci(d)}: '
+                    + ('no shift the interval resolves' if d['lo'] <= 0 <= d['hi'] else
+                       'the swap raises the permuted level' if d['lo'] > 0 else 'the swap lowers the permuted level')
+                    + ('' if arm != 'native' or v2 == verdict(c) else f'; read against records_swap the level would be '
+                                                                      f'{word[v2]} rather than {word[verdict(c)]}') + ')')
+        ctl += (f'The records_swap null ({runs(nat["records_swap"])}) adds the project\'s haplotype label swap: each '
+                f'permuted record\'s feature-SNP genotypes are reversed (0|1 to 1|0) with probability one half and its '
+                f'allelic counts left as reference and alternative, so its reference count moves to the other haplotype '
+                f'relative to the rSNP phase. Under it the shares are {moved("native", nat)} and '
+                f'{moved("pseudo", psd)}. ')
     sig = cg[cg.split_lead_p_x_tested < 0.05]
     if len(sig):
         ctl += (f'"Null" here means pval_beta &gt; 0.5 in the T2T total-expression permutation run; the split arm\'s '
@@ -1845,16 +1930,21 @@ two RASQUAL arms as a mapping-bias estimate.</li>
 channel, allelic channel through the origin, each p on its own degrees of freedom. Its chi-square on the figure is the
 1-df chi-square with the same p as its nominal p, derived from the p, not a likelihood ratio.</li>
 <li><b>Permutation control</b>: both RASQUAL arms at the {N_RANDOM} random variants of each of the {len(cg)} null genes,
-{N_RUNS} runs per gene under each of two nulls, with the same inputs and option lines as the observed arms. The
+{N_RUNS} runs per gene under each of three nulls, with the same inputs and option lines as the observed arms. The
 <i>records permutation</i> moves each donor's whole RNA record to another donor's genotypes: totals, offset, RNA-tied
 covariates and every feature SNP's genotype and allelic counts together, with rSNP genotypes and genotype PCs in
-place (one seeded order per gene and run, seed {SEED}). <i>RASQUAL's -r</i> is its own permutation: one run draws a
+place (one seeded order per gene and run, seed {SEED}). <i>records_swap</i> is the same order plus the project's
+haplotype label swap: with probability one half per record, drawn from the same seeded stream, every feature-SNP
+genotype of the record is reversed (0|1 to 1|0) with its allelic counts left as reference and alternative.
+<i>RASQUAL's -r</i> is its own permutation: one run draws a
 new donor order for each feature SNP (genotype probabilities, allelic counts and offsets move by it, with no haplotype
 swap) and one separate order for the totals and their covariate-fitted offsets (nbem.c:2346-2400); it is seeded
 without modifying the binary by fixing the seed RASQUAL takes from time() and the process id (main.c:209). Gates
 before the runs: the records construction at the identity order reproduced the observed rows' model fields at all
-{N_RANDOM} random variants of {GATE_GENE} in both arms, and a seeded -r run repeated with the same seed was
-byte-identical and differed under another seed.</li>
+{N_RANDOM} random variants of {GATE_GENE} in both arms, a seeded -r run repeated with the same seed was
+byte-identical and differed under another seed, and records_swap's input was byte-identical to records' with every
+swap flag off and, with them on, differed from it only by the reversed genotypes of heterozygous feature-SNP
+entries in swapped records.</li>
 </ul>
 <h2>Result</h2>
 <p><b>At the random tested variants</b> (the {N_RANDOM} per gene drawn without regard to any arm's result), native
@@ -1874,8 +1964,8 @@ per-gene share of p &lt; 0.05, each with its 95% gene-resampling interval and th
 its statistic or association is settled by permuting: an offset persists when the genotype-phenotype link is broken,
 association does not. Per null gene, each arm's observed share of p &lt; 0.05 at its {N_RANDOM} random variants, the
 mean share over the {rec['runs_min']}-{rec['runs_max']} records runs with the permutation p of the observed share
-((1 + runs at or above it) / (1 + runs)), and the mean share over the -r runs. The first two columns are the split
-arm's lead p times the gene's tested-variant count (a Bonferroni bound on its gene-level p, capped at 1) and its
+((1 + runs at or above it) / (1 + runs)), the same for the records_swap runs, and the mean share over the -r runs.
+The first two columns are the split arm's lead p times the gene's tested-variant count (a Bonferroni bound on its gene-level p, capped at 1) and its
 allelic channel's p at that lead. The last two rows are the means over genes and the paired differences observed
 minus permuted, each with its 95% gene-resampling interval.</p>
 {html_table(ct, list(ct.columns))}
@@ -1956,7 +2046,7 @@ def main():
     ap.add_argument('--select', action='store_true', help='choose the 30 genes and check them')
     ap.add_argument('--smoke', action='store_true', help=f'native-arm gate on two genes at {SMOKE_RSNPS} rSNPs')
     ap.add_argument('--arms', action='store_true', help='the three arms on the observed data (resumable)')
-    ap.add_argument('--control', action='store_true', help='both RASQUAL arms under two permutation nulls (resumable)')
+    ap.add_argument('--control', action='store_true', help='both RASQUAL arms under three permutation nulls (resumable)')
     ap.add_argument('--report', action='store_true', help='tables, summary.json and the page')
     a = ap.parse_args()
     if a.scout:
