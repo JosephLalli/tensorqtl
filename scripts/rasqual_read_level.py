@@ -3,7 +3,7 @@
 In the plasmode benchmark (scripts/plasmode/run_rasqual.py) RASQUAL received Salmon
 haplotype counts at ONE pseudo feature SNP per gene, so its read-level features -- per-SNP
 allelic counts at real exonic heterozygous sites, the reference-mapping bias phi, the
-genotype-error rate delta and posterior genotype updating -- were bypassed. This script
+sequencing/mapping (read allele) error rate delta and posterior genotype updating -- were bypassed. This script
 runs, on OBSERVED data (no thinning), three nominal-only arms over the same tested
 variants, covariates and totals, and compares them per gene.
 
@@ -18,8 +18,11 @@ STAGES
              analysis VCF inside the gene's exon union (annot/exons.tsv), and at each such
              site the heterozygous donors' phASER read counts. A site is COVERED when at
              least one heterozygous donor has a read there and both alleles are seen across
-             the heterozygous donors, which is RASQUAL's own admission condition
-             (main.c:530, asaf strictly inside (0, 1)).
+             the heterozygous donors (RASQUAL's asaf strictly inside (0, 1), main.c:535).
+             That is necessary, not sufficient, for RASQUAL's admission, which also requires
+             the site's scaled coverage km above -d and asgaf inside (0.005, 0.995)
+             (main.c:535): the smoke admitted 28 of ANKRD36's 74 covered sites and 33 of
+             PDE4DIP's 83.
              Writes OUT/scout/candidates.tsv, OUT/scout/summary.json and
              OUT/scout/exonic_sites.npz (per-site het mask and phASER ref/alt counts, so
              the arms stage builds its feature-SNP lines without rescanning). Each phASER
@@ -75,7 +78,13 @@ STAGES
                analysis VCF inside the gene's exon union (annot/exons.tsv, the -s/-e
                lists; isExon is inclusive, main.c:44-49), phased GT from the loader's
                xL|xR (the same arrays rsnp_text writes, so fSNP and rSNP phase agree) and
-               AS = phASER's ref,alt counts at that site (0,0 for donors without a row);
+               AS = phASER's ref,alt counts at that site (0,0 for donors without a row).
+               phASER writes rows only at a donor's own heterozygous sites, so every
+               homozygous donor is 0,0 at every fSNP (hom_rows 0 in all 30 genes), where
+               RASQUAL's createASVCF counts reads in every sample (ASVCF/countAS.c:211, no
+               genotype test): the native fit never sees the homozygote reads that inform
+               delta and check fSNP genotypes. phASER also filtered reads at --mapq 255
+               --baseq 10 (phaser_out/*.log), not createASVCF's qcFilterBam;
                RASQUAL's own admission (coverage > -d, both alleles seen, main.c:530-535;
                the fSNP HWE filter is off by default, fHWE = DBL_MAX at main.c:394,
                whatever usage.c prints); the same rSNP lines, option line and -h 0 as the
@@ -108,6 +117,37 @@ STAGES
                rule) excludes them from the rSNP scan and admits every tested variant.
                The smoke checks that no fSNP row is scanned and that the tested rows equal
                those of the unshifted construction (OUT/smoke_unshifted/).
+  --control  The permutation control for the level at random variants: both RASQUAL arms at
+             the N_RANDOM random variants of each of the 10 null genes, N_RUNS runs per gene
+             under each of two nulls, one thread per job, at most JOBS at once, every
+             (null, run, arm, gene) checkpointed under OUT/control/<null>/run_NN/<arm>/.
+       records   The project's records null: one donor order perm per (gene, run),
+                 SeedSequence(SEED, spawn_key=(7, gene index, run)); column i of Y, K, the
+                 RNA-tied covariates and every fSNP's GT:AS entry (native: all fSNPs
+                 together; pseudo: the one pseudo entry) is donor perm[i]'s; rSNP genotypes
+                 and genotype PCs stay (run_rasqual.write_bins with ds['perm']). No haplotype
+                 swap: pooled calibration is the same with and without it (CLAUDE.md,
+                 0.0690 vs 0.0692 at 0.05).
+       rasqual_r RASQUAL's own -r on the observed inputs. One -r run (nbem.c:2346-2400)
+                 draws a new donor order for EACH fSNP and permutes that fSNP's genotype
+                 probabilities, AS counts and offsets by it (2365), with no haplotype swap
+                 (rord12 fixed at {0, 1}, the swap commented out at 2367), then one separate
+                 order for the totals y, offsets ki, the covariate-fitted offsets dki and
+                 weights (2387). The covariate model is fitted on the unpermuted data first
+                 (main.c:632-633) and X is not used after the permutation, so the RNA-tied
+                 covariates' and the genotype PCs' fitted effects both move with the
+                 totals. A donor's fSNP records come from different donors and its allelic
+                 record is decoupled from its total record, so -r also removes within-donor
+                 structure the records null keeps. Seeded without modifying the binary:
+                 main.c:209 seeds rand() with time(NULL) + getpid() and getRandomOrder
+                 (sort.c:251) draws from rand(), so an LD_PRELOAD library (seed_shim) makes
+                 time() return RASQUAL_SEED - getpid(); RASQUAL_SEED per (gene, run) is
+                 SeedSequence(SEED, spawn_key=(8, gene index, run)).generate_state(1)[0].
+             Gates before the pool, on GATE_GENE: the records construction at the identity
+             order writes Y, K and X byte-identical to OUT/rasqual_inputs and reproduces the
+             observed rows' model fields at every random variant in both arms; a seeded -r
+             run repeated with the same seed is byte-identical, differs under another seed
+             and differs from the unpermuted fit.
   --report   Per gene: each arm's lead (RASQUAL: largest chisq; hapmixQTL: smallest
              pval_nominal, since each pair's p has its own dof), its chi-square (for
              hapmixQTL the 1-df chi-square with the same p, chi2.isf(p, 1), derived from
@@ -127,6 +167,12 @@ STAGES
              Writes OUT/per_gene.tsv, OUT/arms_at_leads.tsv, OUT/summary.json and
              OUT/report.html (one figure: per-gene lead chi-square of the three arms,
              eQTL against null genes).
+
+MODULES. run_rasqual, run_arms and make_datasets were removed from scripts/plasmode by commit fc238df
+(2026-09-27 20:59), after every stage here had run on their fc238df^ versions (git blobs 97d880a, 41db9e4,
+76ba855); copies of those are kept in OUT/control/legacy_plasmode as the record. The script now imports
+scripts/plasmode/common.py and 04_run_rasqual.py, whose functions used here compute what the old ones did;
+the old run_gene (no checkpoint file), admission and TIE, which have no equivalent there, are defined below.
 
 SAMPLE KEY. Every table is keyed on the DNA library id (100_D1, ...): the phASER manifest,
 the analysis VCF's sample columns, cohort/salmon.tsv and the Gibbs cache all use it
@@ -162,11 +208,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
 import build_targeted_gene_sets as BT                        # noqa: E402
 import compare_mixqtl_replication as CM                      # noqa: E402
 import corrected_null_store as CNS                           # noqa: E402
-import make_datasets as MD                                   # noqa: E402
-import run_arms as RA                                        # noqa: E402
-import run_rasqual as RR                                     # noqa: E402
+import common as C                                           # noqa: E402
 from compare_pipelines import RASQUAL_FIELDS                 # noqa: E402
 from tensorqtl.hapmixqtl import map_nominal, summaries_from_point_estimates   # noqa: E402
+RR = C.module('04_run_rasqual')
 
 D = BT.D
 OUT = D / 'rasqual_read_level_20260927'
@@ -182,7 +227,7 @@ WIN, MAF_MIN = CM.WIN, CM.MAF    # the tested set's cis window (1 Mb of the TSS)
 SPLIT = OUT / 'hapmix_split.parquet'
 TESTED = OUT / 'tested.npz'
 ARM_DIR = {'pseudo': OUT / 'rasqual_pseudo', 'native': OUT / 'rasqual_native'}
-JOBS = 16                  # RASQUAL threads in flight at once: the host is shared with two other benchmarks (task rule)
+JOBS = 128                 # RASQUAL threads in flight at once: 128 cores granted for the control (user decision 2026-09-27)
 THREADS_MAX = 4            # --n-threads ceiling for the largest native genes (rSNPs claimed under a mutex, nbem.c:279-286)
 SEC_PER_UNIT = 0.35        # seconds per ADMITTED fSNP x rSNP at 92 donors, an upper figure: ANKRD36 smoke 2026-09-27 (28 fSNPs, median 72 EM iterations per rSNP fit, 0.29-0.35 s at host load 100-360); PDE4DIP took 7 iterations and 0.04 s; the LDLR scout figure (14.6 ms) had 5
 POLL = 10.0                # seconds between checks of the running RASQUAL processes
@@ -192,9 +237,33 @@ GTS = np.array(['0|0', '0|1', '1|0', '1|1'])   # index 2 xL + xR, as run_rasqual
 FSNP_OFFSET = 1_000_000_000   # native fSNP lines sit at pos + this, with -s/-e shifted the same (docstring, native arm)
 ITER_FIELD = 'n_iter_null'    # README field 19 is pitr[l], THIS rSNP's fit iterations (main.c:760 prints pitr[l], pitr[0]); field 20 is line 0's count, not "alternative"
 RASQUAL_MAXITR = 231          # nbem.c:513, itr < MAXITR3 + PRESTEPS + 200 (nbem.h:8-9), the per-fit EM cap field 19 reads at non-convergence
+TIE = 1e5                     # RASQUAL ties chisq values equal after round(x * 1e5) (main.c:722, 728)
 SUBSET = OUT / 'native_subset.tsv'
 SEED, SUBSET_KEY = 42, 6      # random tested variants per gene: SeedSequence(SEED, spawn_key=(SUBSET_KEY, gene index)); keys 1-5 are the plasmode scripts'
 TOP_K, N_RANDOM = 20, 80      # native subset per gene: top TOP_K variants of each other arm, N_RANDOM random tested variants, the leads
+MODEL_FIELDS = ['chisq', 'effect_size_pi', 'error_rate_delta', 'ref_mapping_bias_phi', 'overdispersion_theta',
+                'n_feature_snps', ITER_FIELD, 'convergence', 'r2_prior_posterior_fsnps', 'r2_prior_posterior_rsnp']
+CONTROL = OUT / 'control'
+NULLS = ('records', 'rasqual_r')
+NULL_LABEL = {'records': 'records permutation', 'rasqual_r': 'RASQUAL -r'}
+N_RUNS = 15                   # runs per null gene, arm and null: ~80 CPU-min per native run of the 10 null genes (arms.log scaled to 80 rSNPs), 2 x 15 runs ~ 40 CPU-h
+CONTROL_KEY = {'records': 7, 'rasqual_r': 8}   # SeedSequence(SEED, spawn_key=(key, gene index, run))
+GATE_KEY, RESAMPLE_KEY = 10, 9   # seeds of the -r determinism gate and of the gene-resampling intervals
+N_RESAMPLE = 10_000           # gene-resampling draws per interval (genes drawn with replacement)
+GATE_GENE = 'TRMT9B'          # the cheapest null gene in the native arm, 3.2 min at 113 rSNPs (arms.log)
+GATE_RSNPS = 5                # rSNPs in the native -r determinism gate
+STUCK_CHI2 = 0.01             # a RASQUAL fit left at pi = 0.5 reports chisq ~ 0; below this at another arm's lead is reported
+SHIM_C = r'''#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+time_t time(time_t *t) {
+    const char *s = getenv("RASQUAL_SEED");
+    if (s == NULL) abort();
+    time_t v = (time_t)strtoul(s, NULL, 10) - (time_t)getpid();
+    if (t) *t = v;
+    return v;
+}
+'''
 
 
 def log(*a):
@@ -483,7 +552,7 @@ def load_setup():
     genes = read_genes()
     with contextlib.redirect_stdout(io.StringIO()):
         I = CM.load_point_estimate_inputs(gene_list=str(OUT / 'genes.txt'), regions=str(OUT / 'regions.bed'))
-    S = RA.setup(I)
+    S = C.setup(I)
     if S['genes'] != list(genes.gene):
         raise SystemExit('gene order differs between genes.txt and genes.tsv')
     bad = {g: (int(S['n_tested'][g]), int(n)) for g, n in zip(genes.gene, genes.n_tested) if int(S['n_tested'][g]) != int(n)}
@@ -502,14 +571,14 @@ def observed(S):
     N = len(keep)
     ds = dict(A=A, T=T, Va=Va, Vt=Vt, pL=R['pL'], pR=R['pR'], pT=R['pT'], eff_lib=eff_lib,
               perm=np.arange(N), swap=np.ones(N, np.int8))
-    kept = MD.allelic_kept(ds['pL'], ds['pR'], ds['Va'])
+    kept = C.allelic_kept(ds['pL'], ds['pR'], ds['Va'])
     n = kept.sum(1)
     low = [f'{g} ({k})' for g, k in zip(S['genes'], n) if k < MIN_ADMITTED]
     if low:
         raise SystemExit(f'genes below {MIN_ADMITTED} admitted allelic donors: {low}')
     log(f'observed data: {len(S["genes"])} genes x {N} donors; admitted allelic donors per gene '
         f'{n.min()}-{n.max()} (median {int(np.median(n))}); pairs with Va > 0 but dropped by the one-haplotype-zero '
-        f'rule {int(((ds["Va"] > MD.EPS) & ~kept).sum())}')
+        f'rule {int(((ds["Va"] > C.EPS) & ~kept).sum())}')
     return ds, kept
 
 
@@ -522,16 +591,16 @@ def fingerprint(ds):
 
 def run_split(S, ds):
     """map_nominal under split weighting, the call of run_arms.run_nominal without its causal-variant gate."""
-    A, T, Va, Vt, cov, n_zeroed = RA.inputs(S, ds, 'split')
+    A, T, Va, Vt, cov, n_zeroed = C.phenotypes(S, ds, 'split')
     scratch = OUT / 'scratch'
     scratch.mkdir(parents=True, exist_ok=True)
     for q in scratch.glob('*'):
         q.unlink()
-    RA.quiet(map_nominal, S['gdf'], S['vdf'][['chrom', 'pos']], A, T, Va, Vt, S['gp'],
-             xL_df=S['xLdf'], xR_df=S['xRdf'], prefix='n', covariates_df=cov,
-             genotype_covariates_df=S['I']['geno_cov_df'], window=CM.WIN,
-             output_dir=str(scratch), verbose=False, ase_covariates_df=None)
-    df = pd.concat([pd.read_parquet(q, columns=CNS.COLS + RA.DOF_COLS) for q in sorted(scratch.glob('n*.parquet'))],
+    C.quiet(map_nominal, S['gdf'], S['vdf'][['chrom', 'pos']], A, T, Va, Vt, S['gp'],
+            xL_df=S['xLdf'], xR_df=S['xRdf'], prefix='n', covariates_df=cov,
+            genotype_covariates_df=S['I']['geno_cov_df'], window=CM.WIN,
+            output_dir=str(scratch), verbose=False, ase_covariates_df=None)
+    df = pd.concat([pd.read_parquet(q, columns=CNS.COLS + C.DOF_COLS) for q in sorted(scratch.glob('n*.parquet'))],
                    ignore_index=True)
     df['variant_id'] = df['variant_id'].astype(str)
     per = df.groupby('phenotype_id').size().reindex(S['genes'])
@@ -567,8 +636,9 @@ def variant_key(vdf):
                                                                        vdf.ref.values, vdf.alt.values))}
 
 
-def exonic_lines(S, z, ex, g, vkey):
-    """The gene's fSNP lines (docstring, native arm) and how many exonic sites the loader did not carry."""
+def exonic_lines(S, z, ex, g, vkey, perm=None):
+    """The gene's fSNP lines (docstring, native arm) and how many exonic sites the loader did not carry; with perm,
+    column i carries donor perm[i]'s GT:AS entry (the records null, docstring --control)."""
     I, vdf = S['I'], S['I']['vdf']
     chrom = S['gp'].loc[g, 'chr']
     lines, missing = [], 0
@@ -584,6 +654,8 @@ def exonic_lines(S, z, ex, g, vkey):
         if not np.array_equal(xL != xR, z['het'][i]):
             raise SystemExit(f'{g} {chrom}:{pos}: heterozygosity differs between the loader and the scout archive')
         entries = [f'{gt}:{r},{a}' for gt, r, a in zip(GTS[xL * 2 + xR], z['ref_count'][i], z['alt_count'][i])]
+        if perm is not None:
+            entries = [entries[p] for p in perm]
         lines.append(f'{chrom}\t{pos + FSNP_OFFSET}\t{vdf.index[j]}\t{z["ref"][i]}\t{z["alt"][i]}\t.\tPASS\t.\tGT:AS\t'
                      + '\t'.join(entries) + '\n')
     return lines, missing
@@ -659,7 +731,30 @@ def parse_raw(path, g):
 
 
 def write_raw(path, raw):
-    MD.write_atomic(path, lambda fh: fh.write(''.join('\t'.join(r) + '\n' for r in raw.values)), 'w')
+    C.write_atomic(path, lambda fh: fh.write(''.join('\t'.join(r) + '\n' for r in raw.values)), 'w')
+
+
+def run_gene(k, g, site, text, bins, n):
+    """run_rasqual.run_gene as the pseudo arm ran it (fc238df^; the 04_run_rasqual version also checkpoints to a file):
+    RASQUAL on one gene, its rows as strings and the wall seconds."""
+    t0 = time.perf_counter()
+    out = subprocess.run(pseudo_cmd(k, g, site, text.count('\n'), bins, n), input=text, stdout=subprocess.PIPE,
+                         text=True, check=True).stdout
+    secs = time.perf_counter() - t0
+    rows = [ln.split('\t') for ln in out.splitlines()]
+    bad = [r for r in rows if len(r) != len(RASQUAL_FIELDS) or r[0] != g or r[1] == 'SKIPPED']
+    if bad or not rows:
+        raise SystemExit(f'{g}: {len(rows)} RASQUAL rows, {len(bad)} malformed or SKIPPED, e.g. {bad[:1]}')
+    return pd.DataFrame(rows, columns=RASQUAL_FIELDS), secs
+
+
+def admission(pL, pR, kept):
+    """What the pseudo fSNP's het set drops and what rounding to the AS field does to what it keeps
+    (run_rasqual.admission, fc238df^)."""
+    a, b = np.rint(pL), np.rint(pR)
+    return (f'{int(kept.sum())} het of {int((pL + pR > 0).sum())} informative pairs, '
+            f'{int(((pL + pR > 0) & ~kept).sum())} excluded by allelic_kept; among het, AS total changed by '
+            f'> 0.5 read {int((kept & (abs(a + b - pL - pR) > 0.5)).sum())}, AS 0,0 {int((kept & (a + b == 0)).sum())}')
 
 
 def arm_table(g, raw, tested):
@@ -674,11 +769,11 @@ def arm_table(g, raw, tested):
     return out, cnt
 
 
-def inputs_for_rasqual(S, ds):
+def inputs_for_rasqual(S, ds, d=OUT / 'rasqual_inputs'):
     if not os.access(RR.RASQUAL, os.X_OK):
         raise SystemExit(f'{RR.RASQUAL}: missing or not executable')
-    log(f'{RR.RASQUAL} sha256 {hashlib.sha256(RR.RASQUAL.read_bytes()).hexdigest()}')
-    bins, n_cov = RR.write_bins(S, ds, OUT / 'rasqual_inputs')
+    log(f'{RR.RASQUAL} sha256 {hashlib.sha256(Path(RR.RASQUAL).read_bytes()).hexdigest()}')
+    bins, n_cov = RR.write_bins(S, ds, d)
     log(f'RASQUAL inputs: Y = Salmon point-estimate totals pT, K = eff_lib / mean, X = {n_cov} covariates '
         f'({S["I"]["cov_df"].shape[1]} RNA-tied + {S["I"]["geno_cov_df"].shape[1]} genotype PCs), identity permutation')
     with np.load(SCOUT / 'exonic_sites.npz') as npz:
@@ -688,15 +783,20 @@ def inputs_for_rasqual(S, ds):
     return bins, z
 
 
-def native_job(S, z, ex, g, bins, threads, ids, vkey):
-    """(gene, threads, cmd, text) for one native gene over the rSNP ids given, and its line counts."""
-    k = S['genes'].index(g)
-    fs, missing = exonic_lines(S, z, ex, g, vkey)
+def rsnp_subset(S, g, ids):
+    """run_rasqual.rsnp_text over the gene's tested variants whose ids are given."""
     rows = S['tested_rows'][g]
     keep = np.isin(S['I']['vdf'].index.values[rows].astype(str), list(ids))
     if keep.sum() != len(ids):
         raise SystemExit(f'{g}: {len(ids)} rSNP ids requested, {int(keep.sum())} are tested variants')
-    text = ''.join(fs) + RR.rsnp_text(dict(S, tested_rows={g: rows[keep]}), g)
+    return RR.rsnp_text(dict(S, tested_rows={g: rows[keep]}), g)
+
+
+def native_job(S, z, ex, g, bins, threads, ids, vkey, perm=None):
+    """(gene, threads, cmd, text) for one native gene over the rSNP ids given, and its line counts."""
+    k = S['genes'].index(g)
+    fs, missing = exonic_lines(S, z, ex, g, vkey, perm)
+    text = ''.join(fs) + rsnp_subset(S, g, ids)
     starts = ','.join(str(a + FSNP_OFFSET) for a, _ in ex[g])
     ends = ','.join(str(b + FSNP_OFFSET) for _, b in ex[g])
     cmd = native_cmd(k, g, text.count('\n'), len(fs), starts, ends, int(S['gp'].loc[g, 'pos']), bins,
@@ -730,7 +830,7 @@ def native_subset(S, genes):
                             lead_pseudo=v == leads['lead_pseudo'], lead_split=v == leads['lead_split'],
                             published=v == pub))
     sub = pd.DataFrame(rec)
-    MD.write_atomic(SUBSET, lambda fh: sub.to_csv(fh, sep='\t', index=False), 'w')
+    C.write_atomic(SUBSET, lambda fh: sub.to_csv(fh, sep='\t', index=False), 'w')
     per = sub.groupby('gene').size()
     log(f'native subset: {len(sub)} gene-variant pairs, per gene {per.min()}-{per.max()}; random {int(sub.random.sum())}, '
         f'top-{TOP_K} pseudo {int(sub.top_pseudo.sum())}, top-{TOP_K} split {int(sub.top_split.sum())}, published leads '
@@ -788,11 +888,9 @@ def smoke():
             # the identity gate: the fit's own fields must not change when the fSNP lines move by FSNP_OFFSET;
             # fields 10, 16, 18 and 20 (BH q, index in region, tested count, line 0's iterations) depend on
             # which lines were scanned
-            fields = ['chisq', 'effect_size_pi', 'error_rate_delta', 'ref_mapping_bias_phi', 'overdispersion_theta',
-                      'n_feature_snps', ITER_FIELD, 'convergence', 'r2_prior_posterior_fsnps', 'r2_prior_posterior_rsnp']
             a, b = parse_raw(old, g).set_index('rs_id'), raw.set_index('rs_id')
             common = [v for v in b.index if v in a.index]
-            diff = int((a.loc[common, fields].values != b.loc[common, fields].values).any(1).sum())
+            diff = int((a.loc[common, MODEL_FIELDS].values != b.loc[common, MODEL_FIELDS].values).any(1).sum())
             log(f'  identity gate against {old.name} (unshifted fSNP lines): {len(common)} shared rSNPs, rows with any '
                 f'model field differing {diff} (want 0)')
             ok &= len(common) == len(b) and diff == 0
@@ -820,7 +918,7 @@ def arms():
     else:
         t0 = time.perf_counter()
         df, n_zeroed = run_split(S, ds)
-        RA.write_parquet(df, SPLIT, fingerprint(ds), 'log2')
+        C.write_parquet(df, SPLIT, fingerprint(ds), 'log2')
         below = sorted(df.phenotype_id[~df.allelic_admitted].unique())
         log(f'split: map_nominal {len(df):,} rows; allelic admission zeroed {n_zeroed} donor-gene pairs; genes with the '
             f'allelic channel out of the combination {len(below)} {below}; {time.perf_counter() - t0:.1f} s')
@@ -834,10 +932,10 @@ def arms():
     sites = {g: RR.pseudo_site(S, g) for g in todo}
     kk = [S['genes'].index(g) for g in todo]
     if todo:
-        log(f'  pseudo fSNP {RR.admission(ds["pL"][kk], ds["pR"][kk], kept[kk])}')
+        log(f'  pseudo fSNP {admission(ds["pL"][kk], ds["pR"][kk], kept[kk])}')
     t0 = time.perf_counter()
     with cf.ThreadPoolExecutor(JOBS) as ex_:
-        futs = {g: ex_.submit(RR.run_gene, k, g, sites[g],
+        futs = {g: ex_.submit(run_gene, k, g, sites[g],
                               RR.pseudo_line(g, sites[g], ds['pL'][k], ds['pR'][k], kept[k]) + RR.rsnp_text(S, g),
                               bins, N) for k, g in zip(kk, todo)}
         for g, f in futs.items():
@@ -873,6 +971,145 @@ def arms():
             f'[{s.min() / 60:.1f}, {s.max() / 60:.1f}]; {1e3 * s.sum() / u.sum():.1f} ms per covered fSNP x rSNP pooled '
             f'(thread-seconds not corrected)')
     log(f'wrote {OUT}')
+
+
+def seed_shim():
+    """The LD_PRELOAD library that seeds RASQUAL's rand() (docstring, --control rasqual_r), compiled once."""
+    so = CONTROL / 'seed_time.so'
+    if so.exists():
+        log(f'skip: {so} exists')
+        return so
+    src = CONTROL / 'seed_time.c'
+    src.write_text(SHIM_C)
+    subprocess.run(['gcc', '-shared', '-fPIC', '-O2', '-o', str(so), str(src)], check=True)
+    return so
+
+
+def pseudo_cmd(k, g, site, n_lines, bins, n):
+    """run_rasqual.run_gene's option line; run_gene runs the command itself, so it cannot take -r or an environment."""
+    return [str(RR.RASQUAL), '-y', bins['Y'], '-k', bins['K'], '-n', str(n), '-j', str(k + 1),
+            '-l', str(n_lines), '-m', '1', '-s', str(site[2]), '-e', str(site[3]), '-f', g,
+            '-z', '-d', str(RR.MIN_COVERAGE), '-a', str(RR.MAF), '-h', str(RR.HWE_P), '-x', bins['X'], '--n-threads', '1']
+
+
+def records_bins(S, ds, perm, d):
+    """Y, K and X with column i = donor perm[i]'s totals, offset and RNA-tied covariates; genotype PCs stay."""
+    return RR.write_bins(S, dict(ds, pT=ds['pT'][:, perm], eff_lib=ds['eff_lib'][perm], perm=perm), d)[0]
+
+
+def control_job(S, ds, kept, z, ex, vkey, g, ids, perm, bins, arm):
+    """(cmd, text) for one RASQUAL arm of one gene over the rSNP ids given, allelic entries in the order perm."""
+    k, n = S['genes'].index(g), len(S['order'])
+    if arm == 'native':
+        job = native_job(S, z, ex, g, bins, 1, ids, vkey, perm)[0]
+        return job[2], job[3]
+    site = RR.pseudo_site(S, g)
+    text = RR.pseudo_line(g, site, ds['pL'][k][perm], ds['pR'][k][perm], kept[k][perm]) + rsnp_subset(S, g, ids)
+    return pseudo_cmd(k, g, site, text.count('\n'), bins, n), text
+
+
+def seeded(cmd, shim, seed):
+    """cmd under RASQUAL's own permutation, its rand() seeded through the shim."""
+    return ['env', f'LD_PRELOAD={shim}', f'RASQUAL_SEED={seed}'] + cmd + ['-r']
+
+
+def run_once(cmd, text, f):
+    """RASQUAL into f (atomically) unless f exists; returns f's text."""
+    if f.exists():
+        log(f'  skip: {f} exists')
+    else:
+        out = subprocess.run(cmd, input=text, capture_output=True, text=True, check=True).stdout
+        C.write_atomic(f, lambda fh: fh.write(out), 'w')
+    return f.read_text()
+
+
+def control_gates(S, ds, kept, z, ex, vkey, bins, sub, shim):
+    """The known-answer gates before the pool (docstring, --control); stops the stage if any fails."""
+    d = CONTROL / 'gates'
+    d.mkdir(parents=True, exist_ok=True)
+    g, n = GATE_GENE, len(S['order'])
+    ids = list(sub.variant_id[(sub.gene == g) & sub.random])
+    ident = np.arange(n)
+    b = records_bins(S, ds, ident, d / 'identity_inputs')
+    same = {m: Path(b[m]).read_bytes() == (OUT / 'rasqual_inputs' / f'{m}.bin').read_bytes() for m in b}
+    log(f'gate: records inputs at the identity order byte-identical to {OUT / "rasqual_inputs"}: {same}')
+    ok = all(same.values())
+    for arm in ('native', 'pseudo'):
+        cmd, text = control_job(S, ds, kept, z, ex, vkey, g, ids, ident, b, arm)
+        run_once(cmd, text, d / f'identity_{arm}.tsv')
+        new = parse_raw(d / f'identity_{arm}.tsv', g).set_index('rs_id')
+        old = parse_raw(ARM_DIR[arm] / f'{g}.tsv', g).set_index('rs_id')
+        rows = [v for v in new.index if v in set(ids)]
+        want = [v for v in old.index if v in set(ids)]
+        diff = int((new.loc[rows, MODEL_FIELDS].values != old.loc[want, MODEL_FIELDS].values).any(1).sum()) \
+            if rows == want else -1
+        log(f'gate: {g} {arm} at the identity order, {len(rows)} random-variant rows against {len(want)} observed; rows '
+            f'with any model field differing {diff} (want 0)')
+        ok &= rows == want and len(rows) > 0 and diff == 0
+    s1, s2 = (int(x) for x in np.random.SeedSequence(SEED, spawn_key=(GATE_KEY,)).generate_state(2))
+    for arm, gate_ids in (('native', ids[:GATE_RSNPS]), ('pseudo', ids)):
+        cmd, text = control_job(S, ds, kept, z, ex, vkey, g, gate_ids, ident, bins, arm)
+        plain = parse_raw(d / f'identity_{arm}.tsv', g).set_index('rs_id').chisq.astype(float)
+        a = run_once(seeded(cmd, shim, s1), text, d / f'r_{arm}_seed1a.tsv')
+        a2 = run_once(seeded(cmd, shim, s1), text, d / f'r_{arm}_seed1b.tsv')
+        c = run_once(seeded(cmd, shim, s2), text, d / f'r_{arm}_seed2.tsv')
+        perm_chi = parse_raw(d / f'r_{arm}_seed1a.tsv', g).set_index('rs_id').chisq.astype(float)
+        moved = int((perm_chi != plain.reindex(perm_chi.index)).sum())
+        log(f'gate: {g} {arm} -r on {len(gate_ids)} rSNPs: same seed byte-identical {a == a2}, other seed differs '
+            f'{a != c}, rows whose chisq differs from the unpermuted fit {moved} of {len(perm_chi)}')
+        ok &= a == a2 and a != c and moved > 0
+    if not ok:
+        raise SystemExit('control gates failed; see the lines above')
+    log('control gates passed')
+
+
+def control():
+    """Both RASQUAL arms under the records null and RASQUAL's -r at the null genes' random variants (docstring)."""
+    genes, S = load_setup()
+    ds, kept = observed(S)
+    CONTROL.mkdir(parents=True, exist_ok=True)
+    bins, z = inputs_for_rasqual(S, ds, CONTROL / 'rasqual_r' / 'inputs')
+    same = {m: Path(bins[m]).read_bytes() == (OUT / 'rasqual_inputs' / f'{m}.bin').read_bytes() for m in bins}
+    if not all(same.values()):
+        raise SystemExit(f'-r inputs differ from the observed arms\' inputs: {same}')
+    sub = pd.read_csv(SUBSET, sep='\t', keep_default_na=False, na_values=[''])
+    ex, vkey, shim = exon_unions(), variant_key(S['I']['vdf']), seed_shim()
+    control_gates(S, ds, kept, z, ex, vkey, bins, sub, shim)
+    n = len(S['order'])
+    gt = genes.set_index('gene')
+    null_genes = list(genes.gene[genes.pool == 'null'])
+    jobs, done = [], 0
+    for null in NULLS:
+        for r in range(N_RUNS):
+            for g in null_genes:
+                k = S['genes'].index(g)
+                todo = [a for a in ('native', 'pseudo') if not (CONTROL / null / f'run_{r:02d}' / a / f'{g}.tsv').exists()]
+                done += 2 - len(todo)
+                if not todo:
+                    continue
+                ss = np.random.SeedSequence(SEED, spawn_key=(CONTROL_KEY[null], k, r))
+                if null == 'records':
+                    perm = np.random.default_rng(ss).permutation(n)
+                    b = records_bins(S, ds, perm, CONTROL / null / 'inputs' / f'run_{r:02d}' / g)
+                else:
+                    perm, b, seed = np.arange(n), bins, int(ss.generate_state(1)[0])
+                ids = list(sub.variant_id[(sub.gene == g) & sub.random])
+                for arm in todo:
+                    (CONTROL / null / f'run_{r:02d}' / arm).mkdir(parents=True, exist_ok=True)
+                    cmd, text = control_job(S, ds, kept, z, ex, vkey, g, ids, perm, b, arm)
+                    if null == 'rasqual_r':
+                        cmd = seeded(cmd, shim, seed)
+                    units = (int(gt.loc[g, 'n_covered_sites']) + 1) * len(ids) if arm == 'native' else 0
+                    jobs.append((units, (f'{null}/run_{r:02d}/{arm}/{g}', 1, cmd, text)))
+    jobs = [j for _, j in sorted(jobs, key=lambda x: -x[0])]
+    log(f'control: {len(NULLS)} nulls x {N_RUNS} runs x {len(null_genes)} null genes x 2 arms; {done} finished, '
+        f'{len(jobs)} to run over {JOBS} slots')
+    secs = run_pool(jobs, CONTROL)
+    if secs:
+        s = np.array(list(secs.values()))
+        log(f'control done: {len(s)} jobs, {s.sum() / 3600:.1f} CPU hours, per job median {np.median(s):.0f} s '
+            f'[{s.min():.0f}, {s.max():.0f}]')
+    log(f'wrote {CONTROL}')
 
 
 ARMS = ('native', 'pseudo', 'split')
@@ -919,8 +1156,27 @@ def lead_row(t, arm):
         n_tie = 1
     else:
         r = t.loc[t.chisq.idxmax()]
-        n_tie = int((np.round(t.chisq * RR.TIE) == np.round(r.chisq * RR.TIE)).sum())
+        n_tie = int((np.round(t.chisq * TIE) == np.round(r.chisq * TIE)).sum())
     return r, n_tie
+
+
+def gene_interval(x, stat=np.mean):
+    """stat over the genes' finite values, its 95% gene-resampling interval (genes drawn with replacement, N_RESAMPLE
+    draws from one seeded stream, so every call over the same number of genes uses the same draws) and the per-gene
+    range; None when no gene has a value."""
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    if not len(x):
+        return None
+    idx = np.random.default_rng(np.random.SeedSequence(SEED, spawn_key=(RESAMPLE_KEY,))).integers(0, len(x), (N_RESAMPLE, len(x)))
+    m = stat(x[idx], axis=1)
+    return dict(value=float(stat(x)), lo=float(np.percentile(m, 2.5)), hi=float(np.percentile(m, 97.5)),
+                min=float(x.min()), max=float(x.max()), n=int(len(x)))
+
+
+def ci(d, nd=3):
+    """'value [lo, hi]' of a gene_interval record."""
+    return 'n/a' if d is None else f'{fmt(d["value"], nd)} [{fmt(d["lo"], nd)}, {fmt(d["hi"], nd)}]'
 
 
 def paired(x, y):
@@ -962,7 +1218,12 @@ def per_gene_table(genes, arms, counts, dos, pub_dos, n_admitted, subset_flags):
                         f'afc_{arm}': float(lr.slope), f'r2_{arm}_published': ld_r2(dos.get(lr.variant_id), pd_),
                         f'lead_is_published_{arm}': bool(lr.variant_id == r.variant_id), f'n_rows_{arm}': int(len(t))})
             if arm == 'native':
-                rec['lead_ties_native'] = n_tie
+                tied = t.variant_id[np.round(t.chisq * TIE) == np.round(lr.chisq * TIE)]
+                r2t = np.array([ld_r2(dos.get(v), pd_) for v in tied])
+                r2t = r2t[np.isfinite(r2t)]
+                rec.update(lead_ties_native=n_tie,
+                           r2_native_published_ties_min=float(r2t.min()) if len(r2t) else float('nan'),
+                           r2_native_published_ties_max=float(r2t.max()) if len(r2t) else float('nan'))
             if arm in ('native', 'pseudo'):
                 c = counts[(arm, g)]
                 rec.update({f'phi_{arm}': float(lr.phi), f'delta_{arm}': float(lr.delta), f'theta_{arm}': float(lr.theta),
@@ -1073,7 +1334,9 @@ def random_sample(genes, arms, sub):
         d = dict(n_genes=int(len(s)), variants=int(s.n_pseudo.sum()) if len(s) else 0,
                  chi2_1_median=float(chi2.median(1)),
                  level={arm: dict(median_of_gene_median_chi2=float(s[f'median_chi2_{arm}'].median()) if len(s) else None,
-                                  mean_share_p_below_0_05=float(s[f'p05_{arm}'].mean()) if len(s) else None)
+                                  mean_share_p_below_0_05=float(s[f'p05_{arm}'].mean()) if len(s) else None,
+                                  median_chi2_interval=gene_interval(s[f'median_chi2_{arm}'], np.median),
+                                  share_interval=gene_interval(s[f'p05_{arm}']))
                         for arm in ARMS},
                  level_by_segmental_duplication={
                      ('sd' if flag else 'not_sd'): {arm: dict(n_genes=int((s.segmental_duplication == flag).sum()),
@@ -1088,6 +1351,7 @@ def random_sample(genes, arms, sub):
             lt = int((sh < 0.5).sum())
             d[f'native_vs_{other}'] = dict(
                 n_genes=int(len(sh)), mean_share_native_larger=float(sh.mean()) if len(sh) else None,
+                share_native_larger_interval=gene_interval(sh),
                 genes_share_above_half=gt, genes_share_below_half=lt,
                 sign_test_p=float(binomtest(gt, gt + lt, 0.5).pvalue) if gt + lt else None,
                 median_of_gene_median_diff=float(md.median()) if len(md) else None,
@@ -1096,6 +1360,53 @@ def random_sample(genes, arms, sub):
                 median_chi2_other=float(s[f'median_chi2_{other}'].median()) if len(s) else None)
         summ[pool] = d
     return df, summ
+
+
+def control_summary(genes, arms, sub, pg):
+    """Per null gene and RASQUAL arm: the share of the N_RANDOM random variants with p < 0.05 observed and, per null,
+    averaged over the finished runs (each run's share over its converged rows), with the per-gene permutation p of
+    the observed share, (1 + runs at or above it) / (1 + runs); pooled over the genes, the mean share observed and
+    permuted and their paired difference, each with a gene-resampling interval."""
+    pgi = pg.set_index('gene')
+    rows = []
+    for g in genes.gene[genes.pool == 'null']:
+        ids = set(sub.variant_id[(sub.gene == g) & sub.random])
+        rec = dict(gene=g, split_lead_p_x_tested=float(min(1.0, pgi.loc[g, 'p_split'] * pgi.loc[g, 'n_tested'])),
+                   p_a_split=float(pgi.loc[g, 'p_a_split']))
+        for arm in ('native', 'pseudo'):
+            t = arms[arm]
+            rec[f'observed_{arm}'] = float((t.pval_nominal[(t.phenotype_id == g) & t.variant_id.isin(ids)] < 0.05).mean())
+            for null in NULLS:
+                sh, nonconv, conv = [], 0, 0
+                for r in range(N_RUNS):
+                    f = CONTROL / null / f'run_{r:02d}' / arm / f'{g}.tsv'
+                    if f.exists():
+                        out, cnt = arm_table(g, parse_raw(f, g), ids)
+                        sh.append(float((out.pval_nominal < 0.05).mean()))
+                        nonconv, conv = nonconv + cnt['nonconv'], conv + len(out)
+                sh = np.array(sh)
+                rec.update({f'{null}_{arm}': float(sh.mean()) if len(sh) else float('nan'),
+                            f'{null}_{arm}_runs': int(len(sh)),
+                            f'{null}_{arm}_perm_p': float((1 + (sh >= rec[f'observed_{arm}']).sum()) / (1 + len(sh)))
+                            if len(sh) else float('nan'),
+                            f'{null}_{arm}_nonconv_rate': nonconv / (nonconv + conv) if nonconv + conv else float('nan')})
+        rows.append(rec)
+    df = pd.DataFrame(rows)
+    pooled = {}
+    for arm in ('native', 'pseudo'):
+        d = dict(observed=gene_interval(df[f'observed_{arm}']))
+        for null in NULLS:
+            ok = df[f'{null}_{arm}'].notna()
+            d[null] = dict(genes=int(ok.sum()), runs_min=int(df[f'{null}_{arm}_runs'].min()),
+                           runs_max=int(df[f'{null}_{arm}_runs'].max()),
+                           permuted=gene_interval(df.loc[ok, f'{null}_{arm}']),
+                           observed_minus_permuted=gene_interval(df.loc[ok, f'observed_{arm}'] - df.loc[ok, f'{null}_{arm}']),
+                           genes_perm_p_min=int((df.loc[ok, f'{null}_{arm}_perm_p'] <= 1 / (1 + N_RUNS)).sum()),
+                           nonconv_rate_median=float(df.loc[ok, f'{null}_{arm}_nonconv_rate'].median()) if ok.any() else None)
+        both = df[f'records_{arm}'].notna() & df[f'rasqual_r_{arm}'].notna()
+        d['records_minus_rasqual_r'] = gene_interval(df.loc[both, f'records_{arm}'] - df.loc[both, f'rasqual_r_{arm}'])
+        pooled[arm] = d
+    return df, pooled
 
 
 def figure(pg, path):
@@ -1189,11 +1500,16 @@ def report():
     tabs, counts, missing = load_arm_tables(genes, {'pseudo': tested, 'native': sub_ids})
     arms = dict(tabs, split=split)
     pg, at_leads = per_gene_table(genes, arms, counts, dos, pub_dos, n_admitted, subset_flags)
+    # every donor 0|1 at the pseudo fSNP: getCov2 (nbem.c:2068-2087) divides by the prior dosage variance, zero here
+    pg['pseudo_prior_constant'] = pg.n_admitted == len(z['samples'])
+    pg.loc[pg.pseudo_prior_constant, 'r2_fsnps_pseudo'] = np.nan
     summ = summarise(pg)
     rs, rs_summ = random_sample(genes, arms, sub)
-    MD.write_atomic(OUT / 'per_gene.tsv', lambda fh: pg.to_csv(fh, sep='\t', index=False), 'w')
-    MD.write_atomic(OUT / 'arms_at_leads.tsv', lambda fh: at_leads.to_csv(fh, sep='\t', index=False), 'w')
-    MD.write_atomic(OUT / 'random_sample.tsv', lambda fh: rs.to_csv(fh, sep='\t', index=False), 'w')
+    cg, cpool = control_summary(genes, arms, sub, pg)
+    C.write_atomic(OUT / 'per_gene.tsv', lambda fh: pg.to_csv(fh, sep='\t', index=False), 'w')
+    C.write_atomic(OUT / 'arms_at_leads.tsv', lambda fh: at_leads.to_csv(fh, sep='\t', index=False), 'w')
+    C.write_atomic(OUT / 'random_sample.tsv', lambda fh: rs.to_csv(fh, sep='\t', index=False), 'w')
+    C.write_atomic(OUT / 'control_per_gene.tsv', lambda fh: cg.to_csv(fh, sep='\t', index=False), 'w')
     excl = {arm: {k: int(sum(c[k] for (a, g), c in counts.items() if a == arm)) for k in ('nonconv', 'absent', 'fsnp_as_rsnp_rows', 'chisq_le0', 'no_fsnp')}
             for arm in ARM_DIR}
     figure(pg, OUT / 'lead_chi2.png')
@@ -1213,17 +1529,34 @@ def report():
                            pairs=int(len(sub)), per_gene_min=int(sub.groupby('gene').size().min()),
                            per_gene_max=int(sub.groupby('gene').size().max()), random_pairs=int(sub.random.sum())),
         random_sample=rs_summ,
+        control=dict(question='Is RASQUAL\'s share of p < 0.05 at the random variants of the null genes an offset of '
+                              'its statistic or association? Offset if the permuted share matches the observed one, '
+                              'signal if it falls to about 0.05.',
+                     nulls={n: NULL_LABEL[n] for n in NULLS}, runs_per_gene=N_RUNS,
+                     variants_per_run=f'the {N_RANDOM} random tested variants of each null gene (native_subset.tsv)',
+                     seeds=dict(records=f'SeedSequence({SEED}, spawn_key=({CONTROL_KEY["records"]}, gene index, run))',
+                                rasqual_r=f'RASQUAL_SEED = SeedSequence({SEED}, spawn_key=({CONTROL_KEY["rasqual_r"]}, '
+                                          f'gene index, run)).generate_state(1)[0] through the LD_PRELOAD time() shim'),
+                     interval=f'95% gene-resampling interval: the 10 null genes drawn with replacement, {N_RESAMPLE} '
+                              f'draws, each gene carrying its value (for permuted shares, its mean over runs)',
+                     pooled=cpool, per_gene=cg.to_dict('records')),
         definitions=dict(lead='RASQUAL pseudo: largest chisq over the tested variants; RASQUAL native: largest chisq over '
                               'its subset; hapmixQTL: smallest pval_nominal over the tested variants',
                          chi2_split='chi2.isf(pval_nominal, 1): the 1-df chi-square with hapmixQTL\'s p, not a likelihood ratio',
                          afc='log2 allelic fold change ALT over REF; RASQUAL log2(pi / (1 - pi)), hapmixQTL the combined slope',
                          ld_r2='Pearson r^2 of ALT dosage over the 92 donors',
                          phi_pseudo='L/R imbalance by construction (ref = L for every heterozygote), not reference-mapping bias',
+                         delta='RASQUAL field 13, the sequencing/mapping (read allele) error rate: the probability that a '
+                               'read shows the other allele (getK, nbem.c:1428-1439), which pulls every expected allelic '
+                               'share toward 0.5',
+                         r2_fsnps_pseudo='field 24 at the pseudo lead; NaN where every donor is admitted '
+                                         '(pseudo_prior_constant), because the prior dosage is then constant and the '
+                                         'squared correlation undefined',
                          sign_test='two-sided binomial test of the count of genes with a positive paired difference against one half',
                          wilcoxon='two-sided Wilcoxon signed-rank test on the paired differences'),
         summary=summ, per_gene=pg.to_dict('records'))
-    MD.write_atomic(OUT / 'summary.json', lambda fh: fh.write(MD.dumps(rec)), 'w')
-    write_page(genes, pg, summ, missing, excl, rs_summ, sub)
+    C.write_atomic(OUT / 'summary.json', lambda fh: fh.write(C.dumps(rec)), 'w')
+    write_page(genes, pg, summ, missing, excl, rs_summ, sub, at_leads, cg, cpool)
     for pool in ('eqtl', 'null', 'all'):
         for a, b in PAIRS:
             p = summ[pool][f'log2_chi2_{a}_over_{b}']
@@ -1248,7 +1581,9 @@ def random_rows(rs_summ):
             q = rs_summ.get(pool, {}).get(f'native_vs_{other}')
             if q:
                 rows.append(dict(pool=pool, comparison=f'RASQUAL native vs {ARM_LABEL[other]}', genes=q['n_genes'],
-                                 mean_share_native_larger=q['mean_share_native_larger'],
+                                 mean_share_native_larger=ci(q['share_native_larger_interval']),
+                                 per_gene_range=f"{fmt(q['share_native_larger_interval']['min'])} to "
+                                                f"{fmt(q['share_native_larger_interval']['max'])}",
                                  genes_above_below_half=f"{q['genes_share_above_half']} / {q['genes_share_below_half']}",
                                  sign_p=q['sign_test_p'], median_gene_median_diff=q['median_of_gene_median_diff'],
                                  wilcoxon_p=q['wilcoxon_p'], median_chi2_native=q['median_chi2_native'],
@@ -1265,8 +1600,10 @@ def level_rows(rs_summ):
         sd = rs_summ.get(pool, {}).get('level_by_segmental_duplication', {})
         if lv:
             for arm in ARMS:
-                rows.append(dict(pool=pool, arm=ARM_LABEL[arm], median_chi2=lv[arm]['median_of_gene_median_chi2'],
-                                 share_p_below_0_05=lv[arm]['mean_share_p_below_0_05'],
+                mi, si = lv[arm]['median_chi2_interval'], lv[arm]['share_interval']
+                rows.append(dict(pool=pool, arm=ARM_LABEL[arm], median_chi2=ci(mi),
+                                 median_chi2_per_gene_range=f"{fmt(mi['min'])} to {fmt(mi['max'])}",
+                                 share_p_below_0_05=ci(si), share_per_gene_range=f"{fmt(si['min'])} to {fmt(si['max'])}",
                                  share_p_below_0_05_sd_genes=(sd.get('sd', {}).get(arm) or {}).get('mean_share_p_below_0_05'),
                                  n_sd_genes=(sd.get('sd', {}).get(arm) or {}).get('n_genes'),
                                  share_p_below_0_05_other_genes=(sd.get('not_sd', {}).get(arm) or {}).get('mean_share_p_below_0_05'),
@@ -1274,64 +1611,187 @@ def level_rows(rs_summ):
     return pd.DataFrame(rows)
 
 
-def reading(rs_summ, summ, excl, n_pseudo_rows, n_native_rows):
-    """The paragraph that sets the paired advantage against the level at random variants, from the computed values."""
+def control_rows(cg, cpool):
+    """The control's table: one row per null gene, then the pooled means and paired differences with intervals."""
+    rows = []
+    for _, r in cg.iterrows():
+        row = {'gene': r.gene, 'split lead p x tested variants': fmt(r.split_lead_p_x_tested),
+               'split allelic p at its lead': fmt(r.p_a_split)}
+        for arm in ('native', 'pseudo'):
+            row[f'{arm}: observed'] = fmt(r[f'observed_{arm}'])
+            row[f'{arm}: records (perm p)'] = f"{fmt(r[f'records_{arm}'])} ({fmt(r[f'records_{arm}_perm_p'])})"
+            row[f'{arm}: -r'] = fmt(r[f'rasqual_r_{arm}'])
+        rows.append(row)
+    blank = {'split lead p x tested variants': '', 'split allelic p at its lead': ''}
+    mean = {'gene': 'mean over genes [95% interval]', **blank}
+    diff = {'gene': 'observed minus permuted', **blank}
+    for arm in ('native', 'pseudo'):
+        c = cpool[arm]
+        mean.update({f'{arm}: observed': ci(c['observed']), f'{arm}: records (perm p)': ci(c['records']['permuted']),
+                     f'{arm}: -r': ci(c['rasqual_r']['permuted'])})
+        diff.update({f'{arm}: observed': '', f'{arm}: records (perm p)': ci(c['records']['observed_minus_permuted']),
+                     f'{arm}: -r': ci(c['rasqual_r']['observed_minus_permuted'])})
+    return pd.DataFrame(rows + [mean, diff])
+
+
+def verdict(c):
+    """How the records control reads for one arm: 'offset', 'signal', 'both', 'below' or 'unresolved'."""
+    perm, diff = c['records']['permuted'], c['records']['observed_minus_permuted']
+    at_nominal = perm['lo'] <= 0.05 <= perm['hi']
+    if diff['hi'] < 0:
+        return 'below'
+    if diff['lo'] <= 0:
+        return 'unresolved' if at_nominal else 'offset'
+    return 'signal' if at_nominal else 'both'
+
+
+def reading(rs_summ, summ, excl, pg, at_leads, genes, cg, cpool):
+    """The reading paragraphs, every number computed; the verdict on the level at random variants is read off the
+    records control."""
     nl = rs_summ.get('null', {}).get('level')
-    q = rs_summ.get('null', {}).get('native_vs_pseudo')
-    e, a = summ['eqtl'], summ['all']
-    if not nl or not q or not e['delta_native'] or not e['delta_pseudo']:
+    e, n, a = summ['eqtl'], summ['null'], summ['all']
+    nat, psd = cpool['native'], cpool['pseudo']
+    rec, rr = nat['records'], nat['rasqual_r']
+    if not nl or not e['delta_native'] or not e['delta_pseudo'] or rec['permuted'] is None:
         return ''
     p = e['log2_chi2_native_over_pseudo']
     pct = lambda x: f'{100 * x:.1f}%'
-    sd = rs_summ.get('null', {}).get('level_by_segmental_duplication', {})
-    sd_line = ''
-    if sd.get('sd', {}).get('native') and sd.get('not_sd', {}).get('native'):
-        sd_line = (f' The offset is not confined to the genes overlapping a segmental duplication: among the null genes it is '
-                   f'{pct(sd["sd"]["native"]["mean_share_p_below_0_05"])} in the {sd["sd"]["native"]["n_genes"]} that do and '
-                   f'{pct(sd["not_sd"]["native"]["mean_share_p_below_0_05"])} in the {sd["not_sd"]["native"]["n_genes"]} that do not.')
-    return (f'<p><b>Reading.</b> At its own lead RASQUAL native reports a larger chi-square than the pseudo-fSNP arm in '
+    v = verdict(nat)
+    runs = lambda c: (f'{c["runs_min"]} runs per gene' if c['runs_min'] == c['runs_max']
+                      else f'{c["runs_min"]}-{c["runs_max"]} runs per gene')
+    head = (f'<b>Reading.</b> At its own lead RASQUAL native reports a larger chi-square than the pseudo-fSNP arm in '
             f'{p["first_greater"]} of {p["n"]} eQTL genes (median log2 ratio {fmt(p["median_diff"], 2)}, a factor '
-            f'{2 ** p["median_diff"]:.2f}), but at the random variants of the null genes {pct(nl["native"]["mean_share_p_below_0_05"])} '
-            f'of native\'s p-values are below 0.05 against {pct(nl["pseudo"]["mean_share_p_below_0_05"])} for the pseudo arm and '
-            f'{pct(nl["split"]["mean_share_p_below_0_05"])} for hapmixQTL split, with a median chi-square of '
-            f'{fmt(nl["native"]["median_of_gene_median_chi2"])} against the chi-square(1) median of {chi2.median(1):.3f}.{sd_line} '
-            f'So part of native\'s advantage is an offset of its statistic that is present where no association is '
-            f'expected, and the paired comparisons at the leads cannot separate sharper localisation from that offset. '
-            f'The two RASQUAL arms also fit different models to the same totals: the pseudo arm\'s genotype-error rate delta '
-            f'(median {fmt(e["delta_pseudo"]["median"], 3)} at the lead, up to {fmt(e["delta_pseudo"]["max"], 2)}) absorbs '
-            f'the noise of the single haplotype-count feature SNP, where native\'s is {fmt(e["delta_native"]["median"], 4)}, '
-            f'and the single pseudo feature SNP\'s posterior genotypes are moved far from their prior '
-            f'(r<sup>2</sup> {fmt(e["r2_fsnps_pseudo"]["median"])} against {fmt(e["r2_fsnps_native"]["median"])} for native\'s '
-            f'{fmt(e["n_fsnp_native"]["median"], 0)} feature SNPs): a single heterozygous feature SNP holding a gene\'s whole '
-            f'haplotype count has no per-SNP structure for the beta-binomial to fit, so RASQUAL parameterises the mismatch '
-            f'as genotype error and moves that SNP\'s posterior genotype instead. The pseudo arm also leaves more rows '
-            f'without a usable statistic: {excl["pseudo"]["chisq_le0"]:,} of its {n_pseudo_rows:,} converged rows have a '
-            f'chi-square at or below zero and {excl["pseudo"]["nonconv"]} rows did not converge, against '
-            f'{excl["native"]["chisq_le0"]} and {excl["native"]["nonconv"]} of native\'s {n_native_rows:,}. '
-            f'The conclusion is at two levels. The pseudo construction does bypass RASQUAL\'s read-level model, and '
-            f'measurably so: delta absorbs the haplotype-count noise, phi is the L/R imbalance rather than reference-mapping '
-            f'bias, and genotype updating fires on the one feature SNP. But the statistic that comes out is the one closer '
-            f'to nominal where no association is expected, and native\'s is offset above it, so on these data the '
-            f'construction does not disadvantage RASQUAL in the direction that would matter for a head-to-head against '
-            f'hapmixQTL. Where the arms\' leads sit relative to the T2T run\'s published leads discriminates nothing here '
-            f'({a["native"]["r2_published_at_least_close"]}, {a["pseudo"]["r2_published_at_least_close"]} and '
-            f'{a["split"]["r2_published_at_least_close"]} of {a["native"]["n_r2_published"]} leads within r<sup>2</sup> '
-            f'{R2_CLOSE} for native, pseudo and split; every paired sign test p &gt; 0.4), which is a design limit rather '
-            f'than a null result: 14 of the 30 published leads lie inside the gene body, where no arm tests.</p>')
+            f'{2 ** p["median_diff"]:.2f}). At the {N_RANDOM} random variants of each null gene, {ci(nat["observed"])} '
+            f'of native\'s p-values are below 0.05 (mean over the {nat["observed"]["n"]} genes, 95% gene-resampling '
+            f'interval), against {ci(psd["observed"])} for the pseudo arm and {ci(nl["split"]["share_interval"])} for '
+            f'hapmixQTL split. ')
+    ctl = (f'Under the records permutation ({runs(rec)}), which breaks only the link between the tested genotypes and '
+           f'the rest of each donor\'s record, native\'s share is {ci(rec["permuted"])}, and the paired difference '
+           f'observed minus permuted is {ci(rec["observed_minus_permuted"])}. ')
+    ctl += {'offset': 'The excess survives when the genotype-phenotype link is broken, so it is an offset of native\'s '
+                      'statistic rather than association, and part of native\'s paired advantage at the leads is that '
+                      'offset. ',
+            'signal': 'The permuted share is consistent with 0.05 and the observed share lies above it, so native\'s '
+                      'excess at the random variants of these genes is association, not an offset of its statistic. ',
+            'both': 'The permuted share lies above 0.05 and the observed share above the permuted one, so native\'s '
+                    'excess is part offset of its statistic and part association. ',
+            'below': 'The observed share lies below the permuted one. ',
+            'unresolved': 'The permuted share\'s interval contains both 0.05 and the observed share, so the control '
+                          'does not separate an offset from association on these genes. '}[v]
+    d = nat['records_minus_rasqual_r']
+    if rr['permuted'] is not None and d is not None:
+        ctl += (f'Under RASQUAL\'s own -r ({runs(rr)}) native\'s share is {ci(rr["permuted"])}; records minus -r is '
+                f'{ci(d)}. One -r run draws a separate donor order for every feature SNP and another for the totals, so '
+                f'it also removes within-donor structure the records null keeps; '
+                + ('the gap is the part of native\'s permuted level that comes from that structure'
+                   + (', and read against -r alone native\'s excess would have looked like association. '
+                      if v == 'offset' and rr['permuted']['lo'] <= 0.05 <= rr['permuted']['hi'] else '. ')
+                   if d['lo'] > 0 or d['hi'] < 0 else
+                   'the two nulls agree within that interval, so on these genes that structure does not move native\'s '
+                   'level. '))
+    ctl += (f'The pseudo arm reads {ci(psd["records"]["permuted"])} under records and '
+            f'{ci(psd["rasqual_r"]["permuted"])} under -r. ')
+    sig = cg[cg.split_lead_p_x_tested < 0.05]
+    if len(sig):
+        ctl += (f'"Null" here means pval_beta &gt; 0.5 in the T2T total-expression permutation run; the split arm\'s '
+                f'lead p times the tested-variant count (a Bonferroni bound on its gene-level p) is below 0.05 in '
+                f'{len(sig)} of the {len(cg)} null genes: '
+                + ', '.join(f'{r.gene} ({fmt(r.split_lead_p_x_tested)}, allelic p at that lead {fmt(r.p_a_split)}; '
+                            f'native share {fmt(r.observed_native)} observed, {fmt(r.records_native)} permuted, '
+                            f'permutation p {fmt(r.records_native_perm_p)})' for r in sig.itertuples()) + '. ')
+    ctl += (f'In {rec["genes_perm_p_min"]} of the {rec["genes"]} null genes native\'s observed share exceeds every '
+            f'permuted run (permutation p at its floor, {1 / (1 + rec["runs_max"]):.3f}).')
+
+    rank = (pg.chi2_native / pg.chi2_pseudo).rank(ascending=False).astype(int)
+    low = pg.assign(rank=rank)[pg.r2_rsnp_native < pg.r2_rsnp_pseudo.min()].sort_values('r2_rsnp_native')
+    def_e, def_n = e['r2_fsnps_pseudo'], n['r2_fsnps_pseudo']
+    par = (f'The two RASQUAL arms fit different read-level models to the same totals, and two separate effects show '
+           f'at the leads. First, delta, the sequencing/mapping (read allele) error rate, is the probability that a '
+           f'read shows the other allele, so a large delta pulls every expected allelic share toward 0.5 (getK, '
+           f'nbem.c:1428-1439): the pseudo arm\'s delta has median {fmt(e["delta_pseudo"]["median"], 3)} at the eQTL '
+           f'leads (up to {fmt(e["delta_pseudo"]["max"], 2)}) against native\'s {fmt(e["delta_native"]["median"], 4)}, '
+           f'so the construction shrinks the pseudo arm\'s allelic contribution, which is itself a handicap. Second, '
+           f'posterior genotype updating: the squared correlation between prior and posterior feature-SNP genotypes '
+           f'(field 24) is undefined for the pseudo arm in the {int(pg.pseudo_prior_constant.sum())} genes where every '
+           f'donor is admitted, because the prior dosage is then constant (getCov2, nbem.c:2067-2087); where it is '
+           f'defined its median is {fmt(def_e["median"] if def_e else None)} over {def_e["n"] if def_e else 0} eQTL '
+           f'genes and {fmt(def_n["median"] if def_n else None)} over {def_n["n"] if def_n else 0} null genes, against '
+           f'{fmt(e["r2_fsnps_native"]["median"])} and {fmt(n["r2_fsnps_native"]["median"])} for native\'s '
+           f'{fmt(e["n_fsnp_native"]["median"], 0)} / {fmt(n["n_fsnp_native"]["median"], 0)} feature SNPs (eQTL / null '
+           f'medians). RASQUAL\'s own over-correction diagnostic, the prior-posterior r<sup>2</sup> of the rSNP '
+           f'genotypes (field 25; its README asks that large changes be treated with caution), is at least '
+           f'{fmt(pg.r2_rsnp_pseudo.min())} at the pseudo lead in every gene, and falls below that at native\'s lead in '
+           f'{len(low)} genes: '
+           + ', '.join(f'{r.gene} {fmt(r.r2_rsnp_native)} (chi-square {r.chi2_native:.0f} against {r.chi2_pseudo:.0f}, '
+                       f'rank {r.rank} of {len(pg)} by the native-over-pseudo ratio)' for r in low.itertuples())
+           + '. Native was not rerun with --no-posterior-update, so whether those lead chi-squares survive without '
+           'genotype correction is not known. ')
+
+    conv = {'native': int(pg.n_rows_native.fillna(0).sum()), 'pseudo': int(pg.n_rows_pseudo.sum())}
+    tot = {arm: conv[arm] + excl[arm]['nonconv'] for arm in conv}
+    fail = (f'As rates, native fails to converge more often ({excl["native"]["nonconv"]} of {tot["native"]:,} rows, '
+            f'{pct(excl["native"]["nonconv"] / tot["native"])}) than the pseudo arm ({excl["pseudo"]["nonconv"]} of '
+            f'{tot["pseudo"]:,}, {pct(excl["pseudo"]["nonconv"] / tot["pseudo"])}), while a converged chi-square at or '
+            f'below zero is rarer for native ({excl["native"]["chisq_le0"]} of {conv["native"]:,}, '
+            f'{pct(excl["native"]["chisq_le0"] / conv["native"])}) than for the pseudo arm '
+            f'({excl["pseudo"]["chisq_le0"]:,} of {conv["pseudo"]:,}, {pct(excl["pseudo"]["chisq_le0"] / conv["pseudo"])}). ')
+    stuck = at_leads[(at_leads.lead_arm != 'native') & (at_leads.chi2_native < STUCK_CHI2)]
+    if len(stuck):
+        fail += (f'Native\'s fit reports a chi-square below {STUCK_CHI2} (pi left at 0.5) at {len(stuck)} of the other '
+                 f'arms\' leads: '
+                 + ', '.join(f'{r.gene} at the {ARM_LABEL[r.lead_arm]} lead (chi-square {r[f"chi2_{r.lead_arm}"]:.1f} '
+                             f'there, native {r.chi2_native:.4f})' for _, r in stuck.iterrows()) + '. ')
+
+    sp = min(summ[pool][f'r2_published_{x}_minus_{y}']['sign_test_p'] for pool in ('eqtl', 'null', 'all')
+             for x, y in PAIRS)
+    ties = pg[pg.lead_ties_native > 1]
+    pub = (f'Where the arms\' leads sit relative to the T2T run\'s published leads discriminates nothing here '
+           f'({a["native"]["r2_published_at_least_close"]}, {a["pseudo"]["r2_published_at_least_close"]} and '
+           f'{a["split"]["r2_published_at_least_close"]} of {a["native"]["n_r2_published"]} leads within r<sup>2</sup> '
+           f'{R2_CLOSE} for native, pseudo and split; the smallest paired sign-test p on LD to the published lead is '
+           f'{sp:.3f}), which is a design limit rather than a null result: {int(genes.lead_in_body.sum())} of the '
+           f'{len(genes)} published leads lie inside the gene body, where no arm tests.')
+    if len(ties):
+        pub += (f' In {len(ties)} genes several variants tie at native\'s maximum and the first is taken as its lead, so '
+                f'"same lead" and LD to the published lead there rest on an arbitrary choice: '
+                + ', '.join(f'{r.gene} ({int(r.lead_ties_native)} tied, r<sup>2</sup> to the published lead '
+                            f'{fmt(r.r2_native_published_ties_min, 2)} to {fmt(r.r2_native_published_ties_max, 2)})'
+                            for r in ties.itertuples()) + '.')
+
+    concl = {'offset': 'native\'s larger chi-squares cannot be read as more power: its level at random variants is an '
+                       'offset present where the genotype-phenotype link is broken, while the pseudo arm sits at its '
+                       'permuted level; how much power the construction costs at a matched false-positive rate is not '
+                       'measured here',
+             'signal': 'native\'s higher level at random variants is association that its per-SNP input detects and '
+                       'the pseudo construction does not, so on these genes the construction costs RASQUAL power',
+             'both': 'native\'s higher level is partly an offset of its statistic and partly association the pseudo '
+                     'construction does not detect, so the construction costs RASQUAL some power, less than the '
+                     'paired ratio at the leads suggests',
+             'below': 'native\'s level cannot be read as either offset or association',
+             'unresolved': 'power and miscalibration are not separated on these genes'}[v]
+    close = (f'The conclusion is at two levels. The pseudo construction does bypass RASQUAL\'s read-level model, '
+             f'measurably: delta absorbs the haplotype-count noise and attenuates the allelic signal, phi is the L/R '
+             f'imbalance rather than reference-mapping bias, and the pseudo feature SNP\'s genotype updating is '
+             f'undefined in most genes. On the statistic that comes out, the records control says that {concl}.')
+    return f'<p>{head}{ctl}</p>\n<p>{par}{fail}{pub}</p>\n<p>{close}</p>'
 
 
-def write_page(genes, pg, summ, missing, excl, rs_summ, sub):
+def write_page(genes, pg, summ, missing, excl, rs_summ, sub, at_leads, cg, cpool):
     png = base64.b64encode((OUT / 'lead_chi2.png').read_bytes()).decode()
     pr = paired_rows(summ)
     rr = random_rows(rs_summ)
     lv = level_rows(rs_summ)
+    ct = control_rows(cg, cpool)
     per_sub = sub.groupby('gene').size()
     cols_pg = ['gene', 'pool', 'n_tested', 'n_admitted', 'lead_native', 'chi2_native', 'lead_pseudo', 'chi2_pseudo',
                'lead_split', 'chi2_split', 'r2_native_pseudo', 'r2_split_native', 'r2_split_pseudo',
                'r2_native_published', 'r2_pseudo_published', 'r2_split_published', 'afc_native', 'afc_pseudo', 'afc_split',
-               'phi_native', 'phi_pseudo', 'delta_native', 'delta_pseudo', 'n_fsnp_native', 'r2_fsnps_native']
+               'phi_native', 'phi_pseudo', 'delta_native', 'delta_pseudo', 'n_fsnp_native', 'r2_fsnps_native',
+               'r2_fsnps_pseudo', 'pseudo_prior_constant', 'r2_rsnp_native', 'r2_rsnp_pseudo', 'lead_ties_native',
+               'r2_native_published_ties_min', 'r2_native_published_ties_max']
     cols_pg = [c for c in cols_pg if c in pg.columns]
     e, n = summ['eqtl'], summ['null']
+    rec = cpool['native']['records']
     css = ('body{font-family:system-ui,sans-serif;max-width:1200px;margin:24px auto;padding:0 16px;color:#0b0b0b;'
            'background:#f9f9f7;line-height:1.45}table{border-collapse:collapse;font-size:12px;margin:8px 0}'
            'th,td{border-bottom:1px solid #e1e0d9;padding:3px 6px;text-align:right}th{background:#f0efec}'
@@ -1343,13 +1803,13 @@ def write_page(genes, pg, summ, missing, excl, rs_summ, sub):
     html = f'''<!doctype html><html><head><meta charset="utf-8"><title>RASQUAL read-level comparison</title><style>{css}</style></head><body>
 <h1>Does the pseudo-feature-SNP construction handicap RASQUAL? Observed data, 30 genes</h1>
 <p class="note">Written by scripts/rasqual_read_level.py --report on {time.strftime('%Y-%m-%d')}; tables in per_gene.tsv,
-arms_at_leads.tsv and summary.json beside this page.</p>
+arms_at_leads.tsv, control_per_gene.tsv and summary.json beside this page.</p>
 <h2>Why</h2>
 <p>In the plasmode benchmark RASQUAL received Salmon haplotype counts at one pseudo feature SNP per gene, so its
 read-level features (per-SNP allelic counts at real exonic heterozygous sites, the reference-mapping bias phi, the
-genotype-error rate delta and posterior genotype updating) were bypassed. This page measures, on the observed data with
-no thinning, whether RASQUAL fed its own input is stronger than RASQUAL fed the benchmark's construction, and how
-hapmixQTL split weighting compares on the same genes.</p>
+sequencing/mapping (read allele) error rate delta and posterior genotype updating) were bypassed. This page measures, on
+the observed data with no thinning, whether RASQUAL fed its own input is stronger than RASQUAL fed the benchmark's
+construction, and how hapmixQTL split weighting compares on the same genes.</p>
 <h2>What was run</h2>
 <ul>
 <li>Genes: {genes.shape[0]} ({e['n_genes']} eQTL by Benjamini-Hochberg 0.05 on pval_beta in the T2T permutation run,
@@ -1362,7 +1822,11 @@ and 3 genotype PCs) and the totals, which are the Salmon point-estimate totals p
 size as the offset, exactly as the benchmark gave them to RASQUAL.</li>
 <li><b>RASQUAL native</b>: feature SNPs are every exonic biallelic SNP of the analysis VCF inside the gene's exon union,
 with phASER's per-SNP ref/alt read counts and the phased genotypes; RASQUAL's own admission and defaults, the rSNP
-Hardy-Weinberg filter off (-h 0, as in the benchmark), --force for the (fSNPs + 1) x rSNPs budget. The EM iterations
+Hardy-Weinberg filter off (-h 0, as in the benchmark), --force for the (fSNPs + 1) x rSNPs budget. This is not the
+input RASQUAL's createASVCF would build: phASER writes counts only at a donor's own heterozygous sites, so every
+homozygous donor carries AS 0,0 at every feature SNP (no phASER row at a non-heterozygous donor-site pair in any of the
+30 genes), where createASVCF counts reads in every sample (ASVCF/countAS.c:211), and phASER kept reads at mapping
+quality 255 and base quality 10 rather than passing them through createASVCF's qcFilterBam. The EM iterations
 per rSNP fit vary widely between genes (per-gene medians {fmt(pg.iter_median_native.min(), 0)} to
 {fmt(pg.iter_median_native.max(), 0)}; ANKRD36 72, PDE4DIP 7 in the smoke; the earlier LDLR smoke took 5), and the cost
 is proportional to iterations times admitted feature SNPs, up to about 0.3 s per admitted feature SNP per rSNP, so a
@@ -1380,22 +1844,42 @@ two RASQUAL arms as a mapping-bias estimate.</li>
 <li><b>hapmixQTL split</b>: map_nominal with Gibbs variance in the allelic channel and unit variance in the total
 channel, allelic channel through the origin, each p on its own degrees of freedom. Its chi-square on the figure is the
 1-df chi-square with the same p as its nominal p, derived from the p, not a likelihood ratio.</li>
+<li><b>Permutation control</b>: both RASQUAL arms at the {N_RANDOM} random variants of each of the {len(cg)} null genes,
+{N_RUNS} runs per gene under each of two nulls, with the same inputs and option lines as the observed arms. The
+<i>records permutation</i> moves each donor's whole RNA record to another donor's genotypes: totals, offset, RNA-tied
+covariates and every feature SNP's genotype and allelic counts together, with rSNP genotypes and genotype PCs in
+place (one seeded order per gene and run, seed {SEED}). <i>RASQUAL's -r</i> is its own permutation: one run draws a
+new donor order for each feature SNP (genotype probabilities, allelic counts and offsets move by it, with no haplotype
+swap) and one separate order for the totals and their covariate-fitted offsets (nbem.c:2346-2400); it is seeded
+without modifying the binary by fixing the seed RASQUAL takes from time() and the process id (main.c:209). Gates
+before the runs: the records construction at the identity order reproduced the observed rows' model fields at all
+{N_RANDOM} random variants of {GATE_GENE} in both arms, and a seeded -r run repeated with the same seed was
+byte-identical and differed under another seed.</li>
 </ul>
 <h2>Result</h2>
 <p><b>At the random tested variants</b> (the {N_RANDOM} per gene drawn without regard to any arm's result), native
 against each other arm variant by variant: the share of a gene's random variants where native's chi-square is the
-larger, the sign test (two-sided binomial test of the number of genes with a share above one half against one half),
+larger (mean over genes with its 95% gene-resampling interval: the genes drawn with replacement {N_RESAMPLE:,} times),
+the sign test (two-sided binomial test of the number of genes with a share above one half against one half),
 and the Wilcoxon signed-rank test (ranks the absolute per-gene median differences of chi-square and sums the ranks of
 the positive ones). This comparison does not depend on which variants native scanned, so it comes first.
 Native results are in for {nat}.{miss}</p>
 {html_table(rr, list(rr.columns)) if len(rr) else '<p class="note">no native gene finished yet</p>'}
-<p><b>The level of each arm's statistic at the random variants.</b> A random tested variant of a null gene carries no
-association, and most random variants of an eQTL gene are not in LD with its signal, so the median chi-square there
-should sit near the chi-square(1) median of {chi2.median(1):.3f} and about 5% of them should have p &lt; 0.05. An arm
-whose level sits above that in the null genes has an offset in its statistic, and its paired advantage above is partly
-that offset rather than more signal.</p>
+<p><b>The level of each arm's statistic at the random variants.</b> Where no variant is associated, the median
+chi-square sits near the chi-square(1) median of {chi2.median(1):.3f} and about 5% of p-values fall below 0.05. The
+table gives, per pool and arm, the median over genes of the per-gene median chi-square and the mean over genes of the
+per-gene share of p &lt; 0.05, each with its 95% gene-resampling interval and the per-gene range.</p>
 {html_table(lv, list(lv.columns)) if len(lv) else ''}
-{reading(rs_summ, summ, excl, int(pg.n_rows_pseudo.sum()), int(pg.n_rows_native.fillna(0).sum()))}
+<p><b>The permutation control.</b> Whether an arm's level above 5% at the null genes' random variants is an offset of
+its statistic or association is settled by permuting: an offset persists when the genotype-phenotype link is broken,
+association does not. Per null gene, each arm's observed share of p &lt; 0.05 at its {N_RANDOM} random variants, the
+mean share over the {rec['runs_min']}-{rec['runs_max']} records runs with the permutation p of the observed share
+((1 + runs at or above it) / (1 + runs)), and the mean share over the -r runs. The first two columns are the split
+arm's lead p times the gene's tested-variant count (a Bonferroni bound on its gene-level p, capped at 1) and its
+allelic channel's p at that lead. The last two rows are the means over genes and the paired differences observed
+minus permuted, each with its 95% gene-resampling interval.</p>
+{html_table(ct, list(ct.columns))}
+{reading(rs_summ, summ, excl, pg, at_leads, genes, cg, cpool)}
 <img src="data:image/png;base64,{png}" alt="per-gene lead chi-square of the three arms">
 <p class="note">Each gene shows the chi-square at each arm's own lead variant; the grey line spans the three arms.</p>
 <p><b>Paired summary at the leads.</b> The subset native scanned contains the pseudo and split leads, so those two
@@ -1410,9 +1894,14 @@ is still measured; {int((~genes.lead_in_vcf).sum())} published leads are indels 
 {fmt(e['phi_native']['median'] if e['phi_native'] else None)} / {fmt(n['phi_native']['median'] if n['phi_native'] else None)},
 delta {fmt(e['delta_native']['median'] if e['delta_native'] else None, 4)} / {fmt(n['delta_native']['median'] if n['delta_native'] else None, 4)},
 admitted feature SNPs {fmt(e['n_fsnp_native']['median'] if e['n_fsnp_native'] else None, 0)} / {fmt(n['n_fsnp_native']['median'] if n['n_fsnp_native'] else None, 0)},
-r<sup>2</sup> between prior and posterior feature-SNP genotypes {fmt(e['r2_fsnps_native']['median'] if e['r2_fsnps_native'] else None)} / {fmt(n['r2_fsnps_native']['median'] if n['r2_fsnps_native'] else None)}.
+r<sup>2</sup> between prior and posterior feature-SNP genotypes {fmt(e['r2_fsnps_native']['median'] if e['r2_fsnps_native'] else None)} / {fmt(n['r2_fsnps_native']['median'] if n['r2_fsnps_native'] else None)},
+r<sup>2</sup> between prior and posterior rSNP genotypes {fmt(e['r2_rsnp_native']['median'])} / {fmt(n['r2_rsnp_native']['median'])}.
 At the pseudo lead: phi {fmt(e['phi_pseudo']['median'])} / {fmt(n['phi_pseudo']['median'])} (L/R imbalance, see above),
-delta {fmt(e['delta_pseudo']['median'], 4)} / {fmt(n['delta_pseudo']['median'], 4)}.
+delta {fmt(e['delta_pseudo']['median'], 4)} / {fmt(n['delta_pseudo']['median'], 4)},
+feature-SNP r<sup>2</sup> {fmt(e['r2_fsnps_pseudo']['median'] if e['r2_fsnps_pseudo'] else None)} / {fmt(n['r2_fsnps_pseudo']['median'] if n['r2_fsnps_pseudo'] else None)}
+over the {int((~pg.pseudo_prior_constant).sum())} genes where it is defined (undefined in the
+{int(pg.pseudo_prior_constant.sum())} genes where every donor is admitted and the prior is constant; per_gene.tsv
+pseudo_prior_constant), rSNP r<sup>2</sup> {fmt(e['r2_rsnp_pseudo']['median'])} / {fmt(n['r2_rsnp_pseudo']['median'])}.
 Rows excluded from the RASQUAL tables: native non-converged {excl['native']['nonconv']}, tested variants without a row
 {excl['native']['absent']}, feature SNPs RASQUAL also tested as rSNPs {excl['native']['fsnp_as_rsnp_rows']}; pseudo
 non-converged {excl['pseudo']['nonconv']}, absent {excl['pseudo']['absent']}.
@@ -1429,8 +1918,21 @@ handicapped by the optimiser rather than by its input.</p>
 <h2>What this cannot establish</h2>
 <ul>
 <li>Thirty genes on observed data, one realisation each: only the direction and rough size of a difference between the
-arms can be seen. No calibration or power statement follows from these numbers; the null genes' lead chi-squares are
-maxima over thousands of tested variants and are compared between arms, not against a reference distribution.</li>
+arms can be seen. The null genes' lead chi-squares are maxima, over each gene's {int(genes.n_tested.min()):,} to
+{int(genes.n_tested.max()):,} tested variants for the pseudo and split arms and over native's subset of
+{int(per_sub.min())} to {int(per_sub.max())}, and are compared between arms, not against a reference distribution; the
+permutation control speaks to the level at random variants, not to the leads.</li>
+<li>The permutation control covers the {len(cg)} null genes and {N_RUNS} runs per gene and null; its intervals resample
+those genes and do not extend to genes unlike them. The records null keeps each donor's feature-SNP records and totals
+together, as the observed data have them; -r scatters them, so it is not the null the offset question needs and is
+reported as RASQUAL's own. Under -r the genotype PCs' fitted effect moves with the totals, where the records null keeps
+the PCs with the genotypes.</li>
+<li>Native's allelic input is phASER's heterozygous-site counts, not createASVCF's: homozygous donors carry AS 0,0, so
+the reads at homozygous feature SNPs that RASQUAL would otherwise use to estimate delta and to check feature-SNP
+genotypes never reach the fit, and native's delta and feature-SNP r<sup>2</sup> are estimated from heterozygotes alone.
+phASER's read filters (mapping quality 255, base quality 10) also differ from qcFilterBam's.</li>
+<li>Native was not rerun with --no-posterior-update, so how much of its largest lead chi-squares comes from rewriting
+rSNP genotypes (field 25) is not measured.</li>
 <li>The eQTL genes were chosen for high phASER coverage of exonic heterozygous SNPs, the setting where RASQUAL's
 read-level model has the most to work with; the benchmark's 30-100-read stratum is not represented.</li>
 <li>hapmixQTL's chi-square is a p-value conversion, so the arms are compared on the strength of evidence at their leads,
@@ -1445,15 +1947,16 @@ was made to change RASQUAL's optimiser.</li>
 allele-specific input differs between them.</li>
 </ul>
 </body></html>'''
-    MD.write_atomic(OUT / 'report.html', lambda fh: fh.write(html), 'w')
+    C.write_atomic(OUT / 'report.html', lambda fh: fh.write(html), 'w')
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--scout', action='store_true', help='candidate genes and phASER coverage')
     ap.add_argument('--select', action='store_true', help='choose the 30 genes and check them')
-    ap.add_argument('--smoke', action='store_true', help='native-arm gate on two genes at 50 rSNPs')
+    ap.add_argument('--smoke', action='store_true', help=f'native-arm gate on two genes at {SMOKE_RSNPS} rSNPs')
     ap.add_argument('--arms', action='store_true', help='the three arms on the observed data (resumable)')
+    ap.add_argument('--control', action='store_true', help='both RASQUAL arms under two permutation nulls (resumable)')
     ap.add_argument('--report', action='store_true', help='tables, summary.json and the page')
     a = ap.parse_args()
     if a.scout:
@@ -1464,6 +1967,8 @@ def main():
         smoke()
     elif a.arms:
         arms()
+    elif a.control:
+        control()
     elif a.report:
         report()
     else:
