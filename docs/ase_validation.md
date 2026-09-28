@@ -223,6 +223,12 @@ Tier 0b conclusion on realistically generated summaries.
 
 **Harness:** `tests/ase_external_benchmark.py` · **Raw:** `docs/ase_external_benchmark.json`
 
+> **2026-09-28:** the harness was fixed (a total channel built from the simulated totals, a
+> through-origin allelic channel) and now runs default-mode weightings (gibbs / split /
+> plus_one); it no longer writes `docs/ase_external_benchmark.json`. The current record is
+> `brainvar_hapmix_deploy/external_benchmark_current_20260928/` (scripts
+> `scripts/external_benchmark_mirror*`). The numbers below are the earlier record.
+
 Every tier above simulates from hapmixQTL's *own* assumed model. That is circular: the
 simulator and the estimator share a worldview, so it can show internal inconsistency but
 never that the assumptions are wrong about real data. This section removes the circularity
@@ -675,6 +681,8 @@ near-perfect (weighted MAE 0.001) and credible-set coverage is 0.987 against a 0
 > head-to-head against the real binary is future work.
 
 **Harness:** `tests/ase_rasqual_comparison.py` · **Raw:** `docs/ase_rasqual_comparison.json`
+**Not runnable since 2026-09-28 (user decision):** it called the harness's removed
+`tau_mode='estimate'` arm, which is quarantined; the results below stand as a record.
 N = 100, θ = 0.2, 400 loci per cell, power at **matched empirical FPR = 10%** (RASQUAL's metric).
 
 Earlier sections compared against TReCASE only, and §7 explicitly disclaimed implementing
@@ -767,6 +775,8 @@ compared two clean inputs.
 ## 7i. Reference bias: RASQUAL on unfiltered data, and a shipped diagnostic
 
 **Harness:** `tests/ase_reference_bias.py` · **Raw:** `docs/ase_reference_bias.json`
+**Not runnable since 2026-09-28 (user decision):** it called the harness's removed
+`tau_mode='estimate'` arm, which is quarantined; the results below stand as a record.
 **Ships as:** `hapmixqtl.reference_bias_diagnostic()`
 
 §7h used a *uniform* φ = 0.60 — the easiest possible bias for a single-φ model to absorb.
@@ -852,7 +862,8 @@ individual genes rather than the dataset.
 2. **If it flags, filter** (WASP, phASER-style site exclusion, or a variant-aware aligner)
    — do not proceed. hapmixQTL has no internal defence and fails catastrophically.
 3. **If you cannot guarantee filtered input, fitting φ is worth the ~17% clean-data power
-   cost.** The likelihood machinery is in `tests/ase_rasqual_comparison.py`.
+   cost.** The likelihood machinery is in `tests/ase_rasqual_comparison.py` (its functions
+   still import; its own run is not runnable since 2026-09-28).
 
 ## 7j. Beyond biallelic SNPs — STRs and multiallelic sites, and a `map_cis` slope fix
 

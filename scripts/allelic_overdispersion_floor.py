@@ -273,13 +273,14 @@ def R_pred(w, sigma2, tau):
 def _emulate_and_fit(yL, yR, s, rho, rng):
     """Benchmark emulation of Gibbs draws, then the instrument's allelic fit.
     Returns (p, p_oracle)."""
-    import ase_external_benchmark as B
+    import ase_external_benchmark  # noqa: F401  (puts the repository root on sys.path)
+    from tensorqtl.hapmixqtl import compute_summaries_from_gibbs
     n = (yL + yR).astype(int)
     frac = (yL + KAPPA) / (n + 2 * KAPPA)
     dL = rng.binomial(n[:, None], frac[:, None], size=(len(n), N_DRAWS)).astype(float)
     dR = n[:, None] - dL
     with contextlib.redirect_stdout(io.StringIO()):
-        A, _, Va, _, _ = B.compute_summaries_from_gibbs(dL[None], dR[None])
+        A, _, Va, _, _ = compute_summaries_from_gibbs(dL[None], dR[None])
     a, va = A[0], Va[0]
     out = []
     for v in (va, va * (1 + np.maximum(n - 1, 0) * rho)):

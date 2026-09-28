@@ -170,8 +170,9 @@ compute cost, and the reference-bias diagnostic.
 
 Open:
 
-- **The real-RASQUAL head-to-head.** The harness runs
-  (`tests/ase_rasqual_real.py`) but the generative calibration is unsettled:
+- **The real-RASQUAL head-to-head.** The harness (`tests/ase_rasqual_real.py`) is
+  not runnable since 2026-09-28 (user decision: it called the removed, quarantined
+  `tau_mode='estimate'` arm), and its generative calibration was unsettled:
   RASQUAL's shared θ ties beta-binomial precision to NB dispersion, so at a
   realistic NB dispersion the simulated allelic ratios are far noisier than real
   ASE, penalising every ASE method. Settle this before quoting numbers.

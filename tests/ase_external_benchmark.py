@@ -40,14 +40,22 @@ COMPARATORS (implemented here directly, no R or C dependency)
   TReC-only   negative-binomial GLM on total counts, LRT vs kappa = 1
   ASE-only    beta-binomial on allele-specific counts, LRT vs pi = 0.5
   TReCASE     joint likelihood sharing one kappa across both channels, LRT
-  hapmixQTL   counts -> emulated Gibbs posterior -> the real production path,
-              run under the shipped Var(eps)=sigma^2*v default
-              (tau_mode='zero' + se_mode='fitted') and, as controls,
-              the known-variance pairings of tau='zero' and 'estimate'.
-              CAVEAT: this harness's allelic residualizer keeps an
-              intercept, where production has been through-origin
-              since 2026-09-15 -- a known fidelity gap, left as-is so
-              the new arm stays comparable to the recorded run.
+  hapmixQTL   counts -> emulated Gibbs posterior -> the production default
+              mode (tau_mode='zero' + se_mode='fitted': through-origin
+              allelic channel, per-channel t references, the 15-donor
+              allelic admission floor, Meier's correction of the combined
+              SE, and the Welch-Satterthwaite reference of the combined p),
+              at three weightings: gibbs (1/v both channels), split (1/v
+              allelic, unit total) and plus_one (1/(v+1) both).
+              Values are the simulated counts (the point estimates) and
+              variances come from emulated draws, both in log2 through
+              summaries_from_point_estimates, the runner's phenotype.
+              Emulated draws: allelic yL ~ Binomial(n_as, frac) with
+              yR = n_as - yL; total yT ~ Poisson(T), because gene-level Gibbs
+              variance of a total is Poisson (CLAUDE.md, RTA entry). With
+              count_noise the delta-method counting term is added on top in
+              both channels, as production adds it to Salmon draws that
+              already carry shot noise.
 
 RASQUAL's additions over TReCASE (genotype uncertainty, reference mapping bias
 phi, sequencing error delta) are nuisance-parameter refinements on the same joint
@@ -76,13 +84,11 @@ from scipy.special import betaln, gammaln
 
 try:
     from tensorqtl.hapmixqtl import (
-        WeightedResidualizer, _estimate_tau,
-        calculate_hapmixqtl_nominal, compute_summaries_from_gibbs)
+        _prepare_channels, calculate_hapmixqtl_nominal, summaries_from_point_estimates)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (
-        WeightedResidualizer, _estimate_tau,
-        calculate_hapmixqtl_nominal, compute_summaries_from_gibbs)
+        _prepare_channels, calculate_hapmixqtl_nominal, summaries_from_point_estimates)
 
 import torch
 DTYPE = torch.float64
@@ -291,9 +297,10 @@ def trecase_lrt(d):
 #  hapmixQTL on the same data
 # ---------------------------------------------------------------------------
 
-def hapmix_pval(d, rng, tau_mode='estimate', n_draws=80, kappa_pseudo=0.5,
-                fitted=False):
-    """counts -> emulated Gibbs posterior -> production hapmixQTL statistic."""
+def emulated_summaries(d, rng, n_draws=80, kappa_pseudo=0.5):
+    """Simulated counts as point estimates, emulated draws for their variance:
+    (a, t, Va, Vt) in log2 from summaries_from_point_estimates. eff_lib = lib x 1e6
+    makes t = log2(T / lib + 1), the harness's library-normalized expression."""
     N = len(d['g'])
     tot_as = d['yL'] + d['yR']
     frac = (d['yL'] + kappa_pseudo) / (tot_as + 2 * kappa_pseudo)
@@ -304,54 +311,60 @@ def hapmix_pval(d, rng, tau_mode='estimate', n_draws=80, kappa_pseudo=0.5,
             else np.zeros(n_draws)
         yL[0, i, :] = draw
         yR[0, i, :] = max(n_i, 0) - draw
-    A, T_, Va, Vt, _ = compute_summaries_from_gibbs(yL, yR)
-    a, t = A[0], T_[0]
-    va = np.clip(Va[0], 1e-8, None); vt = np.clip(Vt[0], 1e-8, None)
+    # drawn after the allelic draws, so those are the ones the harness always drew
+    yT = rng.poisson(d['T'][:, None], size=(N, n_draws)).astype(float)[None]
+    A, T_, Va, Vt, _ = summaries_from_point_estimates(
+        d['yL'][None], d['yR'][None], d['T'][None], d['lib'] * 1e6, yL, yR, yT)
+    return A[0], T_[0], Va[0], Vt[0]
 
-    # total channel carries the actual library-normalized expression
-    t = np.log((d['T'] / d['lib']) + 1.0)
 
+def weighted_variances(weighting, va, vt, eps=1e-12):
+    """(allelic, total) working variances; hybrid_weights_null.config_variances
+    (split = its 'hybrid'). No-coverage donors (Va = 0) stay at 0, so they stay excluded."""
+    if weighting == 'gibbs':
+        return va, vt
+    if weighting == 'split':
+        return va, np.ones_like(vt)
+    if weighting == 'plus_one':
+        return np.where(va > eps, va + 1.0, 0.0), vt + 1.0
+    raise ValueError(weighting)
+
+
+def hapmix_pval(d, rng, weighting, return_info=False):
+    """counts -> emulated Gibbs posterior -> production default-mode p (map_nominal's
+    pval_nominal: the Meier-corrected combined t on the Welch-Satterthwaite dof)."""
+    a, t, va, vt = emulated_summaries(d, rng)
+    va, vt = weighted_variances(weighting, va, vt)
     g_t = torch.tensor(d['g'].reshape(1, -1), dtype=DTYPE)
     s_t = torch.tensor(d['s'].reshape(1, -1), dtype=DTYPE)
-    a_t = torch.tensor(a, dtype=DTYPE); t_t = torch.tensor(t, dtype=DTYPE)
-    va_t = torch.tensor(va, dtype=DTYPE); vt_t = torch.tensor(vt, dtype=DTYPE)
-    if tau_mode == 'estimate':
-        ta = _estimate_tau(a_t, va_t, None, 'cpu')
-        tt = _estimate_tau(t_t, vt_t, None, 'cpu')
-        sqrt_wa = torch.sqrt(1.0 / (va_t + ta)); sqrt_wt = torch.sqrt(1.0 / (vt_t + tt))
+    a_t, t_t, va_t, vt_t = (torch.tensor(x, dtype=DTYPE) for x in (a, t, va, vt))
+    # ase_covariates_t=None: the allelic channel is through-origin, as in production
+    sqrt_wa, sqrt_wt, res_a, res_t = _prepare_channels(
+        a_t, t_t, va_t, vt_t, None, 'zero', 'cpu', ase_covariates_t=None, fitted_scale=True)
+    res = calculate_hapmixqtl_nominal(g_t, s_t, a_t, t_t, sqrt_wa, sqrt_wt, res_a, res_t,
+                                      fitted=True, return_info=True)
+    tstat, dof = float(res[0].numpy()[0]), float(res[7]['dof_nominal'].numpy()[0])
+    if not (np.isfinite(tstat) and np.isfinite(dof)):
+        out = (1.0, 0.0)
     else:
-        sqrt_wa = torch.sqrt(1.0 / va_t); sqrt_wt = torch.sqrt(1.0 / vt_t)
-    # Samples with no allele-specific coverage have v_inf EXACTLY 0 and a = 0;
-    # weighting by 1/v_inf would hand them the largest weight in the dataset
-    # while they carry no information. Matches the shipped guard
-    # hapmixqtl._zero_degenerate_ase_weights.
-    sqrt_wa = torch.where(va_t > 1e-12, sqrt_wa, torch.zeros_like(sqrt_wa))
-    res_a = WeightedResidualizer(None, sqrt_wa)
-    res_t = WeightedResidualizer(None, sqrt_wt)
-    ts, *_ = calculate_hapmixqtl_nominal(g_t, s_t, a_t, t_t,
-                                         sqrt_wa, sqrt_wt, res_a, res_t,
-                                         fitted=fitted)
-    tstat = float(ts.numpy()[0])
-    if not np.isfinite(tstat):
-        return 1.0, 0.0
-    p = 2 * stats.t.sf(abs(tstat), N - 2)
-    return float(p), tstat ** 2
+        p = float(2 * stats.t.cdf(-abs(tstat), dof))       # tensorqtl.core.get_t_pval
+        out = (p, float(stats.chi2.isf(p, 1)))              # 1-df chi-square equivalent of p
+    if not return_info:
+        return out
+    return out + (dict(n_a=int((sqrt_wa != 0).sum()), dof_nominal=dof,
+                       allelic_admitted=bool(res[7]['allelic_admitted']),
+                       meier=float(res[7]['meier_factor'].numpy()[0])),)
 
 
 METHODS = {
     'TReC-only': lambda d, rng: trec_lrt(d),
     'ASE-only': lambda d, rng: ase_lrt(d),
     'TReCASE (joint)': lambda d, rng: trecase_lrt(d),
-    # The SHIPPED DEFAULT since 2026-09-21: Var(eps) = sigma^2 * v, i.e.
-    # tau_mode='zero' paired with se_mode='fitted'. The two arms below it are
-    # the KNOWN-VARIANCE pairings, kept as controls: the recorded 2026-09-1x
-    # run of this harness had only those, and tau='zero' there reads type-I
-    # 1.000 with lambda_GC 3020 -- which is a verdict on that PAIRING, not on
-    # tau='zero', because se_mode='fitted' did not exist when it was written.
-    "hapmixQTL sigma^2*v (DEFAULT)": lambda d, rng: hapmix_pval(d, rng, 'zero', fitted=True),
-    "hapmixQTL tau='zero'": lambda d, rng: hapmix_pval(d, rng, 'zero'),
-    "hapmixQTL tau='estimate'": lambda d, rng: hapmix_pval(d, rng, 'estimate'),
-    "hapmixQTL tau+fitted": lambda d, rng: hapmix_pval(d, rng, 'estimate', fitted=True),
+    # default mode (tau_mode='zero' + se_mode='fitted') at the three weightings
+    # under decision (docs/pipeline_rules.md, "which weighting configuration ships")
+    'hapmixQTL gibbs': lambda d, rng: hapmix_pval(d, rng, 'gibbs'),
+    'hapmixQTL split': lambda d, rng: hapmix_pval(d, rng, 'split'),
+    'hapmixQTL plus_one': lambda d, rng: hapmix_pval(d, rng, 'plus_one'),
 }
 
 

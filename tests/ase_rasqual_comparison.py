@@ -220,6 +220,10 @@ def run(reps, N, kappa, seed0, **kw):
 
 
 def main():
+    raise SystemExit("Not runnable since 2026-09-28 (user decision): tests/ase_external_benchmark.hapmix_pval now takes a "
+                     "default-mode weighting (gibbs / split / plus_one), and this script called its removed tau_mode='estimate' "
+                     "arm, which is quarantined (CLAUDE.md, 'What was deprecated'). Its recorded results in "
+                     "docs/ase_validation.md stand as records; its likelihood functions still import.")
     ap = argparse.ArgumentParser()
     ap.add_argument('--reps', type=int, default=400)
     ap.add_argument('--N', type=int, default=100)
