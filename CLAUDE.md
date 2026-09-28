@@ -590,8 +590,10 @@ which hapmixQTL does not assume. 500 replicates, N=200, mu=200, NB dispersion
   errors above nominal (se 0.0097). Matched power — each arm held to its own
   empirical 95th percentile — is 0.248/0.744/1.000 at allelic fold change
   1.05/1.10/1.20 against TReCASE's 0.274/0.760/0.998: differences
-  -0.026/-0.016/+0.002 against paired se 0.028/0.027/0.002, so |z| <= 1.0
-  throughout. TReCASE is the joint likelihood OF THE GENERATING MODEL, so this
+  -0.026/-0.016/+0.002 against se 0.028/0.027/0.002, so |z| <= 1.0
+  throughout (those se are UNPAIRED binomial se; the true paired se is about
+  0.012; superseded 2026-09-28 by the fixed-harness mirror benchmark,
+  `brainvar_hapmix_deploy/external_benchmark_current_20260928/`). TReCASE is the joint likelihood OF THE GENERATING MODEL, so this
   is parity with a ceiling, not a peer. Both dominate the single-channel arms
   (TReC-only 0.104/0.204/0.486; ASE-only 0.160/0.558/0.994, the latter
   genuinely anticonservative at type-I 0.158).
@@ -704,6 +706,13 @@ GTEx overdispersion, depth and zero-inflation structure.
 
 ## Known and unfixed
 
+- **chr14, chr15 and chr22 are excluded, short term, by user decision
+  (2026-09-28).** Every copy of the phased genotypes (and the personalized
+  diploid references built from them) stops within the first 1.5-3.1 Mb of
+  these contigs, so no gene there has haplotype pairs or reaches the Gibbs
+  cache; analyses cover 19 autosomes. The unphased joint calls are complete, so
+  re-phasing is possible later. Record:
+  `brainvar_hapmix_deploy/phased_vcf_inventory_20260928/README.md`.
 - The lead refit is biased by selection: appending the window maximum to the
   design removes far more residual sum of squares than the one degree of freedom
   it is charged. Gene-level p-values are unaffected.
@@ -714,12 +723,15 @@ GTEx overdispersion, depth and zero-inflation structure.
 - The total channel has no zero-count guard; `count_noise` stands in for a
   floor. A coverage-based floor for zero-count total samples, then no `q` for
   samples with reads, is the fix — not the flag.
-- `tests/ase_external_benchmark.py` and `tests/ase_gtex_real_data.py` both
-  fabricate the total channel's inferential variance (emulated draws conserve
-  `yL+yR` exactly; `compute_summaries_from_gibbs` called without `yT`). Fix is
-  to pass a `yT` built from the real/simulated totals. Both also keep an
-  intercept on the allelic residualizer, where production has been
-  through-origin since 2026-09-15.
+- `tests/ase_gtex_real_data.py` fabricates the total channel's inferential
+  variance (emulated draws conserve `yL+yR` exactly;
+  `compute_summaries_from_gibbs` called without `yT`) and keeps an intercept
+  on the allelic residualizer, where production has been through-origin since
+  2026-09-15. Fix is to pass a `yT` built from the real totals.
+  `tests/ase_external_benchmark.py` had the same two defects and was FIXED on
+  2026-09-28 (record `brainvar_hapmix_deploy/external_benchmark_current_20260928/`);
+  the three dated scripts that called its removed `tau_mode='estimate'` arm
+  are marked not runnable by user decision.
 - `calib()` in those harnesses reports a censored `lambda_GC` (saturates at
   3019.92). A censoring flag alongside it would stop the number being read as a
   magnitude, as it was until 2026-09-23.
