@@ -433,12 +433,14 @@ def fig_ranking():
 
 
 def fig_bias():
-    fig, axs = plt.subplots(2, 4, figsize=(15, 7.4), sharex=True)
-    for i, ch in enumerate(('allelic', 'total')):
+    """Rows: the allelic and total channels of the arms that have them, then every arm's one combined slope on the
+    count-scale truth, the row where RASQUAL and TReCASE (one joint effect each) and tensorQTL appear."""
+    fig, axs = plt.subplots(3, 4, figsize=(15, 10.8), sharex=True)
+    for i, ch in enumerate(('allelic', 'total', 'combined')):
         for k, bn in enumerate(BANDS):
             ax = axs[i, k]
-            for j, arm in enumerate(ARMS):
-                key = ('combined' if ch == 'total' else None) if arm == TQ else ch   # tensorQTL's one slope is a total-channel slope
+            for j, arm in enumerate(ALL):
+                key = ('combined' if ch == 'total' else None) if (arm == TQ and ch != 'combined') else ch   # tensorQTL's one slope is a total-channel slope
                 if key not in S['recovery']['beta0.4'][arm]:
                     continue
                 for m, b in enumerate(BETAS):
@@ -448,13 +450,13 @@ def fig_bias():
                                 label=f'|beta| = {b}' if (j == 0 and i == 0 and k == 0) else None)
             ax.axhline(1, color=INK, lw=0.8)
             ax.axhline(0, color=MUTED, lw=0.6, ls=':')
-            ax.axvline(3.5, color=GRID, lw=1)
-            ax.axvline(5.5, color=GRID, lw=1)
+            for x in (3.5, 5.5, 6.5):
+                ax.axvline(x, color=GRID, lw=1)
             style(ax, f'{ch}: slope / truth' if k == 0 else None)
             ax.set_title(f'{ch}, {"all genes" if bn == "all" else bn + " reads"}', fontsize=10, loc='left')
-            ax.set_xticks(range(len(ARMS)), [SHORT[a] for a in ARMS], rotation=40, ha='right')
+            ax.set_xticks(range(len(ALL)), [SHORT[a] for a in ALL], rotation=40, ha='right')
     fig.tight_layout()
-    legend_below(fig, axs[0, 0], y=-0.03)
+    legend_below(fig, axs[0, 0], y=-0.02)
     return save(fig, 'fig_bias')
 
 
@@ -481,7 +483,7 @@ def fig_efficiency():
         for k, ch in enumerate(('allelic', 'total', 'combined')):
             ax = axs[i, k]
             arms = [a for a in (ALL if ch == 'combined' else HAPMIX if part == 'nonnull' else ARMS)
-                    if a != 'unit' and ch in S['precision']['beta0.0'][a]]
+                    if a not in ('unit', 'mixqtl') and ch in S['precision']['beta0.0'][a]]   # published cutoffs: in the tables only (user decision 2026-09-28)
             rk = 'ratio_vs_unit_count' if (part, ch) == ('nonnull', 'combined') else 'ratio_vs_unit'
             get = lambda a, key: [prec(f'beta{b}', a, ch, part, rk)[key] for b in scen]   # noqa: E731
             arm_points(ax, arms, xs, {a: get(a, 'value') for a in arms}, {a: get(a, 'lo') for a in arms}, {a: get(a, 'hi') for a in arms}, offset=0.12)
@@ -1709,7 +1711,8 @@ def sec_contrast():
                f'difference (split minus TReCASE) of {gap} at |beta| {" / ".join(BETAS)}, and the precision comparison rests on '
                f'the scale correction above. More |beta| replicates would sharpen the ranking comparison only; they cannot '
                f'replace the stored null. The AUC intervals are the range of {n_rep[THIS_SET]} datasets.</p>')
-    fc = dict(cal=fig_contrast_calibration(runs), prec=fig_contrast_precision(runs, rows), rank=fig_contrast_ranking(runs))
+    fc = dict(cal=fig_contrast_calibration(runs), prec=fig_contrast_precision(runs, [r for r in rows if r[0] != 'mixqtl']),
+              rank=fig_contrast_ranking(runs))   # published cutoffs: in the table only (user decision 2026-09-28)
     return f'''
 <h2>The {THIS_SET} against the {REF_SET}</h2>
 <p>Every gene of each set, each value with its own set's interval; no interval of the difference is computed. The
@@ -1756,7 +1759,10 @@ in the {REF_SET}. The other effect sizes are in section 3.4.</p>
                  f"the causal variant (|beta| 0.4; hapmixQTL and tensorQTL rows on their pipeline-scale truth, every other row on the "
                  f"count-scale truth for arm and unit alike) and on the anchor's null genes (truth 0); bars are gene-clustered "
                  f"95% intervals. Across methods the anchor ratio still carries each method's slope scale (text below the "
-                 f"RASQUAL and TReCASE paragraphs).")}
+                 f"RASQUAL and TReCASE paragraphs). mixQTL with published cutoffs is left out of the figure: its anchor ratio "
+                 f"is {P(S, 'beta0.0', 'mixqtl', 'combined', 'null', 'ratio_vs_unit')['value']:.0f}x in the {THIS_SET} and "
+                 f"{P(R, 'beta0.0', 'mixqtl', 'combined', 'null', 'ratio_vs_unit')['value']:.0f}x in the {REF_SET} (table above), "
+                 f"which would compress every other arm onto one line.")}
 <p><b>Ranking and gene-level power.</b> Each arm gives every tested variant a nominal p; a gene's <i>lead variant</i> is
 the tested variant in its cis window with the smallest nominal p, and that p ranks the genes within a dataset. The
 <b>AUC</b> (area under the receiver operating characteristic curve of that ranking) is the probability that a randomly
@@ -2023,10 +2029,13 @@ arm against the count-scale truth; the table's grey line carries the pipeline-sc
 {joint('bias')}
 {tab_bias()}
 {img(figs['bias'], 'Figure 2. Bias ratio (mean slope / truth at the causal variant, gene-clustered interval) by '
-     'arm and read band, for the allelic and total channels (combined slope not drawn), every arm against the '
-     'count-scale truth. The hapmixQTL allelic points keep as zeros the units with no allelic data, which the mixQTL '
-     'points drop (section 3.3). mixQTL channels: allelic = asc, total = trc. Colour shade = |beta|. The y axes '
-     'differ between panels.')}
+     'arm and read band, every arm against the count-scale truth. Top two rows: the allelic and total channels of the '
+     "arms that have them (hapmixQTL, mixQTL; tensorQTL's one slope is drawn in the total row). Bottom row: every "
+     "arm's one combined slope, the row where RASQUAL and TReCASE appear, each fitting one joint effect for both kinds "
+     "of count, beside hapmixQTL's combined slope, which on this truth carries the log2(CPM + 1) attenuation of its "
+     'total channel (section 3.3). The hapmixQTL allelic points keep as zeros the units with no allelic data, which '
+     'the mixQTL points drop (section 3.3). mixQTL channels: allelic = asc, total = trc. Colour shade = |beta|. The '
+     'y axes differ between panels.')}
 
 <h3>3.4 Precision: stated standard error and efficiency against unit weights</h3>
 <p><b>Realized over stated standard error</b>, written sd(z): z = (slope &minus; truth) / stated se, and sd(z) is
@@ -2071,7 +2080,9 @@ and the per-gene total truth; for tensorQTL, the per-gene total truth; for RASQU
      'RASQUAL and TReCASE included, and at the causal variant the count-scale truth for arm and unit alike, so the '
      'top combined panel is the cross-method comparison and its hapmixQTL points differ from the pipeline-scale '
      'values in the text. unit is 1 by definition and not drawn; the total channel of split is 1 by construction. '
-     'The y range of each panel covers every plotted interval.')}
+     'mixQTL with published cutoffs is left out of the figure (its ratios are in the tables above; on the anchor '
+     f"{prec('beta0.0', 'mixqtl', 'combined', 'null', 'ratio_vs_unit')['value']:.0f}x unit weights', which would "
+     'compress every other arm onto one line). The y range of each panel covers every plotted interval.')}
 
 <h3>3.5 Lead-variant recovery</h3>
 <p>For each non-null gene unit the lead variant is compared with the causal one. <b>LD r<sup>2</sup></b> is the
