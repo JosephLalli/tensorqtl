@@ -10,7 +10,15 @@ sqrt(chisq)), so their null sd(z) is the calibration of the likelihood-ratio sta
 tensorqtl arm is one test per variant too, scored as its combined channel, whose truth is the total
 channel's (count scale: the per-gene total truth; its own scale: the pipeline-scale total truth,
 as a hapmixQTL arm's). mixQTL's natural-log slopes are divided by ln 2 on reading
-(common.read_results); every slope here is log2.
+(common.read_results); every slope here is log2. The native-input arms of 05b_native_arms.py (C.NATIVE_ARMS) are
+scored where C.NATIVE exists (NATIVE_ARMS; a root without it, such as 99_acceptance.py's, is scored without them and says
+so in a printed line), on the count-scale truth only (the Salmon datasets' truths, which depend on the causal genotypes and beta only):
+split_native with channels as a hapmixQTL arm and its cis file's pval_beta, its squared error against unit weights on the
+count-scale truth for both; trecase_native as TReCASE (JOINT_LIKE: one joint test, truth beta, missing rows allowed). A
+gene 05b did not test (native total constant) has no rows in either native arm and ranks as no finite p. Their files
+carry the native dataset's fingerprint, and the native dataset must carry the Salmon dataset's permutation, swap, null
+set and causal variants. For both TReCASE arms (TRECASE_ARMS; empty when the native arms are not scored) at
+|beta| > 0: the share of gene units whose reported lead has no joint fit, and power at 5% realized FDP by each component p.
 
 Units: a causal unit is one (dataset, non-null gene) at its causal variant; a gene unit one
 (dataset, gene). Every statistic is pooled over units, overall and by the gene's real median
@@ -84,13 +92,18 @@ TRUTH = {'count': {'combined': 'allelic_truth', 'allelic': 'allelic_truth', 'tot
 NULL_COLS = ['phenotype_id', 'variant_id', 'slope', 'slope_se', 'slope_a', 'slope_a_se', 'slope_t', 'slope_t_se']
 JOINT_COLS = C.COLS[:5]       # phenotype_id, variant_id, pval_nominal, slope, slope_se
 TRECASE_PARTS = {'trec': 'pval_t', 'joint': 'pval_joint', 'ase': 'pval_a'}   # 05_run_trecase.py's columns
-ARMS = C.ARMS + tuple(C.JOINT)
-ONE_TEST = tuple(C.JOINT) + (C.TENSORQTL,)   # one test per variant, scored as the combined channel
-CIS_P = {a: 'pval_perm' if a in C.MIXQTL_ARMS else 'pval_beta' for a in C.ARMS}   # each arm's gene-level permutation p in its cis file
+NATIVE_ARMS = C.NATIVE_ARMS if C.NATIVE.is_dir() else ()   # scored only where 05b_native_arms.py has written C.NATIVE
+TRECASE_ARMS = ('trecase', 'trecase_native') if NATIVE_ARMS else ()   # trecase_parts: read only by 08's native subsection
+ARMS = C.ARMS + tuple(C.JOINT) + NATIVE_ARMS
+JOINT_LIKE = tuple(C.JOINT) + tuple(a for a in NATIVE_ARMS if a == 'trecase_native')   # one joint test per variant: truth beta, rows may be missing
+MISSING_OK = JOINT_LIKE + tuple(a for a in NATIVE_ARMS if a not in JOINT_LIKE)   # arms whose causal or null-gene rows may be missing (a native arm: a gene 05b did not test)
+ONE_TEST = JOINT_LIKE + (C.TENSORQTL,)   # one test per variant, scored as the combined channel
+CIS_ARMS = C.ARMS + tuple(a for a in NATIVE_ARMS if a == 'split_native')   # the arms with a cis file (03's, and 05b's split_native)
+CIS_P = {a: 'pval_perm' if a in C.MIXQTL_ARMS else 'pval_beta' for a in CIS_ARMS}   # each arm's gene-level permutation p in its cis file
 
 
 def arm_dir(results, sc, arm):
-    return (C.JOINT[arm] if arm in C.JOINT else results) / sc / arm
+    return (C.NATIVE_RESULTS[arm] if arm in C.NATIVE_RESULTS else C.JOINT[arm] if arm in C.JOINT else results) / sc / arm
 
 
 def channels(arm, d):
@@ -120,10 +133,14 @@ def load_units(datasets, results):
     rows = []
     for sc, r in C.runs(meta):
         ds = C.load_dataset(datasets, sc, r)
+        if NATIVE_ARMS:
+            nds = C.load_dataset(C.NATIVE_DATASETS, sc, r)
+            if not all(np.array_equal(ds[k], nds[k]) for k in ('perm', 'swap', 'is_null', 'causal_variant')):
+                raise SystemExit(f'{C.NATIVE_DATASETS} {sc} rep {r}: permutation, swap, null set or causal variants differ from {datasets}')
         for arm in ARMS:
-            for prefix in ('nominal',) + (('cis',) if arm in C.ARMS else ()):
+            for prefix in ('nominal',) + (('cis',) if arm in CIS_ARMS else ()):
                 p = arm_dir(results, sc, arm) / f'{prefix}_rep{r:03d}.parquet'
-                if C.stored_fingerprint(p) != C.fingerprint(ds, arm):
+                if C.stored_fingerprint(p) != C.fingerprint(nds if arm in NATIVE_ARMS else ds, arm):
                     raise SystemExit(f'{p} does not match its dataset and arm (common.fingerprint)')
         rows.append(pd.DataFrame(dict(scenario=sc, beta_abs=float(sc[4:]), rep=r, gene=genes, band=band.values.astype(str),
                                       reads=reads.values, is_null=ds['is_null'],
@@ -172,7 +189,8 @@ def null_calibration(results, U, sc, arm, genes, bsel, bidx, cols=None):
 
 
 def causal_and_leads(results, U, sc, arm):
-    """Causal-variant rows of the non-null genes (a joint arm's missing row left NaN) and every gene's lead, per dataset."""
+    """Causal-variant rows of the non-null genes (a joint arm's missing row left NaN) and every gene's lead, per dataset;
+    a gene that a native arm did not test (05b: constant native total) has no lead and ranks as no finite p."""
     parts, leads = [], []
     cols = (JOINT_COLS if arm in ONE_TEST else C.COLS) + (
         ['method'] if arm in C.MIXQTL_ARMS else [] if arm in ONE_TEST else ['allelic_admitted'])
@@ -186,11 +204,13 @@ def causal_and_leads(results, U, sc, arm):
                .groupby('phenotype_id', sort=False).head(1).set_index('phenotype_id'))
         L = u.set_index('gene')[['scenario', 'rep', 'is_null', 'band', 'causal_variant']].join(
             top[['variant_id', 'p', 'absstat']], how='left')
-        if L.variant_id.isna().any():
+        if arm in NATIVE_ARMS:
+            L['p'] = L.p.fillna(np.inf)
+        elif L.variant_id.isna().any():
             raise SystemExit(f'{sc} {arm} rep {r}: no result rows for {int(L.variant_id.isna().sum())} genes')
         leads.append(L.rename(columns={'variant_id': 'lead_variant', 'p': 'lead_p', 'absstat': 'lead_absstat'}).reset_index())
     Cz = pd.concat(parts, ignore_index=True)
-    if Cz.variant_id.isna().any() and arm not in C.JOINT:
+    if Cz.variant_id.isna().any() and arm not in MISSING_OK:
         raise SystemExit(f'{sc} {arm}: {int(Cz.variant_id.isna().sum())} causal variants have no result row')
     return Cz, pd.concat(leads, ignore_index=True)
 
@@ -228,7 +248,7 @@ def channel_truths(Cz, arm, scale=None):
     inverse-variance combination of the channel truths at the unit's own se (01_check_inputs.py pins that the
     combined slope is that combination of the channel slopes). A joint arm's one slope has estimand beta; the tensorqtl
     arm's is the total channel's."""
-    if arm in C.JOINT:
+    if arm in JOINT_LIKE:
         return {'combined': Cz[TRUTH['count']['combined']].values}
     scale = scale or ('pipeline' if arm in C.HAPMIX_ARMS + (C.TENSORQTL,) else 'count')
     if arm == C.TENSORQTL:
@@ -287,7 +307,7 @@ def null_precision(results, U, sc, arm, genes):
         nulls = set(U[(U.scenario == sc) & (U.rep == r) & U.is_null].gene)
         d, du = null_rows(results, sc, arm, r, nulls), null_rows(results, sc, 'unit', r, nulls)
         no_row = len(du) - len(d)
-        if arm in C.JOINT:   # tests without a joint-arm row are left out, counted as no_row
+        if arm in MISSING_OK:   # tests without a row are left out, counted as no_row
             du = d[['phenotype_id', 'variant_id']].merge(du, how='left')
         if not (d.phenotype_id.equals(du.phenotype_id) and d.variant_id.equals(du.variant_id)):
             raise SystemExit(f'{sc} rep {r}: {arm} and unit differ in their null-gene tested variants')
@@ -435,6 +455,29 @@ def ranking(L, key):
     return res
 
 
+def trecase_parts(results, U, sc, arm, L, key):
+    """A TReCASE arm's joint-fit failure at the reported lead: gene units with a finite lead p (L, causal_and_leads), null and
+    non-null, whose lead row has no joint fit (asSeq's final p is then its total-count test); and power at FDR realized
+    false-discovery proportion (ranking's fdp_matched) with genes ranked by the smallest p of each component (TRECASE_PARTS)
+    alone, a gene without a finite one ranked last."""
+    leads, comp = [], {k: [] for k in TRECASE_PARTS}
+    for r, u in U[U.scenario == sc].groupby('rep'):
+        d = pd.read_parquet(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet',
+                            columns=['phenotype_id', 'variant_id', 'joint_ok', *TRECASE_PARTS.values()])
+        d['variant_id'] = d.variant_id.astype(str)
+        Lr = L[(L.rep == r) & np.isfinite(L.lead_p)].merge(d[['phenotype_id', 'variant_id', 'joint_ok']], how='left',
+                                                              left_on=['gene', 'lead_variant'], right_on=['phenotype_id', 'variant_id'])
+        leads.append(Lr)
+        for k, col in TRECASE_PARTS.items():
+            comp[k].append(u.assign(lead_p=d.groupby('phenotype_id')[col].min().reindex(u.gene).fillna(np.inf).values,
+                                    lead_absstat=np.nan))
+    F = pd.concat(leads, ignore_index=True)
+    fail = {w: dict(units=int(m.sum()), failed=int((~F.joint_ok[m].astype(bool)).sum()))
+            for w, m in (('null', F.is_null.values), ('nonnull', ~F.is_null.values))}
+    return dict(lead_joint_failed=fail, fdp_power={k: ranking(pd.concat(v, ignore_index=True), key)['fdp_matched']['all']['power']
+                                                   for k, v in comp.items()})
+
+
 def gene_level(U, sc, genes, bsel, bidx, pvals, name):
     """Gene-level null rate of p < GENE_LEVEL_ALPHA, Benjamini-Hochberg power at FDR within dataset (section 7) and power at
     FDR realized false-discovery proportion over the pooled datasets (fdp_matched, no interval), for the
@@ -477,10 +520,11 @@ def gene_level(U, sc, genes, bsel, bidx, pvals, name):
 def cis_p(results, sc, arm, genes):
     """pvals for gene_level: dataset r's permutation p (CIS_P) from the arm's cis file."""
     def get(r):
-        d = pd.read_parquet(results / sc / arm / f'cis_rep{r:03d}.parquet', columns=['phenotype_id', CIS_P[arm]])
-        if sorted(d.phenotype_id) != sorted(genes) or not d.phenotype_id.is_unique:
+        d = pd.read_parquet(arm_dir(results, sc, arm) / f'cis_rep{r:03d}.parquet', columns=['phenotype_id', CIS_P[arm]])
+        if not (d.phenotype_id.is_unique and set(d.phenotype_id) <= set(genes)
+                and (arm in NATIVE_ARMS or set(d.phenotype_id) == set(genes))):
             raise SystemExit(f'{sc} {arm} rep {r}: gene-level results do not cover the {len(genes)} genes once each')
-        return d.set_index('phenotype_id').loc[genes, CIS_P[arm]].values.astype(float)
+        return d.set_index('phenotype_id')[CIS_P[arm]].reindex(genes).values.astype(float)   # a native arm's untested gene: NaN
     return get
 
 
@@ -565,6 +609,9 @@ def anchor(null0):
 
 
 def main():
+    if not NATIVE_ARMS:
+        print(f'native-input arms {list(C.NATIVE_ARMS)} not scored: {C.NATIVE} does not exist (05b_native_arms.py has not run '
+              f'into this root)', flush=True)
     meta, genes, U, keep_a = load_units(C.DATASETS, C.RESULTS)
     I = C.load()[0]
     if list(I['genes']) != genes:
@@ -573,11 +620,15 @@ def main():
     bsel, bidx = band_selections(genes, U, keep_a)
     scen = [f'beta{b}' for b in meta['betas']]
     S = dict(datasets=str(C.DATASETS), results=str(C.RESULTS), n_datasets=meta['n_datasets'], arms=list(C.ARMS),
-             joint_arms=list(C.JOINT), joint_results={a: str(p) for a, p in C.JOINT.items()}, bands=[b[0] for b in BANDS],
+             joint_arms=list(C.JOINT), joint_results={a: str(p) for a, p in C.JOINT.items()}, native_arms=list(NATIVE_ARMS),
+             native_results={a: str(C.NATIVE_RESULTS[a]) for a in NATIVE_ARMS}, bands=[b[0] for b in BANDS],
              n_boot=N_BOOT, seed=C.SEED, fdr=FDR,
              mixqtl_permutation=json.loads((C.RESULTS / 'mixqtl_permutation.json').read_text()), missing_causal={},
              one_df_genes=[g for g, k in zip(genes, keep_a) if k == ONE_DF],
-             null={}, precision={}, recovery={}, lead={}, detection={}, ranking={}, gene_level={}, gene_level_eigenmt={})
+             null={}, precision={}, recovery={}, lead={}, detection={}, ranking={}, gene_level={}, gene_level_eigenmt={},
+             trecase_parts={})
+    if NATIVE_ARMS:
+        S['native_datasets'] = str(C.NATIVE_DATASETS)
     em = pd.read_csv(C.EIGENMT, sep='\t').set_index('gene')
     m_eff = em.m_eff.loc[genes].values.astype(float)
     share = em.m_eff / em.n_tested
@@ -601,19 +652,22 @@ def main():
         CL = None
         if (~U[U.scenario == sc].is_null).any():
             CL = {arm: causal_and_leads(C.RESULTS, U, sc, arm) for arm in ARMS}
-            S['missing_causal'][sc] = {arm: int(CL[arm][0].variant_id.isna().sum()) for arm in C.JOINT}
+            S['missing_causal'][sc] = {arm: int(CL[arm][0].variant_id.isna().sum()) for arm in ARMS if arm in MISSING_OK}
             S['recovery'][sc] = {arm: recovery(CL[arm][0], arm, genes, bsel, bidx) for arm in ARMS}
             S['lead'][sc] = {arm: lead_recovery(CL[arm][1], I['dos'], rows) for arm in ARMS}
             S['detection'][sc] = {arm: detection(CL[arm][0], arm) for arm in ARMS}
             S['ranking'][sc] = {arm: ranking(CL[arm][1], (AUC_BOOT_KEY, i)) for arm in ARMS}
+            S['trecase_parts'][sc] = {arm: trecase_parts(C.RESULTS, U, sc, arm, CL[arm][1], (AUC_BOOT_KEY, i)) for arm in TRECASE_ARMS}
         S['precision'][sc] = {arm: precision(C.RESULTS, U, sc, arm, genes, bsel, bidx, CL) for arm in ARMS}
         S['gene_level'][sc] = {arm: gene_level(U, sc, genes, bsel, bidx, cis_p(C.RESULTS, sc, arm, genes), CIS_P[arm])
-                               for arm in C.ARMS}
+                               for arm in CIS_ARMS}
         S['gene_level_eigenmt'][sc] = {arm: gene_level(U, sc, genes, bsel, bidx, eigenmt_p(C.RESULTS, sc, arm, genes, m_eff), 'eigenmt')
                                        for arm in ARMS}
         print(f'scored {sc}', flush=True)
     S['anchor'] = anchor(S['null']['beta0.0']) if ANCHOR else None
     S['trecase_components'] = null_calibration(C.RESULTS, U, 'beta0.0', 'trecase', genes, bsel, bidx, TRECASE_PARTS)
+    if NATIVE_ARMS:
+        S['trecase_native_components'] = null_calibration(C.RESULTS, U, 'beta0.0', 'trecase_native', genes, bsel, bidx, TRECASE_PARTS)
     C.write_json(C.SUMMARY, S)
     a = S['anchor']
     if a is None:

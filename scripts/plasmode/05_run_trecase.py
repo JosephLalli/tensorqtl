@@ -48,6 +48,7 @@ JOBS = 7                       # genes at once; each is an Rscript wrapper plus 
 TRANS_TEST_P = 0.05            # asSeq transTestP default (R/trecase.R), the rule at trecase.c:1311
 TRANS_BORDER = '5.00e-02'      # %.2e of a trans p in [0.04995, 0.05005): either side of TRANS_TEST_P
 MIN_AS_READS = 5               # asSeq min.AS.reads default (Y1 + Y2, trecase.c:615-617); counts only
+CONVERGE = 5e-5                # asSeq converge default: R/trecase.R stops on a Y column with var < converge, so such a gene is not run (no rows)
 MIN_N_HET = 5                  # asSeq min.n.het default; counts only
 CHANNELS = {'t': 'TReC', 'a': 'ASE', 'joint': 'Joint'}
 FAILS = {'joint_theta': 'fail to estimate theta in joint model',   # trecase.c:1003-1012, printed at trace >= 1
@@ -91,11 +92,11 @@ def allelic_counts(ds):
     return np.where(kept, np.rint(ds['pL']), 0.0), np.where(kept, np.rint(ds['pR']), 0.0), kept
 
 
-def write_dataset(S, ds, d):
+def write_dataset(S, ds, d, counts=allelic_counts):
     """Y, Y1, Y2, X, offset and genes.tsv of one dataset for the R runner."""
     I = S['I']
     X = np.column_stack([I['cov_df'].values[ds['perm']], I['geno_cov_df'].values])
-    Y1, Y2, _ = allelic_counts(ds)
+    Y1, Y2, _ = counts(ds)
     d.mkdir(parents=True, exist_ok=True)
     for name, a in dict(Y=ds['pT'], Y1=Y1, Y2=Y2, X=X.T, offset=np.log(ds['eff_lib'])).items():
         write_bin(d / f'{name}.bin', a)
@@ -155,7 +156,7 @@ def convert(g, tag, markers, expected):
     return pd.DataFrame(cols), status, Path(f'{tag}.log').read_text()
 
 
-def dataset_counts(df, ds, S, expected, status, secs, logs):
+def dataset_counts(df, ds, S, expected, status, secs, logs, counts=allelic_counts):
     """Counts written per dataset (the keys 08_report.py reads, plus the run's timing)."""
     genes = S['genes']
     cz = pd.DataFrame(dict(phenotype_id=genes, variant_id=ds['causal_variant'].astype(str), is_null=ds['is_null']))
@@ -164,7 +165,7 @@ def dataset_counts(df, ds, S, expected, status, secs, logs):
     Cz = nn[ran].merge(df, on=['phenotype_id', 'variant_id'], how='left')
     if Cz.final_stat.isna().any():
         raise SystemExit(f'{int(Cz.final_stat.isna().sum())} causal variants of non-null genes have no asSeq row')
-    Y1, Y2, kept = allelic_counts(ds)
+    Y1, Y2, kept = counts(ds)
     text = ''.join(logs)
     trace = {k: text.count(s) for k, s in FAILS.items()}
     trace['theta_fail_abs_gradient_max'] = max([abs(float(x)) for x in re.findall(r'gradience=(\S+), fail=', text)],
@@ -183,8 +184,9 @@ def dataset_counts(df, ds, S, expected, status, secs, logs):
                 wall_seconds=[round(s, 2) for s in secs], trecase_seconds=[round(float(s.seconds), 2) for s in status])
 
 
-def run(S, datasets, out, work, run_list, jobs):
-    """asSeq on the datasets of run_list [(scenario, r)], `jobs` Rscript processes at a time; writes the outputs."""
+def run(S, datasets, out, work, run_list, jobs, arm='trecase', counts=allelic_counts):
+    """asSeq on the datasets of run_list [(scenario, r)], `jobs` Rscript processes at a time, every dataset's genes queued
+    at once; writes the outputs of `arm` (Y1, Y2 from `counts`)."""
     genes = S['genes']
     ids = write_genotypes(S, work / 'genotypes')
     chrom = {g: chrom_int(S['gp'].loc[g, 'chr']) for g in genes}
@@ -192,17 +194,23 @@ def run(S, datasets, out, work, run_list, jobs):
     if any(expected[g] != S['scanned'][g] for g in genes):
         raise SystemExit('a tested variant with varying dosage is missing from its chromosome marker table')
     print(f'{R_RUNNER}; {len(run_list)} datasets x {len(genes)} genes, {jobs} Rscript processes', flush=True)
-    t_all, summary = time.perf_counter(), {}
+    t_all, summary, queued = time.perf_counter(), {}, []
     ex = cf.ThreadPoolExecutor(jobs)
     try:
         for sc, r in run_list:
             ds = C.load_dataset(datasets, sc, r)
             ddir = work / sc / f'rep{r:03d}'
-            n_cov = write_dataset(S, ds, ddir)
+            n_cov = write_dataset(S, ds, ddir, counts)
             (ddir / 'out').mkdir(exist_ok=True)
-            futs = [ex.submit(run_gene, ddir, work / 'genotypes', g, ddir / 'out' / g) for g in genes]
+            refused = [g for g, y in zip(genes, ds['pT']) if np.var(y, ddof=1) < CONVERGE]
+            if refused:
+                print(f'{sc} rep {r:03d}: not run, total variance below asSeq\'s converge {CONVERGE:g} (asSeq stops on it): {refused}',
+                      flush=True)
+            queued.append((sc, r, ds, ddir, n_cov, refused, {g: ex.submit(run_gene, ddir, work / 'genotypes', g, ddir / 'out' / g)
+                                                               for g in genes if g not in refused}))
+        for sc, r, ds, ddir, n_cov, refused, futs in queued:
             parts, status, secs, logs, skipped = [], [], [], [], []
-            for g, f in zip(genes, futs):
+            for g, f in futs.items():
                 s, skip = f.result()
                 secs.append(s)
                 skipped += [g] if skip else []
@@ -211,9 +219,10 @@ def run(S, datasets, out, work, run_list, jobs):
                 status.append(st)
                 logs.append(log)
             df = pd.concat(parts, ignore_index=True)
-            C.write_parquet(df, out / sc / 'trecase' / f'nominal_rep{r:03d}.parquet', C.fingerprint(ds, 'trecase'), 'log2')
-            c = dataset_counts(df, ds, S, expected, status, secs, logs)
+            C.write_parquet(df, out / sc / arm / f'nominal_rep{r:03d}.parquet', C.fingerprint(ds, arm), 'log2')
+            c = dataset_counts(df, ds, S, {g: set() if g in refused else v for g, v in expected.items()}, status, secs, logs, counts)
             c['genes_skipped_existing_status'] = len(skipped)
+            c['genes_not_run_constant_total'] = refused
             summary[f'{sc} rep {r:03d}'] = c
             short = {k: v for k, v in c.items() if not k.endswith('_seconds')}
             print(f'{sc} rep {r:03d} ({n_cov} covariates): {json.dumps(short)}; skipped (status present) '

@@ -62,6 +62,11 @@ ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
                                            'trecase_smoke', 'committed'))
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
+NATIVE_COUNTS = D / 'native_counts_20260928'   # featureCounts totals and phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)
+NATIVE = ROOT / 'native'                       # 05b_native_arms.py: edger/, datasets/, results/, results_trecase/, trecase_work/, facts.json
+NATIVE_DATASETS = NATIVE / 'datasets'
+NATIVE_RESULTS = {'split_native': NATIVE / 'results', 'trecase_native': NATIVE / 'results_trecase'}   # the native-input arms (task 2026-09-28)
+NATIVE_ARMS = tuple(NATIVE_RESULTS)
 COMMITTED_JOINT = {'rasqual': COMMITTED / 'results_rasqual', 'trecase': COMMITTED / 'results_trecase_asseq'}
 EIGENMT = ROOT / 'eigenmt_m_eff.tsv'   # 03: eigenMT's effective number of tests per gene over its tested variants (06 reads it)
 CHECKS, SUMMARY, REPORT = ROOT / 'checks', ROOT / 'summary.json', ROOT / 'report'
@@ -77,7 +82,7 @@ CONFIG = {'split': 'hybrid', 'unit': 'unit', 'plus_one': 'plus_one'}   # hybrid_
 MIXQTL_ARMS = {'mixqtl': MX.PUBLISHED_CUTOFFS, 'mixqtl_permissive': MX.PACKAGE_DEFAULT_CUTOFFS}   # mixqtl_replication.py:167-170
 TENSORQTL = 'tensorqtl'        # tensorqtl.cis on the total phenotype T alone, unweighted (user request 2026-09-27)
 ARMS = HAPMIX_ARMS + tuple(MIXQTL_ARMS) + (TENSORQTL,)
-UNITS = {**{a: 'log2' for a in HAPMIX_ARMS + (TENSORQTL,)}, **{a: 'natural log' for a in MIXQTL_ARMS}}   # mixQTL's response is natural log
+UNITS = {**{a: 'log2' for a in HAPMIX_ARMS + (TENSORQTL,) + NATIVE_ARMS}, **{a: 'natural log' for a in MIXQTL_ARMS}}   # mixQTL's response is natural log
 COLS, CHANNELS, ALPHAS = CNS.COLS, CNS.CHANNELS, CNS.ALPHAS
 DOF_COLS = ['dof_nominal', 'dof_a', 'dof_t', 'allelic_admitted']   # map_nominal's t references (commit 8a06803)
 META_KEY, UNIT_KEY = b'plasmode_input_sha256', b'plasmode_slope_unit'
@@ -202,7 +207,11 @@ def allelic_kept(pL, pR, Va):
 
 
 def arm_variances(ds, arm):
-    """(allelic, total) working variances of an arm after the allelic admission, and the pairs it zeroed."""
+    """(allelic, total) working variances of an arm after the allelic admission, and the pairs it zeroed. split_native
+    (native counts) admits every pair with a + b > 0: the zero-haplotype rule answers Salmon's point estimate putting one
+    copy at exactly zero (docs/pipeline_rules.md), while on alignment counts a one-sided zero is a counting outcome."""
+    if arm == 'split_native':
+        return (*config_variances(CONFIG['split'], ds['Va'], ds['Vt']), 0)
     kept = allelic_kept(ds['pL'], ds['pR'], ds['Va'])
     Va = np.where(kept, ds['Va'], 0.0)
     n_zeroed = int(((ds['Va'] > EPS) & ~kept).sum())

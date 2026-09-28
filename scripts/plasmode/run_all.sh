@@ -2,8 +2,9 @@
 # Regenerate the plasmode benchmark from the Salmon cache into common.ROOT (README.md: run order, runtime).
 # The gene set is common.GENE_SET, from PLASMODE_GENE_SET in the environment (default the 100-gene set;
 # stratum30_100 is the 30-100-read set, made once by select_stratum_genes.py). Each step stops the run on failure and is logged to $ROOT/<step>.log. GPU 1 for map_nominal / map_cis
-# (shared host, 2026-09-27); at most 16 processes at once (04 and 05 set JOBS accordingly). With the argument staged,
-# the committed run's RASQUAL and TReCASE results (common.stage_joint_results) replace steps 4 and 5, which take hours each.
+# (shared host, 2026-09-27); at most 16 processes at once (04 and 05 set JOBS accordingly; 05b_native_arms.py takes its asSeq
+# process count from PLASMODE_NATIVE_JOBS, default 15). With the argument staged, the committed run's RASQUAL and TReCASE results
+# (common.stage_joint_results) replace steps 4 and 5, which take hours each; 05b (the native-input arms) is never staged.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +23,7 @@ elif [[ $# -gt 0 ]]; then
   exit 2
 fi
 
-for script in 01_check_inputs.py 02_make_datasets.py 03_run_arms.py "${joint[@]}" 06_score.py 07_mixqtl_ladder.py 08_report.py; do
+for script in 01_check_inputs.py 02_make_datasets.py 03_run_arms.py "${joint[@]}" 05b_native_arms.py 06_score.py 07_mixqtl_ladder.py 08_report.py; do
   echo "== $script > $ROOT/${script%.py}.log"
   python3 "$HERE/$script" 2>&1 | tee "$ROOT/${script%.py}.log"
 done

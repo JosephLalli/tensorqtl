@@ -45,15 +45,20 @@ COMMITTED_RUN_LOG = C.D / C.GS['committed'] / 'run_arms.log'   # the committed r
 ARMS = C.ARMS
 HAPMIX, JOINT, TQ = C.HAPMIX_ARMS, tuple(C.JOINT), C.TENSORQTL
 HM = HAPMIX + tuple(C.MIXQTL_ARMS)   # the hapmixQTL and mixQTL arms, the arms BEFORE scored
-ALL = ARMS + JOINT
+ALL = ARMS + JOINT                   # the Salmon-input arms: the prose and check_claims are about these
+NATIVE = SC.NATIVE_ARMS              # 05b_native_arms.py: split weighting and TReCASE on native alignment counts; () where C.NATIVE does not exist
+SHOWN = ALL + NATIVE                 # every arm in the section 3 tables and Figures 1-4
 LABEL = {'gibbs': 'gibbs (1/v both channels, shipped)', 'split': 'split (1/v allelic, unit total)',
          'unit': 'unit (weight 1 both channels)', 'plus_one': 'plus_one (1/(v+1) both channels)',
          'mixqtl': 'mixQTL, published cutoffs', 'mixqtl_permissive': 'mixQTL, permissive cutoffs',
-         TQ: 'tensorQTL, total only, unweighted', 'rasqual': 'RASQUAL (joint model)', 'trecase': 'TReCASE, asSeq (joint model)'}
+         TQ: 'tensorQTL, total only, unweighted', 'rasqual': 'RASQUAL (joint model)', 'trecase': 'TReCASE, asSeq (joint model)',
+         'split_native': 'split on native counts (control)', 'trecase_native': 'TReCASE, asSeq, on native counts'}
 SHORT = {'gibbs': 'gibbs', 'split': 'split', 'unit': 'unit', 'plus_one': 'plus_one', 'mixqtl': 'mixQTL pub.',
-         'mixqtl_permissive': 'mixQTL perm.', TQ: 'tensorQTL', 'rasqual': 'RASQUAL', 'trecase': 'TReCASE'}
-COLOR = dict(zip(ALL, ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#8a5a2b', '#4a3aa7', '#e34948')))
-MARKER = dict(zip(ALL, 'osD^vPpXh'))
+         'mixqtl_permissive': 'mixQTL perm.', TQ: 'tensorQTL', 'rasqual': 'RASQUAL', 'trecase': 'TReCASE',
+         'split_native': 'split native', 'trecase_native': 'TReCASE native'}
+COLOR = dict(zip(ALL + C.NATIVE_ARMS, ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#8a5a2b', '#4a3aa7',
+                                       '#e34948', '#222222', '#7a1016')))   # native arms: near-black, and a darker red than TReCASE's
+MARKER = dict(zip(ALL + C.NATIVE_ARMS, 'osD^vPpXh>d'))
 BETA_COLOR = {'0.2': '#86b6ef', '0.4': '#2a78d6', '0.8': '#104281'}
 BETAS = ('0.2', '0.4', '0.8')
 BANDS = tuple(b[0] for b in SC.BANDS)   # 06_score's read bands for this gene set
@@ -65,7 +70,7 @@ ALPHAS = ('0.05', '0.01', '0.001')
 DETECT = ('0.05', '0.001', '1e-05')
 INK, MUTED, GRID = '#0b0b0b', '#52514e', '#e1e0d9'
 LOG_TICKS = (0.25, 0.35, 0.5, 0.7, 1, 1.4, 2, 4, 8, 16, 32)
-S = SB = FX = FA = CG = CP = LF = JF = LD = SM = SF = None   # the inputs, set once by load()
+S = SB = FX = FA = CG = CP = LF = JF = LD = SM = SF = NF = None   # the inputs, set once by load()
 
 
 def skipped(what, key):
@@ -73,8 +78,17 @@ def skipped(what, key):
 
 
 def load():
-    global S, SB, FX, FA, CG, CP, LF, JF, LD, SM, SF
+    global S, SB, FX, FA, CG, CP, LF, JF, LD, SM, SF, NF
     S = json.loads(C.SUMMARY.read_text())
+    if tuple(S['native_arms']) != NATIVE:
+        raise SystemExit(f'{C.SUMMARY}: native arms {S["native_arms"]} differ from this script\'s {NATIVE}')
+    if NATIVE:
+        NF = dict(facts=json.loads((C.NATIVE / 'facts.json').read_text()),
+                  trecase=json.loads((C.NATIVE_RESULTS['trecase_native'] / 'summary.json').read_text()),
+                  counts=json.loads((C.NATIVE_COUNTS / 'facts.json').read_text()))
+    else:
+        print(f'native-input arms {list(C.NATIVE_ARMS)} skipped (tables, figures, their subsection and the sentences that cite '
+              f'it): {C.NATIVE} does not exist', flush=True)
     SB = json.loads(BEFORE.read_text()) if BEFORE else skipped('the before/after comparison of commit 8a06803', 'before_df_fix')
     FX = json.loads(DF_FIX.read_text()) if DF_FIX else skipped('the stored null re-run under 8a06803 (anchor percentiles, tail rates)', 'df_fix')
     for path, X, arms in ((C.SUMMARY, S, ARMS), (BEFORE, SB, HM)):
@@ -407,13 +421,13 @@ def arm_points(ax, arms, xs, ys, los=None, his=None, offset=0.09, line=True):
         ax.plot(x, y, MARKER[arm], color=COLOR[arm], ms=7, mec='white', mew=0.8, label=LABEL[arm], ls='none')
 
 
-def eigenmt_panels(ax_power, ax_fdp, X, xs):
+def eigenmt_panels(ax_power, ax_fdp, X, xs, arms):
     """The eigenMT gene-level p held to a common error rate: power at 5% realized false-discovery proportion over the pooled
     datasets (ax_power), and the realized false-discovery proportion of each arm's Benjamini-Hochberg calls at 5% (ax_fdp)."""
     E = lambda a: [X['gene_level_eigenmt'][f'beta{b}'][a] for b in BETAS]   # noqa: E731
-    arm_points(ax_power, ALL, xs, {a: [e['fdp_matched']['all']['power'] for e in E(a)] for a in ALL}, offset=0.08)
-    arm_points(ax_fdp, ALL, xs, {a: [e['false_discoveries'] / e['discoveries'] if e['discoveries'] else float('nan')
-                                     for e in E(a)] for a in ALL}, offset=0.08)
+    arm_points(ax_power, arms, xs, {a: [e['fdp_matched']['all']['power'] for e in E(a)] for a in arms}, offset=0.08)
+    arm_points(ax_fdp, arms, xs, {a: [e['false_discoveries'] / e['discoveries'] if e['discoveries'] else float('nan')
+                                      for e in E(a)] for a in arms}, offset=0.08)
     ax_fdp.axhline(0.05, color=INK, lw=0.8, ls='--')
     ax_power.set_ylim(0, 1.02)
 
@@ -423,19 +437,21 @@ def fig_ranking():
     axs = [*axs[0], *axs[1]]
     xs = range(len(BETAS))
     get = lambda a, k: [auc(b, a)[k] for b in BETAS]   # noqa: E731
-    arm_points(axs[0], ALL, xs, {a: get(a, 'mean') for a in ALL}, {a: get(a, 'lo') for a in ALL}, {a: get(a, 'hi') for a in ALL}, offset=0.08)
+    arm_points(axs[0], SHOWN, xs, {a: get(a, 'mean') for a in SHOWN}, {a: get(a, 'lo') for a in SHOWN}, {a: get(a, 'hi') for a in SHOWN},
+               offset=0.07)
     axs[0].axhline(0.5, color=MUTED, lw=0.8, ls=':')
     style(axs[0], 'AUC, genes ranked by lead nominal p')
     axs[0].set_title('A. AUC of the gene ranking', fontsize=10, loc='left')
-    arm_points(axs[1], ALL, xs, {a: [fdp(b, a)['all']['power'] for b in BETAS] for a in ALL}, offset=0.08)
+    arm_points(axs[1], SHOWN, xs, {a: [fdp(b, a)['all']['power'] for b in BETAS] for a in SHOWN}, offset=0.07)
     style(axs[1], 'share of non-null genes called')
     axs[1].set_title('B. Power at 5% realized false-discovery proportion', fontsize=10, loc='left')
     g = lambda a, k: [bh(b, a)['power_bh']['all'][k] for b in BETAS]   # noqa: E731
-    arm_points(axs[2], ARMS, xs, {a: g(a, 'rate') for a in ARMS}, {a: g(a, 'lo') for a in ARMS}, {a: g(a, 'hi') for a in ARMS}, offset=0.08)
+    perm = SC.CIS_ARMS   # the arms with a permutation p
+    arm_points(axs[2], perm, xs, {a: g(a, 'rate') for a in perm}, {a: g(a, 'lo') for a in perm}, {a: g(a, 'hi') for a in perm}, offset=0.08)
     style(axs[2], 'share of non-null genes discovered')
     axs[2].set_title('C. Gene level, permutation p: BH at 5%', fontsize=10, loc='left')
     axs[2].set_ylim(0, 1.02)
-    eigenmt_panels(axs[3], axs[4], S, xs)
+    eigenmt_panels(axs[3], axs[4], S, xs, SHOWN)
     style(axs[3], 'share of non-null genes called')
     axs[3].set_title('D. Gene level, eigenMT p: power at 5% realized FDP', fontsize=10, loc='left')
     style(axs[4], 'null genes / genes called')
@@ -456,7 +472,7 @@ def fig_bias():
     for i, ch in enumerate(('allelic', 'total', 'combined')):
         for k, bn in enumerate(BANDS):
             ax = axs[i, k]
-            for j, arm in enumerate(ALL):
+            for j, arm in enumerate(SHOWN):
                 key = ('combined' if ch == 'total' else None) if (arm == TQ and ch != 'combined') else ch   # tensorQTL's one slope is a total-channel slope
                 if key not in S['recovery']['beta0.4'][arm]:
                     continue
@@ -467,11 +483,11 @@ def fig_bias():
                                 label=f'|beta| = {b}' if (j == 0 and i == 0 and k == 0) else None)
             ax.axhline(1, color=INK, lw=0.8)
             ax.axhline(0, color=MUTED, lw=0.6, ls=':')
-            for x in (3.5, 5.5, 6.5):
+            for x in (3.5, 5.5, 6.5) + ((8.5,) if NATIVE else ()):
                 ax.axvline(x, color=GRID, lw=1)
             style(ax, f'{ch}: slope / truth' if k == 0 else None)
             ax.set_title(f'{ch}, {"all genes" if bn == "all" else bn + " reads"}', fontsize=10, loc='left')
-            ax.set_xticks(range(len(ALL)), [SHORT[a] for a in ALL], rotation=40, ha='right')
+            ax.set_xticks(range(len(SHOWN)), [SHORT[a] for a in SHOWN], rotation=40, ha='right')
     fig.tight_layout()
     legend_below(fig, axs[0, 0], y=-0.02)
     return save(fig, 'fig_bias')
@@ -481,7 +497,7 @@ def fig_lead():
     fig, axs = plt.subplots(1, 4, figsize=(15, 3.9), sharey=True)
     xs = range(len(BETAS))
     for k, bn in enumerate(BANDS):
-        arm_points(axs[k], ALL, xs, {a: [S['lead'][f'beta{b}'][a][bn]['r2_high'] for b in BETAS] for a in ALL}, offset=0.08)
+        arm_points(axs[k], SHOWN, xs, {a: [S['lead'][f'beta{b}'][a][bn]['r2_high'] for b in BETAS] for a in SHOWN}, offset=0.07)
         style(axs[k], 'share of non-null genes, lead r^2 >= 0.8' if k == 0 else None)
         n = S['lead']['beta0.4']['gibbs'][bn]['units']
         axs[k].set_title(f'{"all genes" if bn == "all" else bn + " reads"} ({n} gene units per |beta|)', fontsize=10, loc='left')
@@ -499,7 +515,7 @@ def fig_efficiency():
         xs = list(range(len(scen)))
         for k, ch in enumerate(('allelic', 'total', 'combined')):
             ax = axs[i, k]
-            arms = [a for a in (ALL if ch == 'combined' else HAPMIX if part == 'nonnull' else ARMS)
+            arms = [a for a in (SHOWN if ch == 'combined' else HAPMIX if part == 'nonnull' else ARMS)
                     if a not in ('unit', 'mixqtl') and ch in S['precision']['beta0.0'][a]]   # published cutoffs: in the tables only (user decision 2026-09-28)
             rk = 'ratio_vs_unit_count' if (part, ch) == ('nonnull', 'combined') else 'ratio_vs_unit'
             get = lambda a, key: [prec(f'beta{b}', a, ch, part, rk)[key] for b in scen]   # noqa: E731
@@ -607,7 +623,7 @@ def fig_contrast_ranking(runs):
         G = lambda a, v: [X['gene_level'][f'beta{b}'][a]['power_bh']['all'][v] for b in BETAS]   # noqa: E731
         arm_points(axs[2, k], ARMS, xs, {a: G(a, 'rate') for a in ARMS}, {a: G(a, 'lo') for a in ARMS},
                    {a: G(a, 'hi') for a in ARMS}, offset=0.08)
-        eigenmt_panels(axs[3, k], axs[4, k], X, xs)
+        eigenmt_panels(axs[3, k], axs[4, k], X, xs, ALL)
         for i, (lab, title) in enumerate((('AUC, genes ranked by lead nominal p', 'AUC of the gene ranking by lead nominal p'),
                                           ('share of non-null genes called', 'power at 5% realized false-discovery proportion'),
                                           ('share of non-null genes discovered', 'gene level, Benjamini-Hochberg 5% on the permutation p'),
@@ -625,13 +641,13 @@ def fig_contrast_ranking(runs):
 
 def tab_ranking():
     rows = [[LABEL[a]] + [ci(auc(b, a), 'mean') for b in BETAS]
-            + [f'{f(fdp(b, a)["all"]["power"])} ({fdp(b, a)["discoveries"]} called, {fdp(b, a)["false"]} null)' for b in BETAS] for a in ALL]
+            + [f'{f(fdp(b, a)["all"]["power"])} ({fdp(b, a)["discoveries"]} called, {fdp(b, a)["false"]} null)' for b in BETAS] for a in SHOWN]
     return table(['arm'] + [f'AUC, |beta| {b}' for b in BETAS] + [f'power at 5% FDP, |beta| {b}' for b in BETAS], rows)
 
 
 def tab_bands(block, key):
     """Per arm and |beta|, the value in the three read bands, '<100 / 100-999 / >=1000'."""
-    rows = [[LABEL[a]] + [' / '.join(f(block(b, a)[bn][key], 2) for bn in BANDS[1:]) for b in BETAS] for a in ALL]
+    rows = [[LABEL[a]] + [' / '.join(f(block(b, a)[bn][key], 2) for bn in BANDS[1:]) for b in BETAS] for a in SHOWN]
     return table(['arm'] + [f'|beta| {b}: {BAND_HTML}' for b in BETAS], rows)
 
 
@@ -643,7 +659,7 @@ def tab_gene_level():
                                             + (f'<br>{f(d["fdp_matched"]["all"]["power"])} at 5% realized FDP' if d['p'] == 'eigenmt' else ''))
     nr = lambda d: 'n/a' if d is None else f'{d["null_rate"]["all"]["rejections"]} of {d["null_rate"]["all"]["tests"]}'   # noqa: E731
     rows = [[LABEL[a]] + [pw(d) for b in BETAS for d in both(f'beta{b}', a)]
-            + [' / '.join(nr(d) for d in both(sc, a)) for sc in ('beta0.0',) + tuple(f'beta{b}' for b in BETAS)] for a in ALL]
+            + [' / '.join(nr(d) for d in both(sc, a)) for sc in ('beta0.0',) + tuple(f'beta{b}' for b in BETAS)] for a in SHOWN]
     return table(['arm'] + [f'BH power, |beta| {b}, {k}' for b in BETAS for k in ('permutation p', 'eigenMT p')]
                  + [f'null genes with p &lt; 0.05, |beta| {b}: permutation / eigenMT' for b in ('0',) + BETAS], rows)
 
@@ -651,7 +667,7 @@ def tab_gene_level():
 def tab_bias():
     n = lambda d: f' <span class="pipe">({d["units"]} / {d["excluded_nonfinite"]})</span>'   # noqa: E731
     rows = []
-    for a in ALL:
+    for a in SHOWN:
         for ch in CHANNELS:
             if ch not in S['recovery']['beta0.4'][a]:
                 rows.append([LABEL[a], ch, *['n/a'] * len(BETAS)])
@@ -670,9 +686,9 @@ def tab_bias():
 
 def tab_precision(key):
     rows = []
-    for a in (ALL if key == 'sd_z' else tuple(a for a in ALL if a != 'unit')):
+    for a in (SHOWN if key == 'sd_z' else tuple(a for a in SHOWN if a != 'unit')):
         k = key if key == 'sd_z' else rkey(a)
-        joint_z = a in JOINT and key == 'sd_z'
+        joint_z = a in JOINT + ('trecase_native',) and key == 'sd_z'
         name = LABEL[a] + (', derived se (Wald inversion of &chi;<sup>2</sup>): causal-variant columns absorb bias; null column = '
                            'calibration of the likelihood-ratio test (its square is the mean &chi;<sup>2</sup>)' if joint_z
                            else ', count-scale truth' if k == 'ratio_vs_unit_count' else '')
@@ -688,7 +704,7 @@ def tab_precision(key):
 def tab_cross():
     """Combined channel, every arm against unit weights, both on the count-scale truth."""
     rows = [[LABEL[a]] + [ci(prec(f'beta{b}', a, 'combined', 'nonnull', 'ratio_vs_unit_count'), 'value', 2) for b in BETAS]
-            + [ci(prec('beta0.0', a, 'combined', 'null', 'ratio_vs_unit'), 'value', 2)] for a in ALL if a != 'unit']
+            + [ci(prec('beta0.0', a, 'combined', 'null', 'ratio_vs_unit'), 'value', 2)] for a in SHOWN if a != 'unit']
     return table(['arm (combined channel)'] + [f'causal variant, |beta| {b}' for b in BETAS] + ['null genes, beta 0 anchor'], rows)
 
 
@@ -739,7 +755,7 @@ def tab_lead():
     L = lambda b, a: S['lead'][f'beta{b}'][a]   # noqa: E731
     rows = [[LABEL[a]] + [f'{f(L(b, a)["all"]["lead_is_causal"], 2)} / {f(L(b, a)["all"]["r2_high"], 2)} / '
                           f'{f(L(b, a)["all"]["median_r2"], 2)}' for b in BETAS]
-            + [' / '.join(str(L(b, a)['no_finite_p']) for b in BETAS)] for a in ALL]
+            + [' / '.join(str(L(b, a)['no_finite_p']) for b in BETAS)] for a in SHOWN]
     return table(['arm'] + [f'|beta| {b}: lead = causal / r<sup>2</sup> &ge; 0.8 / median r<sup>2</sup>' for b in BETAS]
                  + ['non-null gene units with no finite p (0.2 / 0.4 / 0.8)'], rows)
 
@@ -747,14 +763,14 @@ def tab_lead():
 def tab_detection():
     D = lambda b, a, ch: S['detection'][f'beta{b}'][a].get(ch)   # noqa: E731  None: a joint arm's allelic or total channel
     rows = [[LABEL[a], ch_name(a, ch)] + [' / '.join(f(D(b, a, ch)['all'][al], 2) for al in DETECT) if D(b, a, ch) else 'n/a'
-                                          for b in BETAS] for a in ALL for ch in CHANNELS]
+                                          for b in BETAS] for a in SHOWN for ch in CHANNELS]
     return table(['arm', 'channel'] + [f'|beta| {b}: p &lt; 0.05 / 1e-3 / 1e-5' for b in BETAS], rows)
 
 
 def tab_null():
     rows = [[LABEL[a], ch_name(a, ch)] + [ci(S['null'][sc][a][ch]['all']['0.05'], 'rate', 4) if ch in S['null'][sc][a] else 'n/a'
                                           for sc in ('beta0.0',) + tuple(f'beta{b}' for b in BETAS)]
-            for a in ALL for ch in CHANNELS]
+            for a in SHOWN for ch in CHANNELS]
     return table(['arm', 'channel'] + [f'|beta| {b}' for b in ('0 (anchor)',) + BETAS], rows)
 
 
@@ -871,13 +887,19 @@ def sec_head():
                 f'scripts/plasmode/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
                 f'{COMMITTED_RUN_LOG}, the check files that 01_check_inputs.py wrote into {C.CHECKS} on this run '
                 f'({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, and the '
-                f'joint models\' summaries in {C.JOINT["rasqual"]} and {C.JOINT["trecase"]}; figures also written as PNG in '
+                f'joint models\' summaries in {C.JOINT["rasqual"]} and {C.JOINT["trecase"]}'
+                + (f', and the native-input arms\' {C.NATIVE / "facts.json"} and {C.NATIVE_RESULTS["trecase_native"] / "summary.json"} '
+                   f'(TReCASE and split weighting on alignment counts from the same BAMs, section {native_sec()})' if NATIVE else '')
+                + '; figures also written as PNG in '
                 f'{OUT}. The {REF_SET} page\'s interpretation paragraphs, its mixQTL ladder section '
                 f'and its closing sections (critique, meaning, limits) are not made for this set; the contrast section '
                 f'carries this set\'s comparisons, its limit and what it settles.</p>')
     return ('<h1>Plasmode eQTL benchmark: recovering known cis effects</h1>'
             '<p class="sub">hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on the BrainVar '
-            'cohort\'s own Salmon output with injected effects; 100 genes x 92 donors; datasets of 2026-09-26, regenerated '
+            'cohort\'s own Salmon output with injected effects'
+            + (', and TReCASE and split weighting also on alignment counts from '
+               f'the same BAMs (section {native_sec()}, run 2026-09-28 into {C.NATIVE})' if NATIVE else '')
+            + '; 100 genes x 92 donors; datasets of 2026-09-26, regenerated '
             'unchanged; hapmixQTL, mixQTL and tensorQTL arms and the mixQTL ladder run 2026-09-27 into '
             f'{C.ROOT}, the hapmixQTL arms on commit 8a06803 (per-channel t references and a 15-donor allelic '
             'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
@@ -886,7 +908,10 @@ def sec_head():
             f'(beta = 1 is a twofold effect). Made by scripts/plasmode/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
             f'before commit 8a06803), {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
             f'01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, the joint models\' summaries in {C.JOINT["rasqual"]} '
-            f'and {C.JOINT["trecase"]}, and {C.LADDER}; figures also written as PNG in {OUT}.</p>')
+            f'and {C.JOINT["trecase"]}, '
+            + (f'{C.LADDER}, and the native-input arms\' {C.NATIVE / "facts.json"} and '
+               f'{C.NATIVE_RESULTS["trecase_native"] / "summary.json"}' if NATIVE else f'and {C.LADDER}')
+            + f'; figures also written as PNG in {OUT}.</p>')
 
 
 def sec_why():
@@ -2019,8 +2044,11 @@ variants has a smaller lead p by chance), a confounding every arm shares.</p>
 {img(figs['ranking'], 'Figure 1. A: AUC of the within-dataset gene ranking by lead nominal p (bar: '
      + fig1_bar + '). B: share of non-null gene units called at the deepest point of the pooled '
      'ranking where at most 5% of calls are null genes. C: share of non-null gene units discovered by '
-     "Benjamini-Hochberg at 5% on each arm's permutation p (map_cis pval_beta for the hapmixQTL arms and tensorQTL, "
-     "mixQTL's own pval_perm; RASQUAL and TReCASE have none; gene-clustered intervals). D: the eigenMT p of every "
+     "Benjamini-Hochberg at 5% on each arm's permutation p (map_cis pval_beta for the hapmixQTL arms"
+     + (', split on native counts' if NATIVE else '')
+     + " and tensorQTL, mixQTL's own pval_perm; RASQUAL and "
+     + ('the two TReCASE arms' if NATIVE else 'TReCASE')
+     + " have none; gene-clustered intervals). D: the eigenMT p of every "
      'arm held to a common error rate, the share of non-null gene units called at the deepest point of the pooled '
      'ranking by that p where at most 5% of calls are null genes (as B; no interval). E: the realized '
      "false-discovery proportion of each arm's Benjamini-Hochberg calls at 5% on the eigenMT p, null gene units "
@@ -2154,7 +2182,133 @@ calibration results. The beta = 0 anchor is one dataset, that is ONE record perm
 <p>Null-gene rate at 0.05 (gene-clustered interval):</p>
 {tab_null()}
 {anchor_tab}
-{ladder}'''
+{ladder}
+{sec_native()}'''
+
+
+def native_sec():
+    """The native-input subsection's number: after the mixQTL ladder (3.8) where the gene set has one."""
+    return f'3.{9 if LD is not None else 8}'
+
+
+def sec_native():
+    """The native-input arms of 05b_native_arms.py beside their Salmon-input counterparts: the inputs, the donors each
+    admits, the ranking, the calibration and the limits, the main table, then TReCASE's component statistics in one table
+    after it. Empty where 06 scored no native arms (no C.NATIVE)."""
+    if not NATIVE:
+        return ''
+    F, T = NF['facts'], NF['trecase']
+    gs = NF['counts']['remainder']['gene_sets'][C.GS['gene_dir'].split('/')[0]]
+    anc, (lib_lo, lib_med, lib_hi) = F['datasets']['beta0.0 rep 000'], F['library']['native_over_salmon']
+    cf = F['counts']   # the cohort's own counts, before any dataset's permutation or thinning (05b main)
+    if cf['informative'] != anc['informative']:
+        raise SystemExit(f'{C.NATIVE / "facts.json"}: the anchor has {anc["informative"]:,} native informative pairs against '
+                         f'{cf["informative"]:,} before thinning; section 3 (native-input arms) reads the unthinned counts as the anchor\'s')
+    notrun = sorted({g for v in T['per_dataset'].values() for g in v['genes_not_run_constant_total']})
+    if notrun != sorted({g for v in F['split_native'].values() for g in v['not_tested']}):
+        raise SystemExit(f'{C.NATIVE}: the two native arms left different genes untested; reword section 3 (native-input arms)')
+    arms = ('split', 'split_native', 'trecase', 'trecase_native', TQ)
+    tp = lambda b, a: S['trecase_parts'][f'beta{b}'][a]   # noqa: E731
+    lf = lambda a, ws: (sum(tp(b, a)['lead_joint_failed'][w]['failed'] for b in BETAS for w in ws)   # noqa: E731  pooled over |beta| > 0
+                        / sum(tp(b, a)['lead_joint_failed'][w]['units'] for b in BETAS for w in ws))
+    lead_fail = lambda a, w: lf(a, (w,))   # noqa: E731
+    both = lambda a: lf(a, ('null', 'nonnull'))   # noqa: E731
+    tests = {'trecase': JF['trecase'], 'trecase_native': T['pooled']}
+    n0 = lambda a, al: ci(S['null']['beta0.0'][a]['combined']['all'][al], 'rate', 4)   # noqa: E731
+    nc = lambda a, ch: ci(S['null']['beta0.0'][a][ch]['all']['0.05'], 'rate', 4)   # noqa: E731
+    comp = {'trecase': S['trecase_components'], 'trecase_native': S['trecase_native_components']}
+    name = dict(trec='total-count (TReC)', joint='joint', ase='allele-specific (ASE)')
+    pw = lambda b, a: fdp(b, a)['all']['power']   # noqa: E731
+    moved = ', '.join(f'{w} at {at_betas(bs)}' for w, bs in (
+        ('higher', [b for b in BETAS if pw(b, 'trecase_native') > pw(b, 'trecase')]),
+        ('lower', [b for b in BETAS if pw(b, 'trecase_native') < pw(b, 'trecase')]),
+        ('equal', [b for b in BETAS if pw(b, 'trecase_native') == pw(b, 'trecase')])) if bs)
+    t1 = table(['arm'] + [f'AUC, |beta| {b}' for b in BETAS] + [f'power at 5% FDP, |beta| {b}' for b in BETAS]
+               + ['anchor null-gene rate, 0.05', 'anchor null-gene rate, 0.001']
+               + [f'recovered share of the count-scale truth, |beta| {b}' for b in BETAS],
+               [[LABEL[a]] + [f(auc(b, a)['mean']) for b in BETAS] + [f(fdp(b, a)['all']['power']) for b in BETAS]
+                + [n0(a, '0.05'), n0(a, '0.001')] + [ci(bias(b, a, 'combined', 'bias_count'), 'mean', 2) for b in BETAS] for a in arms])
+    t2 = table(['arm', 'tests without a joint fit', 'reported lead without a joint fit: null / non-null gene units, |beta| &gt; 0']
+               + [f'power at 5% FDP by the {name[k]} p alone, |beta| 0.2 / 0.4 / 0.8' for k in SC.TRECASE_PARTS]
+               + [f'anchor null-gene rate at 0.05, {name[k]} p' for k in SC.TRECASE_PARTS],
+               [[LABEL[a], f'{f(tests[a]["joint_na_share"])} of {tests[a]["tests"]:,}',
+                 f'{f(lead_fail(a, "null"))} / {f(lead_fail(a, "nonnull"))}']
+                + [per_beta(lambda b: tp(b, a)['fdp_power'][k]) for k in SC.TRECASE_PARTS]
+                + [ci(comp[a][k]['all']['0.05'], 'rate', 4) for k in SC.TRECASE_PARTS] for a in SC.TRECASE_ARMS])
+    return f'''
+<h3>{native_sec()} Native-input arms</h3>
+<p>RASQUAL and TReCASE are written for integer alignment counts, and every arm above reads Salmon's point estimates. Two
+further arms read counts from the same STAR alignments instead ({C.NATIVE_COUNTS}, scripts/native_counts.py): the total
+is featureCounts' count of fragments on the gene's exons (primary, uniquely mapped, reverse-stranded read pairs; a fragment
+on exons of two genes is not counted), and the allele-specific counts a and b are phASER's counts of fragments over
+heterozygous SNPs on the haplotypes carrying the analysis VCF's first and second allele, set to a = b = 0 where a + b
+exceeds the total ({gs['negative']:,} of this gene set's {gs['pairs_with_reads']:,} donor-gene pairs with phASER reads,
+holding {gs['allelic_fragments_in_negative']:,} of its {gs['allelic_fragments']:,} allele-specific fragments). Each
+dataset's record permutation, label swaps and thinning factors are applied to them (05b_native_arms.py; exact binomial
+thinning of integers in 02's order), so the null genes, causal variants, injected effects and truth are the Salmon-input
+arms'. The count-scale total truth depends only on the causal genotypes and beta, so it is the truth of both inputs; no
+pipeline-scale truth is computed for the native arms, whose standard-error and squared-error figures in sections 3.3 and
+3.4 use the count-scale truth. The effective library size is recomputed from the native totals by the Salmon run's edgeR
+rule (filterByExpr, edgeR's filter keeping genes with enough counts in enough samples; protein-coding autosomal genes;
+TMM, the trimmed mean of log expression ratios against a reference sample, as the scale factor; {F['library']['genes_kept']:,}
+genes kept) and is {f(lib_lo, 2)} to {f(lib_hi, 2)} times the Salmon one across donors (median {f(lib_med, 2)}).
+<b>{SHORT['trecase_native']}</b> is the same TReCASE runner on the native total and on a and b as they are (no
+zero-haplotype rule; asSeq's own floor of five allele-specific reads applies), with the log native effective library size
+as offset and the same 17 covariates. <b>{SHORT['split_native']}</b> is split weighting on the same counts, the control
+that separates the model from the quantifier: the allelic log2((a + 0.5)/(b + 0.5)) weighted by one over its counting
+variance (1/(a + 0.5) + 1/(b + 0.5))/ln2<sup>2</sup>, the total log2(CPM + 1) unweighted.</p>
+<p><b>Which donors each input admits to the allelic channel.</b> In the cohort's own counts, which the anchor keeps (its
+thinning factors, 2<sup>-|beta|</sup>, are 1), {cf['informative']:,} of the {cf['pairs']:,} donor-gene pairs have native allele-specific counts
+(a + b &gt; 0; {anc['one_sided_zero']:,} of them with one haplotype at 0) and {cf['salmon_informative']:,} have Salmon
+haplotype estimates (pL + pR &gt; 0). Of those Salmon pairs {anc['salmon_admitted']:,} pass hapmixQTL's zero-haplotype
+rule (common.allelic_kept: a pair with exactly one haplotype below {C.EXPRESSIBLE_MIN:g} is left out of the allelic
+channel; docs/pipeline_rules.md), so the rule removes {cf['salmon_informative'] - anc['salmon_admitted']:,} of them, while
+the two inputs' counts of pairs with any allele-specific signal differ by {cf['informative'] - cf['salmon_informative']:+,}
+(native minus Salmon). The Salmon-input TReCASE arm carried that rule (05_run_trecase.allelic_counts gives asSeq
+Y1 = Y2 = 0 on every pair it removes); the native arms do not. The median gene has {anc['admitted_median']:g} allelic
+donors on native counts against {anc['salmon_admitted_median']:g} admitted Salmon donors. The allele-specific depth
+differs too: over the pairs with any, the median a + b is {cf['median_hap']:g} fragments and the median pL + pR
+{f(cf['salmon_median_hap'], 1)} (over every pair with pL + pR &gt; 0, before the rule). phASER's a + b counts fragments
+over a heterozygous SNP; Salmon's pL + pR is its estimate for both haplotype copies of the transcripts whose copies
+differ, fragments over no heterozygous site included.</p>
+<p><b>What changes in the ranking.</b> At |beta| = 0.2 / 0.4 / 0.8 TReCASE's power at 5% realized FDP is
+{P_('trecase')} on Salmon's inputs and {P_('trecase_native')} on native counts ({moved}), and split's
+{P_('split')} and {P_('split_native')}, against total-only tensorQTL's {P_(TQ)} (AUC in the first table below). The
+change in TReCASE's power between its two inputs mixes three differences that this benchmark does not separate: integer
+alignment counts against Salmon's fractional estimates, the zero-haplotype rule that the Salmon-input arm carried and
+the native arm does not, and the allele-specific depth above. A Salmon-input TReCASE arm without the rule, not run,
+would separate the rule from the input format.</p>
+<p><b>Calibration, a finding separate from the ranking.</b> On the anchor TReCASE's null-gene rate at 0.05 is
+{n0('trecase', '0.05')} on Salmon's inputs and {n0('trecase_native', '0.05')} on native counts, and at 0.001
+{n0('trecase', '0.001')} and {n0('trecase_native', '0.001')}. split's anchor rate at 0.05 is {n0('split', '0.05')} on
+Salmon's inputs and {n0('split_native', '0.05')} on native counts, and at 0.001 {n0('split', '0.001')} and
+{n0('split_native', '0.001')}; in split on native counts the allelic channel rejects at 0.05 in
+{nc('split_native', 'allelic')} (split {nc('split', 'allelic')}) and the total channel in {nc('split_native', 'total')}
+(split {nc('split', 'total')}). These rates describe each arm's nominal p; they do not explain its ranking. Power at 5%
+realized FDP ranks genes by their lead p and counts the calls with the true null labels, so a p made smaller for every
+gene by the same increasing map leaves it unchanged, and null genes whose p is too small can only move above non-null
+genes and lower it: an anticonservative null cannot raise that power.</p>
+<p><b>What the native arms cannot show.</b> The 14 RNA-tied covariates are unchanged, and their expression
+principal components were computed from Salmon's log2 CPM. The two inputs admit different donors to the allelic channel
+(above: phASER needs a fragment over a heterozygous SNP, and only the Salmon-input arms apply the zero-haplotype rule);
+featureCounts drops multimapping fragments and fragments on two genes' exons{f", which leaves {', '.join(notrun)} with a total of 0 in every donor and no allele-specific counts: asSeq stops on a constant total and tensorQTL's input generator drops a constant phenotype, so neither native arm tests it and both rank it last in every dataset" if notrun else ''}.
+The inputs therefore differ in which reads are counted, not only in integer against fractional values, and a difference
+between a native and a Salmon-input arm combines those differences. The permutation, thinning, truth and design are
+shared with the Salmon-input arms, so this compares inputs to the same models, not TReCASE's or RASQUAL's own read
+pipelines, and RASQUAL was not run on native counts; {SHORT['split_native']} against {SHORT['trecase_native']} is the
+comparison in which both methods see the same counts. Each |beta| rests on {S['n_datasets']['0.4']} datasets, and power at
+realized FDP has no interval.</p>
+{t1}
+<p><b>TReCASE's component tests</b> (second table): the share of tests whose joint fit is missing (asSeq's final p is
+then its total-count test), the same at each gene unit's reported lead, the power at 5% realized FDP when genes are
+ranked by the lead p of one component test alone (06_score.py, trecase_parts), and each component's null-gene rate on
+the anchor over the tests where its p is finite. TReCASE's joint fit is missing at the reported lead in
+{f(both('trecase'), 2)} of the gene units at |beta| &gt; 0 on Salmon's inputs and {f(both('trecase_native'), 2)} on
+native counts, and in {f(tests['trecase']['joint_na_share'], 2)} and {f(tests['trecase_native']['joint_na_share'], 2)}
+of all tests. Its total-count test alone reaches {per_beta(lambda b: tp(b, 'trecase')['fdp_power']['trec'])} power at
+5% realized FDP on Salmon's inputs and {per_beta(lambda b: tp(b, 'trecase_native')['fdp_power']['trec'])} on native
+counts, against tensorQTL's {P_(TQ)} on Salmon's totals.</p>
+{t2}'''
 
 
 def sec_ladder():
@@ -2432,7 +2586,19 @@ joint model on ranking, on ranking power at 5% realized FDP or on lead placement
 estimate at |beta| 0.8 is lower, with overlapping intervals and a denominator that contains unit weights' own
 count-scale bias (section 3.4). TReCASE's advantage is in bias, and it comes with an anticonservative nominal p. Both joint models were run on
 Salmon point estimates at a pseudo feature SNP rather than on reads (section 6), so this measures them as run here, not
-joint likelihood modelling as such.</p>"""
+joint likelihood modelling as such.{native_meaning()}</p>"""
+
+
+def native_meaning():
+    """The meaning section's sentence on the native-input arms; '' without them."""
+    if not NATIVE:
+        return ''
+    return f''' TReCASE was also run on alignment counts from the same BAMs (section {native_sec()}):
+there its power at 5% realized FDP is {P_('trecase_native')}, against {P_('split_native')} for split on the same counts,
+and its anchor null-gene rate at 0.05 {f(S['null']['beta0.0']['trecase_native']['combined']['all']['0.05']['rate'], 4)};
+its change from the Salmon-input arm mixes the input format, the zero-haplotype rule that arm carried and the
+allele-specific depth, and an anticonservative null cannot raise power at realized FDP. RASQUAL was not run on native
+counts.'''
 
 
 def sec_limits():
@@ -2504,7 +2670,8 @@ section 2 removes {tr["zeroed"][0]:,} to {tr["zeroed"][1]:,} haplotype-informati
 Rounding sets {rq["as00"][0]} to {rq["as00"][1]} of them per dataset to zero reads on both haplotypes for RASQUAL, and
 asSeq's own floors then drop {tr["asseq_dropped"][0]} to {tr["asseq_dropped"][1]} records per dataset (fewer than five
 allele-specific reads) and the allele-specific model at the {tr["few_het"]:,} tests above. Both likelihoods are
-written for read counts, and these are Salmon's fractional point estimates, rounded where a model needs integers. And
+written for read counts, and these are Salmon's fractional point estimates, rounded where a model needs
+integers{f"; section {native_sec()} gives TReCASE (not RASQUAL) the featureCounts totals and phASER allele counts of the same BAMs and states what that comparison cannot show" if NATIVE else ''}. And
 the injected total fold has, averaged over donors, the dosage form both joint models assume (section 2), while the
 linear total channels of hapmixQTL and mixQTL approximate it by a straight line; the generator therefore suits the joint
 models' total model.</p>

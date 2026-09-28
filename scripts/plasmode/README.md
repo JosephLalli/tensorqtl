@@ -5,7 +5,8 @@
 Datasets with known cis effects built from the BrainVar cohort's own Salmon quantification, and
 the recovery of those effects by four hapmixQTL weightings (gibbs, split, unit, plus_one), mixQTL
 mode at two cutoff settings, total-only tensorQTL (tensorqtl.cis on the total phenotype, unweighted),
-RASQUAL and TReCASE (asSeq). The question it answers: on data with the real cohort's depth, noise and
+RASQUAL and TReCASE (asSeq), and two native-input arms on alignment counts from the same STAR BAMs (TReCASE, and split
+weighting as the control; section Native-input arms). The question it answers: on data with the real cohort's depth, noise and
 donor structure, how well does each arm rank non-null genes, discover them at a controlled
 false-discovery rate (on its own permutation p where it has one, and on eigenMT's p for every arm),
 estimate the injected slope, state its standard error, and place the lead variant on the causal one.
@@ -93,6 +94,32 @@ noise that dilutes the real data's weight-residual coupling); and bias against t
 truth separated from the transforms' attenuation (the pipeline-scale truth separates them for an
 unweighted fit only).
 
+## Native-input arms (05b_native_arms.py)
+
+Why (task 2026-09-28): on these datasets TReCASE and RASQUAL ranked non-null genes below total-only tensorQTL, and both are
+written for integer alignment counts while the benchmark gave them Salmon point estimates. `05b_native_arms.py` gives TReCASE
+its native input and gives split weighting the same input as the control that separates the model from the quantifier.
+Inputs: `native_counts_20260928` (scripts/native_counts.py): featureCounts fragment totals (`-p --countReadPairs -s 2
+--primary`, unique, fragments on two genes' exons not counted) and phASER haplotype fragments oriented to the analysis VCF
+(a = first GT allele = xL, b = second), a = b = 0 where a + b exceeds the total; donors joined on the DNA library id.
+Native effective library sizes: featureCounts over every gene through `scripts/edger_library_normalization.R` with the
+Salmon cache's `restrict_calibration.txt`, the Salmon run's rule (12,874 genes kept; native / Salmon 0.62-1.27 across donors).
+Per dataset: the dataset's `perm` and `swap` applied by 02's `move_records`, a thinned by `fL`, b by `fR`, the remainder by
+`(fL + fR) / 2` with 02's `thin_haplotypes` (exact binomial on integers), stream `SeedSequence(42, (7, r, round(1000 |beta|)))`;
+`summaries_from_point_estimates` with the counts as the one draw, so `Va` is the counting variance. Arms: `split_native`
+(map_nominal and map_cis as 03's split arm, every pair with a + b > 0 admitted, no zero-haplotype rule) and `trecase_native`
+(05's runner, Y = native total, Y1 = a, Y2 = b, offset the log native effective library size, same covariates; a gene whose
+total has variance below asSeq's `converge`, which asSeq refuses, is not run and has no rows, RAB4B in the deep set). Truths:
+the Salmon datasets' count-scale truths, which depend on the causal genotypes and beta only (no pipeline-scale truth for
+these arms). The Salmon-input TReCASE arm carries hapmixQTL's zero-haplotype rule (`05_run_trecase.allelic_counts`,
+`common.allelic_kept`) and the native arms do not; 08 gives both inputs' informative pair counts, the admitted Salmon count
+and the median allele-specific depth from `facts.json`. asSeq runs `PLASMODE_NATIVE_JOBS` processes (environment; default
+15, which with the driver is run_all.sh's cap of 16; the 2026-09-28 runs used 44 under a one-off allowance of 48). Outputs
+under `ROOT/native/` (`edger/`, `datasets/`, `results/`, `results_trecase/`, `trecase_work/`, `facts.json`); 06 scores them
+(`native_arms` and `trecase_parts` in `summary.json`), 08 adds them to the section 3 tables and figures and a subsection.
+Both do so only where `ROOT/native/` exists: in a root without it, such as `99_acceptance.py`'s (which does not run 05b),
+each prints a skip line and scores or reports the Salmon-input arms alone, with `native_arms` empty.
+
 ## Run order and runtime
 
 `run_all.sh` prints the versions (`common.versions`, also written to `ROOT/versions.log`) and runs the
@@ -108,6 +135,7 @@ processes (~100 s of each Python step is loading the cache):
 | 3 | `03_run_arms.py` | `results/<scenario>/<arm>/nominal_*.parquet`, `cis_*.parquet` (every arm of 03), `mixqtl_permutation.json`, `run_arms_facts.json`, `eigenmt_m_eff.tsv` | 15-16 min (GPU 1 and 10 CPU worker processes; set by mixQTL's permutation scan, 240-520 s per dataset per arm; 2026-09-27, load 25-100) |
 | 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver) |
 | 5 | `05_run_trecase.py` + `run_trecase.R` | `results_trecase/.../nominal_*.parquet`, `summary.json`; inputs, asSeq files and trace logs under `trecase_work/` | ~15 process-h per dataset; 7 jobs (each budgeted as two processes; `Rscript` execs into `R`, so one is live per job) |
+| 5b | `05b_native_arms.py` | `native/`: native datasets, `split_native` and `trecase_native` results, `facts.json` | loading, datasets and split_native about 6 min (GPU 0, 18-20 s per dataset); asSeq on `PLASMODE_NATIVE_JOBS` processes (default 15), measured on 44: 46.1 min (deep set, 27.5 process-h against 134.4 for the Salmon inputs) and 42.4 min (low-coverage set, 25.1 against 33.3); 2026-09-28, load 50-70 |
 | 6 | `06_score.py` | `summary.json` | 4 min |
 | 7 | `07_mixqtl_ladder.py` | `ladder/ladder.json`, `total_channel_units.tsv`, rung files (a printed skip for a gene set without a ladder) | 3-4 min |
 | 8 | `08_report.py` | `report/plasmode_report.html` and four PNG figures; stops if any of its 26 fixed comparative sentences (`check_claims`) no longer holds on the summary | 0.3 min |
