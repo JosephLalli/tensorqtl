@@ -1,12 +1,16 @@
 """Score the benchmark (README: Scoring): how well each arm recovers the injected effects, the
 precision and stated standard error of its slopes, the nominal-p rate on null genes, lead-variant
-recovery, gene ranking, and the gene-level permutation results of the hapmixQTL arms.
+recovery, gene ranking, and gene-level results: the permutation p of every arm that has one and
+eigenMT for all nine.
 
-Arms: the six of 03_run_arms.py plus the joint models RASQUAL and TReCASE (JOINT), each one test
+Arms: the seven of 03_run_arms.py plus the joint models RASQUAL and TReCASE (JOINT), each one test
 per variant scored as its combined channel with truth beta (both put the total mean at 1,
 (1 + kappa)/2, kappa, the generator's expected total fold); their slope_se is DERIVED (|slope| /
-sqrt(chisq)), so their null sd(z) is the calibration of the likelihood-ratio statistic. mixQTL's
-natural-log slopes are divided by ln 2 on reading (common.read_results); every slope here is log2.
+sqrt(chisq)), so their null sd(z) is the calibration of the likelihood-ratio statistic. The
+tensorqtl arm is one test per variant too, scored as its combined channel, whose truth is the total
+channel's (count scale: the per-gene total truth; its own scale: the pipeline-scale total truth,
+as a hapmixQTL arm's). mixQTL's natural-log slopes are divided by ln 2 on reading
+(common.read_results); every slope here is log2.
 
 Units: a causal unit is one (dataset, non-null gene) at its causal variant; a gene unit one
 (dataset, gene). Every statistic is pooled over units, overall and by the gene's real median
@@ -28,8 +32,17 @@ false-discovery proportion FDR; (6) null-gene nominal-p rate at ALPHAS; the beta
 against each hapmixQTL arm's stored 200-permutation null run (ANCHOR: inside the stored central
 ANCHOR_CENTRAL of per-permutation rates at ANCHOR_ALPHA; descriptive, one permutation; skipped
 with a printed line, anchor null, for a gene set without stored null runs); (7) gene
-level: null-gene rate of pval_beta < GENE_LEVEL_ALPHA and Benjamini-Hochberg power at FDR within
-dataset. TReCASE's component tests (TRECASE_PARTS) are scored on the anchor like channels.
+level, for two gene-level p: the permutation p of 03's cis files (CIS_P: pval_beta for the
+hapmixQTL and tensorqtl arms, pval_perm for mixQTL, whose port has no Beta approximation) and
+eigenMT's for all nine arms (Davis et al. 2016: min(1, the gene's smallest nominal p x M_eff), M_eff
+from C.EIGENMT); for each, the null-gene rate of p < GENE_LEVEL_ALPHA and Benjamini-Hochberg power at
+FDR within dataset; and what sets M_eff (review 2026-09-27): per gene, in 03's windows of EIGENMT_WINDOW
+tested variants, the median Ledoit-Wolf weight (tensorqtl.eigenmt.lw_shrink, float64 on the CPU) and
+the unshrunk count (eigenvalues of the sample correlation of the window's varying variants needed for
+EIGENMT_VAR of their sum), and per arm with pval_beta the median of M_eff / beta_shape2 over gene units
+(hapmixQTL arms; the tensorqtl cis file has no shape) and of eigenMT p / pval_beta over gene units with
+pval_beta in [FDR / genes, FDR), the range of a dataset's Benjamini-Hochberg thresholds. TReCASE's
+component tests (TRECASE_PARTS) are scored on the anchor like channels.
 
 Output: SUMMARY (JSON, NaN as null; 08_report.py reads it).
 """
@@ -37,9 +50,11 @@ import json
 
 import numpy as np
 import pandas as pd
+import torch
 from scipy.stats import false_discovery_control
 
 import common as C
+from tensorqtl import eigenmt
 
 ANCHOR = {   # arm: (stored null summary, its key prefix); the 100-gene x 200-permutation null runs of the GENE_SET genes
     'gibbs': (C.GENE_DIR / 'summary.json', 'drop'),
@@ -53,6 +68,7 @@ ANCHOR_N_PERM = 200           # draws per arm in the stored null runs
 DETECT_ALPHAS = (0.05, 1e-3, 1e-5)   # user decision 2026-09-26
 FDR = 0.05                    # user decision 2026-09-26: power where the pooled realized FDP is 0.05
 GENE_LEVEL_ALPHA = 0.05
+EIGENMT_WINDOW, EIGENMT_VAR = 200, 0.99   # tensorqtl.eigenmt.compute_tests' defaults, as 03 calls it
 R2_HIGH = 0.8                 # user decision 2026-09-26
 BANDS = {   # (name, lo, hi) on the gene's median haplotype-informative reads over all donors; the first band is every gene
     'corrected_null_store_20260925': (('all', 0, np.inf), ('<100', 0, 100), ('100-999', 100, 1000), ('>=1000', 1000, np.inf)),  # user decision 2026-09-26
@@ -69,6 +85,8 @@ NULL_COLS = ['phenotype_id', 'variant_id', 'slope', 'slope_se', 'slope_a', 'slop
 JOINT_COLS = C.COLS[:5]       # phenotype_id, variant_id, pval_nominal, slope, slope_se
 TRECASE_PARTS = {'trec': 'pval_t', 'joint': 'pval_joint', 'ase': 'pval_a'}   # 05_run_trecase.py's columns
 ARMS = C.ARMS + tuple(C.JOINT)
+ONE_TEST = tuple(C.JOINT) + (C.TENSORQTL,)   # one test per variant, scored as the combined channel
+CIS_P = {a: 'pval_perm' if a in C.MIXQTL_ARMS else 'pval_beta' for a in C.ARMS}   # each arm's gene-level permutation p in its cis file
 
 
 def arm_dir(results, sc, arm):
@@ -76,8 +94,13 @@ def arm_dir(results, sc, arm):
 
 
 def channels(arm, d):
-    """The channels scored for an arm: a joint arm's one test per variant is its combined channel."""
-    return {'combined': d['combined']} if arm in C.JOINT else d
+    """The channels scored for an arm: a joint or tensorqtl arm's one test per variant is its combined channel."""
+    return {'combined': d['combined']} if arm in ONE_TEST else d
+
+
+def truth_col(arm, ch, scale):
+    """The truth column of an arm's channel on a scale: the tensorqtl arm's combined channel is a total channel."""
+    return TRUTH[scale]['total' if arm == C.TENSORQTL else ch]
 
 
 def boot(key, n):
@@ -98,7 +121,7 @@ def load_units(datasets, results):
     for sc, r in C.runs(meta):
         ds = C.load_dataset(datasets, sc, r)
         for arm in ARMS:
-            for prefix in ('nominal',) + (('cis',) if arm in C.HAPMIX_ARMS else ()):
+            for prefix in ('nominal',) + (('cis',) if arm in C.ARMS else ()):
                 p = arm_dir(results, sc, arm) / f'{prefix}_rep{r:03d}.parquet'
                 if C.stored_fingerprint(p) != C.fingerprint(ds, arm):
                     raise SystemExit(f'{p} does not match its dataset and arm (common.fingerprint)')
@@ -151,8 +174,8 @@ def null_calibration(results, U, sc, arm, genes, bsel, bidx, cols=None):
 def causal_and_leads(results, U, sc, arm):
     """Causal-variant rows of the non-null genes (a joint arm's missing row left NaN) and every gene's lead, per dataset."""
     parts, leads = [], []
-    cols = (JOINT_COLS if arm in C.JOINT else C.COLS) + (
-        ['method'] if arm in C.MIXQTL_ARMS else [] if arm in C.JOINT else ['allelic_admitted'])
+    cols = (JOINT_COLS if arm in ONE_TEST else C.COLS) + (
+        ['method'] if arm in C.MIXQTL_ARMS else [] if arm in ONE_TEST else ['allelic_admitted'])
     for r, u in U[U.scenario == sc].groupby('rep'):
         d = C.read_results(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet', cols)
         parts.append(u[~u.is_null].merge(d, left_on=['gene', 'causal_variant'], right_on=['phenotype_id', 'variant_id'],
@@ -193,9 +216,9 @@ def ratio_block(ratio, Cz, genes, bsel, bidx):
 def recovery(Cz, arm, genes, bsel, bidx):
     res = {}
     for ch in channels(arm, SLOPE):
-        res[ch] = dict(bias_count=ratio_block(Cz[SLOPE[ch][0]].astype(float) / Cz[TRUTH['count'][ch]], Cz, genes, bsel, bidx))
-        if arm in C.HAPMIX_ARMS and ch in TRUTH['pipeline']:
-            res[ch]['bias_pipeline'] = ratio_block(Cz[SLOPE[ch][0]].astype(float) / Cz[TRUTH['pipeline'][ch]], Cz, genes,
+        res[ch] = dict(bias_count=ratio_block(Cz[SLOPE[ch][0]].astype(float) / Cz[truth_col(arm, ch, 'count')], Cz, genes, bsel, bidx))
+        if (arm in C.HAPMIX_ARMS and ch in TRUTH['pipeline']) or arm == C.TENSORQTL:
+            res[ch]['bias_pipeline'] = ratio_block(Cz[SLOPE[ch][0]].astype(float) / Cz[truth_col(arm, ch, 'pipeline')], Cz, genes,
                                                    bsel, bidx)
     return res
 
@@ -203,10 +226,13 @@ def recovery(Cz, arm, genes, bsel, bidx):
 def channel_truths(Cz, arm, scale=None):
     """Per causal unit, the estimand of each channel's slope (scale None: the arm's own); combined = the
     inverse-variance combination of the channel truths at the unit's own se (01_check_inputs.py pins that the
-    combined slope is that combination of the channel slopes). A joint arm's one slope has estimand beta."""
+    combined slope is that combination of the channel slopes). A joint arm's one slope has estimand beta; the tensorqtl
+    arm's is the total channel's."""
     if arm in C.JOINT:
         return {'combined': Cz[TRUTH['count']['combined']].values}
-    scale = scale or ('pipeline' if arm in C.HAPMIX_ARMS else 'count')
+    scale = scale or ('pipeline' if arm in C.HAPMIX_ARMS + (C.TENSORQTL,) else 'count')
+    if arm == C.TENSORQTL:
+        return {'combined': Cz[truth_col(arm, 'combined', scale)].values}
     ta, tt = Cz[TRUTH[scale]['allelic']].values, Cz[TRUTH[scale]['total']].values
     sa, sea = Cz.slope_a.astype(float).values, Cz.slope_a_se.astype(float).values
     st, set_ = Cz.slope_t.astype(float).values, Cz.slope_t_se.astype(float).values
@@ -248,7 +274,7 @@ def nonnull_precision(Cz, Cu, arm, genes):
 
 
 def null_rows(results, sc, arm, r, nulls):
-    d = C.read_results(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet', NULL_COLS[:4] if arm in C.JOINT else NULL_COLS)
+    d = C.read_results(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet', NULL_COLS[:4] if arm in ONE_TEST else NULL_COLS)
     return d[d.phenotype_id.isin(nulls)].sort_values(['phenotype_id', 'variant_id'], kind='stable').reset_index(drop=True)
 
 
@@ -409,25 +435,79 @@ def ranking(L, key):
     return res
 
 
-def gene_level(results, U, sc, arm, genes, bsel, bidx):
-    """Gene-level null rate of pval_beta and Benjamini-Hochberg power from the cis_repNNN files (section 7)."""
+def gene_level(U, sc, genes, bsel, bidx, pvals, name):
+    """Gene-level null rate of p < GENE_LEVEL_ALPHA and Benjamini-Hochberg power at FDR within dataset (section 7), for the
+    gene-level p `name` whose values for dataset r, in `genes` order, are pvals(r)."""
     reps = sorted(U[U.scenario == sc].rep.unique())
     K = {c: np.zeros((len(reps), len(genes))) for c in ('null', 'disc', 'false')}
     n0, n1 = np.zeros((len(reps), len(genes))), np.zeros((len(reps), len(genes)))
     for i, r in enumerate(reps):
-        d = pd.read_parquet(results / sc / arm / f'cis_rep{r:03d}.parquet', columns=['phenotype_id', 'pval_beta'])
-        if sorted(d.phenotype_id) != sorted(genes) or not d.phenotype_id.is_unique:
-            raise SystemExit(f'{sc} {arm} rep {r}: gene-level results do not cover the {len(genes)} genes once each')
-        p = d.set_index('phenotype_id').loc[genes].pval_beta.values.astype(float)
+        p = pvals(r)
         null = U[(U.scenario == sc) & (U.rep == r)].set_index('gene').is_null.loc[genes].values
         fin = np.isfinite(p)
+        if not ((p[fin] >= 0) & (p[fin] <= 1)).all():
+            raise SystemExit(f'{sc} rep {r} {name}: gene-level p outside [0, 1]')
         disc = np.zeros(len(genes), bool)
         disc[fin] = false_discovery_control(p[fin], method='bh') <= FDR
         n0[i], n1[i] = null, ~null
         K['null'][i], K['disc'][i], K['false'][i] = null & (p < GENE_LEVEL_ALPHA), ~null & disc, null & disc
-    return dict(discoveries=int(K['disc'].sum() + K['false'].sum()), false_discoveries=int(K['false'].sum()),
-                null_rate_pval_beta={bn: pooled(K['null'], n0, g, bidx[bn]) for bn, g in bsel.items() if n0[:, g].sum() > 0},
+    return dict(p=name, discoveries=int(K['disc'].sum() + K['false'].sum()), false_discoveries=int(K['false'].sum()),
+                null_rate={bn: pooled(K['null'], n0, g, bidx[bn]) for bn, g in bsel.items() if n0[:, g].sum() > 0},
                 power_bh={bn: pooled(K['disc'], n1, g, bidx[bn]) for bn, g in bsel.items() if n1[:, g].sum() > 0})
+
+
+def cis_p(results, sc, arm, genes):
+    """pvals for gene_level: dataset r's permutation p (CIS_P) from the arm's cis file."""
+    def get(r):
+        d = pd.read_parquet(results / sc / arm / f'cis_rep{r:03d}.parquet', columns=['phenotype_id', CIS_P[arm]])
+        if sorted(d.phenotype_id) != sorted(genes) or not d.phenotype_id.is_unique:
+            raise SystemExit(f'{sc} {arm} rep {r}: gene-level results do not cover the {len(genes)} genes once each')
+        return d.set_index('phenotype_id').loc[genes, CIS_P[arm]].values.astype(float)
+    return get
+
+
+def eigenmt_p(results, sc, arm, genes, m_eff):
+    """pvals for gene_level: dataset r's eigenMT p, min(1, the gene's smallest nominal p x M_eff); NaN without a finite p."""
+    def get(r):
+        d = pd.read_parquet(arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet', columns=['phenotype_id', 'pval_nominal'])
+        return np.minimum(1.0, d.groupby('phenotype_id').pval_nominal.min().reindex(genes).values.astype(float) * m_eff)
+    return get
+
+
+def eigenmt_structure(I, genes):
+    """Per gene over 03's windows of its tested variants (position order, checked in 03): the median Ledoit-Wolf weight
+    and the unshrunk EIGENMT_VAR count summed over windows (module docstring), float64 on the CPU."""
+    tested, rows = C.setup(I)['tested_rows'], []
+    for g in genes:
+        dos, weights, count = I['dos'][tested[g]].astype(np.float64), [], 0
+        for s in range(0, len(dos), EIGENMT_WINDOW):
+            x = dos[s:s + EIGENMT_WINDOW].T                    # donors x variants
+            weights.append(float(eigenmt.lw_shrink(torch.from_numpy(x))[1]))
+            v = x[:, x.std(0) > 0]
+            if v.shape[1]:
+                ev = np.clip(np.linalg.eigvalsh(np.atleast_2d(np.corrcoef(v, rowvar=False))), 0, None)
+                count += eigenmt.find_num_eigs(ev, v.shape[1], EIGENMT_VAR)
+        rows.append(dict(gene=g, n_tested=len(dos), unshrunk=count, lw_weight=float(np.median(weights))))
+    return pd.DataFrame(rows).set_index('gene')
+
+
+def eigenmt_vs_permutation(runs, genes, m_eff):
+    """Per arm with pval_beta: median M_eff / beta_shape2 over gene units (where the cis file has the shape) and median
+    eigenMT p / pval_beta over gene units with pval_beta in [FDR / genes, FDR) (module docstring)."""
+    lo, res = FDR / len(genes), {}
+    for arm in (a for a in C.ARMS if CIS_P[a] == 'pval_beta'):
+        shape, ratio = [], []
+        for sc, r in runs:
+            c = pd.read_parquet(C.RESULTS / sc / arm / f'cis_rep{r:03d}.parquet').set_index('phenotype_id').loc[genes]
+            pb, pe = c.pval_beta.to_numpy(float), eigenmt_p(C.RESULTS, sc, arm, genes, m_eff)(r)
+            if 'beta_shape2' in c:
+                shape.append(m_eff / c.beta_shape2.to_numpy(float))
+            band = (pb >= lo) & (pb < FDR) & np.isfinite(pe)
+            ratio.append(pe[band] / pb[band])
+        shape, ratio = (np.concatenate(x) if x else np.array([]) for x in (shape, ratio))
+        res[arm] = dict(m_eff_over_shape2=float(np.nanmedian(shape)) if len(shape) else None, units=int(np.isfinite(shape).sum()),
+                        eigenmt_over_pval_beta=float(np.median(ratio)), band=[lo, FDR], band_units=len(ratio))
+    return res
 
 
 def stored_rates(path, prefix):
@@ -479,7 +559,25 @@ def main():
              n_boot=N_BOOT, seed=C.SEED, fdr=FDR,
              mixqtl_permutation=json.loads((C.RESULTS / 'mixqtl_permutation.json').read_text()), missing_causal={},
              one_df_genes=[g for g, k in zip(genes, keep_a) if k == ONE_DF],
-             null={}, precision={}, recovery={}, lead={}, detection={}, ranking={}, gene_level={})
+             null={}, precision={}, recovery={}, lead={}, detection={}, ranking={}, gene_level={}, gene_level_eigenmt={})
+    em = pd.read_csv(C.EIGENMT, sep='\t').set_index('gene')
+    m_eff = em.m_eff.loc[genes].values.astype(float)
+    share = em.m_eff / em.n_tested
+    st = eigenmt_structure(I, genes)
+    un = st.unshrunk / st.n_tested
+    S['eigenmt'] = dict(source=str(C.EIGENMT), m_eff_min=int(em.m_eff.min()), m_eff_median=float(em.m_eff.median()),
+                        m_eff_max=int(em.m_eff.max()), share_min=float(share.min()), share_median=float(share.median()),
+                        share_max=float(share.max()), window=EIGENMT_WINDOW, donors=int(I['dos'].shape[1]),
+                        unshrunk_share_min=float(un.min()), unshrunk_share_median=float(un.median()), unshrunk_share_max=float(un.max()),
+                        lw_weight_min=float(st.lw_weight.min()), lw_weight_median=float(st.lw_weight.median()),
+                        lw_weight_max=float(st.lw_weight.max()),
+                        vs_permutation=eigenmt_vs_permutation(C.runs(meta), genes, m_eff))
+    vp = S['eigenmt']['vs_permutation']
+    print(f'eigenMT: M_eff / tested {share.min():.2f}-{share.max():.2f}, unshrunk {un.min():.2f}-{un.max():.2f} (median Ledoit-Wolf '
+          f'weight per gene {st.lw_weight.min():.2f}-{st.lw_weight.max():.2f}); M_eff / beta_shape2 '
+          + ', '.join(f'{a} {v["m_eff_over_shape2"]:.2f}' for a, v in vp.items() if v['m_eff_over_shape2'])
+          + f'; eigenMT p / pval_beta in [{FDR / len(genes):g}, {FDR}) ' + ', '.join(f'{a} {v["eigenmt_over_pval_beta"]:.2f} ({v["band_units"]})'
+                                                                             for a, v in vp.items()), flush=True)
     for i, sc in enumerate(scen):
         S['null'][sc] = {arm: null_calibration(C.RESULTS, U, sc, arm, genes, bsel, bidx) for arm in ARMS}
         CL = None
@@ -491,7 +589,10 @@ def main():
             S['detection'][sc] = {arm: detection(CL[arm][0], arm) for arm in ARMS}
             S['ranking'][sc] = {arm: ranking(CL[arm][1], (AUC_BOOT_KEY, i)) for arm in ARMS}
         S['precision'][sc] = {arm: precision(C.RESULTS, U, sc, arm, genes, bsel, bidx, CL) for arm in ARMS}
-        S['gene_level'][sc] = {arm: gene_level(C.RESULTS, U, sc, arm, genes, bsel, bidx) for arm in C.HAPMIX_ARMS}
+        S['gene_level'][sc] = {arm: gene_level(U, sc, genes, bsel, bidx, cis_p(C.RESULTS, sc, arm, genes), CIS_P[arm])
+                               for arm in C.ARMS}
+        S['gene_level_eigenmt'][sc] = {arm: gene_level(U, sc, genes, bsel, bidx, eigenmt_p(C.RESULTS, sc, arm, genes, m_eff), 'eigenmt')
+                                       for arm in ARMS}
         print(f'scored {sc}', flush=True)
     S['anchor'] = anchor(S['null']['beta0.0']) if ANCHOR else None
     S['trecase_components'] = null_calibration(C.RESULTS, U, 'beta0.0', 'trecase', genes, bsel, bidx, TRECASE_PARTS)

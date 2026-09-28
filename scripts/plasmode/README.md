@@ -4,17 +4,21 @@
 
 Datasets with known cis effects built from the BrainVar cohort's own Salmon quantification, and
 the recovery of those effects by four hapmixQTL weightings (gibbs, split, unit, plus_one), mixQTL
-mode at two cutoff settings, RASQUAL and TReCASE (asSeq). The question it answers: on data with the
-real cohort's depth, noise and donor structure, how well does each arm rank non-null genes, discover
-them at a controlled false-discovery rate, estimate the injected slope, state its standard error,
-and place the lead variant on the causal one. It bears on which weighting ships
+mode at two cutoff settings, total-only tensorQTL (tensorqtl.cis on the total phenotype, unweighted),
+RASQUAL and TReCASE (asSeq). The question it answers: on data with the real cohort's depth, noise and
+donor structure, how well does each arm rank non-null genes, discover them at a controlled
+false-discovery rate (on its own permutation p where it has one, and on eigenMT's p for every arm),
+estimate the injected slope, state its standard error, and place the lead variant on the causal one.
+The hapmixQTL arms carry Meier's correction of the combined standard error (commit a1b2ef4). It bears on which weighting ships
 (`docs/pipeline_rules.md`, "Open decision: which weighting configuration ships").
 
 This directory is the analysis-tier rewrite (2026-09-27) of `scripts/plasmode/`: the same design,
-about 2,500 lines of pipeline code (common.py and scripts 01-07, run_trecase.R) plus a report script of
-about 2,200 lines and the acceptance test, one check script, no per-dataset re-validation, no
+about 2,600 lines of pipeline code (common.py and scripts 01-07, run_trecase.R) plus a report script of
+about 2,400 lines and the acceptance test, one check script, no per-dataset re-validation, no
 command-line options; `select_stratum_genes.py` made the 30-100-read gene set once.
-`99_acceptance.py` checks it against the committed run of each gene set (2026-09-26 and 2026-09-27).
+`99_acceptance.py` checks it against the committed run of each gene set (2026-09-26 and 2026-09-27); those runs
+predate Meier's correction and the tensorqtl arm, so it is a refactoring check that needs references made by the
+same statistics.
 
 ## Data provenance
 
@@ -31,31 +35,27 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   stored runs of that gene set the scripts read: `hybrid_weights_null_20260926` (the split, unit and
   plus_one null runs; 06's anchors and 01's check d), `allelic_df_fix_20260927` (the stored null re-run
   under commit 8a06803; 08's like-for-like anchor and tail comparison), `plasmode_20260926/summary_before_df_fix.json`
-  (the arms scored before that commit; a record the report compares against, not regenerable),
-  `plasmode_20260926/results_smoke/mixqtl_permutation.json` (the 2026-09-26 timing that excludes mixQTL's
-  permutation scan, user decision, 300 s budget per dataset) and
+  (the arms scored before that commit; a record the report compares against, not regenerable) and
   `plasmode_20260926/results_trecase_asseq/smoke/summary.json` (the TReCASE smoke run whose largest theta
   gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
   stops every script at import. `PLASMODE_GENE_SET` in the environment selects the entry.
 - `stratum30_100`: the 30-100-read gene set, 100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100) with at least 15 admitted allelic donors, drawn once by
   `select_stratum_genes.py` into `plasmode_stratum30_100_20260927/gene_set` (with its log and
-  `pool_stratum.tsv`). Its entry names that directory, its root, its committed run and the mixQTL
-  permutation timing that run measured on its first dataset (2026-09-27, 302 s for 65 of 100 genes
-  against the 300 s budget); it has no stored null runs, before-fix record, TReCASE smoke run or ladder
+  `pool_stratum.tsv`). Its entry names that directory, its root and its committed run; it has no stored null runs, before-fix record, TReCASE smoke run or ladder
   (`None`), so check (d), the anchor, 07 and the parts of 08 that read them print a skip. 06 scores it in
   the read bands <30 / 30-50 / 50-100, and 01's check (c) over every gene. Its report leaves out the
   interpretation paragraphs of section 3, section 3.8 and sections 4-6 (they were written for the
-  default set) and adds a section setting it, the low-coverage set, against the committed 100-gene run,
-  the deep set (`plasmode_20260926/summary.json`), with three contrast figures, from its selection log,
+  default set) and adds a section setting it, the low-coverage set, against the deep set's run of this
+  code (`plasmode_meier_20260927/summary.json`), with three contrast figures, from its selection log,
   `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json` and the committed
   stratum run's `run_arms.log` (its dataset blocks).
 - `cohort/salmon.tsv`, `annot/tx2gene.tsv` and donor 100_D1's dumped equivalence classes (the Salmon
   premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, through
   `corrected_null_store.OLD`).
 
-Outputs go to `common.ROOT` only (`plasmode2_acceptance_20260927` for the default gene set,
-`plasmode2_stratum_acceptance_20260927` for `stratum30_100`).
+Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
+`plasmode_lowcov_meier_20260927` for `stratum30_100`).
 
 ## Generator (02_make_datasets.py)
 
@@ -95,14 +95,15 @@ unweighted fit only).
 
 `run_all.sh` prints the versions (`common.versions`, also written to `ROOT/versions.log`) and runs the
 numbered scripts in order into `common.ROOT`; each step logs to `ROOT/<step>.log` and stops the run on
-failure. Measured 2026-09-27 on the shared 256-core host at load 120-220, one NVIDIA L4, at most 16
+failure. With the argument `staged` (`run_all.sh staged`) the gene set's committed RASQUAL and TReCASE results
+(`common.stage_joint_results`, also used by `99_acceptance.py`) replace steps 4 and 5. Measured 2026-09-27 on the shared 256-core host at load 120-220, one NVIDIA L4, at most 16
 processes (~100 s of each Python step is loading the cache):
 
 | step | script | what it writes | runtime |
 |---|---|---|---|
-| 1 | `01_check_inputs.py` | `checks/salmon_premise.json`, `checks/check_generator.json` (premise, generator checks a-d, plumbing gates e; the gate disposition of the earlier pipeline's per-dataset checks is in its docstring) | 2.5-10 min |
+| 1 | `01_check_inputs.py` | `checks/salmon_premise.json`, `checks/check_generator.json` (premise, generator checks a-d, plumbing gates e; check d pins the combined se at the stored se times sqrt(M), M Meier's factor recomputed from the stored channel se and dof, for the library at commit a1b2ef4; the gate disposition of the earlier pipeline's per-dataset checks is in its docstring) | 2.5-10 min |
 | 2 | `02_make_datasets.py` | `datasets/beta*/rep*.npz`, `meta.json`, `truth.tsv` | 1.5 min |
-| 3 | `03_run_arms.py` | `results/<scenario>/<arm>/nominal_*.parquet`, `cis_*.parquet` (hapmixQTL), `mixqtl_permutation.json`, `run_arms_facts.json` | 16-40 min (GPU 1) |
+| 3 | `03_run_arms.py` | `results/<scenario>/<arm>/nominal_*.parquet`, `cis_*.parquet` (every arm of 03), `mixqtl_permutation.json`, `run_arms_facts.json`, `eigenmt_m_eff.tsv` | 15-16 min (GPU 1 and 10 CPU worker processes; set by mixQTL's permutation scan, 240-520 s per dataset per arm; 2026-09-27, load 25-100) |
 | 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver) |
 | 5 | `05_run_trecase.py` + `run_trecase.R` | `results_trecase/.../nominal_*.parquet`, `summary.json`; inputs, asSeq files and trace logs under `trecase_work/` | ~15 process-h per dataset; 7 jobs (each budgeted as two processes; `Rscript` execs into `R`, so one is live per job) |
 | 6 | `06_score.py` | `summary.json` | 4 min |
@@ -112,15 +113,22 @@ processes (~100 s of each Python step is loading the cache):
 Steps 4 and 5 checkpoint per gene (a gene whose raw file or `_status.tsv` exists is not rerun; every
 skip is printed).
 
+The two roots of 2026-09-27 (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`) were made step by
+step, with the same scripts rather than one `run_all.sh` call: the staged joint results, 02, 03, 06, 07 (deep set
+only) and 08; then 01, once check d had been made Meier-aware, into each root's `checks/` (its log
+`01_check_inputs.log` beside them), replacing check files first copied from `plasmode2_acceptance_20260927` and
+`plasmode2_stratum_acceptance_20260927`; then 06 and 08 again.
+
 ## Report figures and tables
 
 | report item | made by | from |
 |---|---|---|
 | Section 2 tables: Fano factors by band, recovery estimates | `08_report.py` `sec_run` | `checks/check_generator.json` |
 | Section 2 conversion-of-effects table | `tab_conversion` | fixed text (the methods' definitions), no file |
+| Section 2 eigenMT paragraph: what sets M_eff, M_eff against the Beta shape2, eigenMT p against pval_beta | `sec_run` | `summary.json` `eigenmt` (06 `eigenmt_structure` on the genotypes, `eigenmt_vs_permutation` on the cis and nominal files) |
 | Table 3.1 AUC and power at 5% FDP, band tables | `tab_ranking`, `tab_bands` | `summary.json` `ranking` (06 `ranking`) |
-| Figure 1 (AUC, FDP power, BH power) | `fig_ranking` | `summary.json` `ranking`, `gene_level` |
-| Table 3.2 gene-level BH power and null rates | `tab_gene_level` | `summary.json` `gene_level` (06 `gene_level`, from 03's `cis_*.parquet`) |
+| Figure 1 (AUC, FDP power, BH power on the permutation p and on the eigenMT p) | `fig_ranking` | `summary.json` `ranking`, `gene_level`, `gene_level_eigenmt` |
+| Table 3.2 gene-level BH power and null rates, permutation p and eigenMT p | `tab_gene_level` | `summary.json` `gene_level` (06 `gene_level` on 03's `cis_*.parquet`), `gene_level_eigenmt` (on the nominal files and 03's `eigenmt_m_eff.tsv`) |
 | Table 3.3 bias ratios; Figure 2 | `tab_bias`, `fig_bias` | `summary.json` `recovery` (06 `recovery`) |
 | Tables 3.4 sd(z), squared-error ratios, cross-method; Figure 3 | `tab_precision`, `tab_cross`, `fig_efficiency` | `summary.json` `precision` (06 `precision`) |
 | Table 3.5 lead recovery, band table; Figure 4 | `tab_lead`, `tab_bands`, `fig_lead` | `summary.json` `lead` (06 `lead_recovery`) |

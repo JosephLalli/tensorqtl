@@ -10,6 +10,7 @@ import importlib.metadata
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,31 +35,31 @@ D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
 GENE_SET = os.environ.get('PLASMODE_GENE_SET', 'corrected_null_store_20260925')   # the gene set this run uses: a key of GENE_SETS
 GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, gene_design.tsv; for the default set also its stored
                 # 200-permutation gibbs null run), this pipeline's output directory, the committed run of the previous code (scripts/plasmode/ before f0c0b07) that
-                # 99_acceptance.py compares with, and the stored runs of that gene set the scripts read (None: the set has none, and
-                # each reader prints a skip); a new gene set adds an entry
+                # 99_acceptance.py compares with and whose RASQUAL and TReCASE results stage_joint_results copies, and the stored runs of that
+                # gene set the scripts read (None: the set has none, and each reader prints a skip); a new gene set adds an entry
     'corrected_null_store_20260925': dict(
         gene_dir='corrected_null_store_20260925',
-        root='plasmode2_acceptance_20260927',                              # every output: the one directory this pipeline may write (task of 2026-09-27)
+        root='plasmode_meier_20260927',                                    # every output: the one directory this pipeline may write (task of 2026-09-27, Meier's correction)
         committed='plasmode_20260926',                                     # the previous code at commit 3aac315
         hybrid_null='hybrid_weights_null_20260926',                        # the stored split / unit / plus_one null runs, with the gibbs run in gene_dir (06 ANCHOR, 01 REPRO_DRAWS)
         before_df_fix='plasmode_20260926/summary_before_df_fix.json',      # the arms scored before commit 8a06803 (08 BEFORE; a record, not regenerable)
         df_fix='allelic_df_fix_20260927/summary.json',                     # the stored null re-run under 8a06803 (08 DF_FIX; scripts/allelic_df_null_check.py)
-        mixqtl_perm_timed='plasmode_20260926/results_smoke/mixqtl_permutation.json',   # the 2026-09-26 timing that excludes mixQTL's permutation scan (03)
         trecase_smoke='plasmode_20260926/results_trecase_asseq/smoke/summary.json',    # the 2026-09-26 TReCASE smoke run (08: its largest theta gradient)
         ladder='ladder'),                                                  # 07's output directory under root (08 section 3.8)
     'stratum30_100': dict(   # 100 genes at 30-100 median haplotype-informative reads over admitted allelic donors (select_stratum_genes.py)
         gene_dir='plasmode_stratum30_100_20260927/gene_set',
-        root='plasmode2_stratum_acceptance_20260927',
+        root='plasmode_lowcov_meier_20260927',
         committed='plasmode_stratum30_100_20260927',                       # the previous code, commits 15aac90 to d3247e0
-        hybrid_null=None, before_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None,
-        mixqtl_perm_timed='plasmode_stratum30_100_20260927/results/mixqtl_permutation.json')}   # timed 2026-09-27 on this set's first dataset
+        hybrid_null=None, before_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None)}
 GS = GENE_SETS[GENE_SET]
 GENE_DIR = D / GS['gene_dir']
 GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', GENE_DIR / 'gene_design.tsv'
-ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, MIXQTL_PERM_TIMED, TRECASE_SMOKE = (
-    D / GS[k] if GS[k] else None for k in ('root', 'hybrid_null', 'before_df_fix', 'df_fix', 'mixqtl_perm_timed', 'trecase_smoke'))
+ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
+    D / GS[k] if GS[k] else None for k in ('root', 'hybrid_null', 'before_df_fix', 'df_fix', 'trecase_smoke', 'committed'))
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
+COMMITTED_JOINT = {'rasqual': COMMITTED / 'results_rasqual', 'trecase': COMMITTED / 'results_trecase_asseq'}
+EIGENMT = ROOT / 'eigenmt_m_eff.tsv'   # 03: eigenMT's effective number of tests per gene over its tested variants (06 reads it)
 CHECKS, SUMMARY, REPORT = ROOT / 'checks', ROOT / 'summary.json', ROOT / 'report'
 LADDER = ROOT / GS['ladder'] if GS['ladder'] else None
 SEED = 42                      # one master seed; every stream is SeedSequence(SEED, spawn_key=...)
@@ -66,12 +67,13 @@ KAPPA = 0.5                    # summaries_from_point_estimates' pseudocount
 EXPRESSIBLE_MIN = 0.5          # reads; the zero-haplotype rule (docs/pipeline_rules.md)
 EPS = 1e-12                    # allelic admission Va > EPS: hapmixqtl._zero_degenerate_ase_weights
 ROUNDING_TOL = 1e-6            # Salmon sums: pT - pL - pR measured down to -1.8e-12 (point estimates), -1.0e-11 (draws), 2026-09-26
-PACKAGES = ('numpy', 'scipy', 'pandas', 'pyarrow', 'torch', 'matplotlib')   # requirements.txt
+PACKAGES = ('numpy', 'scipy', 'pandas', 'pyarrow', 'torch', 'matplotlib', 'threadpoolctl')   # requirements.txt
 HAPMIX_ARMS = ('gibbs', 'split', 'unit', 'plus_one')
 CONFIG = {'split': 'hybrid', 'unit': 'unit', 'plus_one': 'plus_one'}   # hybrid_weights_null.config_variances names
 MIXQTL_ARMS = {'mixqtl': MX.PUBLISHED_CUTOFFS, 'mixqtl_permissive': MX.PACKAGE_DEFAULT_CUTOFFS}   # mixqtl_replication.py:167-170
-ARMS = HAPMIX_ARMS + tuple(MIXQTL_ARMS)
-UNITS = {**{a: 'log2' for a in HAPMIX_ARMS}, **{a: 'natural log' for a in MIXQTL_ARMS}}   # mixQTL's response is natural log
+TENSORQTL = 'tensorqtl'        # tensorqtl.cis on the total phenotype T alone, unweighted (user request 2026-09-27)
+ARMS = HAPMIX_ARMS + tuple(MIXQTL_ARMS) + (TENSORQTL,)
+UNITS = {**{a: 'log2' for a in HAPMIX_ARMS + (TENSORQTL,)}, **{a: 'natural log' for a in MIXQTL_ARMS}}   # mixQTL's response is natural log
 COLS, CHANNELS, ALPHAS = CNS.COLS, CNS.CHANNELS, CNS.ALPHAS
 DOF_COLS = ['dof_nominal', 'dof_a', 'dof_t', 'allelic_admitted']   # map_nominal's t references (commit 8a06803)
 META_KEY, UNIT_KEY = b'plasmode_input_sha256', b'plasmode_slope_unit'
@@ -267,3 +269,37 @@ def run_nominal(S, ds, arm, scratch, keep_a=None, keep_t=None):
     if not per.equals(S['n_tested'].reindex(S['genes'])):
         raise SystemExit(f'map_nominal returned {len(df):,} rows against {int(S["n_tested"].sum()):,} tested pairs')
     return df, n_zeroed
+
+
+def stage_joint_results():
+    """The committed run's RASQUAL and TReCASE results (COMMITTED_JOINT) into JOINT, copied once, with a summary.json each
+    (RASQUAL's derived from the committed run's log, which alone holds its counts): 99_acceptance.py, and run_all.sh with
+    the argument staged in place of 04 and 05 (hours each)."""
+    for arm, src in COMMITTED_JOINT.items():
+        for f in sorted(src.glob(f'beta*/{arm}/nominal_rep*.parquet')):
+            dst = JOINT[arm] / f.parent.parent.name / arm / f.name
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                write_atomic(dst, lambda fh, f=f: fh.write(f.read_bytes()))
+    src = COMMITTED_JOINT['trecase'] / 'summary.json'
+    write_atomic(JOINT['trecase'] / 'summary.json', lambda fh: fh.write(src.read_bytes()))
+    log = (COMMITTED_JOINT['rasqual'] / 'run_rasqual.log').read_text()
+    per = {}
+    for k, *m in re.findall(r'(?m)^(beta\S+ rep \d+): ([\d,]+) rows written; excluded non-converged (\d+), pseudo-fSNP '
+                            r'rows (\d+); tested variants with no RASQUAL row (\d+); chisq <= 0 \(slope_se NaN\) (\d+); '
+                            r'genes where RASQUAL did not admit the pseudo fSNP (\d+); non-null causal variants without a '
+                            r'row: non-converged (\d+), absent (\d+) \(of (\d+)\)', log):
+        v = [int(x.replace(',', '')) for x in m]
+        per[k] = dict(zip(('rows', 'nonconv', 'pseudo', 'absent', 'chisq_le0', 'no_fsnp', 'causal_nonconv', 'causal_absent',
+                           'causal_nonnull'), v))
+        per[k]['tests'] = per[k]['rows'] + per[k]['nonconv'] + per[k]['absent']
+    for k, h, inf, z in re.findall(r'(?m)^(beta\S+ rep \d+): \d+ covariates; pseudo fSNP (\d+) het of (\d+) informative '
+                                   r'pairs.*AS 0,0 (\d+)$', log):
+        per[k].update(het=int(h), informative=int(inf), as00=int(z))
+    if len(per) != 10 or not all('het' in v for v in per.values()):
+        raise SystemExit(f'{COMMITTED_JOINT["rasqual"]}/run_rasqual.log: {len(per)} dataset lines parsed')
+    pooled = {k: sum(v[k] for v in per.values()) for k in ('rows', 'tests', 'nonconv', 'absent', 'chisq_le0', 'no_fsnp',
+                                                             'causal_nonconv', 'causal_absent', 'causal_nonnull')}
+    write_json(JOINT['rasqual'] / 'summary.json', dict(per_dataset=per, pooled=pooled,
+                                                       source=str(COMMITTED_JOINT['rasqual'] / 'run_rasqual.log')))
+    print(f'staged the committed joint results of {COMMITTED} into {ROOT}; RASQUAL pooled {pooled}', flush=True)

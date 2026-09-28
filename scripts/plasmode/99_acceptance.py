@@ -21,6 +21,9 @@ Runs the pipeline into common.ROOT and checks:
  (6) the report's numbers: every numeric token of the old and new pages (image data, style, path
      tokens, dates and commit ids removed) compared as multisets.
 Prints PASS, FAIL or SKIP per item with the maximum difference, then exits non-zero on any FAIL.
+The committed references predate Meier's correction of the combined statistic (commit a1b2ef4) and the
+tensorqtl arm, so items 2-6 cannot pass against them now: the acceptance is a refactoring tool, and it
+needs references made by the same statistics as the code under test.
 
 The one-dataset joint rerun of (4) runs only with the argument `joint`. It costs hours of RASQUAL
 and TReCASE (97 and 136 min in the recorded pass, and a RASQUAL run can take more than 6 h), and its
@@ -55,8 +58,8 @@ import pandas as pd
 
 import common as C
 
-OLD = C.D / C.GS['committed']           # the committed run of the previous code (scripts/plasmode/ before f0c0b07)
-OLD_JOINT = {'rasqual': OLD / 'results_rasqual', 'trecase': OLD / 'results_trecase_asseq'}
+OLD = C.COMMITTED                       # the committed run of the previous code (scripts/plasmode/ before f0c0b07)
+OLD_JOINT = C.COMMITTED_JOINT
 JOINT_CHECK = {'corrected_null_store_20260925': ('beta0.8', 0),   # the one dataset 04 and 05 are rerun on
                'stratum30_100': None}[C.GENE_SET]                 # None: the committed joint results are staged and scored only (task 2026-09-27)
 JOINT_PASS = C.ROOT / 'acceptance_df76f3b.log'   # the last recorded pass of the one-dataset joint rerun (default set, 2026-09-27 14:42-16:59)
@@ -127,38 +130,6 @@ def run_step(script, output, imports, reads, stamps):
     stamps[script] = cur
     C.write_json(STAMPS, stamps)
     print(f'ran {script}: {(time.perf_counter() - t0) / 60:.1f} min', flush=True)
-
-
-def stage_joint_results():
-    """The committed RASQUAL and TReCASE results into ROOT (copied once), with a summary.json each."""
-    for arm, src in OLD_JOINT.items():
-        for f in sorted(src.glob(f'beta*/{arm}/nominal_rep*.parquet')):
-            dst = C.JOINT[arm] / f.parent.parent.name / arm / f.name
-            if not dst.exists():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                C.write_atomic(dst, lambda fh, f=f: fh.write(f.read_bytes()))
-    src = OLD_JOINT['trecase'] / 'summary.json'
-    C.write_atomic(C.JOINT['trecase'] / 'summary.json', lambda fh: fh.write(src.read_bytes()))
-    log = (OLD_JOINT['rasqual'] / 'run_rasqual.log').read_text()   # the old run wrote its counts to the log only
-    per = {}
-    for k, *m in re.findall(r'(?m)^(beta\S+ rep \d+): ([\d,]+) rows written; excluded non-converged (\d+), pseudo-fSNP '
-                            r'rows (\d+); tested variants with no RASQUAL row (\d+); chisq <= 0 \(slope_se NaN\) (\d+); '
-                            r'genes where RASQUAL did not admit the pseudo fSNP (\d+); non-null causal variants without a '
-                            r'row: non-converged (\d+), absent (\d+) \(of (\d+)\)', log):
-        v = [int(x.replace(',', '')) for x in m]
-        per[k] = dict(zip(('rows', 'nonconv', 'pseudo', 'absent', 'chisq_le0', 'no_fsnp', 'causal_nonconv', 'causal_absent',
-                           'causal_nonnull'), v))
-        per[k]['tests'] = per[k]['rows'] + per[k]['nonconv'] + per[k]['absent']
-    for k, h, inf, z in re.findall(r'(?m)^(beta\S+ rep \d+): \d+ covariates; pseudo fSNP (\d+) het of (\d+) informative '
-                                   r'pairs.*AS 0,0 (\d+)$', log):
-        per[k].update(het=int(h), informative=int(inf), as00=int(z))
-    if len(per) != 10 or not all('het' in v for v in per.values()):
-        raise SystemExit(f'{OLD_JOINT["rasqual"]}/run_rasqual.log: {len(per)} dataset lines parsed')
-    pooled = {k: sum(v[k] for v in per.values()) for k in ('rows', 'tests', 'nonconv', 'absent', 'chisq_le0', 'no_fsnp',
-                                                             'causal_nonconv', 'causal_absent', 'causal_nonnull')}
-    C.write_json(C.JOINT['rasqual'] / 'summary.json', dict(per_dataset=per, pooled=pooled,
-                                                            source=str(OLD_JOINT['rasqual'] / 'run_rasqual.log')))
-    print(f'staged the committed joint results into {C.ROOT}; RASQUAL pooled {pooled}', flush=True)
 
 
 def verdict(item, ok, detail):
@@ -400,7 +371,7 @@ def main():
     t0 = time.perf_counter()
     C.ROOT.mkdir(parents=True, exist_ok=True)
     print('\n'.join(C.versions()), flush=True)
-    stage_joint_results()
+    C.stage_joint_results()
     stamps = json.loads(STAMPS.read_text()) if STAMPS.exists() else {}
     steps = {s[0]: s for s in STEPS}
     step = lambda name: run_step(*steps[name], stamps)   # noqa: E731
