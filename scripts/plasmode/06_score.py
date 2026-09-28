@@ -436,13 +436,16 @@ def ranking(L, key):
 
 
 def gene_level(U, sc, genes, bsel, bidx, pvals, name):
-    """Gene-level null rate of p < GENE_LEVEL_ALPHA and Benjamini-Hochberg power at FDR within dataset (section 7), for the
+    """Gene-level null rate of p < GENE_LEVEL_ALPHA, Benjamini-Hochberg power at FDR within dataset (section 7) and power at
+    FDR realized false-discovery proportion over the pooled datasets (fdp_matched, no interval), for the
     gene-level p `name` whose values for dataset r, in `genes` order, are pvals(r)."""
     reps = sorted(U[U.scenario == sc].rep.unique())
     K = {c: np.zeros((len(reps), len(genes))) for c in ('null', 'disc', 'false')}
     n0, n1 = np.zeros((len(reps), len(genes))), np.zeros((len(reps), len(genes)))
+    P = np.ones((len(reps), len(genes)))   # no finite p: never called
     for i, r in enumerate(reps):
         p = pvals(r)
+        P[i] = np.where(np.isfinite(p), p, 1.0)
         null = U[(U.scenario == sc) & (U.rep == r)].set_index('gene').is_null.loc[genes].values
         fin = np.isfinite(p)
         if not ((p[fin] >= 0) & (p[fin] <= 1)).all():
@@ -451,7 +454,22 @@ def gene_level(U, sc, genes, bsel, bidx, pvals, name):
         disc[fin] = false_discovery_control(p[fin], method='bh') <= FDR
         n0[i], n1[i] = null, ~null
         K['null'][i], K['disc'][i], K['false'][i] = null & (p < GENE_LEVEL_ALPHA), ~null & disc, null & disc
+    # power at FDR realized false-discovery proportion, as ranking's fdp_matched: the scenario's gene units pooled over
+    # datasets, ranked by this p, cut at the deepest tie boundary where at most FDR of the units called are null
+    p, isnull = P.ravel(), n0.ravel().astype(bool)
+    o = np.argsort(p, kind='stable')
+    cut = np.r_[p[o][1:] != p[o][:-1], True] & (np.cumsum(isnull[o]) / np.arange(1, len(o) + 1) <= FDR)
+    k = int(np.where(cut)[0].max()) + 1 if cut.any() else 0
+    top = np.zeros(len(p), bool)
+    top[o[:k]] = True
+    top = top.reshape(P.shape)
+    fm = dict(fdr=FDR, discoveries=k, false=int((top & (n0 > 0)).sum()))
+    for bn, g in bsel.items():
+        m = n1[:, g] > 0
+        if m.any():
+            fm[bn] = dict(non_null=int(m.sum()), power=float(top[:, g][m].mean()))
     return dict(p=name, discoveries=int(K['disc'].sum() + K['false'].sum()), false_discoveries=int(K['false'].sum()),
+                fdp_matched=fm,
                 null_rate={bn: pooled(K['null'], n0, g, bidx[bn]) for bn, g in bsel.items() if n0[:, g].sum() > 0},
                 power_bh={bn: pooled(K['disc'], n1, g, bidx[bn]) for bn, g in bsel.items() if n1[:, g].sum() > 0})
 

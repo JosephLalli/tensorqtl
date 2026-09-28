@@ -407,8 +407,20 @@ def arm_points(ax, arms, xs, ys, los=None, his=None, offset=0.09, line=True):
         ax.plot(x, y, MARKER[arm], color=COLOR[arm], ms=7, mec='white', mew=0.8, label=LABEL[arm], ls='none')
 
 
+def eigenmt_panels(ax_power, ax_fdp, X, xs):
+    """The eigenMT gene-level p held to a common error rate: power at 5% realized false-discovery proportion over the pooled
+    datasets (ax_power), and the realized false-discovery proportion of each arm's Benjamini-Hochberg calls at 5% (ax_fdp)."""
+    E = lambda a: [X['gene_level_eigenmt'][f'beta{b}'][a] for b in BETAS]   # noqa: E731
+    arm_points(ax_power, ALL, xs, {a: [e['fdp_matched']['all']['power'] for e in E(a)] for a in ALL}, offset=0.08)
+    arm_points(ax_fdp, ALL, xs, {a: [e['false_discoveries'] / e['discoveries'] if e['discoveries'] else float('nan')
+                                     for e in E(a)] for a in ALL}, offset=0.08)
+    ax_fdp.axhline(0.05, color=INK, lw=0.8, ls='--')
+    ax_power.set_ylim(0, 1.02)
+
+
 def fig_ranking():
-    fig, axs = plt.subplots(1, 4, figsize=(18, 4.2))
+    fig, axs = plt.subplots(2, 3, figsize=(16, 8.6))
+    axs = [*axs[0], *axs[1]]
     xs = range(len(BETAS))
     get = lambda a, k: [auc(b, a)[k] for b in BETAS]   # noqa: E731
     arm_points(axs[0], ALL, xs, {a: get(a, 'mean') for a in ALL}, {a: get(a, 'lo') for a in ALL}, {a: get(a, 'hi') for a in ALL}, offset=0.08)
@@ -418,17 +430,22 @@ def fig_ranking():
     arm_points(axs[1], ALL, xs, {a: [fdp(b, a)['all']['power'] for b in BETAS] for a in ALL}, offset=0.08)
     style(axs[1], 'share of non-null genes called')
     axs[1].set_title('B. Power at 5% realized false-discovery proportion', fontsize=10, loc='left')
-    for ax, fn, arms, title in ((axs[2], bh, ARMS, 'C. Gene level, permutation p: BH at 5%'),
-                                (axs[3], bhe, ALL, 'D. Gene level, eigenMT p: BH at 5%')):
-        g = lambda a, k: [fn(b, a)['power_bh']['all'][k] for b in BETAS]   # noqa: E731
-        arm_points(ax, arms, xs, {a: g(a, 'rate') for a in arms}, {a: g(a, 'lo') for a in arms}, {a: g(a, 'hi') for a in arms}, offset=0.08)
-        style(ax, 'share of non-null genes discovered')
-        ax.set_title(title, fontsize=10, loc='left')
-        ax.set_ylim(0, 1.02)
-    for ax in axs:
+    g = lambda a, k: [bh(b, a)['power_bh']['all'][k] for b in BETAS]   # noqa: E731
+    arm_points(axs[2], ARMS, xs, {a: g(a, 'rate') for a in ARMS}, {a: g(a, 'lo') for a in ARMS}, {a: g(a, 'hi') for a in ARMS}, offset=0.08)
+    style(axs[2], 'share of non-null genes discovered')
+    axs[2].set_title('C. Gene level, permutation p: BH at 5%', fontsize=10, loc='left')
+    axs[2].set_ylim(0, 1.02)
+    eigenmt_panels(axs[3], axs[4], S, xs)
+    style(axs[3], 'share of non-null genes called')
+    axs[3].set_title('D. Gene level, eigenMT p: power at 5% realized FDP', fontsize=10, loc='left')
+    style(axs[4], 'null genes / genes called')
+    axs[4].set_title('E. Gene level, eigenMT p: realized FDP of BH at 5%', fontsize=10, loc='left')
+    axs[5].axis('off')
+    for ax in axs[:5]:
         ax.set_xticks(list(xs), [f'|beta| = {b}' for b in BETAS])
     axs[1].set_ylim(0, 1.02)
-    legend_below(fig, axs[0])
+    fig.tight_layout()
+    legend_below(fig, axs[0], y=-0.06)
     return save(fig, 'fig_ranking')
 
 
@@ -578,7 +595,7 @@ def fig_contrast_precision(runs, rows):
 def fig_contrast_ranking(runs):
     """AUC, power at 5% realized false-discovery proportion and Benjamini-Hochberg gene-level power on the permutation p
     and on the eigenMT p by |beta|, one column per gene set (the arm colours and markers of Figure 1)."""
-    fig, axs = plt.subplots(4, len(runs), figsize=(12, 14.5), sharex=True, sharey='row')
+    fig, axs = plt.subplots(5, len(runs), figsize=(12, 18), sharex=True, sharey='row')
     xs = range(len(BETAS))
     for k, (name, X) in enumerate(runs):
         Rk = {b: X['ranking'][f'beta{b}'] for b in BETAS}
@@ -587,17 +604,18 @@ def fig_contrast_ranking(runs):
                    {a: [Rk[b][a]['auc']['all']['hi'] for b in BETAS] for a in ALL}, offset=0.08)
         axs[0, k].axhline(0.5, color=MUTED, lw=0.8, ls=':')
         arm_points(axs[1, k], ALL, xs, {a: [Rk[b][a]['fdp_matched']['all']['power'] for b in BETAS] for a in ALL}, offset=0.08)
-        for i, key, arms in ((2, 'gene_level', ARMS), (3, 'gene_level_eigenmt', ALL)):
-            G = lambda a, v: [X[key][f'beta{b}'][a]['power_bh']['all'][v] for b in BETAS]   # noqa: E731
-            arm_points(axs[i, k], arms, xs, {a: G(a, 'rate') for a in arms}, {a: G(a, 'lo') for a in arms},
-                       {a: G(a, 'hi') for a in arms}, offset=0.08)
+        G = lambda a, v: [X['gene_level'][f'beta{b}'][a]['power_bh']['all'][v] for b in BETAS]   # noqa: E731
+        arm_points(axs[2, k], ARMS, xs, {a: G(a, 'rate') for a in ARMS}, {a: G(a, 'lo') for a in ARMS},
+                   {a: G(a, 'hi') for a in ARMS}, offset=0.08)
+        eigenmt_panels(axs[3, k], axs[4, k], X, xs)
         for i, (lab, title) in enumerate((('AUC, genes ranked by lead nominal p', 'AUC of the gene ranking by lead nominal p'),
                                           ('share of non-null genes called', 'power at 5% realized false-discovery proportion'),
                                           ('share of non-null genes discovered', 'gene level, Benjamini-Hochberg 5% on the permutation p'),
-                                          ('share of non-null genes discovered', 'gene level, Benjamini-Hochberg 5% on the eigenMT p'))):
+                                          ('share of non-null genes called', 'gene level, eigenMT p, power at 5% realized FDP'),
+                                          ('null genes / genes called', 'gene level, eigenMT p, realized FDP of BH at 5%'))):
             style(axs[i, k], lab if k == 0 else None)
             axs[i, k].set_title(f'{name}: {title}', fontsize=10, loc='left')
-        axs[3, k].set_xticks(list(xs), [f'|beta| = {b}' for b in BETAS])
+        axs[4, k].set_xticks(list(xs), [f'|beta| = {b}' for b in BETAS])
     for i in (1, 2, 3):
         axs[i, 0].set_ylim(0, 1.02)
     fig.tight_layout()
@@ -621,7 +639,8 @@ def tab_gene_level():
     """Per arm, Benjamini-Hochberg power and the null-gene count below 0.05 on its two gene-level p: its permutation p
     (n/a where it has none) and eigenMT's."""
     both = lambda sc, a: [S[k][sc].get(a) for k in ('gene_level', 'gene_level_eigenmt')]   # noqa: E731
-    pw = lambda d: 'n/a' if d is None else f'{ci(d["power_bh"]["all"], "rate")} ({d["discoveries"]} called, {d["false_discoveries"]} null)'   # noqa: E731
+    pw = lambda d: 'n/a' if d is None else (f'{ci(d["power_bh"]["all"], "rate")} ({d["discoveries"]} called, {d["false_discoveries"]} null)'   # noqa: E731
+                                            + (f'<br>{f(d["fdp_matched"]["all"]["power"])} at 5% realized FDP' if d['p'] == 'eigenmt' else ''))
     nr = lambda d: 'n/a' if d is None else f'{d["null_rate"]["all"]["rejections"]} of {d["null_rate"]["all"]["tests"]}'   # noqa: E731
     rows = [[LABEL[a]] + [pw(d) for b in BETAS for d in both(f'beta{b}', a)]
             + [' / '.join(nr(d) for d in both(sc, a)) for sc in ('beta0.0',) + tuple(f'beta{b}' for b in BETAS)] for a in ALL]
@@ -1262,6 +1281,7 @@ def interp_gene_level():
     P = lambda a: per_beta(lambda b: bh(b, a)['power_bh']['all']['rate'])   # noqa: E731
     N = lambda a: ' / '.join(f'{bh(b, a)["false_discoveries"]} of {bh(b, a)["discoveries"]}' for b in BETAS)   # noqa: E731
     Pe = lambda a: per_beta(lambda b: bhe(b, a)['power_bh']['all']['rate'])   # noqa: E731
+    Pm = lambda a: per_beta(lambda b: bhe(b, a)['fdp_matched']['all']['power'])   # noqa: E731
     nre = lambda a: S['gene_level_eigenmt']['beta0.0'][a]['null_rate']['all']   # noqa: E731
     nr = lambda sc, a: S['gene_level'][sc][a]['null_rate']['all']   # noqa: E731
     worst = max(((nr(f'beta{b}', a)['rejections'], b, a) for b in BETAS for a in HAPMIX))
@@ -1287,7 +1307,12 @@ permutation nulls are their own (section 2), not the generator's, so that argume
 {'; '.join(f'{SHORT[a]} {Pe(a)}' for a in ALL)}. The eigenMT p multiplies an arm's smallest nominal p by
 M<sub>eff</sub>, so it inherits whatever miscalibration that nominal p has (section 3.7), where the permutation p is
 referred to the arm's own null; null gene units with eigenMT p below 0.05 on the anchor:
-{'; '.join(f'{SHORT[a]} {nre(a)["rejections"]} of {nre(a)["tests"]}' for a in ALL)}.</p>"""
+{'; '.join(f'{SHORT[a]} {nre(a)["rejections"]} of {nre(a)["tests"]}' for a in ALL)}. So the eigenMT power above
+rewards an anticonservative nominal p: an arm that calls more null genes also calls more non-null ones. Held to the same
+5% realized false-discovery proportion on the same eigenMT p (Figure 1 D; the gene units of the scenario's datasets
+ranked by it and cut, using the truth, where at most 5% of the units called are null; no interval) the power is
+{'; '.join(f'{SHORT[a]} {Pm(a)}' for a in ALL)}, and Figure 1 E gives each arm's realized false-discovery proportion of
+its Benjamini-Hochberg calls.</p>"""
 
 
 def interp_bias():
@@ -1623,6 +1648,7 @@ def sec_contrast():
         if d is None:
             return 'n/a'
         return ci(d['power_bh']['all'], 'rate') + (f' ({d["discoveries"]} called, {d["false_discoveries"]} null)'
+                                                   f'<br>{f(d["fdp_matched"]["all"]["power"])} at 5% realized FDP'
                                                    if k == 'gene_level_eigenmt' else '')
     efd = lambda X, a: X['gene_level_eigenmt']['beta0.4'][a]   # noqa: E731
     fdp_e = lambda X, a: efd(X, a)['false_discoveries'] / efd(X, a)['discoveries']   # noqa: E731  realized FDP of the eigenMT calls
@@ -1635,7 +1661,9 @@ def sec_contrast():
                     + ', '.join(f'{SHORT[a]} {fdp_txt(S, a)}' for a in high) + f' in the {THIS_SET} and '
                     + ', '.join(f'{SHORT[a]} {fdp_txt(R, a)}' for a in high) + f' in the {REF_SET}, against at most '
                     f'{fdp_txt(S, other(S))} and {fdp_txt(R, other(R))} for the other arms; the eigenMT entries of the '
-                    f'second table give the calls and null gene units at every |beta|.')
+                    f'second table give the calls and null gene units at every |beta|, and on a second line the power when '
+                    f'every arm is held to the same 5% realized false-discovery proportion on its eigenMT p, which is the '
+                    f'comparison across arms.')
     t_gene = table(['arm'] + [f'{n}, |beta| {b}, {c}' for n, _ in runs for b in BETAS for c in ('permutation p', 'eigenMT p')],
                    [[LABEL[a]] + [gl(X, k, b, a) for _, X in runs for b in BETAS for k in ('gene_level', 'gene_level_eigenmt')]
                     for a in ALL])
@@ -1794,8 +1822,12 @@ permutation-p column and an eigenMT column per effect size.{fdp_sentence}</p>
                  f'the {n_rep[THIS_SET]} per-dataset values, not a 95% interval; dotted line: chance). Second row: power at 5% '
                  f'realized false-discovery proportion over the pooled datasets (no interval). Third row: gene-level power, the share '
                  f"of non-null gene units discovered by Benjamini-Hochberg at 5% on each arm's "
-                 f'permutation p (every arm but RASQUAL and TReCASE); bottom: the same on the eigenMT p, every arm '
-                 f'(gene-clustered 95% intervals). The four statistics are defined in the paragraph above the tables.')}
+                 f'permutation p (every arm but RASQUAL and TReCASE; gene-clustered 95% intervals). Fourth row: the eigenMT p '
+                 f'of every arm held to a common error rate, power at 5% realized false-discovery proportion as in the second '
+                 f"row (no interval). Bottom: the realized false-discovery proportion of each arm's Benjamini-Hochberg calls at "
+                 f'5% on the eigenMT p (dashed line: 0.05); an arm above the line calls null genes beyond the 5% the procedure '
+                 f"promises, so its Benjamini-Hochberg power on this p (table) is not comparable with the others'. The "
+                 f'statistics are defined in the paragraph above the tables.')}
 {joint}
 {limit}
 {settled}'''
@@ -1988,8 +2020,13 @@ variants has a smaller lead p by chance), a confounding every arm shares.</p>
      + fig1_bar + '). B: share of non-null gene units called at the deepest point of the pooled '
      'ranking where at most 5% of calls are null genes. C: share of non-null gene units discovered by '
      "Benjamini-Hochberg at 5% on each arm's permutation p (map_cis pval_beta for the hapmixQTL arms and tensorQTL, "
-     "mixQTL's own pval_perm; RASQUAL and TReCASE have none); D: the same on the eigenMT p, every arm "
-     '(gene-clustered intervals). Points are offset sideways within each |beta| so that intervals do not overlap.')}
+     "mixQTL's own pval_perm; RASQUAL and TReCASE have none; gene-clustered intervals). D: the eigenMT p of every "
+     'arm held to a common error rate, the share of non-null gene units called at the deepest point of the pooled '
+     'ranking by that p where at most 5% of calls are null genes (as B; no interval). E: the realized '
+     "false-discovery proportion of each arm's Benjamini-Hochberg calls at 5% on the eigenMT p, null gene units "
+     'among the units called (dashed line: 0.05); an arm above the line calls null genes beyond the 5% the procedure '
+     'promises, which is why its Benjamini-Hochberg power on this p (table below) is not comparable with the '
+     "others'. Points are offset sideways within each |beta| so that intervals do not overlap.")}
 
 <h3>3.2 Gene-level power</h3>
 <p>map_cis gives each gene a gene-level p, <b>pval_beta</b>: the lead variant's nominal p is compared with the
