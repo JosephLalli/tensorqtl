@@ -31,24 +31,36 @@ from tensorqtl import mixqtl_replication as MX               # noqa: E402
 from tensorqtl.hapmixqtl import map_nominal                  # noqa: E402
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
-GENE_SET = 'corrected_null_store_20260925'   # the gene set this run uses: a key of GENE_SETS
-GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, gene_design.tsv, its stored 200-permutation gibbs null run),
-                # this pipeline's output directory, and the stored runs of that gene set the scripts read; a new gene set adds an entry
+GENE_SET = os.environ.get('PLASMODE_GENE_SET', 'corrected_null_store_20260925')   # the gene set this run uses: a key of GENE_SETS
+GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, gene_design.tsv; for the default set also its stored
+                # 200-permutation gibbs null run), this pipeline's output directory, the committed run of scripts/plasmode/ that
+                # 99_acceptance.py compares with, and the stored runs of that gene set the scripts read (None: the set has none, and
+                # each reader prints a skip); a new gene set adds an entry
     'corrected_null_store_20260925': dict(
+        gene_dir='corrected_null_store_20260925',
         root='plasmode2_acceptance_20260927',                              # every output: the one directory this pipeline may write (task of 2026-09-27)
-        hybrid_null='hybrid_weights_null_20260926',                        # the stored split / unit / plus_one null runs (06 ANCHOR, 01 REPRO_DRAWS)
+        committed='plasmode_20260926',                                     # scripts/plasmode/, commit 3aac315
+        hybrid_null='hybrid_weights_null_20260926',                        # the stored split / unit / plus_one null runs, with the gibbs run in gene_dir (06 ANCHOR, 01 REPRO_DRAWS)
         before_df_fix='plasmode_20260926/summary_before_df_fix.json',      # the arms scored before commit 8a06803 (08 BEFORE; a record, not regenerable)
         df_fix='allelic_df_fix_20260927/summary.json',                     # the stored null re-run under 8a06803 (08 DF_FIX; scripts/allelic_df_null_check.py)
         mixqtl_perm_timed='plasmode_20260926/results_smoke/mixqtl_permutation.json',   # the 2026-09-26 timing that excludes mixQTL's permutation scan (03)
-        trecase_smoke='plasmode_20260926/results_trecase_asseq/smoke/summary.json')}   # the 2026-09-26 TReCASE smoke run (08: its largest theta gradient)
+        trecase_smoke='plasmode_20260926/results_trecase_asseq/smoke/summary.json',    # the 2026-09-26 TReCASE smoke run (08: its largest theta gradient)
+        ladder='ladder'),                                                  # 07's output directory under root (08 section 3.8)
+    'stratum30_100': dict(   # 100 genes at 30-100 median haplotype-informative reads over admitted allelic donors (select_stratum_genes.py)
+        gene_dir='plasmode_stratum30_100_20260927/gene_set',
+        root='plasmode2_stratum_acceptance_20260927',
+        committed='plasmode_stratum30_100_20260927',                       # scripts/plasmode/, commits 15aac90 to 4f0b439
+        hybrid_null=None, before_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None,
+        mixqtl_perm_timed='plasmode_stratum30_100_20260927/results/mixqtl_permutation.json')}   # timed 2026-09-27 on this set's first dataset
 GS = GENE_SETS[GENE_SET]
-GENE_DIR = D / GENE_SET
+GENE_DIR = D / GS['gene_dir']
 GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', GENE_DIR / 'gene_design.tsv'
 ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, MIXQTL_PERM_TIMED, TRECASE_SMOKE = (
-    D / GS[k] for k in ('root', 'hybrid_null', 'before_df_fix', 'df_fix', 'mixqtl_perm_timed', 'trecase_smoke'))
+    D / GS[k] if GS[k] else None for k in ('root', 'hybrid_null', 'before_df_fix', 'df_fix', 'mixqtl_perm_timed', 'trecase_smoke'))
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
-CHECKS, LADDER, SUMMARY, REPORT = ROOT / 'checks', ROOT / 'ladder', ROOT / 'summary.json', ROOT / 'report'
+CHECKS, SUMMARY, REPORT = ROOT / 'checks', ROOT / 'summary.json', ROOT / 'report'
+LADDER = ROOT / GS['ladder'] if GS['ladder'] else None
 SEED = 42                      # one master seed; every stream is SeedSequence(SEED, spawn_key=...)
 KAPPA = 0.5                    # summaries_from_point_estimates' pseudocount
 EXPRESSIBLE_MIN = 0.5          # reads; the zero-haplotype rule (docs/pipeline_rules.md)

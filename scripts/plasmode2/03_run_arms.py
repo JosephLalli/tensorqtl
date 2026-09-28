@@ -18,7 +18,8 @@ record order, genotype PCs in place, h1 / h2 = xL / xR; COLS in NATURAL LOG (the
 records the unit; 06_score.py divides by ln 2) plus `method` (meta, trc or asc: which estimate the
 meta columns hold when a channel has fewer than MX.META_N_CUTOFF samples). mixQTL's own gene-level
 permutation scan is not run: timed on 2026-09-26 at 307 s for 24 of 100 genes against a 300 s
-budget per dataset (user decision); that record (MIXQTL_PERM_TIMED) is copied into RESULTS.
+budget per dataset (user decision), and for the 30-100-read set on 2026-09-27 at 302 s for 65 of 100
+genes on its first dataset; the gene set's record (MIXQTL_PERM_TIMED) is copied into RESULTS.
 
 Tested variants: the loader's idx set within each gene's window is exactly map_nominal's output
 (row count checked per call); 507 tested variants have every donor heterozygous, which map_cis

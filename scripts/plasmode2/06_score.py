@@ -26,7 +26,8 @@ AUC (Mann-Whitney: the share of (non-null, null) gene pairs ranked in the right 
 half), mean over datasets with a dataset-resampling interval, and power at pooled realized
 false-discovery proportion FDR; (6) null-gene nominal-p rate at ALPHAS; the beta = 0 anchor
 against each hapmixQTL arm's stored 200-permutation null run (ANCHOR: inside the stored central
-ANCHOR_CENTRAL of per-permutation rates at ANCHOR_ALPHA; descriptive, one permutation); (7) gene
+ANCHOR_CENTRAL of per-permutation rates at ANCHOR_ALPHA; descriptive, one permutation; skipped
+with a printed line, anchor null, for a gene set without stored null runs); (7) gene
 level: null-gene rate of pval_beta < GENE_LEVEL_ALPHA and Benjamini-Hochberg power at FDR within
 dataset. TReCASE's component tests (TRECASE_PARTS) are scored on the anchor like channels.
 
@@ -44,7 +45,7 @@ ANCHOR = {   # arm: (stored null summary, its key prefix); the 100-gene x 200-pe
     'gibbs': (C.GENE_DIR / 'summary.json', 'drop'),
     'split': (C.HYBRID_NULL / 'summary.json', 'hybrid'),
     'unit': (C.HYBRID_NULL / 'summary_unit.json', 'unit'),
-    'plus_one': (C.HYBRID_NULL / 'summary_plus_one.json', 'plus_one')}
+    'plus_one': (C.HYBRID_NULL / 'summary_plus_one.json', 'plus_one')} if C.HYBRID_NULL else None
 N_BOOT = 2000                 # task spec 2026-09-26
 ANCHOR_ALPHA = 0.05           # the only alpha with an anchor rule (task spec 2026-09-26)
 ANCHOR_CENTRAL = 0.99         # the anchor is ONE permutation: inside the stored central 99% of per-permutation rates
@@ -53,7 +54,10 @@ DETECT_ALPHAS = (0.05, 1e-3, 1e-5)   # user decision 2026-09-26
 FDR = 0.05                    # user decision 2026-09-26: power where the pooled realized FDP is 0.05
 GENE_LEVEL_ALPHA = 0.05
 R2_HIGH = 0.8                 # user decision 2026-09-26
-BANDS = (('all', 0, np.inf), ('<100', 0, 100), ('100-999', 100, 1000), ('>=1000', 1000, np.inf))   # user decision 2026-09-26
+BANDS = {   # (name, lo, hi) on the gene's median haplotype-informative reads over all donors; the first band is every gene
+    'corrected_null_store_20260925': (('all', 0, np.inf), ('<100', 0, 100), ('100-999', 100, 1000), ('>=1000', 1000, np.inf)),  # user decision 2026-09-26
+    'stratum30_100': (('all', 0, np.inf), ('<30', 0, 30), ('30-50', 30, 50), ('50-100', 50, 100)),   # set 2026-09-27 before scoring: the set's all-donor medians are 0-78 reads (its stratum is defined on the admitted-donor median, 30-100; select_stratum_genes.py)
+}[C.GENE_SET]
 ONE_DF = 2                    # admitted allelic donors at which the through-origin allelic fit has 1 residual df (review 2026-09-27)
 NO_ONE_DF = 'without one-df genes'
 GENE_BOOT_KEY, AUC_BOOT_KEY = 30, 33   # spawn keys after 02's 1 / 2 / 3 and 03's 4; 31 and 32 belonged to interval streams no longer computed
@@ -489,13 +493,16 @@ def main():
         S['precision'][sc] = {arm: precision(C.RESULTS, U, sc, arm, genes, bsel, bidx, CL) for arm in ARMS}
         S['gene_level'][sc] = {arm: gene_level(C.RESULTS, U, sc, arm, genes, bsel, bidx) for arm in C.HAPMIX_ARMS}
         print(f'scored {sc}', flush=True)
-    S['anchor'] = anchor(S['null']['beta0.0'])
+    S['anchor'] = anchor(S['null']['beta0.0']) if ANCHOR else None
     S['trecase_components'] = null_calibration(C.RESULTS, U, 'beta0.0', 'trecase', genes, bsel, bidx, TRECASE_PARTS)
     C.write_json(C.SUMMARY, S)
     a = S['anchor']
-    print('anchor at 0.05, this dataset vs stored mean (percentile among stored permutations): '
-          + '; '.join(f'{arm} {ch} {a[arm][ch]["0.05"]["rate"]:.4f} vs {a[arm][ch]["0.05"]["stored"]:.4f} '
-                      f'({a[arm][ch]["0.05"]["percentile"]:.0f}%)' for arm in a for ch in a[arm]))
+    if a is None:
+        print(f'anchor comparison skipped: gene set {C.GENE_SET} has no stored null runs (common.HYBRID_NULL is None)')
+    else:
+        print('anchor at 0.05, this dataset vs stored mean (percentile among stored permutations): '
+              + '; '.join(f'{arm} {ch} {a[arm][ch]["0.05"]["rate"]:.4f} vs {a[arm][ch]["0.05"]["stored"]:.4f} '
+                          f'({a[arm][ch]["0.05"]["percentile"]:.0f}%)' for arm in a for ch in a[arm]))
     print(f'wrote {C.SUMMARY}')
 
 

@@ -21,7 +21,10 @@ non-zero if any check fails; nothing downstream re-checks what passes here.
     RULE_RTOL on every informative record, Va' = 0 wherever pL' + pR' = 0.
 (c) RECOVERY of an injected |beta| = C_BETA over C_N all-non-null datasets: per gene the allelic
     slope at the causal variant (null_permutation_instrument.fit_channels, through-origin weighted
-    least squares over the records common.allelic_kept admits) under seven weight / truth pairs;
+    least squares over the records common.allelic_kept admits) under eight weight / truth pairs (one,
+    unit no drop, weights 1 over every record with Va' > EPS, the zero-haplotype drop not applied:
+    added 2026-09-27 for the 30-100-read set to measure the drop rule's part of the low-depth
+    shortfall; no pass rule);
     PASS if over genes with >= C_MIN_READS median haplotype reads the unit-weighted slope over the
     pipeline-scale truth is within C_SE_MULT gene-clustered se of 1 (rule set 2026-09-26 before its
     first run), and map_nominal (gibbs) on dataset 0 matches fit_channels at every causal variant
@@ -33,6 +36,8 @@ non-zero if any check fails; nothing downstream re-checks what passes here.
     recompute from the stored statistics (pval_a at dof_a = n_a - 1, the admitted pval_nominal
     at the Welch-Satterthwaite dof within DOF_RTOL, the total channel cloned below the
     MIN_ALLELIC_DONORS floor); the stored p equal 2 t.sf(|t|, OLD_DOF) of their own statistic.
+    Skipped with a printed line for a gene set without stored null runs (common.HYBRID_NULL None);
+    the check file's reproduction is then null.
 (e) PLUMBING GATES, once, on dataset 0 of check (c) (the earlier pipeline's per-dataset gates):
     mixqtl_scan's lead (largest |meta stat|), beta and se equal compare_mixqtl_replication.
     mixqtl_gene's on the same inputs in every gene; map_cis (gibbs) scans exactly the tested
@@ -82,11 +87,13 @@ MIN_PAIRS = 1000                     # exempts the 1-9 read band (364 thinned pa
 FANO_BAND = (0.95, 1.02)             # measured 0.990-0.994 in the bands with >= MIN_PAIRS pairs
 RULE_RTOL = 1e-9                     # measured 3.8e-15
 C_BETA, C_N = 0.4, 20                # the middle scenario and 20 all-non-null datasets: scripts/plasmode/check_generator.py, 2026-09-26, basis not recorded
-C_MIN_READS = 100                    # the lower edge of 06_score's 100-999 read band (user decision 2026-09-26)
+C_MIN_READS = {'corrected_null_store_20260925': 100,   # the lower edge of 06_score's 100-999 read band (user decision 2026-09-26)
+               'stratum30_100': 0}[C.GENE_SET]         # every gene of the 30-100-read set (all-donor medians 0-78 reads); set 2026-09-27 before its first run
 C_SE_MULT = 3                        # set 2026-09-26 before the rule's first run
 BANDS = ((1, 10), (10, 100), (100, 1000), (1000, np.inf))                     # decades of pL + pR per donor-gene pair (check b)
 C_BANDS = ([0, 10, 100, 1000, np.inf], ['0-9', '10-99', '100-999', '1000+'])   # the same decades of a gene's median haplotype reads (check c)
-REPRO_DRAWS = {'gibbs': C.GENE_DIR / 'draws' / 'drop_000.parquet', 'unit': C.HYBRID_NULL / 'draws' / 'unit_000.parquet'}
+REPRO_DRAWS = ({'gibbs': C.GENE_DIR / 'draws' / 'drop_000.parquet', 'unit': C.HYBRID_NULL / 'draws' / 'unit_000.parquet'}
+               if C.HYBRID_NULL else None)
 REPRO_ALPHAS = C.ALPHAS
 REPRO_SLOPE_TOL = 1e-4               # stored draws are float32; 2026-09-26 measured 5.5e-6
 REPRO_P_RTOL, DOF_RTOL = 1e-3, 1e-5  # set 2026-09-27 before their first run (p and dof from float32 statistics)
@@ -95,7 +102,7 @@ GATE_TOL = 1e-3                      # corrected_null_store.py's gate, max |diff
 IVW_TOL = 1e-4                       # combined slope vs the inverse-variance combination, / se (float32; measured 2.6e-6 at causal units)
 ESTIMATES = (('inv_va_nodrop_beta', "1/Va' no drop, vs beta"), ('inv_va_beta', "1/Va', vs beta"),
              ('inv_va_exp_beta', '1/Va_exp, vs beta'), ('inv_va_real_beta', '1/Va_real, vs beta'),
-             ('unit_beta', 'unit, vs beta'), ('unit_pipeline', 'unit, vs pipeline truth'),
+             ('unit_beta', 'unit, vs beta'), ('unit_nodrop_beta', 'unit no drop, vs beta'), ('unit_pipeline', 'unit, vs pipeline truth'),
              ('inv_va_pipeline', "1/Va', vs pipeline truth"))
 
 
@@ -261,7 +268,7 @@ def check_recovery(I, R, tested):
             s = (I['xL'][j] - I['xR'][j]).astype(float)
             va = {'inv_va_nodrop': ds['Va'][k], 'inv_va': np.where(kept, ds['Va'][k], 0.0),
                   'inv_va_exp': np.where(kept, va_exp[k], 0.0), 'inv_va_real': np.where(kept, va_real[k], 0.0),
-                  'unit': kept.astype(float)}
+                  'unit': kept.astype(float), 'unit_nodrop': (ds['Va'][k] > C.EPS).astype(float)}
             fc = {w: fit_channels(ds['A'][k], s, v, ds['T'][k], I['dos'][j].astype(float) / 2.0, ds['Vt'][k], Cg) for w, v in va.items()}
             if any(x is None for x in fc.values()):
                 none += 1
@@ -270,6 +277,7 @@ def check_recovery(I, R, tested):
             recs.append(dict(rep=r, gene=genes[k], hap_real=hap_real[k], inv_va_nodrop_beta=fc['inv_va_nodrop']['ba'] / b,
                              inv_va_beta=fc['inv_va']['ba'] / b, inv_va_exp_beta=fc['inv_va_exp']['ba'] / b,
                              inv_va_real_beta=fc['inv_va_real']['ba'] / b, unit_beta=fc['unit']['ba'] / b,
+                             unit_nodrop_beta=fc['unit_nodrop']['ba'] / b,
                              unit_pipeline=fc['unit']['ba'] / bp, inv_va_pipeline=fc['inv_va']['ba'] / bp))
         if r == 0:
             first = ds
@@ -281,7 +289,7 @@ def check_recovery(I, R, tested):
     summ = lambda x, col: dict(genes=int(x.gene.nunique()), units=len(x), mean=float(x[col].mean()),   # noqa: E731
                                gene_clustered_se=float(x.groupby('gene')[col].mean().std(ddof=1) / np.sqrt(x.gene.nunique())))
     hi = t[t.hap_real >= C_MIN_READS]
-    res = dict(beta=C_BETA, n_datasets=C_N, units_fewer_than_fit_channels_minimum=none,
+    res = dict(beta=C_BETA, n_datasets=C_N, min_reads=C_MIN_READS, units_fewer_than_fit_channels_minimum=none,
                primary={c: summ(hi, c) for c in cols},
                by_band={str(b): {c: summ(x, c) for c in cols} for b, x in t.groupby('band', observed=True)})
     p = res['primary']['unit_pipeline']
@@ -462,7 +470,11 @@ def main():
     oka, ra = check_identity(I, R)
     okb, rb = check_thinning(I, R)
     okc, rc, ds0 = check_recovery(I, R, tested)
-    okd, rd = check_reproduction(I, R, S, scratch)
+    okd, rd = True, None
+    if REPRO_DRAWS:
+        okd, rd = check_reproduction(I, R, S, scratch)
+    else:
+        print(f'(d) skipped: gene set {C.GENE_SET} has no stored null runs to reproduce (common.HYBRID_NULL is None)', flush=True)
     oke, re_ = check_gates(S, ds0, scratch)
     rc['map_nominal_gate'] = re_['map_nominal_vs_fit_channels']
     rc['passed'] = bool(okc and re_['map_nominal_vs_fit_channels']['max_abs_diff_over_se'] < GATE_TOL)

@@ -26,7 +26,8 @@ as NaN. ESTIMABILITY records where the rung's joint design (intercept, 17 covari
 has no residual df while mixQTL's trc (intercept and x) still estimates.
 
 Output: LADDER/<scenario>/<rung>/nominal_repNNN.parquet, LADDER/total_channel_units.tsv,
-LADDER/ladder.json (08_report.py reads it).
+LADDER/ladder.json (08_report.py reads it). Run only for a gene set whose common.GENE_SETS entry
+names a ladder directory (the default set); for any other set it prints a skip and writes nothing.
 """
 import shutil
 
@@ -182,6 +183,9 @@ def total_summary(T, Cu, common, genes, bsel, bidx):
 
 
 def main():
+    if C.LADDER is None:
+        print(f'skipped: gene set {C.GENE_SET} has no ladder (common.GENE_SETS[{C.GENE_SET!r}][\'ladder\'] is None); nothing written')
+        return
     meta, genes, U, keep_a = SC.load_units(C.DATASETS, C.RESULTS)
     U = U[U.beta_abs > 0]
     S = C.setup(C.load()[0])

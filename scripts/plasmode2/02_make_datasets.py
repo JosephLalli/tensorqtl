@@ -25,7 +25,7 @@ import common as C
 from tensorqtl.hapmixqtl import LN2, summaries_from_point_estimates
 
 BETAS = (0.0, 0.2, 0.4, 0.8)   # user decision 2026-09-26; 0.0 is the null anchor
-N_DATASETS = {0.0: 1, 0.2: 3, 0.4: 3, 0.8: 3}   # user decision 2026-09-26
+N_DATASETS = {0.0: 1, 0.2: 3, 0.4: 3, 0.8: 3}   # user decisions 2026-09-26 and, for the 30-100-read set, 2026-09-27
 NULL_FRACTION = 0.5            # user decision 2026-09-26, for beta > 0
 PERM_KEY, DESIGN_KEY, THIN_KEY = 1, 2, 3
 STORED = ('A', 'T', 'Va', 'Vt', 'pL', 'pR', 'pT', 'eff_lib', 'perm', 'swap', 'is_null', 'beta', 'causal_variant',

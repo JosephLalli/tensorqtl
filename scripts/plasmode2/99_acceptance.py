@@ -1,4 +1,6 @@
-"""Acceptance test of this pipeline against the committed 100-gene run of 2026-09-26 (README).
+"""Acceptance test of this pipeline against the committed run of its gene set (common.GENE_SETS
+'committed': the 100-gene run of 2026-09-26 by default, the 30-100-read run of 2026-09-27 with
+PLASMODE_GENE_SET=stratum30_100) (README).
 
 Runs the pipeline into common.ROOT and checks:
  (1) every dataset array bit for bit (datasets/*.npz, all keys; the same number of files);
@@ -12,11 +14,21 @@ Runs the pipeline into common.ROOT and checks:
      on the committed RASQUAL and TReCASE results copied into ROOT (their summary.json derived from
      the old run's log for RASQUAL). The new 04 and 05 are checked by running ONE dataset
      (JOINT_CHECK) into ROOT/joint_check and comparing its nominal file bit for bit with the
-     committed one and its summary.json counts (the keys 08 reads) with the committed run's;
- (5) ladder.json as (4);
+     committed one and its summary.json counts (the keys 08 reads) with the committed run's
+     (JOINT_CHECK; for a gene set without one only the staged results are scored), only when run as
+     `99_acceptance.py joint` (below);
+ (5) ladder.json as (4) (skipped for a gene set without a ladder, whose committed run has none);
  (6) the report's numbers: every numeric token of the old and new pages (image data, style, path
      tokens, dates and commit ids removed) compared as multisets.
-Prints PASS or FAIL per item with the maximum difference, then exits non-zero on any FAIL.
+Prints PASS, FAIL or SKIP per item with the maximum difference, then exits non-zero on any FAIL.
+
+The one-dataset joint rerun of (4) runs only with the argument `joint`. It costs hours of RASQUAL
+and TReCASE (97 and 136 min in the recorded pass, and a RASQUAL run can take more than 6 h), and its
+stamp includes common.py and 02's stamp, which change far more often than anything 04 and 05 read
+from them (a gene-set entry or a comment reruns it). Without the argument each arm prints a SKIP
+naming its last recorded pass (the PASS line in JOINT_PASS) and whether 04 / 05, their imports and
+common.py still have the sha256 that run's header records; a SKIP is not a failure. Rerun with
+`joint` when 04, 05, run_trecase.R or what they read from common.py or 02's datasets changes.
 
 Skipping: a step is skipped when its output exists and its stamp matches, the stamp being the
 sha256 of the script, common.py and the other scripts it imports, plus the stamps of the steps
@@ -43,25 +55,26 @@ import pandas as pd
 
 import common as C
 
-OLD = C.D / 'plasmode_20260926'          # the committed run (scripts/plasmode/, commit 3aac315)
+OLD = C.D / C.GS['committed']           # the committed run of scripts/plasmode/
 OLD_JOINT = {'rasqual': OLD / 'results_rasqual', 'trecase': OLD / 'results_trecase_asseq'}
-JOINT_CHECK = ('beta0.8', 0)             # the one dataset 04 and 05 are rerun on
+JOINT_CHECK = {'corrected_null_store_20260925': ('beta0.8', 0),   # the one dataset 04 and 05 are rerun on
+               'stratum30_100': None}[C.GENE_SET]                 # None: the committed joint results are staged and scored only (task 2026-09-27)
+JOINT_PASS = C.ROOT / 'acceptance_df76f3b.log'   # the last recorded pass of the one-dataset joint rerun (default set, 2026-09-27 14:42-16:59)
 JOINT_JOBS = {'rasqual': 5, 'trecase': 4}   # alongside the GPU steps: 5 RASQUAL + 4 x (Rscript + R) + this process + one pipeline step = 15 live processes, under the host's cap of 16
 GPU = '1'                                # CUDA_VISIBLE_DEVICES for map_nominal / map_cis (shared host, 2026-09-27)
 RTOL = 1e-9
 CIS_RTOL = 1e-6
-STEPS = [   # (script, final output, other scripts it imports, steps whose outputs it reads), in run order
+STEPS = [   # (script, final output, other scripts it imports, steps whose outputs it reads), in run order; 08 reads every earlier step
     ('01_check_inputs.py', C.CHECKS / 'check_generator.json', ['02_make_datasets.py', '03_run_arms.py'], []),
     ('02_make_datasets.py', C.DATASETS / 'meta.json', [], []),
     ('03_run_arms.py', C.RESULTS / 'run_arms_facts.json', [], ['02_make_datasets.py']),
-    ('06_score.py', C.SUMMARY, [], ['02_make_datasets.py', '03_run_arms.py']),
-    ('07_mixqtl_ladder.py', C.LADDER / 'ladder.json', ['06_score.py'], ['02_make_datasets.py', '03_run_arms.py']),
-    ('08_report.py', C.REPORT / 'plasmode_report.html', [],
-     ['01_check_inputs.py', '02_make_datasets.py', '03_run_arms.py', '06_score.py', '07_mixqtl_ladder.py'])]
+    ('06_score.py', C.SUMMARY, [], ['02_make_datasets.py', '03_run_arms.py'])] + (
+    [('07_mixqtl_ladder.py', C.LADDER / 'ladder.json', ['06_score.py'], ['02_make_datasets.py', '03_run_arms.py'])] if C.LADDER else [])
+STEPS.append(('08_report.py', C.REPORT / 'plasmode_report.html', [], [s[0] for s in STEPS]))
 JOINT_STEPS = {'rasqual': ('04_run_rasqual.py', []), 'trecase': ('05_run_trecase.py', ['run_trecase.R'])}   # both read 02's datasets
 STAMPS = C.ROOT / 'acceptance_stamps.json'
 DROPPED = {   # leaf families of the committed files that 06 / 07 no longer write; neither report reads them (README, Acceptance test)
-    'summary.json': (r'^/anchor_passed$', r'^/cannot_answer\[\d+\]$', r'^/units$', r'^/anchor/[^/]+/[^/]+/[^/]+/stored_without_one_df$',
+    'summary.json': (r'^/anchor_passed$', r'^/cannot_answer\[\d+\]$', r'^/units$', r'^/gene_set$', r'^/anchor/[^/]+/[^/]+/[^/]+/stored_without_one_df$',
                      r'^/detection/[^/]+/[^/]+/[^/]+/nonfinite_p$', r'^/gene_level/[^/]+/[^/]+/(datasets|nonfinite_p_for_power|p_for_power)$',
                      r'^/gene_level/[^/]+/[^/]+/null_rate_pval_perm/', r'^/null/.*/dataset_(lo|hi)$', r'^/precision/.*/nonnull_excluded/',
                      r'^/ranking/[^/]+/[^/]+/auc/[^/]+/datasets$'),
@@ -72,6 +85,7 @@ JOINT_KEYS = {   # per-dataset counts of the joint summaries that 08_report.join
                 'joint_na', 'joint_na_by_trace/joint_theta', 'joint_na_by_trace/ase', 'joint_na_by_trace/trec_linear_dosage',
                 'joint_na_by_trace/theta_fail_abs_gradient_max', 'final_joint', 'final_trec', 'final_na', 'final_df_not_1', 'causal_not_run',
                 'causal_nonnull', 'causal_joint_na', 'causal_final_joint', 'causal_final_trec', 'causal_final_na')}
+SKIPPED = []
 if OLD == C.ROOT:
     raise SystemExit(f'common.ROOT is the committed run {OLD}')
 
@@ -150,6 +164,11 @@ def stage_joint_results():
 def verdict(item, ok, detail):
     print(f'({item}) {"PASS" if ok else "FAIL"}: {detail}', flush=True)
     return ok
+
+
+def skip(item, detail):
+    SKIPPED.append(f'({item})')
+    print(f'({item}) SKIP: {detail}', flush=True)
 
 
 def check_datasets():
@@ -238,14 +257,15 @@ def is_path(v):
 def compare_json(new, old, dropped=()):
     """Both JSON trees walked leaf by leaf: (leaves compared, max relative difference, [differing leaves], [path-string
     leaves left uncompared], {accepted old-only family: count}); an old-only leaf outside `dropped` and every new-only leaf
-    are differences; numbers within RTOL relative, everything else exactly."""
+    that is not a path string (a record's provenance, e.g. 03's mixqtl_permutation source) are differences; numbers within
+    RTOL relative, everything else exactly."""
     pn, po = dict(leaves(new)), dict(leaves(old))
     n, worst, bad, paths, accepted = 0, 0.0, [], [], Counter()
     for p, v in pn.items():
-        if p not in po:
-            bad.append(f'{p}: only in the new file')
-        elif is_path(v):
+        if is_path(v):
             paths.append(p)
+        elif p not in po:
+            bad.append(f'{p}: only in the new file')
         elif isinstance(v, bool) or not isinstance(v, (int, float)) or isinstance(po[p], bool) or not isinstance(po[p], (int, float)):
             n += 1
             if v != po[p]:
@@ -359,7 +379,24 @@ def check_joint(arm):
                    f'{m} summary counts against {ref.parent.name} within {RTOL:g}, max relative difference {worst:.1e}, differing {bad[:5]}')
 
 
+def recorded_pass(arm):
+    """The SKIP text of one joint arm without `joint`: JOINT_PASS's PASS line for it, and its files whose sha256 differs
+    from that run's header."""
+    log = JOINT_PASS.read_text()
+    line = re.search(rf'(?m)^\(4, {arm}\) PASS: .*$', log)
+    if line is None:
+        raise SystemExit(f'{JOINT_PASS}: no (4, {arm}) PASS line')
+    then = dict((name, h) for h, name in re.findall(r'(?m)^([0-9a-f]{64})  \S*/scripts/plasmode2/(\S+)$', log))
+    script, imports = JOINT_STEPS[arm]
+    changed = [f for f in (script, *imports, 'common.py', '02_make_datasets.py') if then.get(f) != sha(C.HERE / f)]
+    return (f'the one-dataset rerun runs only with the argument joint; last recorded pass {JOINT_PASS}: "{line.group(0)}"; '
+            f'sha256 differing from that run: {changed or "none"}')
+
+
 def main():
+    if sys.argv[1:] not in ([], ['joint']):
+        raise SystemExit(f'usage: {sys.argv[0]} [joint]')
+    rerun = sys.argv[1:] == ['joint']
     t0 = time.perf_counter()
     C.ROOT.mkdir(parents=True, exist_ok=True)
     print('\n'.join(C.versions()), flush=True)
@@ -372,7 +409,7 @@ def main():
         step('01_check_inputs.py')
         step('02_make_datasets.py')
         ok = check_datasets()
-        if ok:   # the joint one-dataset runs alongside the GPU steps, on the datasets just verified, within the process cap
+        if ok and JOINT_CHECK and rerun:   # the joint one-dataset runs alongside the GPU steps, on the datasets just verified, within the process cap
             S = C.setup(C.load()[0])
             joint = {arm: ex.submit(run_joint, arm, stamp(script, imports, ['02_make_datasets.py'], stamps), S)
                      for arm, (script, imports) in JOINT_STEPS.items()}
@@ -381,12 +418,20 @@ def main():
         ok &= check_cis()
         step('06_score.py')
         ok &= check_json(4, C.SUMMARY, OLD / 'summary.json')
-        step('07_mixqtl_ladder.py')
-        ok &= check_json(5, C.LADDER / 'ladder.json', OLD / 'ladder' / 'ladder.json')
+        if C.LADDER:
+            step('07_mixqtl_ladder.py')
+            ok &= check_json(5, C.LADDER / 'ladder.json', OLD / 'ladder' / 'ladder.json')
+        else:
+            skip(5, f'gene set {C.GENE_SET} has no ladder (common.LADDER is None; 07 not run) and {OLD} has none')
         step('08_report.py')
         ok &= check_report()
         for arm in JOINT_STEPS:
-            if arm in joint:
+            if not JOINT_CHECK:
+                skip(f'4, {arm}', f'no one-dataset rerun for gene set {C.GENE_SET} (JOINT_CHECK is None); its committed '
+                                  f'results are staged and scored in (4)')
+            elif not rerun:
+                skip(f'4, {arm}', recorded_pass(arm))
+            elif arm in joint:
                 print(f'{arm} on {JOINT_CHECK}: {joint[arm].result():.1f} min', flush=True)
                 ok &= check_joint(arm)
             else:
@@ -397,7 +442,8 @@ def main():
         os._exit(1)   # not sys.exit: the executor's exit hook would wait for the running joint arms (hours)
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
-    print(f'ACCEPTANCE {"PASS" if ok else "FAIL"}: items 1-6 in {(time.perf_counter() - t0) / 60:.1f} min', flush=True)
+    print(f'ACCEPTANCE {"PASS" if ok else "FAIL"}: items 1-6{" except " + ", ".join(SKIPPED) if SKIPPED else ""} for gene set '
+          f'{C.GENE_SET} in {(time.perf_counter() - t0) / 60:.1f} min', flush=True)
     if not ok:
         raise SystemExit(1)
 

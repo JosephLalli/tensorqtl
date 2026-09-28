@@ -12,8 +12,9 @@ and place the lead variant on the causal one. It bears on which weighting ships
 
 This directory is the analysis-tier rewrite (2026-09-27) of `scripts/plasmode/`: the same design,
 about 2,500 lines of pipeline code (common.py and scripts 01-07, run_trecase.R) plus a report script of
-about 1,900 lines and the acceptance test, one check script, no per-dataset re-validation, no
-command-line options. `99_acceptance.py` proves it reproduces the committed run of 2026-09-26.
+about 2,200 lines and the acceptance test, one check script, no per-dataset re-validation, no
+command-line options; `select_stratum_genes.py` made the 30-100-read gene set once.
+`99_acceptance.py` checks it against the committed run of each gene set (2026-09-26 and 2026-09-27).
 
 ## Data provenance
 
@@ -35,12 +36,26 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   permutation scan, user decision, 300 s budget per dataset) and
   `plasmode_20260926/results_trecase_asseq/smoke/summary.json` (the TReCASE smoke run whose largest theta
   gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
-  stops every script at import.
+  stops every script at import. `PLASMODE_GENE_SET` in the environment selects the entry.
+- `stratum30_100`: the 30-100-read gene set, 100 genes whose median haplotype-informative reads over
+  admitted allelic donors lie in [30, 100) with at least 15 admitted allelic donors, drawn once by
+  `select_stratum_genes.py` into `plasmode_stratum30_100_20260927/gene_set` (with its log and
+  `pool_stratum.tsv`). Its entry names that directory, its root, its committed run and the mixQTL
+  permutation timing that run measured on its first dataset (2026-09-27, 302 s for 65 of 100 genes
+  against the 300 s budget); it has no stored null runs, before-fix record, TReCASE smoke run or ladder
+  (`None`), so check (d), the anchor, 07 and the parts of 08 that read them print a skip. 06 scores it in
+  the read bands <30 / 30-50 / 50-100, and 01's check (c) over every gene. Its report leaves out the
+  interpretation paragraphs of section 3, section 3.8 and sections 4-6 (they were written for the
+  default set) and adds a section setting it, the low-coverage set, against the committed 100-gene run,
+  the deep set (`plasmode_20260926/summary.json`), with three contrast figures, from its selection log,
+  `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json` and the committed
+  stratum run's `run_arms.log` (its dataset blocks).
 - `cohort/salmon.tsv`, `annot/tx2gene.tsv` and donor 100_D1's dumped equivalence classes (the Salmon
   premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, through
   `corrected_null_store.OLD`).
 
-Outputs go to `common.ROOT` only (`plasmode2_acceptance_20260927` for the default gene set).
+Outputs go to `common.ROOT` only (`plasmode2_acceptance_20260927` for the default gene set,
+`plasmode2_stratum_acceptance_20260927` for `stratum30_100`).
 
 ## Generator (02_make_datasets.py)
 
@@ -91,7 +106,7 @@ processes (~100 s of each Python step is loading the cache):
 | 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver) |
 | 5 | `05_run_trecase.py` + `run_trecase.R` | `results_trecase/.../nominal_*.parquet`, `summary.json`; inputs, asSeq files and trace logs under `trecase_work/` | ~15 process-h per dataset; 7 jobs (each budgeted as two processes; `Rscript` execs into `R`, so one is live per job) |
 | 6 | `06_score.py` | `summary.json` | 4 min |
-| 7 | `07_mixqtl_ladder.py` | `ladder/ladder.json`, `total_channel_units.tsv`, rung files | 3-4 min |
+| 7 | `07_mixqtl_ladder.py` | `ladder/ladder.json`, `total_channel_units.tsv`, rung files (a printed skip for a gene set without a ladder) | 3-4 min |
 | 8 | `08_report.py` | `report/plasmode_report.html` and four PNG figures; stops if any of its 26 fixed comparative sentences (`check_claims`) no longer holds on the summary | 0.3 min |
 
 Steps 4 and 5 checkpoint per gene (a gene whose raw file or `_status.tsv` exists is not rerun; every
@@ -113,23 +128,33 @@ skip is printed).
 | Tables 3.7 null rates and the anchor | `tab_null`, `tab_anchor` | `summary.json` `null`, `anchor` (06 `null_calibration`, `anchor`); `allelic_df_fix_20260927` draws |
 | Tables 3.8 mixQTL ladder | `sec_ladder` | `ladder/ladder.json` (07) |
 | Section 6, the smoke run's largest theta gradient | `sec_limits` | `plasmode_20260926/results_trecase_asseq/smoke/summary.json` |
+| Stratum page: head, section 1 and "The low-coverage set against the deep set" with contrast figures A-C | `stratum_facts`, `sec_head`, `sec_why`, `sec_contrast`, `fig_contrast_calibration`, `fig_contrast_precision`, `fig_contrast_ranking` | `summary.json`, `plasmode_20260926/summary.json`, the gene directory's `select_stratum_genes.log` and `pool_stratum.tsv`, `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json`, `plasmode_stratum30_100_20260927/run_arms.log` |
 
 ## Acceptance test (99_acceptance.py)
 
-Against `/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_20260926` (scripts/plasmode/, commit
-3aac315). It prints the versions, stages the committed RASQUAL and TReCASE results into `ROOT` (their
-`summary.json` derived from the old run's log for RASQUAL), runs steps 1-3 and 6-8 into `ROOT`, and
-runs steps 4 and 5 on ONE dataset (`beta0.8` rep 000) into `ROOT/joint_check` alongside the GPU
-steps, with `JOINT_JOBS` 5 RASQUAL and 4 TReCASE jobs (the recorded run in `ROOT/acceptance.log`
-used these values). The code comments budget two processes per TReCASE job; `ps` on the recorded
+Against the gene set's committed run (`common.GENE_SETS` `committed`):
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_20260926` (scripts/plasmode/, commit 3aac315) for the
+default set. For `stratum30_100` it is `plasmode_stratum30_100_20260927` and the test runs items 1-4
+and 6, with that run's RASQUAL and TReCASE results staged as below; item 5 (the set has no ladder) and
+the one-dataset joint runs (`JOINT_CHECK` None) print a skip. It prints the versions, stages the
+committed RASQUAL and TReCASE results into `ROOT` (their
+`summary.json` derived from the old run's log for RASQUAL), runs steps 1-3 and 6-8 into `ROOT`, and,
+only when run as `python3 99_acceptance.py joint`, runs steps 4 and 5 on ONE dataset (`beta0.8` rep
+000) into `ROOT/joint_check` alongside the GPU steps, with `JOINT_JOBS` 5 RASQUAL and 4 TReCASE jobs
+(the recorded pass, `ROOT/acceptance_df76f3b.log`, used these values and took 97 and 136 min). Without
+`joint` each joint arm prints a SKIP naming that recorded PASS line and the files among 04 / 05, their
+imports and `common.py` whose sha256 differs from that run's header, and the SKIP is not a failure:
+the rerun costs hours and its stamp includes `common.py`, which changes more often than anything 04
+and 05 read from it. The code comments budget two processes per TReCASE job; `ps` on the recorded
 run shows `Rscript` exec'ing into `R`, one process per job, so the run held 5 + 4 + the driver = 10
 processes while the joint runs were alone and 11 while a pipeline step ran beside them. Checks: (1) every dataset array bit for bit
 and the same number of dataset files; (2) the six arms' map_nominal outputs bit for bit on the scored
 columns, on the same (phenotype_id, variant_id) row set; (3) map_cis leads and num_var identical, the
 same finite / NaN pattern, and pval_beta and pval_perm within 1e-6 relative on every dataset; (4)
 `summary.json` walked over the union of both files' leaves: every numeric leaf within 1e-9 relative,
-every string except a path exactly, no leaf only in the new file, and leaves only in the committed
-file allowed only in the families 06 no longer writes (`anchor_passed`, `cannot_answer`, `units`,
+every string except a path exactly, no leaf only in the new file except a path string (03's
+`mixqtl_permutation/source`), and leaves only in the committed file allowed only in the families 06 no
+longer writes (`anchor_passed`, `cannot_answer`, `units`, `gene_set`,
 `anchor/*/*/*/stored_without_one_df`, `detection/*/*/*/nonfinite_p`, `gene_level/*/*/{datasets,
 nonfinite_p_for_power, p_for_power, null_rate_pval_perm/*}`, `null/**/dataset_lo|hi`,
 `precision/**/nonnull_excluded/*`, `ranking/*/*/auc/*/datasets`; 1,163 leaves, none read by either
@@ -143,7 +168,9 @@ Steps are skipped when their output exists under an unchanged stamp: the sha256 
 `common.py` and the scripts it imports, plus the stamps of the steps whose outputs it reads
 (`acceptance_stamps.json`; what invalidated a stamp is printed). The joint runs are stamped the same
 way (`joint_check/stamp_<arm>.json`, written when a run starts), so a run under the same stamp resumes
-its per-gene checkpoints and a changed stamp wipes them. About 2-3 h, set by the joint runs.
+its per-gene checkpoints and a changed stamp wipes them. About 2-3 h with `joint`, set by the joint
+runs; without it about 27 min on the default set when every step reruns (01-08 took 26.5 min on
+2026-09-27) and under 2 min when only 08 does.
 
 ## Requirements
 

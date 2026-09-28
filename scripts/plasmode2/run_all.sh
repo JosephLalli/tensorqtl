@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the plasmode benchmark from the Salmon cache into common.ROOT (README.md: run order, runtime).
-# Each step stops the run on failure and is logged to $ROOT/<step>.log. GPU 1 for map_nominal / map_cis
+# The gene set is common.GENE_SET, from PLASMODE_GENE_SET in the environment (default the 100-gene set;
+# stratum30_100 is the 30-100-read set, made once by select_stratum_genes.py). Each step stops the run on failure and is logged to $ROOT/<step>.log. GPU 1 for map_nominal / map_cis
 # (shared host, 2026-09-27); at most 16 processes at once (04 and 05 set JOBS accordingly).
 set -euo pipefail
 
