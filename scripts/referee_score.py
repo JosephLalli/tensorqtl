@@ -1016,7 +1016,14 @@ def MEANING_TEXT(S, where):
               all(d['arm_only_share'] > d['ref_only_share'] for d in dD.values()), 'gene-choice gap reverses with depth')
         claim(max(gap.values()) <= 1, 'shared genes replicate alike with either lead')
         tc = S['channel']['subset'][t]['eigenmt'][K_SHOW]
-        claim(tc['allelic-led']['share_hi'] < tc['total-led']['share_lo'], 'TReCASE allelic-led below total-led, intervals apart')
+        al, tl = tc['allelic-led'], tc['total-led']
+        tre_ab = (f'(allelic-led {iv(al, f=".3f")}, n = {al["K"]}, against total-led {iv(tl, f=".3f")}, n = {tl["K"]})')
+        tre = (f'The allelic-led gap is not specific to hapmixQTL or to Salmon: TReCASE on native counts shows it on the subset '
+               f'at K = {K_SHOW} {tre_ab}. ' if al['share_hi'] < tl['share_lo'] else
+               f'TReCASE on native counts points the same way on the subset at K = {K_SHOW}, with overlapping intervals '
+               f'{tre_ab}, so this referee does not show whether the gap is specific to hapmixQTL and Salmon. '
+               if al['share'] < tl['share'] else
+               f'TReCASE on native counts does not show the gap on the subset at K = {K_SHOW} {tre_ab}. ')
         r3 = lambda d, k: f'{min(x[k] for x in d.values()):.3f} to {max(x[k] for x in d.values()):.3f}'   # noqa: E731
         return (
             f' Where that difference lies was measured. At K = {K_SHOW}, on the genes both an arm and tensorQTL rank that '
@@ -1025,9 +1032,7 @@ def MEANING_TEXT(S, where):
             f'costs nothing there. The deficit is in the genes only the arm ranks that high, which replicate at '
             f'{r3(dK, "arm_only_share")} against {r3(dK, "ref_only_share")} for the genes only tensorQTL ranks that high; at '
             f'K = {KD:,} the arm-only genes are the better ones ({r3(dD, "arm_only_share")} against '
-            f'{r3(dD, "ref_only_share")}). The allelic-led gap is not specific to hapmixQTL or to Salmon: TReCASE on native '
-            f'counts shows it on the subset at K = {K_SHOW} (allelic-led {iv(tc["allelic-led"], f=".3f")}, n = '
-            f'{tc["allelic-led"]["K"]}, against total-led {iv(tc["total-led"], f=".3f")}, n = {tc["total-led"]["K"]}). '
+            f'{r3(dD, "ref_only_share")}). ' + tre +
             'Addressing the objection therefore leaves the depth pattern as measured: the shallow deficit is in genes the '
             'allelic arms alone rank that high, and what those genes carry that this referee does not credit is the '
             'three-way question in the limits below.')
