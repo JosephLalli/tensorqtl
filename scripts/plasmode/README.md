@@ -99,9 +99,12 @@ unweighted fit only).
 Why (task 2026-09-28): on these datasets TReCASE and RASQUAL ranked non-null genes below total-only tensorQTL, and both are
 written for integer alignment counts while the benchmark gave them Salmon point estimates. `05b_native_arms.py` gives TReCASE
 its native input and gives split weighting the same input as the control that separates the model from the quantifier.
-Inputs: `native_counts_20260928` (scripts/native_counts.py): featureCounts fragment totals (`-p --countReadPairs -s 2
+Inputs: `native_counts_wasp_20260928` (scripts/native_counts.py): featureCounts fragment totals (`-p --countReadPairs -s 2
 --primary`, unique, fragments on two genes' exons not counted) and phASER haplotype fragments oriented to the analysis VCF
-(a = first GT allele = xL, b = second), a = b = 0 where a + b exceeds the total; donors joined on the DNA library id.
+(a = first GT allele = xL, b = second), counted per transcript strand at SNVs in gene-unique exons on WASP-filtered reads
+(`brainvar_hapmix_deploy/wasp_20260928/README.md`), a = b = 0 where a + b exceeds the total; donors joined on the DNA
+library id. Earlier stages of these counts: `native_counts_20260928` (unstranded gene spans) and
+`native_counts_stranded_20260928` (no WASP).
 Native effective library sizes: featureCounts over every gene through `scripts/edger_library_normalization.R` with the
 Salmon cache's `restrict_calibration.txt`, the Salmon run's rule (12,874 genes kept; native / Salmon 0.62-1.27 across donors).
 Per dataset: the dataset's `perm` and `swap` applied by 02's `move_records`, a thinned by `fL`, b by `fR`, the remainder by
