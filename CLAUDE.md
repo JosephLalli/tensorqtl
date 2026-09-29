@@ -149,6 +149,7 @@ status as current practice is.
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
 | How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/README.md` (run order `run_all.sh`, acceptance `99_acceptance.py`). Pages `<root>/report/plasmode_report.html` under `brainvar_hapmix_deploy/`: current library (commit a1b2ef4) `plasmode_meier_20260927` (deep set) and `plasmode_lowcov_meier_20260927` (low-coverage set, 30-100 reads); earlier code and library `plasmode_20260926`, `plasmode_stratum30_100_20260927`. The thinning rule against Salmon itself: `salmon_half_depth_20260927/salmon_half_depth.html` |
 | What was the superseded Salmon-emulator design? | `docs/simulation_benchmark_spec.md` (marked superseded; its real-data calibration appendices still hold) |
+| How are the alignment-based (native) counts TReCASE reads built, and what did each fix change? | `brainvar_hapmix_deploy/phaser_stranded_20260928/README.md` (VCF, strand split, exonic model, blacklists) and `brainvar_hapmix_deploy/wasp_20260928/README.md` (WASP; three-stage comparison) |
 | What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`; RASQUAL on native per-SNP allele counts against the benchmark's pseudo feature SNP, with a permutation control: `brainvar_hapmix_deploy/rasqual_read_level_20260927/report.html` |
 
 ## Pipeline rules, 2026-09-25 (user decisions, standing)
