@@ -18,6 +18,10 @@
 > residuals they combine; commit a1b2ef4).
 > The calibration measurements of the real data in the appendices below remain
 > valid as measurements; the emulator layers and the build plan do not apply.
+> In particular the external-benchmark tier's plan to freeze `hapmix_pval` was
+> not followed: on 2026-09-28 (commit 9369bb1) `hapmix_pval` itself was fixed
+> and now runs default mode, and the three harnesses that used its removed
+> arm stop (record `external_benchmark_current_20260928/`).
 
 Date: 2026-09-26, revised the same day after two review passes. Status:
 specification only; nothing in it is implemented.

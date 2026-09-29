@@ -230,3 +230,15 @@ standard error for weights estimated from the same residuals, and a
 (`scripts/plasmode/README.md`), the result pages, what was running (nothing)
 and what is open, including the weighting decision, for which the two
 benchmark pages are now the known-effect evidence.
+
+## 8. State as of 2026-09-29
+
+Read `docs/CURRENT_SCIENTIFIC_STATE.md`, section "Native counts, held-out
+replication and the effect-size question (2026-09-28/29)". It names the
+alignment-based counts TReCASE and the `split_native` control now read
+(phASER rebuilt to its own assumptions, then WASP), the held-out replication
+referee on real data, the fixed external benchmark harness, the diagnosis of
+why TReCASE and RASQUAL rank below total-only tensorQTL, the two summary
+pages, what was running (nothing) and what is open: the weighting decision,
+and the shortfall of the estimated slope against the planted effect, which
+is the question of the next phase.

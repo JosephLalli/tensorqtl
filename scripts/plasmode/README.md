@@ -150,7 +150,12 @@ The two roots of 2026-09-27 (`plasmode_meier_20260927`, `plasmode_lowcov_meier_2
 step, with the same scripts rather than one `run_all.sh` call: the staged joint results, 02, 03, 06, 07 (deep set
 only) and 08; then 01, once check d had been made Meier-aware, into each root's `checks/` (its log
 `01_check_inputs.log` beside them), replacing check files first copied from `plasmode2_acceptance_20260927` and
-`plasmode2_stratum_acceptance_20260927`; then 06 and 08 again.
+`plasmode2_stratum_acceptance_20260927`; then 06 and 08 again. 05b, then 06 and 08, ran into both roots once per build
+of the native counts: unstranded and stranded-without-WASP on 2026-09-28, WASP-filtered on 2026-09-29
+(`native_rerun_chain_20260928.log` and `wasp_rerun_chain_20260928.log` in the deploy directory). `ROOT/native/` holds the
+WASP run; each root keeps the earlier builds' native directories as `native_unstranded_20260928/` (with the summary and
+page before the stranded counts) and `native_stranded_nowasp_20260928/`, and the stranded-without-WASP summary and page
+as `stage_stranded_nowasp_20260928/` (`brainvar_hapmix_deploy/wasp_20260928/README.md`, "Copies of each stage").
 
 ## Report figures and tables
 
@@ -160,14 +165,15 @@ only) and 08; then 01, once check d had been made Meier-aware, into each root's 
 | Section 2 conversion-of-effects table | `tab_conversion` | fixed text (the methods' definitions), no file |
 | Section 2 eigenMT paragraph: what sets M_eff, M_eff against the Beta shape2, eigenMT p against pval_beta | `sec_run` | `summary.json` `eigenmt` (06 `eigenmt_structure` on the genotypes, `eigenmt_vs_permutation` on the cis and nominal files) |
 | Table 3.1 AUC and power at 5% FDP, band tables | `tab_ranking`, `tab_bands` | `summary.json` `ranking` (06 `ranking`) |
-| Figure 1 (AUC, FDP power, BH power on the permutation p and on the eigenMT p) | `fig_ranking` | `summary.json` `ranking`, `gene_level`, `gene_level_eigenmt` |
-| Table 3.2 gene-level BH power and null rates, permutation p and eigenMT p | `tab_gene_level` | `summary.json` `gene_level` (06 `gene_level` on 03's `cis_*.parquet`), `gene_level_eigenmt` (on the nominal files and 03's `eigenmt_m_eff.tsv`) |
-| Table 3.3 bias ratios; Figure 2 | `tab_bias`, `fig_bias` | `summary.json` `recovery` (06 `recovery`) |
-| Tables 3.4 sd(z), squared-error ratios, cross-method; Figure 3 | `tab_precision`, `tab_cross`, `fig_efficiency` | `summary.json` `precision` (06 `precision`) |
+| Figure 1: A AUC, B power at 5% realized FDP, C BH power on the permutation p, D power at 5% realized FDP and E realized FDP of the BH calls, both on the eigenMT p | `fig_ranking`, `eigenmt_panels` | `summary.json` `ranking`, `gene_level`, `gene_level_eigenmt` (D from its `fdp_matched`) |
+| Table 3.2 gene-level BH power and null rates, permutation p and eigenMT p, with the power at 5% realized FDP under each eigenMT entry | `tab_gene_level` | `summary.json` `gene_level` (06 `gene_level` on 03's `cis_*.parquet`), `gene_level_eigenmt` (on the nominal files and 03's `eigenmt_m_eff.tsv`; `fdp_matched`) |
+| Table 3.3 bias ratios (slope at the causal variant over the count-scale truth, and over the pipeline-scale truth where there is one); Figure 2 (rows: allelic, total, and every arm's one combined slope on the count-scale truth) | `tab_bias`, `fig_bias` | `summary.json` `recovery` (06 `recovery`: `bias_count`, `bias_pipeline`) |
+| Tables 3.4 sd(z), squared-error ratios, cross-method; Figure 3 (mixQTL with published cutoffs in the tables only) | `tab_precision`, `tab_cross`, `fig_efficiency` | `summary.json` `precision` (06 `precision`) |
 | Table 3.5 lead recovery, band table; Figure 4 | `tab_lead`, `tab_bands`, `fig_lead` | `summary.json` `lead` (06 `lead_recovery`) |
 | Table 3.6 detection | `tab_detection` | `summary.json` `detection` (06 `detection`) |
 | Tables 3.7 null rates and the anchor | `tab_null`, `tab_anchor` | `summary.json` `null`, `anchor` (06 `null_calibration`, `anchor`); `allelic_df_fix_20260927` draws |
 | Tables 3.8 mixQTL ladder | `sec_ladder` | `ladder/ladder.json` (07) |
+| Section 3.9 (deep set) / 3.8 (low-coverage set), native-input arms: inputs, admitted donors, ranking, calibration, recovered share, TReCASE's component tests | `sec_native` | `ROOT/native/facts.json`, `ROOT/native/results_trecase/summary.json`, the native counts' `facts.json`, `summary.json` `native_arms`, `trecase_parts`, `trecase_components`, `trecase_native_components` |
 | Section 6, the smoke run's largest theta gradient | `sec_limits` | `plasmode_20260926/results_trecase_asseq/smoke/summary.json` |
 | Stratum page: head, section 1 and "The low-coverage set against the deep set" with contrast figures A-C | `stratum_facts`, `sec_head`, `sec_why`, `sec_contrast`, `fig_contrast_calibration`, `fig_contrast_precision`, `fig_contrast_ranking` | `summary.json`, `plasmode_20260926/summary.json`, the gene directory's `select_stratum_genes.log` and `pool_stratum.tsv`, `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json`, `plasmode_stratum30_100_20260927/run_arms.log` |
 

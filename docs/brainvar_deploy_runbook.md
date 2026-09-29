@@ -388,6 +388,19 @@ chromosome names to match between the BAM and the VCF. That is the same
 naming constraint the annotation tables are subject to, arriving one step
 earlier -- see the naming section below.
 
+DATED NOTE 2026-09-28: this recipe, run by `scripts/run_phaser_cohort.py`
+(which also passes `--pass_only 0 --id_separator -`), made the `phaser_out/`
+counts the comparison below reads: one unstranded run per donor, genes
+counted over their whole spans, no blacklists, no WASP. A second run brought phASER's
+inputs in line with its own assumptions (an SNV-only VCF with multi-ALT
+heterozygotes masked, per-strand runs over gene-unique exonic segments, the
+HLA and CHM13-accessibility blacklists, then WASP filtering with
+`--as_q_cutoff 0`). It feeds only the alignment-based (native) counts that
+the benchmark's native arms and the held-out referee's TReCASE read
+(`scripts/native_counts.py`): `brainvar_hapmix_deploy/phaser_stranded_20260928/README.md` and
+`brainvar_hapmix_deploy/wasp_20260928/README.md`, which also give the
+per-donor reference-allele share of each build.
+
 ## Assembling the matrices and overlaying read-backed phase
 
 ```bash

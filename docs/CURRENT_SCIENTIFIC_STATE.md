@@ -1,7 +1,8 @@
 # Current scientific state: hapmixQTL
 
-Reconciled 2026-09-16, updated 2026-09-18; dated sections for 2026-09-25 and
-2026-09-27 added since (the latest state is the last dated section). A router
+Reconciled 2026-09-16, updated 2026-09-18; dated sections for 2026-09-25,
+2026-09-27 and 2026-09-28/29 added since (the latest state is the last dated
+section). A router
 to the current state: what is implemented, what was measured, and what is
 open.
 
@@ -522,6 +523,93 @@ paths under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   every stored-null rate, including the bands in section 3.7 of the deep-set
   page, predates it.
 
+## Native counts, held-out replication and the effect-size question (2026-09-28/29)
+
+Commits 9369bb1 to 5d9123f on branch `simulation-benchmark`. No change to
+the library (`tensorqtl/` is as at a1b2ef4). This section routes; result
+paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
+
+- **Implemented and committed.**
+  - The external benchmark harness (`tests/ase_external_benchmark.py`, commit
+    9369bb1) now builds the total channel from Poisson draws of the simulated
+    totals, fits the allelic channel through the origin and runs default mode
+    at gibbs, split and plus_one; `scripts/external_benchmark_mirror*` run it
+    beside the real asSeq TReCASE. The three harnesses that called its
+    removed `tau_mode='estimate'` arm (`tests/ase_rasqual_comparison.py`,
+    `ase_rasqual_real.py`, `ase_reference_bias.py`) stop with that reason
+    (user decision); their recorded results stand, as `docs/ase_validation.md`
+    and `docs/LOCAL_HANDOFF.md` say.
+  - Alignment-based ("native") counts for TReCASE and a control arm:
+    `scripts/native_counts.py` (featureCounts totals, phASER haplotype
+    counts), with the phASER inputs rebuilt to phASER's assumptions
+    (`scripts/phaser_input_vcf.py`, `phaser_features.py`,
+    `phaser_stranded.py`) and WASP filtering ahead of phASER
+    (`scripts/wasp_star_index.sh`, `phaser_wasp.py`). Current counts
+    `native_counts_wasp_20260928`; the two earlier builds
+    (`native_counts_20260928`, `native_counts_stranded_20260928`) are kept.
+    The benchmark's `scripts/plasmode/05b_native_arms.py` runs
+    `split_native` and `trecase_native` on them; 06 and 08 score and report
+    them (`scripts/plasmode/README.md`, "Native-input arms").
+  - The held-out replication referee: `scripts/referee_replication.py`,
+    `referee_trecase.py`, `referee_score.py`.
+  - The input diagnosis of TReCASE and RASQUAL:
+    `scripts/trecase_input_diagnosis.py`, `rasqual_input_diagnosis.py`.
+  - Summary pages: `scripts/benchmark_summary.py` and
+    `scripts/hapmix_vs_trecase.py`, each with its `_template.html`.
+  - chr14, chr15 and chr22 excluded short term (user decision; `CLAUDE.md`,
+    "Known and unfixed").
+- **Validated results** (each record states its own numbers and limits).
+  - The fixed external benchmark at N = 200 and N = 92:
+    `external_benchmark_current_20260928/report.html`. It supersedes the
+    2026-09-23 record for default mode.
+  - Why TReCASE and RASQUAL rank below total-only tensorQTL on Salmon inputs
+    (deep set, one input changed at a time):
+    `input_diagnosis_20260928/trecase_integer/report.html` and
+    `input_diagnosis_20260928/rasqual_total_only/report.html`.
+  - The native counts, stage by stage, with their effect on the native arms:
+    `phaser_stranded_20260928/README.md` and `wasp_20260928/README.md` (the
+    latter tabulates power for all three builds and the referee's TReCASE
+    difference). With WASP the per-donor reference-allele share is
+    0.500-0.516; the referee's own `facts.json` still carries the pre-WASP
+    share and is not the figure to quote.
+  - Both benchmark pages (`plasmode_meier_20260927`,
+    `plasmode_lowcov_meier_20260927`) were rescored on 2026-09-29 with the
+    native arms on the WASP counts; each root keeps the earlier native stages
+    as `native_unstranded_20260928/` and `native_stranded_nowasp_20260928/`.
+  - Held-out replication on real data, 11,740 genes, 92 discovery and 135
+    held-out donors, every arm scored at matched list depth (TReCASE, on
+    native counts only, on a seeded 1,500-gene subset with every arm
+    restricted to it): `referee_replication_20260928/report.html` (numbers
+    in its `score/score.json`). The referee measures total expression only.
+  - One-page summaries: `benchmark_summary_20260929/summary.html` and
+    `benchmark_summary_20260929/hapmix_vs_trecase.html`.
+- **Run state.** Nothing of this project was running on 2026-09-29 (the WASP
+  rerun chain, `wasp_rerun_chain_20260928.log`, ends "done" at 03:02).
+- **Open.**
+  - Which weighting ships (`docs/pipeline_rules.md`); the referee is now its
+    real-data evidence beside the two benchmark pages.
+  - **The effect-size shortfall, the question of the next phase.** Measured,
+    not explained. The statistic is 06's `bias_count`: per non-null gene
+    unit, the slope at the planted causal variant divided by the count-scale
+    truth (`allelic_truth`, the planted effect, for a combined or joint
+    slope; `total_truth` for tensorQTL, whose one slope is a total-channel
+    slope), averaged over a scenario's finite units (at most 150: 50 genes x
+    3 datasets), 95% interval from resampling genes (`summary.json`,
+    `recovery/beta0.4/<arm>/combined/bias_count`; Table 3.3 and Figure 2 of
+    each page). For split weighting's combined slope at |beta| 0.4 it is
+    0.915 [0.866, 0.966] on the deep set and 0.721 [0.667, 0.777] on the
+    low-coverage set. On the deep set it is 0.778 [0.649, 0.905] in the 42
+    units of genes under 100 median allele-resolved reads, against 0.961
+    and 0.978 at 100-999 and 1,000+.
+    Total-only tensorQTL on the same Salmon totals gives 0.898 and 0.706,
+    `split_native` on alignment counts 0.911 and 0.723, and TReCASE on
+    alignment counts 0.991 and 0.941. NOT established: the cause. The
+    benchmark README lists separating bias against the count-scale truth
+    from the transforms' attenuation among what it cannot answer (the
+    pipeline-scale truth, `bias_pipeline`, separates them for an unweighted
+    fit only). `hapmix_vs_trecase.html` states the shortfall as under
+    investigation.
+
 ## Routing and run state
 
 Start with `docs/hapmixqtl_methods.md` for implementation and
@@ -544,8 +632,9 @@ sigma test was itself closed 2026-09-20, refuted; that file keeps it only as
 a pointer and no longer lists it as open work — this sentence was not
 updated when that happened.)
 
-Worktree: `hapmix-runbook-local`; the through-origin change is commit
-`bea450c` on top of `f11d586`. The estimator ablation
+Worktree as of 2026-09-16: `hapmix-runbook-local`; the through-origin change
+is commit `bea450c` on top of `f11d586`. Current work (the last two dated
+sections above) is on branch `simulation-benchmark`. The estimator ablation
 (`deprecated_models/estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
 final TMM normalization, production association mapping, or biological-residual
 calibration. Applying phASER error correction before constructing quantification

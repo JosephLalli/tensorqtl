@@ -542,6 +542,21 @@ remains the user's. User decision 2026-09-27: the candidates are Gibbs
 variance in both channels (the shipped default), split and 1/(v+1); unit
 weights stay as the reference of the efficiency ratios only.
 
+Since 2026-09-28 both pages also carry TReCASE and split weighting on
+alignment-based counts from the same BAMs (`scripts/plasmode/README.md`,
+"Native-input arms"); they were rescored on 2026-09-29 on the WASP-filtered
+counts, at the same paths.
+
+**Held-out replication evidence, 2026-09-28.** On real data, the four
+weightings, total-only tensorQTL, mixQTL mode at both cutoff settings and
+(on a 1,500-gene subset) TReCASE map the 92 donors, and each arm's top genes
+at matched list depth are checked in 135 BrainVar donors that no arm saw:
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/referee_replication_20260928/report.html`.
+The referee measures total expression only; the page's section "Leads driven
+by the allelic channel" scores allelic-led and total-led leads separately.
+The one-page summary of both kinds of evidence is
+`benchmark_summary_20260929/summary.html` in the same directory.
+
 ## Open decision: the genotype-PC permutation rule interacts with the weights
 
 Not established: why the genotype-PC tie hurts only through the weights. A

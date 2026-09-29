@@ -147,9 +147,13 @@ status as current practice is.
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
-| How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/README.md` (run order `run_all.sh`, acceptance `99_acceptance.py`). Pages `<root>/report/plasmode_report.html` under `brainvar_hapmix_deploy/`: current library (commit a1b2ef4) `plasmode_meier_20260927` (deep set) and `plasmode_lowcov_meier_20260927` (low-coverage set, 30-100 reads); earlier code and library `plasmode_20260926`, `plasmode_stratum30_100_20260927`. The thinning rule against Salmon itself: `salmon_half_depth_20260927/salmon_half_depth.html` |
+| How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/README.md` (run order `run_all.sh`, acceptance `99_acceptance.py`; native-input arms, its section of that name). Pages `<root>/report/plasmode_report.html` under `brainvar_hapmix_deploy/`: current library (commit a1b2ef4) `plasmode_meier_20260927` (deep set) and `plasmode_lowcov_meier_20260927` (low-coverage set, 30-100 reads); earlier code and library `plasmode_20260926`, `plasmode_stratum30_100_20260927`. The thinning rule against Salmon itself: `salmon_half_depth_20260927/salmon_half_depth.html` |
+| Whose top genes replicate in held-out BrainVar donors (real data, every arm)? | `brainvar_hapmix_deploy/referee_replication_20260928/report.html` (scripts `referee_replication.py`, `referee_trecase.py`, `referee_score.py`) |
+| The whole benchmark on one page, and hapmixQTL against TReCASE? | `brainvar_hapmix_deploy/benchmark_summary_20260929/summary.html` and `hapmix_vs_trecase.html` beside it (scripts `benchmark_summary.py`, `hapmix_vs_trecase.py`, each with its `_template.html`) |
+| Why do TReCASE and RASQUAL rank below total-only tensorQTL in the benchmark? | `brainvar_hapmix_deploy/input_diagnosis_20260928/trecase_integer/report.html` and `rasqual_total_only/report.html` beside it (scripts `trecase_input_diagnosis.py`, `rasqual_input_diagnosis.py`) |
+| How does default mode do on data drawn from TReCASE's own model, on the fixed harness? | `brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html` (scripts `external_benchmark_mirror*`); the section "Default mode holds on non-circular ground truth" below is the 2026-09-23 record on the earlier harness |
 | What was the superseded Salmon-emulator design? | `docs/simulation_benchmark_spec.md` (marked superseded; its real-data calibration appendices still hold) |
-| How are the alignment-based (native) counts TReCASE reads built, and what did each fix change? | `brainvar_hapmix_deploy/phaser_stranded_20260928/README.md` (VCF, strand split, exonic model, blacklists) and `brainvar_hapmix_deploy/wasp_20260928/README.md` (WASP; three-stage comparison) |
+| How are the alignment-based (native) counts TReCASE reads built, and what did each fix change? | `brainvar_hapmix_deploy/phaser_stranded_20260928/README.md` (VCF, strand split, exonic model, blacklists) and `brainvar_hapmix_deploy/wasp_20260928/README.md` (WASP; three-stage comparison). Current counts `native_counts_wasp_20260928` (`scripts/native_counts.py`) |
 | What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`; RASQUAL on native per-SNP allele counts against the benchmark's pseudo feature SNP, with a permutation control: `brainvar_hapmix_deploy/rasqual_read_level_20260927/report.html` |
 
 ## Pipeline rules, 2026-09-25 (user decisions, standing)
@@ -168,8 +172,9 @@ page, do not quote a single percentage); which weighting configuration ships
 (2026-09-26: the shipped Gibbs-both-channels default is anticonservative on
 the corrected pipeline's total channel; unit/1/v split weighting and
 `1/(v+1)` both calibrate, at different costs; since 2026-09-27 the two
-benchmark pages in the table above add known-effect evidence; the decision
-is still open); and why tying genotype PCs to
+benchmark pages in the table above add known-effect evidence, and since
+2026-09-28 the held-out replication referee adds real-data evidence; the
+decision is still open); and why tying genotype PCs to
 the genotypes under permutation interacts with the weights. Every
 calibration number in this file dated on or before 2026-09-25 was measured on
 the pre-correction pipeline.
@@ -585,6 +590,8 @@ non-weighting difference between the estimators.
 which hapmixQTL does not assume. 500 replicates, N=200, mu=200, NB dispersion
 0.2, BB overdispersion 0.01, allele-specific fraction 0.25. Report:
 `brainvar_hapmix_deploy/external_benchmark_fitted_defaults_20260923/`.
+This section is the 2026-09-23 record on the harness as it was then; the
+harness was fixed and re-run on 2026-09-28 (the table above names the record).
 
 - **Calibrated at nominal 0.05 and at parity with the generating model's own
   joint likelihood.** Type-I 0.0640 (lambda_GC 1.24), 1.4 Monte Carlo standard
@@ -610,17 +617,19 @@ which hapmixQTL does not assume. 500 replicates, N=200, mu=200, NB dispersion
   Fitting the residual scale from the residuals it scales did NOT produce
   anticonservatism at this N and depth. The objection is structural, so one
   design point is not a general refutation.
-- **The harness fabricates the total channel's inferential variance, and the
-  consequence for default mode was measured rather than argued.**
-  `hapmix_pval` emulates draws as `yL ~ Binomial(n, frac)` with `yR = n - yL`,
-  so `yL+yR` is EXACTLY constant across draws and the total channel's
-  across-draw variance is zero by construction; `compute_summaries_from_gibbs`
-  is called without `yT`. Only the Poisson term `1/(m_T + 2*kappa)` survives,
+- **The harness fabricated the total channel's inferential variance (until
+  commit 9369bb1, 2026-09-28, which draws the total from the simulated
+  totals; record in the table above), and the consequence for default mode
+  was measured rather than argued.** As of 2026-09-23,
+  `hapmix_pval` emulated draws as `yL ~ Binomial(n, frac)` with `yR = n - yL`,
+  so `yL+yR` was EXACTLY constant across draws and the total channel's
+  across-draw variance was zero by construction; `compute_summaries_from_gibbs`
+  was called without `yT`. Only the Poisson term `1/(m_T + 2*kappa)` survived,
   computed on the ALLELE-SPECIFIC total (median 48 reads) while the phenotype
   comes from true totals (median 195.5): measured median `Vt` 0.0204082 against
   median `1/(m_T+2*kappa)` 0.0204082, identical to every printed digit. The
   delta-method variance of the harness's own phenotype, `T/(T+lib)^2`, has
-  median 0.00507, so the harness **overstates the total channel's inferential
+  median 0.00507, so the harness **overstated the total channel's inferential
   variance by 4.0x**. Substituting it over 150 replicates moves default mode
   0.073 -> 0.067 in type-I and 0.733 -> 0.760 in matched power at 1.10, both
   inside the 150-rep Monte Carlo floor (~0.018, ~0.038), because a fitted
