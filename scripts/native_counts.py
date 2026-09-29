@@ -19,7 +19,8 @@ libraries (nf_results, gene-biotype counting).
 HAPLOTYPES. scripts/phaser_stranded.py gene counts (aCount, bCount) per donor, rows in annot/genes.NC.bed order
 (checked): phASER per transcript strand on strand-split BAMs, each gene counted from the heterozygous SNVs its own
 exons hold on its own strand (GTEx-style collapsed model, scripts/phaser_features.py; HLA and CHM13-inaccessible
-regions blacklisted; no WASP). A gene with gw_phased = 1 sums the genome-wide phased haplotype blocks, A = the VCF's
+regions blacklisted; reads WASP-filtered, scripts/phaser_wasp.py, and phASER's alignment-score
+cutoff off). A gene with gw_phased = 1 sums the genome-wide phased haplotype blocks, A = the VCF's
 first allele; gw_phased = 0 is phASER's single best-covered block whose A/B labels are not anchored to the VCF
 (phaser_gene_ae's rule), and is written as a = b = 0 (no VCF-oriented allelic information; its fragments stay in
 the total). The orientation is verified on a sample of genes by summing phASER's per-SNP counts, from the gene's
@@ -46,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
-OUT = D / 'native_counts_stranded_20260928'           # native_counts_20260928: the same, on the unstranded span-based phASER run
+OUT = D / 'native_counts_wasp_20260928'   # native_counts_stranded_20260928: the same without WASP; native_counts_20260928: unstranded spans
 BAMS = D / 'cohort' / 'bams.tsv'                        # DNA library id -> BAM (metadata v1.4 pairing)
 PAIRING = D / 'cohort' / 'pairing.tsv'                  # dna_library, rna_library, bam stem (HSBxxx)
 CACHE = D / 'cache' / 'gibbs_56b63c3b37ed5df8'          # samples.txt (donor order), genes.txt
@@ -67,7 +68,7 @@ N_JOBS, THREADS = 8, 4                                  # 32 processes (task cap
 RECONCILE_TOL = 0.005        # featureCounts summary vs STAR's own counts, relative (100_D1: unmapped exact, unique +0.054%)
 ASSIGNED_RATIO = (0.9, 1.1)  # assigned / the pipeline's own featureCounts assigned, same library: annotation and gene-vs-biotype
                              # ambiguity move it by a few percent; a wrong strand (-s 1) would assign ~pe_sense/pe_antisense ~2%
-PHASER = D / 'phaser_stranded_20260928'                 # gene_ae/<donor>.gene_ae.txt, phaser/<donor>.<plus|minus>.allelic_counts.txt
+PHASER = D / 'phaser_stranded_wasp_20260928'            # gene_ae/<donor>.gene_ae.txt, phaser/<donor>.<plus|minus>.allelic_counts.txt
 ANALYSIS_VCF = D / 'prepped' / 'analysis.snps.maf01.vcf.gz'   # the phase xL/xR the benchmark uses (compare_mixqtl_replication.load_inputs)
 PHASER_VCF = D / 'vcf' / 'cohort92.phaser_input.NC.vcf.gz'   # the VCF phASER ran against (scripts/phaser_input_vcf.py)
 PHASER_STRAND = D / 'phaser_inputs_20260928' / 'nesting.tsv'  # gene strand, as phaser_stranded.py assigns genes to runs

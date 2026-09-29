@@ -2243,7 +2243,7 @@ is featureCounts' count of fragments on the gene's exons (primary, uniquely mapp
 on exons of two genes is not counted), and the allele-specific counts a and b are phASER's counts of fragments over
 heterozygous SNPs on the haplotypes carrying the analysis VCF's first and second allele (counted per transcript strand
 on strand-split BAMs, at SNVs in exon stretches that one gene owns on its strand, the GTEx-style collapsed gene model;
-HLA genes and CHM13 short-read-inaccessible regions excluded; no WASP filtering; scripts/phaser_stranded.py), set to a = b = 0 where a + b
+HLA genes and CHM13 short-read-inaccessible regions excluded; reads WASP-filtered for allele-dependent mapping, scripts/phaser_wasp.py; scripts/phaser_stranded.py), set to a = b = 0 where a + b
 exceeds the total ({gs['negative']:,} of this gene set's {gs['pairs_with_reads']:,} donor-gene pairs with phASER reads,
 holding {gs['allelic_fragments_in_negative']:,} of its {gs['allelic_fragments']:,} allele-specific fragments). Each
 dataset's record permutation, label swaps and thinning factors are applied to them (05b_native_arms.py; exact binomial

@@ -62,7 +62,7 @@ ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
                                            'trecase_smoke', 'committed'))
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
-NATIVE_COUNTS = D / 'native_counts_stranded_20260928'   # featureCounts totals and strand-split exonic phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)
+NATIVE_COUNTS = D / 'native_counts_wasp_20260928'   # featureCounts totals and WASP-filtered strand-split exonic phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)
 NATIVE = ROOT / 'native'                       # 05b_native_arms.py: edger/, datasets/, results/, results_trecase/, trecase_work/, facts.json
 NATIVE_DATASETS = NATIVE / 'datasets'
 NATIVE_RESULTS = {'split_native': NATIVE / 'results', 'trecase_native': NATIVE / 'results_trecase'}   # the native-input arms (task 2026-09-28)

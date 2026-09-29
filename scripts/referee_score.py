@@ -358,7 +358,7 @@ def referee_source(genes):
     si = [samples.index(s) for s in shared]
     sal = np.load(Path(RR.CM.PE) / 'pT.npy', mmap_mode='r')[[gi[g] for g in genes]][:, si]
     sal_eff = H.read_edger_dir(Path(RR.CM.PE) / 'edger', shared)[0]
-    nat = pd.read_parquet(C.D / 'native_counts_stranded_20260928' / 'totals.parquet').loc[genes, shared].to_numpy(float)
+    nat = pd.read_parquet(C.D / 'native_counts_wasp_20260928' / 'totals.parquet').loc[genes, shared].to_numpy(float)
     nat_eff = H.read_edger_dir(OUT / 'trecase_work' / 'native_edger', shared)[0]
     rank = lambda M: np.argsort(np.argsort(M, 1), 1).astype(float)   # noqa: E731  ties broken by position
     def rho(M):
@@ -1090,7 +1090,7 @@ def MEANING_TEXT(S, where):
 
 def LIMITS(S):
     F = S['facts']
-    rs = json.loads((C.D / 'native_counts_stranded_20260928' / 'facts.json').read_text())['reference_share']   # native_counts.reference_share
+    rs = json.loads((C.D / 'native_counts_wasp_20260928' / 'facts.json').read_text())['reference_share']   # native_counts.reference_share
     return (
         '<h2>What this cannot establish</h2><ul>'
         '<li>Purely allelic effects. The referee measures total expression only, so an effect that changes the allelic ratio '
@@ -1110,8 +1110,8 @@ def LIMITS(S):
         'genes, so the subset comparison is not on the scale of the all-gene one.</li>'
         '<li>Reference-mapping bias in TReCASE\'s allele counts. The native counts come from phASER run on STAR alignments '
         'to the standard reference, per transcript strand at SNVs in exon stretches that one gene owns on its strand, with '
-        'HLA genes and CHM13 short-read-inaccessible regions excluded but no WASP filtering, the one correction for '
-        'reference-mapping bias not applied (scripts/phaser_stranded.py). Per '
+        'HLA genes and CHM13 short-read-inaccessible regions excluded, on reads WASP-filtered for allele-dependent mapping '
+        '(scripts/phaser_wasp.py, scripts/phaser_stranded.py). Per '
         f'donor, the median over phASER heterozygous sites with at least {rs["min_reads"]} reads of the reference-allele share '
         f'(refCount / totalCount, 0.5 if reads from the two alleles mapped alike) runs from {rs["median_min"]:.3f} to '
         f'{rs["median_max"]:.3f} over the {rs["donors"]} discovery donors ({rs["sites_per_donor"][1]:,} such sites in the '
@@ -1121,7 +1121,7 @@ def LIMITS(S):
         f'{rs["min_reads"]} reads, over all donors, at heterozygotes of two ALT alleles (native_counts.reference_share). '
         'In real data, unlike the plasmode '
         'benchmark, whose records are shuffled against the genotypes, reference bias is not randomized, so native '
-        'TReCASE\'s allelic channel can carry it. The hapmixQTL arms use Salmon on a personalized diploid transcriptome '
+        'TReCASE\'s allelic channel can carry what WASP leaves of it. The hapmixQTL arms use Salmon on a personalized diploid transcriptome '
         'instead.</li>'
         '<li>Which variant is causal. The replication is at the discovery lead, and in the same population a lead in linkage '
         'disequilibrium with the causal variant replicates as well as the causal variant does.</li>'
