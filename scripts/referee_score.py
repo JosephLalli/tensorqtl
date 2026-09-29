@@ -841,10 +841,11 @@ def TRECASE_TEXT(S):
         f'{v["genes"] - len(v["genes_failed"]):,}. Tests without a final p: '
         f'{miss["final_na"]:,} of {miss["tests"]:,} in {miss["genes_affected"]} of {miss["genes"]} genes, of which '
         f'{miss["joint_chosen_joint_failed"]:,} are tests where asSeq chose the joint test and its fit failed; asSeq does not '
-        'fall back to the TReC p there, and the lead is chosen among the gene\'s other tests. The run was restarted on the '
-        f'native input alone once the Salmon input was dropped; the restarted call ran {v["genes"] - v["genes_resumed"]} genes '
-        f'({v["genes_resumed"]} had finished before) in {TR["wall_hours"]:.2f} h at {TR["jobs"]} R processes, largest genes '
-        'first.</p>')
+        'fall back to the TReC p there, and the lead is chosen among the gene\'s other tests. '
+        + (f'The run was restarted on the native input alone once the Salmon input was dropped; the restarted call ran '
+           f'{v["genes"] - v["genes_resumed"]} genes ({v["genes_resumed"]} had finished before)' if v['genes_resumed'] else
+           f'The run ran {v["genes"]} genes') +
+        f' in {TR["wall_hours"]:.2f} h at {TR["jobs"]} R processes, largest genes first.</p>')
 
 
 def SUMMARY(S):
@@ -1063,15 +1064,18 @@ def MEANING_TEXT(S, where):
     loss = [a for a in HAPMIX + MIX if bh[a]['K'] > bh[REF]['K'] and bh[a]['replicated'] < bh[a]['ref_replicated_at_this_K']]
     ties = {a: S['sets']['all']['rankings']['perm']['at_K'][a][KS[-1]]['tied_at_K'] for a in MIX}
     tb = B['bh'][t]
+    nn = P['beta0.4'][t]['fdp_matched']['all']['non_null']
+    side = lambda d: 'above' if d['share_lo'] > 0 else 'below' if d['share_hi'] < 0 else 'level with'   # noqa: E731
     return (
         f'<p><b>Against the plasmode.</b> At |beta| = 0.4 the plasmode put {", ".join(LABEL[a] for a in agree)} above '
         f'tensorQTL in power, and the referee agrees for them deep in the list. It put {", ".join(LABEL[a] for a in differ)} '
         f'below tensorQTL ({", ".join(f"{pw(a):+.3f}" for a in differ)}), where the referee has it above at K = {KD:,}. The '
         'two benchmarks do not cut at the same depth: the plasmode reads power where 5% of the called genes are null, the '
-        'referee a fixed number of genes. TReCASE is compared on native counts in both: the plasmode put its trecase_native '
-        f'arm above tensorQTL in power ({pw(t):+.3f} at |beta| = 0.4, {pw(t, "0.8"):+.3f} at 0.8; on Salmon input '
-        f'{pw("trecase"):+.3f} and {pw("trecase", "0.8"):+.3f}), and the referee has it above tensorQTL on the subset at '
-        f'K = {K_SHOW} ({iv(pd_(t, K_SHOW, B))}).</p>'
+        'referee a fixed number of genes. TReCASE is compared on native counts in both: in the plasmode its trecase_native '
+        f'arm differs from tensorQTL in power by {pw(t):+.3f} at |beta| = 0.4 and {pw(t, "0.8"):+.3f} at 0.8 '
+        f'({round(pw(t) * nn):+d} and {round(pw(t, "0.8") * nn):+d} of {nn} non-null gene units; power at realized FDP has '
+        f'no interval there), and its Salmon-input arm by {pw("trecase"):+.3f} and {pw("trecase", "0.8"):+.3f}; the referee '
+        f'has it {side(pd_(t, K_SHOW, B))} tensorQTL on the subset at K = {K_SHOW} ({iv(pd_(t, K_SHOW, B))}).</p>'
         f'<p><b>The weighting decision.</b> Against gibbs, the shipped weighting, split is at or above it at every K on all '
         f'genes and clear of zero from K = 783 on ({split[1565]["share"]:+.3f} [{split[1565]["share_lo"]:+.3f}, '
         f'{split[1565]["share_hi"]:+.3f}] at 1,565); {weigh}. This page reports these differences; it does not settle the '
