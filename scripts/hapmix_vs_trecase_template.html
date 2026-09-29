@@ -121,8 +121,10 @@ a { color: var(--hap); }
     <div class="card">
       <div class="chart" id="c-bias"></div>
       <p class="caption">hapmixQTL's shortfall is concentrated in genes under 100 reads; the same shortfall on
-        alignment counts (table) places it in the estimator, not in Salmon. Its cause is under investigation. Whiskers: 95%
-        interval from resampling genes.</p>
+        alignment counts (table) places it in the estimator, not in Salmon. Most of it is the total channel's log2(CPM + 1),
+        whose 1-CPM pseudocount is about 17 reads here; the rest is the allelic channel's Gibbs-variance weights, computed from
+        the same counts as the allelic ratio (<a href="https://claude.ai/artifact/WDcQ43gf1XDy36yL7CPULK">effect-size
+        shortfall</a>). Whiskers: 95% interval from resampling genes.</p>
       <details><summary>Table</summary><div class="tbl" id="tb-bias"></div></details>
     </div>
   </section>

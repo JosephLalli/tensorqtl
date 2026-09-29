@@ -31,6 +31,10 @@ switched over, and which recorded results predate it.
    library size cancels within a sample. mixQTL mode keeps its published
    natural-log response log(count / 2 / L) with the same L, so its raw betas
    are hapmixQTL's times ln 2.
+   What the "+ 1" costs effect sizes (a 1-CPM pseudocount is effective
+   library / 1e6 reads) is measured in
+   `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
+   (2026-09-29); the rule itself is unchanged.
 
 3. **The expression-PC gene filter equals the eQTL gene filter actually
    used.** Calibration phase (user decision, explicitly temporary while the
@@ -556,6 +560,15 @@ The referee measures total expression only; the page's section "Leads driven
 by the allelic channel" scores allelic-led and total-led leads separately.
 The one-page summary of both kinds of evidence is
 `benchmark_summary_20260929/summary.html` in the same directory.
+
+**Effect-size evidence, 2026-09-29.**
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
+explains why every weighting's plasmode slope falls short of the planted
+effect. For this decision it adds that Gibbs `1/v` weights in the allelic
+channel (the shipped default and split) pull the allelic slope toward zero
+under a true effect, while unit weights do not; its section "What it means for
+the wider claims" sets that against the allelic null calibration. Evidence, not
+the decision.
 
 ## Open decision: the genotype-PC permutation rule interacts with the weights
 

@@ -589,8 +589,8 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
 - **Open.**
   - Which weighting ships (`docs/pipeline_rules.md`); the referee is now its
     real-data evidence beside the two benchmark pages.
-  - **The effect-size shortfall, the question of the next phase.** Measured,
-    not explained. The statistic is 06's `bias_count`: per non-null gene
+  - **The effect-size shortfall.** Measured 2026-09-28/29, explained
+    2026-09-29 (below); the decisions it feeds are open. The statistic is 06's `bias_count`: per non-null gene
     unit, the slope at the planted causal variant divided by the count-scale
     truth (`allelic_truth`, the planted effect, for a combined or joint
     slope; `total_truth` for tensorQTL, whose one slope is a total-channel
@@ -604,12 +604,16 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
     and 0.978 at 100-999 and 1,000+.
     Total-only tensorQTL on the same Salmon totals gives 0.898 and 0.706,
     `split_native` on alignment counts 0.911 and 0.723, and TReCASE on
-    alignment counts 0.991 and 0.941. NOT established: the cause. The
-    benchmark README lists separating bias against the count-scale truth
-    from the transforms' attenuation among what it cannot answer (the
-    pipeline-scale truth, `bias_pipeline`, separates them for an unweighted
-    fit only). `hapmix_vs_trecase.html` states the shortfall as under
-    investigation.
+    alignment counts 0.991 and 0.941. Cause (validated 2026-09-29, plasmode
+    only): mostly the total channel's log2(CPM + 1) pseudocount, the rest the
+    allelic channel's Gibbs-variance weights, which are computed from the same
+    counts as the allelic ratio. Record, with the budget, the counterfactual
+    refits through `map_nominal`, a voom log-CPM arm and the limits:
+    `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
+    (scripts `beta_shortfall_budget.py`, `beta_shortfall_refits.py`,
+    `beta_shortfall_report.py`). Proposed, not run: a real-data allelic
+    weighting that avoids the coupling; voom with decoupled allelic weights
+    together.
 
 ## Routing and run state
 

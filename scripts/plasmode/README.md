@@ -92,7 +92,10 @@ rule for genotype PCs is right (the null is the record permutation); effects oth
 one variant per gene; null rates at `beta > 0` as calibration (thinning adds model-like binomial
 noise that dilutes the real data's weight-residual coupling); and bias against the count-scale
 truth separated from the transforms' attenuation (the pipeline-scale truth separates them for an
-unweighted fit only).
+unweighted fit only). That separation is made outside the benchmark, by refitting its datasets
+through `common.run_nominal` with one ingredient changed: `scripts/beta_shortfall_budget.py` and
+`scripts/beta_shortfall_refits.py`, page
+`brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html` (2026-09-29).
 
 ## Native-input arms (05b_native_arms.py)
 
