@@ -389,7 +389,7 @@ naming constraint the annotation tables are subject to, arriving one step
 earlier -- see the naming section below.
 
 DATED NOTE 2026-09-28: this recipe, run by `scripts/run_phaser_cohort.py`
-(which also passes `--pass_only 0 --id_separator -`), made the `phaser_out/`
+with `--pass_only 0 --id_separator -`, made the `phaser_out/`
 counts the comparison below reads: one unstranded run per donor, genes
 counted over their whole spans, no blacklists, no WASP. A second run brought phASER's
 inputs in line with its own assumptions (an SNV-only VCF with multi-ALT

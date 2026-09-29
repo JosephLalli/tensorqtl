@@ -897,7 +897,8 @@ via `--null-gene-list`; seed 42). Summary page:
   SNP separately with no haplotype swap, at 30 draws, so it is NOT like-for-like;
   its 96 of 1,380 non-converged null rows reject at 0.083 and must be excluded.
   The external simulation benchmark's tail (0.064 / 0.020) has the same
-  mechanism (section below).
+  mechanism (section below); that tail is the 2026-09-23 harness's and was
+  not reproduced on the fixed harness (record in the table above).
 - **Standard-error accuracy**, mean reported se over realized null sd, ~215,000
   (gene, variant) units, corrected for the 1.017 convexity inflation of an
   estimated denominator: hapmixQTL 0.939, mixQTL 0.987. **Flat across MAF** for
@@ -1055,7 +1056,8 @@ untested candidate"):** (a) a records permutation cannot create excess from
 errors correlated across donors, because the permuted record set is fixed and
 only its assignment to genotypes is random -- so it does NOT explain the
 records-null excess measured here, and the external benchmark (i.i.d. donors
-by construction) shows the same tail; (b) cross-donor CORRELATION -- relatedness,
+by construction) showed the same tail on its 2026-09-23 harness, not
+reproduced on the fixed harness (record in the table above); (b) cross-donor CORRELATION -- relatedness,
 population structure, batch, anything the 17 covariates do not absorb --
 remains untested as a source of miscalibration on OBSERVED data; (c) a
 per-donor VARIANCE component does exist in the total channel (221_D1, RIN 3.1,
