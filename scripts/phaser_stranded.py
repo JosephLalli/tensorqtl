@@ -7,7 +7,11 @@ transcript strand, keeping only reads over that strand's gene-unique exonic segm
 phASER (the fast beta in tools/phaser) runs once per strand against a VCF restricted to the same segments, with the
 HLA spans as --blacklist and the CHM13 short-read inaccessible regions as --haplo_count_blacklist. Other flags are
 the previous run's (run_phaser_cohort.py): --mapq 255 --baseq 10 --paired_end 1 --pass_only 0 --id_separator -.
-Not applied: --gw_phase_vcf, --min_haplo_maf (not decided), WASP (awaiting a decision).
+The BAMs are phaser_wasp.py's WASP-filtered output, and --as_q_cutoff is 0: phASER's default 0.05 drops the reads
+below the 5th percentile of alignment score (phaser.py:643-651, 1401), and STAR scores a read carrying the alt
+allele 2 below one carrying the ref, so the cutoff removes alt reads preferentially. The native (pre-WASP) run with
+the default cutoff is phaser_stranded_20260928, from this script at commit 0e3b268.
+Not applied: --gw_phase_vcf, --min_haplo_maf (not decided).
 
 Gene counts: phaser_gene_ae credits a variant to every feature whose span contains it, and pools read names only
 within one feature row, so neither gene spans (nested same-strand genes) nor one row per exon (reads spanning two
@@ -32,13 +36,13 @@ import pandas as pd
 from intervaltree import IntervalTree
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
-BAMS = D / 'cohort' / 'bams.tsv'                        # DNA library id, BAM (the native counts' list)
+BAMS = D / 'wasp_20260928' / 'bams.tsv'                 # DNA library id, WASP BAM (scripts/phaser_wasp.py)
 VCF = D / 'vcf' / 'cohort92.phaser_input.NC.vcf.gz'     # scripts/phaser_input_vcf.py
 FEAT = D / 'phaser_inputs_20260928'                     # scripts/phaser_features.py
 GENES_NC_BED = D / 'annot' / 'genes.NC.bed'
 PHASER_DIR = D / 'tools' / 'phaser'                     # fast beta, 2026-02-03
 PREVIOUS = D / 'phaser_out'                             # run_phaser_cohort.py output, for `check`
-OUT = D / 'phaser_stranded_20260928'
+OUT = D / 'phaser_stranded_wasp_20260928'
 STRANDS = {'plus': '(flag.read1 && flag.reverse) || (flag.read2 && !flag.reverse)',
            'minus': '(flag.read1 && !flag.reverse) || (flag.read2 && flag.reverse)'}
 GENE_STRAND = {'plus': '+', 'minus': '-'}
@@ -90,7 +94,8 @@ def one(donor, bam, strand, vcf):
         tmp_prefix = OUT / 'phaser' / f'{donor}.{strand}.partial'
         run([sys.executable, PHASER_DIR / 'phaser' / 'phaser.py', '--vcf', vcf, '--bam', sbam, '--sample', donor,
              '--mapq', 255, '--baseq', 10, '--paired_end', 1, '--write_vcf', 0, '--python_string', sys.executable,
-             '--id_separator', SEP, '--pass_only', 0, '--threads', THREADS, '--temp_dir', OUT / 'tmp',
+             '--id_separator', SEP, '--pass_only', 0, '--as_q_cutoff', 0, '--threads', THREADS,
+             '--temp_dir', OUT / 'tmp',
              '--blacklist', FEAT / 'hla.NC.bed', '--haplo_count_blacklist', FEAT / 'haplo_count_blacklist.NC.bed',
              '--o', tmp_prefix], log)
     for f in OUT.joinpath('phaser').glob(f'{donor}.{strand}.partial.*'):
