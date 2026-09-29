@@ -1,0 +1,400 @@
+<title>hapmixQTL Effect-Size Shortfall</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+/* Layout: one reading column (~980px): answer and tiles, then Why / What was run / Results (five figures) / Critique / Meaning / Limits / Definitions. */
+:root {
+  --bg: #f6f6f3; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #7c7b76;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --a: #2a78d6; --b: #eb6834; --c: #1baf7a;
+  --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f0f0e; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a998f;
+  --grid: #2c2c2a; --axis: #45453f; --ring: rgba(255,255,255,0.10);
+  --a: #3987e5; --b: #d95926; --c: #199e70; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f0f0e; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a998f;
+  --grid: #2c2c2a; --axis: #45453f; --ring: rgba(255,255,255,0.10);
+  --a: #3987e5; --b: #d95926; --c: #199e70; color-scheme: dark; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.6 var(--sans); margin: 0; padding-inline: 16px; }
+main { max-width: 980px; margin: 0 auto; padding-block: 36px 64px; display: flex; flex-direction: column; gap: 40px; }
+h1, h2 { font-family: var(--serif); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(28px, 4vw, 38px); line-height: 1.15; }
+h2 { font-size: 23px; line-height: 1.25; }
+h3 { font-size: 15px; font-weight: 600; margin: 0; }
+p { margin: 0; max-width: 72ch; }
+.sub { color: var(--ink-2); }
+.eyebrow { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+header, section { display: flex; flex-direction: column; gap: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+.tile .num { font-size: 26px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.tile .lab { font-size: 13px; color: var(--ink-2); }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.caption { font-size: 13px; color: var(--ink-2); max-width: 84ch; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 8px; overflow: hidden; }
+.seg span { font-size: 12px; color: var(--muted); padding: 6px 10px; align-self: center; }
+.seg button { font: inherit; font-size: 13px; background: transparent; color: var(--ink-2); border: 0; border-left: 1px solid var(--axis); padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.seg button:focus-visible { outline: 2px solid var(--a); outline-offset: -2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; border-radius: 50%; }
+.legend i.sq { border-radius: 2px; } .legend i.line { height: 0; border-top: 2px solid; border-radius: 0; width: 16px; vertical-align: 3px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.panel { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.panel h3 { font-size: 13px; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--ink-2); font-family: var(--sans); font-size: 12px; }
+.chart .strong { fill: var(--ink); font-weight: 600; } .chart .muted { fill: var(--muted); font-size: 11px; }
+details { font-size: 13px; } details summary { cursor: pointer; color: var(--ink-2); }
+.tbl { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+th, td { border-bottom: 1px solid var(--grid); padding: 4px 10px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; } th { font-weight: 600; color: var(--ink-2); }
+ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; max-width: 74ch; }
+dl { margin: 0; display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 6px 16px; max-width: 84ch; font-size: 14px; }
+dt { font-weight: 600; } dd { margin: 0; color: var(--ink-2); }
+#tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--ring); border-radius: 8px;
+  padding: 8px 10px; font-size: 12.5px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); max-width: 280px; z-index: 5; }
+#tip b { display: block; font-size: 13.5px; }
+</style>
+
+<main>
+  <header>
+    <div class="eyebrow">BrainVar plasmode · 92 donors · 29 September 2026</div>
+    <h1>Why hapmixQTL's effect sizes fall short</h1>
+    <p class="sub" id="answer"></p>
+    <div class="tiles" id="tiles"></div>
+  </header>
+
+  <section>
+    <h2>Why this was needed</h2>
+    <p id="why"></p>
+  </section>
+
+  <section>
+    <h2>What was run</h2>
+    <p id="what1"></p>
+    <p id="what2"></p>
+    <p id="what3"></p>
+  </section>
+
+  <section>
+    <h2>Where the shortfall sits</h2>
+    <p id="res-budget"></p>
+    <div class="card">
+      <div class="controls"><div class="seg" id="seg-arm"><span>Weighting</span></div></div>
+      <div class="legend" id="lg-budget"></div>
+      <div class="grid2" id="c-budget"></div>
+      <p class="caption">Each row is one part of 1 − slope/β at the causal variant, averaged over the 150 planted gene units of an effect
+        size; the five parts add up exactly to the dot-and-whisker labelled "whole shortfall". Whiskers: 95% gene-clustered interval.</p>
+      <details><summary>Table</summary><div class="tbl" id="tb-budget"></div></details>
+    </div>
+  </section>
+
+  <section>
+    <h2>The total channel: log2(CPM + 1) compresses fold changes at low CPM</h2>
+    <p id="res-comp"></p>
+    <div class="card">
+      <div class="legend" id="lg-comp"></div>
+      <div class="grid2" id="c-comp"></div>
+      <p class="caption">One point per planted gene unit at a 1.32-fold effect: the noise-free planted shift on the pipeline's
+        log2(CPM + 1) scale divided by the same shift on the count scale. The line is CPM/(CPM + 1), the share of a small fold change
+        that log2(CPM + 1) passes at a given CPM. No estimation is involved in either axis.</p>
+    </div>
+    <p id="res-band"></p>
+    <div class="card">
+      <div class="legend" id="lg-band"></div>
+      <div class="grid2" id="c-band"></div>
+      <p class="caption">Total-channel slope over its count-scale truth, 1.74-fold effect, split weighting, by the gene's median allele-resolved
+        reads. "Pipeline truth, no covariates" is the stored truth; "pipeline truth, estimator's design" is the shipped fit applied to the
+        noise-free shifts with the estimator's covariates.</p>
+      <details><summary>Table</summary><div class="tbl" id="tb-band"></div></details>
+    </div>
+  </section>
+
+  <section>
+    <h2>The allelic channel</h2>
+    <p id="res-allelic"></p>
+    <div class="card">
+      <div class="controls"><div class="seg" id="seg-beta"><span>Effect</span></div><div class="seg" id="seg-arm2"><span>Weighting</span></div></div>
+      <div class="legend" id="lg-allelic"></div>
+      <div class="grid2" id="c-allelic"></div>
+      <p class="caption">Allelic slope over the planted β under the observed inputs and three counterfactuals; the hairline marks the
+        noise-free target of the observed configuration. Whiskers: 95% gene-clustered interval.</p>
+      <details><summary>Table</summary><div class="tbl" id="tb-allelic"></div></details>
+    </div>
+  </section>
+
+  <section>
+    <h2>A transform with a 0.5-read pseudocount</h2>
+    <p id="res-voom"></p>
+    <div class="card">
+      <div class="legend" id="lg-voom"></div>
+      <div class="grid2" id="c-voom"></div>
+      <p class="caption">Left: combined and total slopes over their count-scale truths. Right: nominal-p rate on the dataset with no
+        planted effect, as a multiple of the nominal level. Split weighting. Whiskers: 95% gene-clustered interval.</p>
+      <details><summary>Table</summary><div class="tbl" id="tb-voom"></div></details>
+    </div>
+  </section>
+
+  <section>
+    <h2>The strongest objection, and what it changed</h2>
+    <p id="critique1"></p>
+    <p id="critique2"></p>
+  </section>
+
+  <section>
+    <h2>What it means for the wider claims</h2>
+    <p id="mean1"></p>
+    <p id="mean2"></p>
+    <p id="mean3"></p>
+  </section>
+
+  <section>
+    <h2>What this cannot establish</h2>
+    <ul id="limits"></ul>
+  </section>
+
+  <section>
+    <h2>Definitions</h2>
+    <dl>
+      <dt>Planted effect β</dt><dd>The log2 allelic fold the plasmode plants at one causal variant by binomial thinning of the haplotype
+        carrying the lower-expressed allele by 2<sup>−|β|</sup>; 0.4 and 0.8 are 1.32- and 1.74-fold.</dd>
+      <dt>Causal unit</dt><dd>One (dataset, non-null gene) pair, scored at its causal variant; 150 per effect size and gene set.</dd>
+      <dt>Count-scale truth</dt><dd>β for the allelic and combined slopes; for the total slope, the least-squares slope of the exact
+        log2 total fold on ALT dosage/2, which differs from β by the curvature of (1 + 2<sup>−β</sup>)/2.</dd>
+      <dt>Pipeline-scale truth</dt><dd>The noise-free planted shift of each record on the pipeline's own scale (allelic log2 ratio with
+        a 0.5 pseudocount; log2(CPM + 1) total), regressed on genotype without noise.</dd>
+      <dt>CPM</dt><dd>Counts per million: count × 10<sup>6</sup>/effective library size (edgeR's library size × TMM factor). Adding 1 CPM
+        adds effective library/10<sup>6</sup> reads.</dd>
+      <dt>Inverse-variance combination</dt><dd>The combined slope is the channel slopes averaged with weights 1/se², which is
+        the most precise average only if both channels estimate the same quantity.</dd>
+      <dt>Gene-clustered interval</dt><dd>Genes resampled with replacement 2,000 times, each carrying all its units; the 2.5% and 97.5%
+        quantiles of the recomputed mean.</dd>
+      <dt>voom log-CPM</dt><dd>limma::voom's transform, log2((count + 0.5)/(library + 1) × 10<sup>6</sup>): a pseudocount of half a read
+        rather than one CPM.</dd>
+    </dl>
+  </section>
+</main>
+<div id="tip" hidden></div>
+
+<script>
+const DATA = /*DATA*/null;
+const NS = 'http://www.w3.org/2000/svg';
+const SETS = { deep: 'Deep set', lowcov: 'Low-coverage set' };
+const state = { arm: 'split', arm2: 'split', beta: 'beta0.8' };
+const f2 = x => x.toFixed(2), f3 = x => x.toFixed(3), pc = x => (100 * x).toFixed(0) + '%';
+const iv = d => { const x = d.all ?? d; return `${f3(x.mean)} [${f3(x.lo)}, ${f3(x.hi)}]`; };
+const col = k => `var(--${k})`;
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if ((k === 'fill' || k === 'stroke') && String(v).startsWith('var(')) e.style.setProperty(k, v); else e.setAttribute(k, v);
+  }
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function txt(p, x, y, s, a = {}) { const t = el('text', { x, y, ...a }, p); t.textContent = s; return t; }
+const tip = document.getElementById('tip');
+function hover(n, head, lines) {
+  n.setAttribute('tabindex', '0');
+  const show = ev => { tip.replaceChildren(); const b = document.createElement('b'); b.textContent = head; tip.appendChild(b);
+    lines.forEach(s => { const d = document.createElement('div'); d.textContent = s; tip.appendChild(d); }); tip.hidden = false;
+    const r = n.getBoundingClientRect(), x = ev.clientX ?? r.left + r.width / 2, y = ev.clientY ?? r.top;
+    tip.style.left = Math.min(x + 14, innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = Math.max(8, y - tip.offsetHeight - 10) + 'px'; };
+  n.addEventListener('pointermove', show); n.addEventListener('focus', show);
+  n.addEventListener('pointerleave', () => { tip.hidden = true; }); n.addEventListener('blur', () => { tip.hidden = true; });
+}
+function table(id, head, rows) {
+  const t = document.createElement('table'), h = t.insertRow();
+  head.forEach(x => { const th = document.createElement('th'); th.textContent = x; h.appendChild(th); });
+  rows.forEach(r => { const row = t.insertRow(); r.forEach(c => { row.insertCell().textContent = c; }); });
+  document.getElementById(id).replaceChildren(t);
+}
+function legend(id, items) {
+  const host = document.getElementById(id); host.replaceChildren();
+  items.forEach(([k, label, shape]) => { const s = document.createElement('span'), i = document.createElement('i');
+    if (shape === 'line') { i.className = 'line'; i.style.borderColor = col(k); } else { i.style.background = col(k); if (shape) i.className = shape; }
+    s.append(i, label); host.appendChild(s); });
+}
+function seg(id, opts, key, cb) {
+  const host = document.getElementById(id);
+  opts.forEach(([v, l]) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = l; b.dataset.val = v;
+    b.setAttribute('aria-pressed', String(state[key] === v));
+    b.addEventListener('click', () => { state[key] = v; host.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.val === v))); cb(); });
+    host.appendChild(b); });
+}
+function mark(svg, x, y, k, shape) {
+  return shape === 'sq' ? el('rect', { x: x - 5, y: y - 5, width: 10, height: 10, rx: 1.5, fill: col(k), stroke: 'var(--surface)', 'stroke-width': 2 }, svg)
+                        : el('circle', { cx: x, cy: y, r: 5, fill: col(k), stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
+}
+function panel(host, title) {
+  const p = document.createElement('div'); p.className = 'panel'; const h = document.createElement('h3'); h.textContent = title;
+  const box = document.createElement('div'); box.className = 'chart'; p.append(h, box); host.appendChild(p); return box;
+}
+// Rows of points with intervals; each row carries one mark per series, offset vertically. rows: [{label, strong, v: {key: {mean, lo, hi}}, ref}]
+function dotRows(box, rows, series, dom, ticks, fmt, ref, refLabel) {
+  const W = Math.max(290, box.clientWidth || 300), lab = W < 420 ? 128 : 170, R = 18, rh = 14 + 12 * series.length, T = 6;
+  const H = T + rows.length * rh + 26, x = v => lab + (Math.min(Math.max(v, dom[0]), dom[1]) - dom[0]) / (dom[1] - dom[0]) * (W - lab - R);
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  ticks.forEach(t => { el('line', { x1: x(t), x2: x(t), y1: T, y2: T + rows.length * rh, stroke: 'var(--grid)', 'stroke-width': 1 }, svg);
+    txt(svg, x(t), T + rows.length * rh + 16, fmt(t), { 'text-anchor': 'middle', class: 'muted' }); });
+  if (ref !== null) { el('line', { x1: x(ref), x2: x(ref), y1: T - 2, y2: T + rows.length * rh, stroke: 'var(--ink-2)', 'stroke-width': 1 }, svg);
+    if (refLabel) txt(svg, x(ref) + 4, T + 10, refLabel, { class: 'muted' }); }
+  rows.forEach((r, i) => { const y0 = T + i * rh;
+    txt(svg, lab - 10, y0 + rh / 2 + 4, r.label, { 'text-anchor': 'end', class: r.strong ? 'strong' : '' });
+    if (r.ref !== undefined) el('line', { x1: x(r.ref), x2: x(r.ref), y1: y0 + 3, y2: y0 + rh - 3, stroke: 'var(--ink)', 'stroke-width': 1.5 }, svg);
+    series.forEach(([k, name, shape], j) => { const d = r.v[k]; if (!d) return; const y = y0 + 7 + 12 * j + 6;
+      el('line', { x1: x(d.lo), x2: x(d.hi), y1: y, y2: y, stroke: col(k), 'stroke-width': 2, 'stroke-linecap': 'round' }, svg);
+      const m = mark(svg, x(d.mean), y, k, shape);
+      hover(m, `${r.label}, ${name}`, [`${fmt(d.mean)}`, `95% interval ${fmt(d.lo)} to ${fmt(d.hi)}`, ...(d.note ? [d.note] : [])]); }); });
+  box.replaceChildren(svg);
+}
+
+const B = (gs, sc, arm) => DATA[gs].budget[sc][arm];
+const RF = (gs, sc, arm) => DATA[gs].refits.recovery[sc][arm];
+const PARTS = [['total_compression', 'log2(CPM + 1) compression'], ['allelic_residual', 'allelic residual'], ['total_residual', 'total residual'],
+  ['allelic_pseudocount', 'allelic 0.5 pseudocount'], ['total_definition', 'total-truth curvature']];
+
+function prose() {
+  const d4 = B('deep', 'beta0.4', 'split'), l4 = B('lowcov', 'beta0.4', 'split'), C = DATA.lowcov.compression, Cd = DATA.deep.compression;
+  const lib = C.lib_median / 1e6, sh = x => x.shortfall.all.mean, tc = x => x.total_compression.all.mean, m = d => d.all.mean;
+  const allRatios = ['deep', 'lowcov'].flatMap(g => ['beta0.4', 'beta0.8'].flatMap(s => ['split', 'gibbs', 'unit', 'plus_one'].map(a => tc(B(g, s, a)) / sh(B(g, s, a)))));
+  const set = (id, s) => { document.getElementById(id).textContent = s; };
+  const L8 = RF('lowcov', 'beta0.8', 'split'), D8 = RF('deep', 'beta0.8', 'split'), L8u = RF('lowcov', 'beta0.8', 'unit');
+  const NL = DATA.lowcov.refits.null.split, ND = DATA.deep.refits.null.split;
+  const rates = (N, cfg, ch) => ['0.05', '0.01', '0.001'].map(al => N[cfg][ch][al].rate.toFixed(4)).join(' / ');
+  const zrel = r => m(r.z_voom_minus_observed.combined) / m(r.z_observed.combined);
+  set('answer', `Two mechanisms, different in kind. Most of the shortfall is the total channel's transform: log2(CPM + 1) adds one CPM, which at this cohort's median effective library of ${lib.toFixed(1)} million fragments is ${lib.toFixed(0)} reads, so a gene at 3 CPM passes about three quarters of its fold change into the slope. At 1.32- and 1.74-fold effects that compression is ${pc(Math.min(...allRatios))} to ${pc(Math.max(...allRatios))} of the combined slope's shortfall in every weighting and gene set (a share can pass 100% because the small curvature term of the total truth is negative), and the total estimator is unbiased for the compressed quantity. The rest is the allelic channel's weights: the Gibbs variance is computed from the same counts as the allelic ratio, so a record that shows the effect more strongly is weighted less. With voom's log-CPM (a 0.5-read pseudocount) in place of log2(CPM + 1), the combined slope at a 1.74-fold effect moves from ${f3(m(L8.observed.combined))} to ${f3(m(L8.voom.combined))} of the planted effect on the low-coverage set and from ${f3(m(D8.observed.combined))} to ${f3(m(D8.voom.combined))} on the deep set, with an unchanged null rate.`);
+  const tiles = document.getElementById('tiles');
+  [[f3(1 - sh(d4)), 'deep set: combined slope / planted, 1.32-fold'], [f3(tc(d4)), 'of the planted effect lost to log2(CPM + 1)'],
+   [f3(1 - sh(l4)), 'low-coverage set: combined slope / planted'], [f3(tc(l4)), 'of the planted effect lost to log2(CPM + 1)'],
+   ['+' + f3(m(L8.va_real_minus_observed.allelic)), 'allelic slope / planted when its weights are decoupled (low coverage, 1.74-fold)'],
+   [`${lib.toFixed(0)} reads`, '= 1 CPM at the median library']].forEach(([n, l]) => {
+    const t = document.createElement('div'); t.className = 'tile'; const x = document.createElement('div'); x.className = 'num'; x.textContent = n;
+    const y = document.createElement('div'); y.className = 'lab'; y.textContent = l; t.append(x, y); tiles.appendChild(t); });
+  const R = DATA.deep.recovery, Lr = DATA.lowcov.recovery, cb = (S, a) => S['beta0.4'][a].combined.bias_count.all.mean;
+  set('why', `The plasmode benchmark plants a known allelic fold at one variant in real expression records and asks each method to recover it. At a 1.32-fold effect hapmixQTL's combined slope averaged ${f3(cb(R, 'split'))} of the planted value on the deep set and ${f3(cb(Lr, 'split'))} on the low-coverage set (genes with 30 to 100 allele-resolved reads), while TReCASE on alignment counts recovered ${f3(cb(R, 'trecase_native'))} and ${f3(cb(Lr, 'trecase_native'))}. hapmixQTL on alignment counts fell short by the same amount as on Salmon estimates, which placed the loss in the estimator or its transforms rather than in the quantifier, but nothing said which part.`);
+  set('what1', `First, a budget from the stored results alone. At each causal unit the combined slope is the inverse-variance combination of the allelic and total slopes, and the generator stores the planted truth both on the count scale and on the pipeline's own scale (with the 0.5 allelic and 1-CPM total pseudocounts). So 1 − slope/β splits exactly into five parts, each divided only by the planted β: the allelic pseudocount, the allelic residual (slope minus its own-scale truth), the curvature of the total truth, the log2(CPM + 1) compression, and the total residual, each multiplied by its channel's share of the weight. The means reproduce the benchmark's stored recovery ratios exactly, and the parts sum to the shortfall at every unit to float32 precision.`);
+  set('what2', `Second, counterfactual refits through the shipped fitting code (map_nominal in default mode, via the benchmark's own runner), each changing one ingredient of a stored dataset: the planted shifts without noise in place of the phenotypes (the estimand of the estimator's own design, covariates and weights); the allelic Gibbs variance, the allelic admission rule, or both, computed from the record before the effect was planted; and voom's log-CPM, log2((count + 0.5)/(library + 1) × 10⁶), in place of log2(CPM + 1) for the total phenotype. Before anything was changed, the unmodified refit reproduced every stored result exactly (487,454 and 517,376 variant rows per dataset, largest difference 0), and the noise-free shifts reproduced the generator's stored truths to 10⁻¹².`);
+  set('what3', `Held fixed: the records, permutations, planted variants and thinning of every dataset, the covariates and genotype PCs, and the 15-donor allelic floor. Varied: one ingredient per arm, for split and unit weighting, at 1.32- and 1.74-fold, three datasets each, in both gene sets; the no-effect dataset was refit with and without voom for its null rate. The 1.15-fold effect was left out because its per-unit ratios are dominated by noise.`);
+  set('res-budget', `On the deep set at a 1.32-fold effect with split weighting, the combined slope falls short by ${f3(sh(d4))} of the planted effect, of which ${f3(tc(d4))} is the log2(CPM + 1) compression, ${f3(m(d4.allelic_residual))} the allelic residual and ${f3(m(d4.total_residual))} the total residual. On the low-coverage set the shortfall is ${f3(sh(l4))}, of which ${f3(tc(l4))} is compression and ${f3(m(l4.allelic_residual))} the allelic residual. The allelic pseudocount and the curvature of the total truth are each under 0.01. The allelic residual is small in the combined slope because the allelic channel carries ${f2(m(d4.allelic_share))} of the weight on the deep set and ${f2(m(l4.allelic_share))} on the low-coverage set; within its own channel it is larger (below).`);
+  const cs = g => DATA[g].compression.summary;
+  set('res-comp', `The compression is predictable from CPM alone. Across the 1.32-fold units the noise-free ratio averages ${f3(cs('deep')['0.4'].ratio)} on the deep set against ${f3(cs('deep')['0.4'].pred)} from the donor mean of CPM/(CPM + 1), and ${f3(cs('lowcov')['0.4'].ratio)} against ${f3(cs('lowcov')['0.4'].pred)} on the low-coverage set, with correlations across units of ${f3(cs('deep')['0.4'].corr)} and ${f3(cs('lowcov')['0.4'].corr)}. The ratio falls further below that first-order prediction at 1.74-fold (${f3(cs('lowcov')['0.8'].ratio)}), because the derivative understates how much larger folds are compressed. The median gene is at ${Cd.cpm_quantiles[1].toFixed(1)} CPM on the deep set and ${C.cpm_quantiles[1].toFixed(1)} CPM on the low-coverage set.`);
+  const bands = Object.keys(L8.noise_observed.total).filter(b => !['all', 'without one-df genes'].includes(b));
+  set('res-band', `Fitting the noise-free shifts with the estimator's own covariates gives the same target as the stored no-covariate truth to within 0.003 in every band, so covariate adjustment does not move the estimand. The observed total slope departs from that target by ${iv(L8.noise_observed.total.all)} of β over all low-coverage genes at 1.74-fold (${iv(D8.noise_observed.total.all)} on the deep set). Within bands the departures run ${bands.map(b => `${iv(L8.noise_observed.total[b])} (${b} reads)`).join(', ')}; every interval includes zero, but the same sign pattern appears at 1.32-fold, so a band-dependent residual of up to about 0.05 is not excluded.`);
+  set('res-allelic', `At 1.74-fold with split weighting the allelic slope is ${iv(L8.observed.allelic)} of the planted effect on the low-coverage set, against a noise-free target of ${f3(m(L8.target.allelic))} under the same weights. Taking the Gibbs variance from the record before the effect was planted raises it by ${iv(L8.va_real_minus_observed.allelic)}; taking the admission rule from that record raises it by ${iv(L8.kept_real_minus_observed.allelic)}; with both, the slope departs from its target by ${iv(L8.noise_both_real.allelic)}. On the deep set the variance counterfactual adds ${iv(D8.va_real_minus_observed.allelic)}. The weights carry it. For a fixed number of reads the variance of a log ratio is smallest at balance, so a record whose low side happens to come out lower shows the effect more strongly, gets a larger Gibbs variance and so less weight, and the weighted slope is pulled toward zero. Binomial thinning of a Poisson count is again Poisson, so a thinned record carries the counting noise a real effect of that size would carry; this is a property of the estimator on real data, not of the plasmode. With no effect the coupling is symmetric in the two haplotypes and does not bias. Unit weights avoid it (the variance counterfactual moves nothing) and lose less, mostly to admission: a record whose thinned haplotype drops below half a read is excluded by the zero-haplotype rule, ${iv(L8u.kept_real_minus_observed.allelic)} when admission comes from the record before the effect was planted.`);
+  set('res-voom', `Replacing log2(CPM + 1) by voom's log-CPM moves the total slope from ${f3(m(L8.observed.total))} to ${f3(m(L8.voom.total))} of its count-scale truth at 1.74-fold on the low-coverage set (${f3(m(D8.observed.total))} to ${f3(m(D8.voom.total))} deep), and the combined slope from ${f3(m(L8.observed.combined))} to ${f3(m(L8.voom.combined))} (${f3(m(D8.observed.combined))} to ${f3(m(D8.voom.combined))} deep). On the dataset with no planted effect the nominal-p rate at 0.05 / 0.01 / 0.001 is unchanged: combined ${rates(NL, 'observed', 'pval_nominal')} shipped against ${rates(NL, 'voom', 'pval_nominal')} with voom on the low-coverage set, ${rates(ND, 'observed', 'pval_nominal')} against ${rates(ND, 'voom', 'pval_nominal')} deep. The test statistic moves slightly the other way: the mean signed z at the causal variant changes by ${iv(L8.z_voom_minus_observed.combined)} on ${f2(m(L8.z_observed.combined))} (${(100 * zrel(L8)).toFixed(1)}%) on the low-coverage set and by ${iv(D8.z_voom_minus_observed.combined)} on ${f2(m(D8.z_observed.combined))} (${(100 * zrel(D8)).toFixed(1)}%) deep. The transform sets the scale of the reported effect and hardly moves detection.`);
+  set('critique1', `The strongest objection is that the total channel is unbiased for its own scale, so calling its slope inaccurate is a complaint about units. Addressing it sharpened the conclusion rather than changing it. The combined slope averages an allelic slope that estimates the fold β with a total slope that estimates about c·β, where c ≈ CPM/(CPM + 1) runs from 0.5 at 1 CPM to 0.99 at 100 CPM, using weights that also differ gene to gene (the allelic share averages ${f2(m(d4.allelic_share))} deep and ${f2(m(l4.allelic_share))} low-coverage). An inverse-variance combination is the most precise estimate of one quantity when both inputs estimate that quantity; here they do not, so the reported slope is neither β nor the pipeline-scale effect but a mixture that differs by gene, and effects are not comparable between genes of different expression. With no effect both channels estimate zero, which is why every null calibration so far was unaffected and why this was not seen there.`);
+  set('critique2', `A second objection is that the allelic coupling could come from how the plasmode recomputes the Gibbs variance of a thinned record (a formula scaling the real record's across-draw variance by the change in its counting term, not fresh Gibbs draws). The formula makes the variance follow the thinned counts the way Salmon's counting noise would, which the benchmark's input checks verify against the sampler; a plasmode that kept the real record's variance would hide the coupling a real effect produces. The paired intervals on the variance counterfactual (${iv(L8.va_real_minus_observed.allelic)} low-coverage, ${iv(D8.va_real_minus_observed.allelic)} deep) are far from zero, so the effect is not resampling noise.`);
+  set('mean1', `This supplies the cause the benchmark pages left open. TReCASE recovers the planted size because it fits the counts themselves with a negative-binomial and a beta-binomial likelihood: it has neither a ${lib.toFixed(0)}-read pseudocount nor weights computed from each record's observed allele fraction. The shortfall is not Salmon's, since hapmixQTL on alignment counts falls short identically.`);
+  set('mean2', `The recorded 0.78× ratio of hapmixQTL to RASQUAL effect sizes on real data (2026-09-24) was measured on the earlier pipeline, whose total phenotype was log(total/2 + 0.5), a half-read pseudocount with no CPM scaling, so the compression found here cannot explain it; the allelic coupling was present then and could contribute, which was not measured.`);
+  set('mean3', `The 2026-09-19 finding that 1/Gibbs-variance weighting cuts the allelic slope's variance 2.9-fold with no effect present is a variance result and stands. This page adds that the same weights pull the slope toward zero when an effect is present, by about ${f2(m(D8.va_real_minus_observed.allelic))} of β on deep genes and ${f2(m(L8.va_real_minus_observed.allelic))} on 30-100-read genes. The 2026-09-25 count-scale measurement (pre-correction pipeline) found that giving up that downweighting of imbalanced records makes the allelic null worse: a quasi-binomial fit, whose weights are set at the fitted rather than the observed allele fraction, rejected 0.0861 at nominal 0.05 against 0.069 for the Gibbs-weighted fit, and the swap of weights accounted for the gap. The downweighting that holds the null closer to nominal is the same one that attenuates a true effect, so in the allelic weights accuracy and calibration pull against each other. log2(CPM + 1) is a standing user decision (2026-09-25) and the weighting configuration is an open one; these measurements are evidence for both decisions, not a change to either.`);
+  const lim = [`Each gene set is 100 genes with three datasets per effect size; the 1.15-fold effect was not refit.`,
+    `The voom arm measures one alternative transform with unit weights in the total channel, as split ships; voom's own precision weights were not tried, and its null rate rests on one no-effect dataset per gene set.`,
+    `Weights taken from the record before the effect was planted are not available on real data. A real-data weighting that avoids the coupling (for example variances evaluated at fitted rather than observed allele fractions) was not built here, and the 2026-09-25 evidence says it would cost calibration.`,
+    `voom and decoupled allelic weights were not run together, so their combined recovery is not measured.`,
+    `The planted effect acts equally on both channels, as TReCASE assumes; effects that differ between channels were not planted.`,
+    `A band-level total residual of up to about 0.05 is not excluded.`];
+  const ul = document.getElementById('limits'); lim.forEach(s => { const li = document.createElement('li'); li.textContent = s; ul.appendChild(li); });
+}
+
+function budgetChart() {
+  const host = document.getElementById('c-budget'); host.replaceChildren();
+  ['deep', 'lowcov'].forEach(gs => {
+    const box = panel(host, SETS[gs]);
+    const rows = [{ label: 'whole shortfall', strong: true, v: { a: B(gs, 'beta0.4', state.arm).shortfall.all, b: B(gs, 'beta0.8', state.arm).shortfall.all } },
+      ...PARTS.map(([k, l]) => ({ label: l, v: { a: B(gs, 'beta0.4', state.arm)[k].all, b: B(gs, 'beta0.8', state.arm)[k].all } }))];
+    dotRows(box, rows, [['a', '1.32-fold', null], ['b', '1.74-fold', 'sq']], [-0.05, 0.35], [0, 0.1, 0.2, 0.3], f2, 0, null);
+  });
+  legend('lg-budget', [['a', '1.32-fold (β 0.4)'], ['b', '1.74-fold (β 0.8)', 'sq']]);
+  table('tb-budget', ['Gene set, effect, weighting', 'shortfall', ...PARTS.map(p => p[1]), 'allelic weight share'],
+    ['deep', 'lowcov'].flatMap(gs => ['beta0.2', 'beta0.4', 'beta0.8'].flatMap(sc => ['split', 'gibbs', 'unit', 'plus_one'].map(a => {
+      const x = B(gs, sc, a); return [`${SETS[gs]}, β ${sc.slice(4)}, ${a}`, iv(x.shortfall.all), ...PARTS.map(([k]) => iv(x[k].all)), f2(x.allelic_share.all.mean)]; }))));
+}
+
+function compChart() {
+  const host = document.getElementById('c-comp'); host.replaceChildren();
+  ['deep', 'lowcov'].forEach(gs => {
+    const box = panel(host, SETS[gs]), U = DATA[gs].compression.units.filter(u => u.beta === 0.4);
+    const W = Math.max(290, box.clientWidth || 300), H = 230, L = 40, R = 12, T = 8, Bm = 34;
+    const lx = [Math.log10(0.8), Math.log10(600)], x = c => L + (Math.log10(c) - lx[0]) / (lx[1] - lx[0]) * (W - L - R);
+    const y = v => T + (1.05 - v) / (1.05 - 0.4) * (H - T - Bm);
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${SETS[gs]}: compression against CPM` });
+    [0.4, 0.6, 0.8, 1.0].forEach(v => { el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: 'var(--grid)' }, svg); txt(svg, L - 6, y(v) + 4, f2(v), { 'text-anchor': 'end', class: 'muted' }); });
+    [1, 3, 10, 30, 100, 300].forEach(c => { txt(svg, x(c), H - 16, String(c), { 'text-anchor': 'middle', class: 'muted' }); });
+    txt(svg, (L + W - R) / 2, H - 2, 'gene median CPM (log scale)', { 'text-anchor': 'middle', class: 'muted' });
+    const pts = []; for (let lc = lx[0]; lc <= lx[1]; lc += 0.02) { const c = 10 ** lc; pts.push(`${x(c)},${y(c / (c + 1))}`); }
+    el('polyline', { points: pts.join(' '), fill: 'none', stroke: 'var(--ink-2)', 'stroke-width': 1.5 }, svg);
+    U.forEach(u => { const m = el('circle', { cx: x(Math.max(0.8, u.cpm)), cy: y(Math.max(0.4, u.ratio)), r: 3.5, fill: col('a'), 'fill-opacity': 0.75 }, svg);
+      hover(m, `${f2(u.ratio)} of the fold passes`, [`gene median CPM ${u.cpm.toFixed(1)}`, `donor mean of CPM/(CPM+1): ${f2(u.pred)}`]); });
+    box.replaceChildren(svg);
+  });
+  legend('lg-comp', [['a', 'planted gene unit'], ['ink-2', 'CPM/(CPM + 1)', 'line']]);
+}
+
+function bandChart() {
+  const host = document.getElementById('c-band'); host.replaceChildren();
+  ['deep', 'lowcov'].forEach(gs => {
+    const r = RF(gs, 'beta0.8', 'split'), box = panel(host, SETS[gs]);
+    const bands = Object.keys(r.observed.total).filter(b => b !== 'without one-df genes');
+    dotRows(box, bands.map(b => ({ label: b === 'all' ? 'all genes' : b.replace('>=', '≥') + ' reads', strong: b === 'all',
+      v: { b: r.unadjusted_truth.total[b], c: r.target.total[b], a: r.observed.total[b] } })),
+      [['b', 'pipeline truth, no covariates', null], ['c', "pipeline truth, estimator's design", 'sq'], ['a', 'total slope', null]],
+      [0.4, 1.3], [0.5, 0.75, 1.0, 1.25], f2, 1, null);
+  });
+  legend('lg-band', [['b', 'pipeline truth, no covariates'], ['c', "pipeline truth, estimator's design", 'sq'], ['a', 'total slope (observed)']]);
+  table('tb-band', ['Gene set, band', 'truth, no covariates', "truth, estimator's design", 'observed slope', 'noise bias (slope − design truth)/β'],
+    ['deep', 'lowcov'].flatMap(gs => { const r = RF(gs, 'beta0.8', 'split');
+      return Object.keys(r.observed.total).map(b => [`${SETS[gs]}, ${b}`, iv(r.unadjusted_truth.total[b]), iv(r.target.total[b]), iv(r.observed.total[b]), iv(r.noise_observed.total[b])]); }));
+}
+
+function allelicChart() {
+  const host = document.getElementById('c-allelic'); host.replaceChildren();
+  const CF = [['observed', 'observed'], ['va_real', 'variance from unthinned record'], ['kept_real', 'admission from unthinned record'], ['both_real', 'both from unthinned record']];
+  ['deep', 'lowcov'].forEach(gs => {
+    const r = RF(gs, state.beta, state.arm2), box = panel(host, SETS[gs]);
+    dotRows(box, CF.map(([k, l]) => ({ label: l, strong: k === 'observed', ref: (k === 'both_real' ? r.target_real : r.target).allelic.all.mean,
+      v: { a: r[k].allelic.all } })), [['a', 'allelic slope / β', null]], [0.4, 1.2], [0.5, 0.75, 1.0], f2, 1, null);
+  });
+  legend('lg-allelic', [['a', 'allelic slope / β'], ['ink', 'noise-free target', 'line']]);
+  table('tb-allelic', ['Gene set, effect, weighting', 'observed', 'target', 'variance unthinned', 'admission unthinned', 'both unthinned', 'target (both)',
+    'both − observed', 'variance − observed', 'admission − observed'],
+    ['deep', 'lowcov'].flatMap(gs => ['beta0.4', 'beta0.8'].flatMap(sc => ['split', 'unit'].map(a => { const r = RF(gs, sc, a);
+      return [`${SETS[gs]}, β ${sc.slice(4)}, ${a}`, iv(r.observed.allelic.all), iv(r.target.allelic.all), iv(r.va_real.allelic.all), iv(r.kept_real.allelic.all),
+        iv(r.both_real.allelic.all), iv(r.target_real.allelic.all), iv(r.both_real_minus_observed.allelic.all), iv(r.va_real_minus_observed.allelic.all),
+        iv(r.kept_real_minus_observed.allelic.all)]; }))));
+}
+
+function voomChart() {
+  const host = document.getElementById('c-voom'); host.replaceChildren();
+  const rows = ['deep', 'lowcov'].flatMap(gs => ['combined', 'total'].map(ch => { const r = RF(gs, 'beta0.8', 'split');
+    return { label: `${gs === 'deep' ? 'deep' : 'low-cov.'}, ${ch}`, v: { a: r.observed[ch].all, c: r.voom[ch].all } }; }));
+  dotRows(panel(host, 'Slope / count-scale truth, 1.74-fold'), rows, [['a', 'log2(CPM + 1)', null], ['c', 'voom log-CPM', 'sq']], [0.5, 1.1], [0.6, 0.8, 1.0], f2, 1, null);
+  const nrows = ['deep', 'lowcov'].flatMap(gs => [['pval_t', 'total'], ['pval_nominal', 'combined']].map(([ch, nm]) => { const N = DATA[gs].refits.null.split;
+    const al = '0.01', a0 = 0.01, sc = d => ({ mean: d.rate / a0, lo: d.lo / a0, hi: d.hi / a0 });
+    return { label: `${gs === 'deep' ? 'deep' : 'low-cov.'}, ${nm}`, v: { a: sc(N.observed[ch][al]), c: sc(N.voom[ch][al]) } }; }));
+  dotRows(panel(host, 'Null rate at nominal 0.01, × nominal'), nrows, [['a', 'log2(CPM + 1)', null], ['c', 'voom log-CPM', 'sq']], [0, 3], [0, 1, 2, 3], v => v.toFixed(1) + '×', 1, null);
+  legend('lg-voom', [['a', 'log2(CPM + 1), as shipped'], ['c', 'voom log-CPM (0.5-read pseudocount)', 'sq']]);
+  table('tb-voom', ['Gene set, weighting', 'combined slope / β: shipped', 'voom', 'total slope / truth: shipped', 'voom', 'mean signed z, combined: shipped', 'voom', 'voom − shipped',
+    'null rate total 0.05 / 0.01 / 0.001: shipped', 'voom', 'null rate combined: shipped', 'voom'],
+    ['deep', 'lowcov'].flatMap(gs => ['beta0.4', 'beta0.8'].flatMap(sc => ['split', 'unit'].map(a => { const r = RF(gs, sc, a), N = DATA[gs].refits.null[a];
+      const nr = (cfg, ch) => ['0.05', '0.01', '0.001'].map(al => N[cfg][ch][al].rate.toFixed(4)).join(' / ');
+      return [`${SETS[gs]}, β ${sc.slice(4)}, ${a}`, iv(r.observed.combined.all), iv(r.voom.combined.all), iv(r.observed.total.all), iv(r.voom.total.all),
+        iv(r.z_observed.combined.all), iv(r.z_voom.combined.all), iv(r.z_voom_minus_observed.combined.all),
+        nr('observed', 'pval_t'), nr('voom', 'pval_t'), nr('observed', 'pval_nominal'), nr('voom', 'pval_nominal')]; }))));
+}
+
+prose();
+seg('seg-arm', [['split', 'split'], ['gibbs', 'gibbs'], ['unit', 'unit'], ['plus_one', '1/(v+1)']], 'arm', budgetChart);
+seg('seg-beta', [['beta0.4', '1.32-fold'], ['beta0.8', '1.74-fold']], 'beta', allelicChart);
+seg('seg-arm2', [['split', 'split'], ['unit', 'unit']], 'arm2', allelicChart);
+const drawAll = () => { budgetChart(); compChart(); bandChart(); allelicChart(); voomChart(); };
+drawAll();
+let rt; new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(drawAll, 150); }).observe(document.querySelector('main'));
+</script>
