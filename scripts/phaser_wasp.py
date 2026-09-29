@@ -70,7 +70,7 @@ STAR_ARGS = ['--runRNGseed', '42', '--readFilesCommand', 'zcat', '--outMultimapp
              '--outSAMunmapped', 'Within', '--outFilterMultimapNmax', '40', '--alignIntronMax', '1000000',
              '--alignMatesGapMax', '1000000', '--alignSJoverhangMin', '8', '--alignSJDBoverhangMin', '1',
              '--sjdbOverhang', '149']
-JOBS, THREADS = 8, 4                                    # 32 CPUs; each STAR holds ~35 GB with on-the-fly junctions (8 x 35 GB of ~600 GB free)
+JOBS, THREADS = 16, 4                                   # 64 CPUs (user, 2026-09-28); each STAR holds ~35 GB with on-the-fly junctions, a few at a time
 
 
 def run(cmd, log, **kw):
