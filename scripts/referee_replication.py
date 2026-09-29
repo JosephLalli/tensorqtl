@@ -101,8 +101,6 @@ POOL = 14              # mixQTL worker processes: with this process 15 of the 16
 MAIN_THREADS = 2       # BLAS and torch CPU threads in this process
 TRECASE_PROCESS_H_PER_GENE = 0.15   # plasmode README: ~15 process-h per 100-gene dataset (median 4,695 tested variants per gene)
 MAF_BANDS = (0.05, 0.1, 0.2, 0.3, 0.5)
-PHASER_OUT = C.D / 'phaser_out'   # run_phaser_cohort.py: <DNA library id>.allelic_counts.txt, --id_separator '-'
-REF_SHARE_MIN_READS = 20          # task (2026-09-28): the reference-allele share at sites with at least 20 reads
 PER_GENE = ('A', 'T', 'Va', 'Vt', 'pL', 'pR', 'pT')
 ARMS = C.HAPMIX_ARMS + (C.TENSORQTL,) + tuple(C.MIXQTL_ARMS)
 FACTS = {}
@@ -156,38 +154,6 @@ def cohort(dm):
     h = man.set_index('matchingDNALibrary').loc[held].reset_index()[['matchingDNALibrary', 'SubjectID', 'LibraryID']]
     write_tsv(OUT / 'cohort' / 'heldout_donors.tsv', h.rename(columns={'matchingDNALibrary': 'dna_library'}))
     return man, disc, held
-
-
-def reference_share(donors):
-    """Reference-mapping bias in the native allele counts (TReCASE's allelic input): per donor, the median over phASER
-    heterozygous sites with at least REF_SHARE_MIN_READS reads of refCount / totalCount, at the sites whose refAllele is
-    the VCF REF. phASER's variantID is CHROM-POS-REF-ALT[-ALT...] from the VCF record (phaser.py, the unique id) and its
-    refAllele is the donor's first carried allele in that order, so the two differ only at a heterozygote of two ALT
-    alleles, where refCount does not count the reference allele; those sites are dropped (counted)."""
-    have = sorted(p.name[:-len('.allelic_counts.txt')] for p in PHASER_OUT.glob('*.allelic_counts.txt'))
-    if have != sorted(donors):
-        raise SystemExit(f'{PHASER_OUT}: allelic_counts files for {len(have)} donors, not the {len(donors)} discovery donors')
-    med, sites, alt_alt = {}, [], 0
-    for d in donors:
-        ac = pd.read_csv(PHASER_OUT / f'{d}.allelic_counts.txt', sep='\t', dtype={'contig': str, 'variantID': str, 'refAllele': str},
-                         usecols=['contig', 'position', 'variantID', 'refAllele', 'refCount', 'totalCount'])
-        ac = ac[ac.totalCount >= REF_SHARE_MIN_READS]
-        f = ac.variantID.str.split('-')
-        if not ((f.str[0] == ac.contig) & (f.str[1] == ac.position.astype(str))).all():
-            raise SystemExit(f'{d}.allelic_counts.txt: a variantID does not start with its contig and position')
-        is_ref = (f.str[2] == ac.refAllele).values
-        alt_alt += int((~is_ref).sum())
-        sites.append(int(is_ref.sum()))
-        med[d] = float((ac.refCount[is_ref] / ac.totalCount[is_ref]).median())
-    v = np.array(list(med.values()))
-    FACTS['native_reference_share'] = dict(
-        statistic='per donor, median over heterozygous sites of refCount / totalCount', min_reads=REF_SHARE_MIN_READS,
-        donors=len(donors), median_min=float(v.min()), median_max=float(v.max()),
-        sites_per_donor=[min(sites), int(np.median(sites)), max(sites)], alt_alt_sites_dropped=alt_alt)
-    print(f'native reference share: {len(donors)} donors, per-donor median of refCount / totalCount at phASER heterozygous '
-          f'sites with >= {REF_SHARE_MIN_READS} reads and refAllele = VCF REF: {v.min():.4f} to {v.max():.4f}; sites per donor '
-          f'min / median / max {FACTS["native_reference_share"]["sites_per_donor"]}; {alt_alt} ALT/ALT heterozygous site '
-          f'rows dropped over all donors', flush=True)
 
 
 def referee_genes(dm):
@@ -622,7 +588,6 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     dm = json.loads(DATASET_MANIFEST.read_text())
     man, disc, held = cohort(dm)
-    reference_share(disc)
     GENE_TABLE = referee_genes(dm)
     write_regions(GENE_TABLE, OUT / 'genes' / 'regions.bed')
     I, R = load(list(GENE_TABLE.gene))

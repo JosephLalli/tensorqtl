@@ -358,7 +358,7 @@ def referee_source(genes):
     si = [samples.index(s) for s in shared]
     sal = np.load(Path(RR.CM.PE) / 'pT.npy', mmap_mode='r')[[gi[g] for g in genes]][:, si]
     sal_eff = H.read_edger_dir(Path(RR.CM.PE) / 'edger', shared)[0]
-    nat = pd.read_parquet(C.D / 'native_counts_20260928' / 'totals.parquet').loc[genes, shared].to_numpy(float)
+    nat = pd.read_parquet(C.D / 'native_counts_stranded_20260928' / 'totals.parquet').loc[genes, shared].to_numpy(float)
     nat_eff = H.read_edger_dir(OUT / 'trecase_work' / 'native_edger', shared)[0]
     rank = lambda M: np.argsort(np.argsort(M, 1), 1).astype(float)   # noqa: E731  ties broken by position
     def rho(M):
@@ -1085,7 +1085,7 @@ def MEANING_TEXT(S, where):
 
 def LIMITS(S):
     F = S['facts']
-    rs = F['native_reference_share']
+    rs = json.loads((C.D / 'native_counts_stranded_20260928' / 'facts.json').read_text())['reference_share']   # native_counts.reference_share
     return (
         '<h2>What this cannot establish</h2><ul>'
         '<li>Purely allelic effects. The referee measures total expression only, so an effect that changes the allelic ratio '
@@ -1104,15 +1104,16 @@ def LIMITS(S):
         'ranking of the rest is unmeasured. A top K of the subset reaches deeper into weak signals than the same K of all '
         'genes, so the subset comparison is not on the scale of the all-gene one.</li>'
         '<li>Reference-mapping bias in TReCASE\'s allele counts. The native counts come from phASER run on STAR alignments '
-        'to the standard reference with no correction for reference-mapping bias (no WASP filtering, no '
-        '--haplo_count_blacklist), summed to genes over strand-blind gene-span features on a reverse-stranded library. Per '
+        'to the standard reference, per transcript strand at SNVs in exon stretches that one gene owns on its strand, with '
+        'HLA genes and CHM13 short-read-inaccessible regions excluded but no WASP filtering, the one correction for '
+        'reference-mapping bias not applied (scripts/phaser_stranded.py). Per '
         f'donor, the median over phASER heterozygous sites with at least {rs["min_reads"]} reads of the reference-allele share '
         f'(refCount / totalCount, 0.5 if reads from the two alleles mapped alike) runs from {rs["median_min"]:.3f} to '
         f'{rs["median_max"]:.3f} over the {rs["donors"]} discovery donors ({rs["sites_per_donor"][1]:,} such sites in the '
         'median donor). Only sites where the donor carries the VCF REF allele enter: phASER\'s variantID is '
         'contig-position-REF-ALT from the VCF record and its refAllele is the donor\'s first carried allele, so a row is kept '
         f'where refAllele equals the REF field of the variantID, which drops {rs["alt_alt_sites_dropped"]} rows with at least '
-        f'{rs["min_reads"]} reads, over all donors, at heterozygotes of two ALT alleles (referee_replication.reference_share). '
+        f'{rs["min_reads"]} reads, over all donors, at heterozygotes of two ALT alleles (native_counts.reference_share). '
         'In real data, unlike the plasmode '
         'benchmark, whose records are shuffled against the genotypes, reference bias is not randomized, so native '
         'TReCASE\'s allelic channel can carry it. The hapmixQTL arms use Salmon on a personalized diploid transcriptome '

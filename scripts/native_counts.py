@@ -16,19 +16,21 @@ own counts (unmapped = input - unique - multimapped; assigned + no-feature + amb
 RECONCILE_TOL), and assigned fragments are within ASSIGNED_RATIO of the pipeline's own featureCounts on the same
 libraries (nf_results, gene-biotype counting).
 
-HAPLOTYPES. phASER gene_ae (aCount, bCount) per donor, rows in annot/genes.NC.bed order (checked). A gene with
-gw_phased = 1 sums the genome-wide phased haplotype blocks, A = the VCF's first allele; gw_phased = 0 is phASER's
-single best-covered block whose A/B labels are not anchored to the VCF (phaser_gene_ae.py), and is written as
-a = b = 0 (no VCF-oriented allelic information; its fragments stay in the total). The orientation is verified on
-a sample of genes by summing phASER's per-SNP counts by the analysis VCF's phase.
+HAPLOTYPES. scripts/phaser_stranded.py gene counts (aCount, bCount) per donor, rows in annot/genes.NC.bed order
+(checked): phASER per transcript strand on strand-split BAMs, each gene counted from the heterozygous SNVs its own
+exons hold on its own strand (GTEx-style collapsed model, scripts/phaser_features.py; HLA and CHM13-inaccessible
+regions blacklisted; no WASP). A gene with gw_phased = 1 sums the genome-wide phased haplotype blocks, A = the VCF's
+first allele; gw_phased = 0 is phASER's single best-covered block whose A/B labels are not anchored to the VCF
+(phaser_gene_ae's rule), and is written as a = b = 0 (no VCF-oriented allelic information; its fragments stay in
+the total). The orientation is verified on a sample of genes by summing phASER's per-SNP counts, from the gene's
+own strand, by the analysis VCF's phase.
 
-REMAINDER. U = total - a - b must be non-negative for thinning. The two counts are not nested: phaser_gene_ae
-credits a fragment at a heterozygous SNP to every gene whose SPAN (introns included, either strand) contains the
-SNP, while featureCounts gives a fragment to one gene only if it overlaps that gene's exons alone on the library
-strand. phASER's filters (MAPQ 255 = STAR unique, base quality 10, proper pairs, duplicates dropped) all make a + b
-smaller, so they cannot make U negative. Rule: where a + b > total, a = b = 0 and the total is kept; how often,
-and in which kind of gene (span overlapping another gene, listed variant outside the merged exons), is recorded.
-The remedy, if the lost share matters, is phaser_gene_ae over exon features, not built here.
+REMAINDER. U = total - a - b must be non-negative for thinning. The two counts are close to nested: both take a
+gene's fragments on its own strand, phASER at SNVs in exon stretches no other same-strand gene shares,
+featureCounts over the gene's exons unless the fragment also overlaps another gene's. phASER's filters (MAPQ 255 =
+STAR unique, base quality 10, proper pairs, duplicates dropped) all make a + b smaller. Rule: where a + b > total,
+a = b = 0 and the total is kept; how often, and in which kind of gene (span overlapping another gene, listed
+variant outside the merged exons), is recorded.
 
 Output (OUT): totals.parquet, hap_a.parquet, hap_b.parquet (pool genes x the 92 donors in the Gibbs cache's
 samples.txt order, int64), orientation.json, facts.json; featurecounts/<donor>.txt[.summary]; exons.saf.
@@ -44,7 +46,7 @@ import numpy as np
 import pandas as pd
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
-OUT = D / 'native_counts_20260928'
+OUT = D / 'native_counts_stranded_20260928'           # native_counts_20260928: the same, on the unstranded span-based phASER run
 BAMS = D / 'cohort' / 'bams.tsv'                        # DNA library id -> BAM (metadata v1.4 pairing)
 PAIRING = D / 'cohort' / 'pairing.tsv'                  # dna_library, rna_library, bam stem (HSBxxx)
 CACHE = D / 'cache' / 'gibbs_56b63c3b37ed5df8'          # samples.txt (donor order), genes.txt
@@ -65,11 +67,13 @@ N_JOBS, THREADS = 8, 4                                  # 32 processes (task cap
 RECONCILE_TOL = 0.005        # featureCounts summary vs STAR's own counts, relative (100_D1: unmapped exact, unique +0.054%)
 ASSIGNED_RATIO = (0.9, 1.1)  # assigned / the pipeline's own featureCounts assigned, same library: annotation and gene-vs-biotype
                              # ambiguity move it by a few percent; a wrong strand (-s 1) would assign ~pe_sense/pe_antisense ~2%
-PHASER = D / 'phaser_out'                               # <donor>.gene_ae.txt, .allelic_counts.txt (phASER 1.2.0, --mapq 255 --baseq 10 --paired_end 1)
+PHASER = D / 'phaser_stranded_20260928'                 # gene_ae/<donor>.gene_ae.txt, phaser/<donor>.<plus|minus>.allelic_counts.txt
 ANALYSIS_VCF = D / 'prepped' / 'analysis.snps.maf01.vcf.gz'   # the phase xL/xR the benchmark uses (compare_mixqtl_replication.load_inputs)
-PHASER_VCF = D / 'vcf' / 'cohort92.NC.vcf.gz'           # the VCF phASER ran against
+PHASER_VCF = D / 'vcf' / 'cohort92.phaser_input.NC.vcf.gz'   # the VCF phASER ran against (scripts/phaser_input_vcf.py)
+PHASER_STRAND = D / 'phaser_inputs_20260928' / 'nesting.tsv'  # gene strand, as phaser_stranded.py assigns genes to runs
 SEED, ORIENT_KEY, N_ORIENT = 42, 1, 500                 # orientation sample: the benchmark genes plus N_ORIENT random pool genes
 CLEAR = (20, 0.2)                                       # 'clear imbalance' for the sign check: a + b >= 20 and |a - b| >= 0.2 (a + b)
+REF_SHARE_MIN_READS = 20                                # reference-allele share at sites with at least 20 reads (task 2026-09-28)
 TMP = OUT / 'tmp'                                       # featureCounts --tmpDir, on the SSD
 
 
@@ -282,7 +286,7 @@ def read_phaser(order, pool, c2n):
     rows = bed.name.isin(set(pool)).values
     A, B, W, V = {}, {}, {}, {}
     for d in order:
-        t = pd.read_csv(PHASER / f'{d}.gene_ae.txt', sep='\t', dtype={'contig': str, 'variants': str},
+        t = pd.read_csv(PHASER / 'gene_ae' / f'{d}.gene_ae.txt', sep='\t', dtype={'contig': str, 'variants': str},
                         usecols=['contig', 'start', 'stop', 'name', 'aCount', 'bCount', 'gw_phased', 'variants'])
         if len(t) != len(bed) or not (t[['contig', 'start', 'stop', 'name']].values == bed.values).all():
             raise SystemExit(f'{d}.gene_ae.txt rows differ from {GENES_NC_BED}')
@@ -323,9 +327,11 @@ def check_orientation(order, pool, bench, A, B, W, V, c2n):
     rec = [(g, d, int(W.at[g, d]), int(A.at[g, d]), int(B.at[g, d]), v) for g in sample for d in order
            if A.at[g, d] + B.at[g, d] > 0 for v in V.at[g, d].split(',')]
     E = pd.DataFrame(rec, columns=['gene', 'donor', 'gw', 'a', 'b', 'var'])
+    E['run'] = E.gene.map(pd.read_csv(PHASER_STRAND, sep='\t', index_col='gene').strand.map({'+': 'plus', '-': 'minus'}))
     ac = []
-    for d, e in E.groupby('donor'):
-        c = pd.read_csv(PHASER / f'{d}.allelic_counts.txt', sep='\t', usecols=['variantID', 'refCount', 'altCount'], index_col=0)
+    for (d, s), e in E.groupby(['donor', 'run']):
+        c = pd.read_csv(PHASER / 'phaser' / f'{d}.{s}.allelic_counts.txt', sep='\t', usecols=['variantID', 'refCount', 'altCount'],
+                        index_col=0)
         ac.append(c.reindex(e['var'].values).set_axis(e.index))
     E = E.join(pd.concat(ac))
     E['gt92'] = [g92.at[v, d] if v in g92.index else None for v, d in zip(E['var'], E.donor)]
@@ -381,6 +387,34 @@ def check_orientation(order, pool, bench, A, B, W, V, c2n):
               f'{g0["single_variant_exact"]} of {g0["single_variant_pairs"]} exact, several {g0["multi_variant_same_sign"]} of '
               f'{g0["multi_variant_pairs_imbalanced"]} same sign')
     return o
+
+
+def reference_share(order):
+    """Reference-mapping bias in the allele counts: per donor, the median over phASER heterozygous sites (both strand
+    runs) with at least REF_SHARE_MIN_READS reads of refCount / totalCount, at the sites whose refAllele is the VCF REF
+    (phASER's variantID is CHROM-POS-REF-ALT and its refAllele the donor's first carried allele; any row where they
+    differ is dropped and counted)."""
+    med, sites, alt_alt = {}, [], 0
+    for d in order:
+        ac = pd.concat([pd.read_csv(PHASER / 'phaser' / f'{d}.{s}.allelic_counts.txt', sep='\t',
+                                    dtype={'contig': str, 'variantID': str, 'refAllele': str},
+                                    usecols=['contig', 'position', 'variantID', 'refAllele', 'refCount', 'totalCount'])
+                        for s in ('plus', 'minus')])
+        ac = ac[ac.totalCount >= REF_SHARE_MIN_READS]
+        f = ac.variantID.str.split('-')
+        if not ((f.str[0] == ac.contig) & (f.str[1] == ac.position.astype(str))).all():
+            raise SystemExit(f'{d}: a variantID does not start with its contig and position')
+        is_ref = (f.str[2] == ac.refAllele).values
+        alt_alt += int((~is_ref).sum())
+        sites.append(int(is_ref.sum()))
+        med[d] = float((ac.refCount[is_ref] / ac.totalCount[is_ref]).median())
+    v = np.array(list(med.values()))
+    r = dict(statistic='per donor, median over heterozygous sites of refCount / totalCount', min_reads=REF_SHARE_MIN_READS,
+             donors=len(order), median_min=float(v.min()), median_max=float(v.max()),
+             sites_per_donor=[min(sites), int(np.median(sites)), max(sites)], alt_alt_sites_dropped=alt_alt)
+    print(f'reference share: per-donor median of refCount / totalCount at sites with >= {REF_SHARE_MIN_READS} reads: '
+          f'{v.min():.4f} to {v.max():.4f}; sites per donor {r["sites_per_donor"]}; {alt_alt} rows with refAllele != REF dropped')
+    return r
 
 
 def overlap_classes(pool):
@@ -497,7 +531,8 @@ def main():
                   rule_negative_remainder='a = b = 0 where a + b > total; the total is kept')
     F.update(annotation_counted=str(GTF),
              annotation_star_sjdb='GCF_009914755.1_T2T-CHM13v2.0_genomic-RS_2023_03_with_chrM.gtf (BAM @PG; file not found on disk)',
-             featurecounts_options=f'-F SAF -p --countReadPairs -s {STRAND} --primary', remainder=rem, orientation=orient)
+             featurecounts_options=f'-F SAF -p --countReadPairs -s {STRAND} --primary', remainder=rem, orientation=orient,
+             reference_share=reference_share(order))
     for name, X in (('totals', T), ('hap_a', a), ('hap_b', b)):
         write_atomic(OUT / f'{name}.parquet', lambda fh: X.astype(np.int64).to_parquet(fh), 'wb')
     write_atomic(OUT / 'orientation.json', lambda fh: fh.write(json.dumps(orient, indent=1)))

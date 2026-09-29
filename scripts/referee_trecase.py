@@ -66,7 +66,7 @@ DISC = OUT / 'discovery'
 WORK = OUT / 'trecase_work'
 ORDER = OUT / 'genes' / 'referee_order.tsv'   # referee_replication.py
 VARIANT_MAP = OUT / 'variant_map.tsv.gz'      # referee_replication.py: store_id set = tested
-NATIVE = C.D / 'native_counts_20260928'       # native_counts.py: totals / hap_a / hap_b parquet, featurecounts/<donor>.txt
+NATIVE = C.D / 'native_counts_stranded_20260928'   # native_counts.py: totals / hap_a / hap_b parquet, featurecounts/<donor>.txt
 RESTRICT = RR.CACHE / 'point_estimates' / 'restrict_calibration.txt'   # the gene list the Salmon eff_lib was normalized on
 INPUTS = ('salmon', 'native')   # the timing block's
 RUN_INPUTS = ('native',)          # the subset's full run (user decision 2026-09-28, module docstring)
