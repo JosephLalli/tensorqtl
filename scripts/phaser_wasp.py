@@ -70,7 +70,7 @@ STAR_ARGS = ['--runRNGseed', '42', '--readFilesCommand', 'zcat', '--outMultimapp
              '--outSAMunmapped', 'Within', '--outFilterMultimapNmax', '40', '--alignIntronMax', '1000000',
              '--alignMatesGapMax', '1000000', '--alignSJoverhangMin', '8', '--alignSJDBoverhangMin', '1',
              '--sjdbOverhang', '149']
-JOBS, THREADS = 16, 4                                   # 64 CPUs (user, 2026-09-28); each STAR holds ~35 GB with on-the-fly junctions, a few at a time
+JOBS, THREADS = 8, 8                                    # 64 CPUs (user, 2026-09-28): 8 donors, so at most 8 STAR index loads (~35 GB each) compete
 
 
 def run(cmd, log, **kw):
