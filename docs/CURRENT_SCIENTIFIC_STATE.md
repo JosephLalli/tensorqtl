@@ -583,7 +583,8 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
     in its `score/score.json`). The referee measures total expression only.
   - One-page summaries: `benchmark_summary_20260929/summary.html` and
     `benchmark_summary_20260929/hapmix_vs_trecase.html`.
-- **Run state.** Nothing of this project was running on 2026-09-29 (the WASP
+- **Run state.** Nothing of this project was running when this section was
+  written, on 2026-09-29 before the effect-size work below began (the WASP
   rerun chain, `wasp_rerun_chain_20260928.log`, ends "done" at 03:02).
 - **Open.**
   - Which weighting ships (`docs/pipeline_rules.md`); the referee is now its
