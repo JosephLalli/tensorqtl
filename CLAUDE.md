@@ -24,14 +24,26 @@ the paper) are the primary setting; `weight_cap` is 10. Driver
 `scripts/compare_mixqtl_replication.py`, analysis
 `scripts/analyze_mixqtl_comparison.py` (the 2026-09-19 record only).
 
-### (b) default mode — `Var(eps_i) = sigma^2 * v_i`
+### (b) default mode — ASE Gibbs weighting plus a half-read, unit-weighted total
 
-TIMES, not plus. `v_i` is the **Gibbs across-draw variance**, used as a SHAPE
-only; `sigma^2` is the residual scale fitted per variant. There is no additive
-floor. Reached by `tau_mode='zero'` + `se_mode='fitted'`, which are the
-defaults everywhere and are not worth overriding. Driver
+The ASE channel uses `Var(eps_i) = sigma^2 * v_i`: `v_i` is the **Gibbs
+across-draw variance**, used as a SHAPE only, and `sigma^2` is the residual
+scale fitted per variant. The total channel is
+`log2((point_count + .5)/(effective_library_size + 1)*1e6)` with unit working
+variance. There is no additive floor. Reached by `tau_mode='zero'` +
+`se_mode='fitted'`, which are the defaults everywhere and are not worth
+overriding. Driver
 `scripts/run_hapmixqtl_from_salmon.py`, which offers no other hapmixQTL
 configuration.
+
+**Default-input contract (2026-09-29).** `prepare_default_inputs` retains the original point-estimate ASE
+contrast, Gibbs ASE variance, no-coverage handling, `Va > 1e-12` support, and
+exclusive-one-sided (`pL < .5` XOR `pR < .5`) ASE admission. It uses the
+half-read total above and `Vt = 1`, without total draw variance or `Cat`.
+Fitted residual scales, Meier combination, GPU matrix multiplication, the
+same gene-set/effective-library-size provenance checks, and the published
+mixQTL comparator are unchanged. This is an accepted beta/precision tradeoff,
+not a claim of uniform precision improvement.
 
 Say **"Gibbs variance"** and **"Gibbs draws"**. Never "bootstrap" — that word
 belongs to sleuth and to Salmon's `--numBootstraps`, which this cohort does not
@@ -151,22 +163,24 @@ status as current practice is.
 | Whose top genes replicate in held-out BrainVar donors (real data, every arm)? | `brainvar_hapmix_deploy/referee_replication_20260928/report.html` (scripts `referee_replication.py`, `referee_trecase.py`, `referee_score.py`) |
 | The whole benchmark on one page, and hapmixQTL against TReCASE? | `brainvar_hapmix_deploy/benchmark_summary_20260929/summary.html` and `hapmix_vs_trecase.html` beside it (scripts `benchmark_summary.py`, `hapmix_vs_trecase.py`, each with its `_template.html`) |
 | Why do hapmixQTL's plasmode effect sizes fall short of the planted effect? | `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html` (scripts `beta_shortfall_budget.py`, `beta_shortfall_refits.py`, `beta_shortfall_report.py`) |
+| What did the rejected variance-balance and completed half-read trials show, including the unit-weight comparison? | `brainvar_hapmix_deploy/beta_balance_trial_20260929/CONCLUSION.md` and its `REPORT.md`/`summary.json`: rejected; archived source copies matched SHA256 and the four live files were deleted. `brainvar_hapmix_deploy/half_read_trial_20260929/CONCLUSION.md` (with `REPORT.md`, `repeated_summary.json`, and manifests): improved beta recovery but was rejected then as a blanket default under the earlier strict accuracy-plus-uniform-precision criterion. `half_read_se_comparison_20260929/` and `half_read_pvalue_comparison_20260929/` contain the completed four-method descriptive comparisons. Completed [`half_read_unit_power_pr_20260929/index.html`](../../../../brainvar_hapmix_deploy/half_read_unit_power_pr_20260929/index.html) is the local figure gallery, methods record, and actual-FDP table for no-Gibbs-weighting unit weights on retained `Va > EPS` support: five-method SE/mean-nominal-p charts, oracle-FDP and fixed-BH power, and gene-level PR. It retains original point-estimate phenotypes, admission, and mapper; both half-read exports have 1,000 rows/stratum and exactly match the prior 550 cached slope/SE/p rows. The 959 common finite SE/p units are unchanged. Results have wide gene-bootstrap intervals and establish no universal winner. On 2026-09-29 the user explicitly adopted half-read split as the default. Implementation and validation are recorded in `brainvar_hapmix_deploy/half_read_default_adoption_20260929/`. |
 | Why do TReCASE and RASQUAL rank below total-only tensorQTL in the benchmark? | `brainvar_hapmix_deploy/input_diagnosis_20260928/trecase_integer/report.html` and `rasqual_total_only/report.html` beside it (scripts `trecase_input_diagnosis.py`, `rasqual_input_diagnosis.py`) |
 | How does default mode do on data drawn from TReCASE's own model, on the fixed harness? | `brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html` (scripts `external_benchmark_mirror*`); the section "Default mode holds on non-circular ground truth" below is the 2026-09-23 record on the earlier harness |
 | What was the superseded Salmon-emulator design? | `docs/simulation_benchmark_spec.md` (marked superseded; its real-data calibration appendices still hold) |
 | How are the alignment-based (native) counts TReCASE reads built, and what did each fix change? | `brainvar_hapmix_deploy/phaser_stranded_20260928/README.md` (VCF, strand split, exonic model, blacklists) and `brainvar_hapmix_deploy/wasp_20260928/README.md` (WASP; three-stage comparison). Current counts `native_counts_wasp_20260928` (`scripts/native_counts.py`) |
 | What is the RASQUAL comparison, and what can it settle? | `brainvar_hapmix_deploy/rasqual_comparison_design_20260923/rasqual_comparison.html`; RASQUAL on native per-SNP allele counts against the benchmark's pseudo feature SNP, with a permutation control: `brainvar_hapmix_deploy/rasqual_read_level_20260927/report.html` |
 
-## Pipeline rules, 2026-09-25 (user decisions, standing)
+## Pipeline rules, 2026-09-25, updated 2026-09-29 (user decisions, standing)
 
-Both modes: every value from Salmon point estimates, Gibbs draws only for
-measurement variance; unit log2(CPM + 1) on edgeR's effective library size
-(allelic ratio log2((L+0.5)/(R+0.5)); mixQTL keeps its natural-log response);
+Both modes: every value from Salmon point estimates. Default mode uses Gibbs
+draws only for ASE measurement variance, half-read total expression with unit
+total weights, and retained log2(CPM + 1) expression PCs on edgeR's effective
+library sizes (allelic ratio log2((L+0.5)/(R+0.5)); mixQTL keeps its natural-log response);
 expression-PC gene filter = eQTL gene filter; genotype PCs stay with the
 genotypes under permutation, every other covariate moves with the RNA record;
 mixQTL never touches the draws. Full statement, code map, built inputs, what
 is not yet switched (`compare_pipelines.py`), and which results predate the
-rules: `docs/pipeline_rules.md`. Four open decisions live there, one section
+rules: `docs/pipeline_rules.md`. Dated decision records live there, one section
 each: 1,208 filtered genes without Gibbs draws; Salmon point estimates that
 put one haplotype at exactly zero (rate depends on the gene set — see the
 page, do not quote a single percentage); which weighting configuration ships
@@ -175,7 +189,7 @@ the corrected pipeline's total channel; unit/1/v split weighting and
 `1/(v+1)` both calibrate, at different costs; since 2026-09-27 the two
 benchmark pages in the table above add known-effect evidence, and since
 2026-09-28 the held-out replication referee adds real-data evidence; the
-decision is still open); and why tying genotype PCs to
+decision was settled on 2026-09-29 by adopting half-read split); and why tying genotype PCs to
 the genotypes under permutation interacts with the weights. Every
 calibration number in this file dated on or before 2026-09-25 was measured on
 the pre-correction pipeline.
@@ -207,7 +221,9 @@ experiment.
   convention since 2026-09-15. beta=1 means a twofold effect. Runtime
   conversion is DONE for the default-mode runner since 2026-09-25:
   `run_hapmixqtl_from_salmon.py` builds `log2((L+0.5)/(R+0.5))` and
-  `log2(CPM+1)` through `summaries_from_point_estimates`. Still natural log: `compare_pipelines.py` and every dated script
+  half-read total `log2((pT+.5)/(Leff+1)*1e6)` through
+  `prepare_default_inputs` since 2026-09-29. The historical
+  `summaries_from_point_estimates` retains `log2(CPM+1)`. Still natural log: `compare_pipelines.py` and every dated script
   on `compute_summaries_from_gibbs`, so every result recorded before
   2026-09-25, and mixQTL mode's published response by design. See the
   [unit convention record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).

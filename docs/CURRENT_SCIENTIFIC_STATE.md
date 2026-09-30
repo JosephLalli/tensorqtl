@@ -8,9 +8,9 @@ open.
 
 > **SUPERSEDED IN PART, 2026-09-23.** hapmixQTL now ships exactly **two modes**:
 > **mixQTL mode** (the published estimator on posterior-mean counts, no draws,
-> `tensorqtl/mixqtl_replication.py`) and **default mode**
-> (`Var(eps_i) = sigma^2 v_i` — the Gibbs across-draw variance as a shape with
-> the residual scale fitted, no additive floor; `tau_mode='zero'` +
+> `tensorqtl/mixqtl_replication.py`) and **default mode** (Gibbs-shape ASE
+> variance with fitted residual scale, plus half-read total phenotype and unit
+> total working variance; no additive floor; `tau_mode='zero'` +
 > `se_mode='fitted'`).
 >
 > Wherever this document discusses choosing among `additive`, `two_component`
@@ -614,6 +614,170 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
     `beta_shortfall_report.py`). Proposed, not run: a real-data allelic
     weighting that avoids the coupling; voom with decoupled allelic weights
     together.
+- **Next-phase gate (2026-09-29).** The completed plasmode evidence and its
+  report above are the current local record; the Meier correction introduced
+  by `a1b2ef4` remains implemented at current worktree HEAD `afae3ea`, and no
+  `postfit_<set>.json` completed receipts exist. Fixed donor-gene full balance
+  is rejected for adoption (below). Its source is archived at
+  `brainvar_hapmix_deploy/beta_balance_trial_20260929/`. Its four live trial
+  source files were deleted after those archive copies matched SHA256;
+  three remaining bytecode caches were also removed.
+
+  **Completed experimental half-read trial (2026-09-29):** total-only
+  `T_half = log2((pT + 0.5) / (Leff + 1) * 1e6)` changed only `T`; `A`, original
+  `Va`, admission, and the GPU mapper were unchanged. It improves combined
+  beta=0.4 recovery from 0.915 to 0.980 deep and 0.721 to 0.918 low, but the
+  low-coverage beta=0.4 MSE ratio is 1.257 [1.064, 1.470]. At beta=0.8, MSE
+  ratios are 0.691 deep and 0.673 low. This result was measured and rejected
+  then as a blanket default under the strict accuracy-plus-uniform-precision
+  goal. That historical conclusion is superseded by the user's explicit
+  2026-09-29 decision to adopt half-read split as the default; see the accepted
+  implementation and validation record below.
+
+  Reused completed causal coverage was:
+  `beta_shortfall_20260929/refits_corrected_null_store_20260925.{json,parquet}`
+  and `refits_stratum30_100.{json,parquet}` already contain the same 0.5-read
+  `voom` transform for both split and unit refits at beta 0.4/0.8, and their
+  beta-0 `observed`/`voom` rows are the completed null comparison. The logs
+  show three paired effect datasets per stratum and one beta-0 dataset per
+  stratum (487,454 and 517,376 rows per scan, respectively). The completed
+  trial extended them with 2,000 record-null draws at one selected variant per
+  gene (100 genes, 92 donors, each stratum), plus 1,000 independent NB count
+  replicates per gene for beta 0, +/-0.4, +/-0.8 and phi 0.05/0.2. Under that
+  total-only constant-CPM count model, low-coverage phi=0.2 normalized variance
+  ratios are 1.131-1.168 (upper CIs 1.153-1.191), and NB coverage is about 95%.
+  The separate record-null check still shows imperfect total-channel tail
+  calibration. ASE outputs were exactly unchanged; saved original scans and
+  prior nulls reproduced, and the GPU mapper was unchanged.
+  Evidence and final limits: `brainvar_hapmix_deploy/half_read_trial_20260929/`
+  ([CONCLUSION.md](../../../../../brainvar_hapmix_deploy/half_read_trial_20260929/CONCLUSION.md),
+  `REPORT.md`, `repeated_summary.json`, manifests). Experimental source remains
+  in `scripts/half_read_trial.py`, `scripts/half_read_score.py`,
+  `scripts/half_read_report.py`, and `tests/test_half_read_trial.py`; five
+  targeted tests passed.
+
+  **Completed reported-SE comparison (2026-09-29):**
+  `brainvar_hapmix_deploy/half_read_se_comparison_20260929/` now holds
+  `summary.tsv`, `comparison_units.parquet`, `manifest.json`, the main
+  `mean_reported_se.{png,pdf,svg}` plots, the actual-read-band
+  `mean_reported_se_by_read_band.*` plots, and the separate sealed 150-unit
+  `mse_audit.tsv`/`.json`/examples. The figure is the arithmetic mean reported
+  slope SE at the prespecified causal variant on each four-method common finite
+  support, with mixQTL converted from natural-log to log2 units. It distinguishes
+  beta=0 from non-null effects and full sets from 06's actual coverage bands:
+  deep `<100` / `100-999` / `>=1000`, low `<30` / `30-50` / `50-100`.
+  At beta=0.4 the common-support means are half-read/split/mixQTL/total-only
+  0.100898/0.091816/0.129099/0.114828 (broad, n=142) and
+  0.168227/0.131105/0.543519/0.144142 (low, n=118). These are reported SEs,
+  not empirical repeated-sampling SDs. The historical sealed 150-unit MSE
+  audit remains separate from those common-support plot values: low beta=0.4
+  MSE is 0.04165115581010687 to 0.052374121291368585 (+25.7447%), while RMSE
+  rises about 12.1%. MSE is planted-effect error (bias squared plus variance),
+  not pure precision. The prior 1.10 variance-retention margin was an internal
+  exploratory criterion, not a user-stipulated hard threshold; a 15.9%
+  variance change is about a 7.7% SD change. Missing half-read beta=0 and
+  |beta|=0.2 fits completed as eight full scans across both strata; ASE was
+  exact and the finite combined-value pattern invariant, while beta=0.4/0.8
+  refits were reused. This evidence does not establish uniform superiority or
+  inferiority and changes no default, method, or production estimator.
+
+  **Completed nominal-p comparison (2026-09-29):**
+  `brainvar_hapmix_deploy/half_read_pvalue_comparison_20260929/` contains
+  `summary.tsv`, `paired_half_minus_split.tsv`, `pvalue_units.parquet`,
+  manifests, logs, and the main and read-band
+  `mean_neg_log10_p.{png,pdf,svg}` figures. The figures show the arithmetic
+  mean of individual `-log10(pval_nominal)` values at the prespecified causal
+  variant, **not** `-log10(mean p)`: nominal two-sided association evidence,
+  not calibrated power, detection, or a gene-level adjusted p. They retain
+  the SE plot's 959 four-method common finite units across beta 0/0.2/0.4/0.8
+  and actual coverage bands, add no losses for missing p, use 2,000
+  gene-cluster bootstrap intervals and no significance filter, and show beta=0
+  separately from stored null sentinels. The positive-effect points use three
+  causal datasets. Half-read nominal-p exports have 550 rows in each stratum,
+  no zero p values, the unchanged mapper hash, and exact cached slope/SE
+  agreement. Overall half-read versus split is very close and slightly lower
+  for nonzero effects (beta=0.8: deep 18.226 versus 18.272; low 6.722 versus
+  6.772). This bounded descriptive result changes no model, default, or
+  calibration conclusion.
+
+  **Completed unit-weight comparison (2026-09-29; user-requested plots
+  complete):** [`brainvar_hapmix_deploy/half_read_unit_power_pr_20260929/index.html`](../../../../../brainvar_hapmix_deploy/half_read_unit_power_pr_20260929/index.html)
+  is the local figure gallery, methods record, and actual-FDP table. Its root
+  contains five-method `power_comparison`, `precision_recall`,
+  `mean_reported_se`, and `mean_neg_log10_p` PNG/PDF/SVG figures plus
+  fine-band variants, manifest, summaries, and acceptance record. The five
+  arms are half-read + split, split, unit, canonical mixQTL, and tensorQTL
+  total-only. Unit uses weight 1 in both channels on the original
+  point-estimate phenotypes and retained `Va > EPS` admitted support; it is
+  therefore **no Gibbs weighting**, not removal of variance-based admission.
+  Across all 20 datasets, zero count-eligible records were additionally
+  excluded by `Va <= EPS`; the mapper did not change. Both half-read full-gene
+  exports have 1,000 rows per stratum and exactly reproduce the prior 550-row
+  cached slope/SE/p subset. The five methods share exactly the prior 959
+  common finite SE/p units.
+
+  Power uses three positive-beta datasets per stratum (150 non-null and 150
+  null gene-dataset units per beta), counting missing evidence as uncalled.
+  The oracle curve ranks deepest complete nominal lead p then `abs(slope/SE)`
+  tie prefixes at realized FDP <=5%. The fixed detection sensitivity uses
+  eigenMT `min(p)*m_eff`, capped at 1, then BH 5% over all 100 genes per
+  dataset with missing p=1. This differs from legacy 06 finite-only BH in
+  three mixQTL settings; `baseline_acceptance.json` separately reproduces all
+  24 oracle and all 24 legacy-BH baselines exactly. Gene-level precision-
+  recall uses whole equal-p groups, step integration, and average precision.
+  The 2,000 paired truth-pattern-stratified gene bootstraps reselect
+  thresholds and rerun BH, but are conditional on this selected gene set and
+  its three stored datasets, not donor-generalization intervals.
+
+  At beta=0.8 oracle power is deep 0.853333/0.853333/0.820000 and low
+  0.553333/0.526667/0.560000 for half-read/split/unit. At beta=0.4, mean
+  reported SE is deep 0.100898/0.091816/0.099377 and low
+  0.168227/0.131105/0.134455, respectively. The gene-bootstrap intervals are
+  wide; these values establish no universal winner.
+
+  **Accepted default decision (2026-09-29; implemented and validated):** the user
+  explicitly authorized half-read split as the default despite the absence of
+  uniform precision superiority. Its required semantics are total phenotype
+  `log2((point_count + .5) / (effective_library_size + 1) * 1e6)`; original
+  point-estimate ASE; original Gibbs ASE variances and admission; unit total
+  working weights; fitted residual scales; Meier combination; and retained GPU
+  matrix multiplication. The published mixQTL comparator is unchanged.
+  `prepare_default_inputs` implements this contract; the Salmon driver uses it
+  and the BED CLI supplies unit total variance when `--hap_Vt` is omitted,
+  preserving explicit overrides. Existing log2(CPM+1) expression PCs remain
+  fixed. The selected integration branch is `simulation-benchmark`. Validation
+  receipts are in `brainvar_hapmix_deploy/half_read_default_adoption_20260929/`:
+  exact manual-arm nominal/permutation parity, unchanged existing GPU fitting
+  functions and legacy summarizer, the regression suite, and the full Salmon
+  runner self-test (including opt-in STR/multiallelic paths). The decision
+  accepts the beta/precision tradeoff; it does not claim uniform precision improvement.
+- **Completed comparison.** [Mohammadi et al. (2017)](https://genome.cshlp.org/content/27/11/1872)
+  reports population-expression aFC estimates 6.35% smaller than ASE estimates
+  overall; this is not known truth or a universal factor.
+  [ACME (2018)](https://pmc.ncbi.nlm.nih.gov/articles/PMC5920774/) shows that
+  inverse-normalized coefficients are not molecular fold changes, and
+  [Erhard (2018)](https://doi.org/10.1093/bioinformatics/bty471)
+  establishes pseudocount-induced fold-change distortion is general. Our
+  counterfactuals remain plasmode-only; no estimator change was made.
+- **TESTED / REJECTED for adoption (2026-09-29).** Fixed donor-gene full balance,
+  `V* = V * 4(L + .5)(R + .5)/(N + 1)^2` with `N=L+R`, retained `A`, `T`, admission,
+  and the shipped GPU mapper; no library, default, or production change was made.
+  At beta 0.4, admitted-ASE recovery rose deep 0.890→1.048 (140 causal units) and low
+  0.751→1.068 (150), but ASE MSE ratios were 1.882 and 2.097; combined recovery was
+  0.915→0.933 and 0.721→0.746. In 2,000 genotype-only fixed-variant record-permutation/
+  sign-flip draws, ASE geometric variance ratios were 1.842 (95 deep admitted genes) and
+  2.286 (100 low); Type-I 0.05 rose 0.04062→0.06967 and 0.04270→0.09791. Three paired
+  scans per stratum were within 0.5%; preprocessing was about 0.28 ms/100 genes. The
+  q-only independent-binomial check recovered beta 0.4 on deep (0.40012 vs 0.39679), but does not validate Gibbs variance. The generator's `q'/q`, conditional precision, and
+  unidentified noise components limit interpretation. Five tests and the mapper equivalence
+  checks at three arrangements passed; scientific precision/calibration criteria failed.
+  The candidate remains experimental and is not proposed for adoption. Evidence:
+  `brainvar_hapmix_deploy/beta_balance_trial_20260929/`
+  ([CONCLUSION.md](../../../../../brainvar_hapmix_deploy/beta_balance_trial_20260929/CONCLUSION.md),
+  report, summary, receipts, and archived source copies). The former worktree
+  `scripts/beta_balance_trial.py`, `scripts/beta_balance_null.py`,
+  `scripts/beta_balance_score.py`, and `tests/test_beta_balance_trial.py`
+  were deleted after their archived copies matched SHA256.
 
 ## Routing and run state
 

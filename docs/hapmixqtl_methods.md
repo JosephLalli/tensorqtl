@@ -11,9 +11,10 @@ This document specifies the statistics implemented in `tensorqtl/hapmixqtl.py` a
 > draws is computed FROM the draws); every mixQTL-mode measurement recorded
 > before 2026-09-25 was run on posterior-mean counts
 > (`docs/pipeline_rules.md`). **Default mode** is
-> `Var(\varepsilon_i) = \sigma^2 v_i` — the Gibbs across-draw variance as a
-> *shape*, with the residual scale fitted per variant, and **no additive
-> floor** (`tau_mode='zero'` + `se_mode='fitted'`).
+> ASE uses `Var(\varepsilon_i) = \sigma^2 v_i` — Gibbs across-draw variance as
+> a *shape*, with the residual scale fitted per variant and **no additive
+> floor**. The total channel uses the half-read phenotype with unit working
+> variance (`tau_mode='zero'` + `se_mode='fitted'`).
 >
 > Every other variance model specified below — `additive`, `two_component`,
 > `library_scaled`, the `variance_prior` shrinkage, the `tau_mode='estimate'`
@@ -39,31 +40,28 @@ explanation of equation (4). The counting formula remains in the implementation
 pending a separate variance-model decision; it is not justified by that
 explanation. See the [corrected algorithm review](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md).
 
-**Since 2026-09-25, the deployed path: values from Salmon's point estimates,
-variance from the draws.** User rule: every VALUE below — the
+**Current default input contract (2026-09-29).** User rule: every VALUE below — the
 per-sample summaries $a_i$, $t_i$ of Section 2, the total-channel CPM
 normalization, mixQTL's inputs, count cutoffs and expression PCs — must come
 from Salmon's point estimates (`quant.sf` `NumReads`), never from a mean over
-the Gibbs draws (a "posterior-mean count"); the draws are used ONLY to
-measure that same value's variance, through the identical transform. This is
-implemented as `summaries_from_point_estimates` in `tensorqtl/hapmixqtl.py`
-(tested, `tests/test_hapmixqtl_point_estimates.py`), which replaces the draw
-MEAN of equations (2)-(3) with the point-estimate value while keeping an
-across-draw variance of the same transform, in `log2` rather than natural
-log: $a_i = \log_2\!\big((p_{L,i}+\kappa)/(p_{R,i}+\kappa)\big)$,
-$t_i = \log_2(\mathrm{CPM}_i + 1)$ with $\mathrm{CPM}_i = p_{T,i} /
-L^{\mathrm{eff}}_i \times 10^6$ from edgeR's effective library size
-$L^{\mathrm{eff}}$ (TMM norm.factors times lib.size; "Pipeline rules,
-2026-09-25" in `CLAUDE.md` has the exact procedure), and $v_{a,i}$, $v_{t,i}$
-the across-draw variance of $\log_2$ applied to the draws by the identical
-formula. The counting term of equation (4) is likewise evaluated at the point
-estimate plus one half rather than at the draw mean, so a zero-read donor
-keeps a positive, finite counting variance (user decision) rather than an
-undefined one. `run_hapmixqtl_from_salmon.py` uses this function since
-2026-09-25, with covariates required. **Equations (2)-(4) below describe
+the Gibbs draws (a "posterior-mean count"); the draws are used ONLY for ASE
+variance. `prepare_default_inputs` in `tensorqtl/hapmixqtl.py`
+uses $a_i = \log_2\!\big((p_{L,i}+\kappa)/(p_{R,i}+\kappa)\big)$ and
+$t_i = \log_2((p_{T,i}+.5)/(L^{\mathrm{eff}}_i+1)\times10^6)$, where
+$L^{\mathrm{eff}}$ is edgeR's effective library size. It retains the original
+Gibbs ASE variance and counting-noise/no-coverage handling, then sets
+$v_{t,i}=1$; it does not compute total draw variance or `Cat`. ASE admission
+requires `Va > 1e-12` and excludes `pL < .5` XOR `pR < .5`. Fitted residual
+scales, Meier combination, and GPU fitting are unchanged. Expression PCs
+remain `log2(CPM+1)` by design. **Equations (2)-(4) below describe
 `compute_summaries_from_gibbs`**, the natural-log draws-mean phenotype that
 every result recorded before 2026-09-25 used and that `compare_pipelines.py`
 still uses. Rules, code map and open decisions: `docs/pipeline_rules.md`.
+
+For raw BED CLI input, `--hap_A`, `--hap_T`, and `--hap_Va` are required;
+omitting optional `--hap_Vt` creates unit total working variance, while a
+supplied `--hap_Vt` is an exact custom override. Those files alone cannot
+verify the half-read total transform or ASE admission mask.
 
 ### Summary
 

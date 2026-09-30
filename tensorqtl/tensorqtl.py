@@ -68,9 +68,12 @@ def build_parser():
     parser.add_argument('--batch-size-snps', default=16000, type=int, help='Number of SNPs per block for nbqtl-score mode')
     # hapmixQTL-specific arguments
     parser.add_argument('--hap_A', default=None, type=str, help='Allelic contrast BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_T', default=None, type=str, help='Log total expression BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_Va', default=None, type=str, help='Inferential variance for allelic contrast BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_Vt', default=None, type=str, help='Inferential variance for total expression BED file (hapmixqtl modes)')
+    parser.add_argument('--hap_T', default=None, type=str,
+                        help='Precomputed half-read total BED: log2((total+0.5)/(effective_library_size+1)*1e6) (hapmixqtl modes)')
+    parser.add_argument('--hap_Va', default=None, type=str,
+                        help='ASE variance BED with excluded donor-gene pairs set to zero by prepare_default_inputs; BED mode cannot verify raw-count admission (hapmixqtl modes)')
+    parser.add_argument('--hap_Vt', default=None, type=str,
+                        help='Optional explicit total working-variance BED override (hapmixqtl modes; omitted uses unit total variance)')
     parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional; loaded for inspection only -- intentionally unused by the method, see the hapmixqtl module docstring)')
     parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
@@ -80,8 +83,8 @@ def build_parser():
     parser.add_argument('--se_mode', default='fitted', type=str,
                         choices=['fitted', 'robust'],
                         help="hapmixqtl DEFAULT MODE: 'fitted' (default) is the "
-                             'estimated-dispersion standard error sigma_hat/sqrt(xx), so the '
-                             'Gibbs variances act as a SHAPE and their absolute scale cancels; '
+                             'estimated-dispersion standard error sigma_hat/sqrt(xx); ASE Gibbs '
+                             'variances act as a SHAPE while the half-read total has unit variance; '
                              'together with the fixed tau_mode=\'zero\' weighting this is '
                              'Var(eps_i) = sigma^2 v_i. \'robust\' is the HC1 sandwich, for '
                              'map_nominal only. The known-variance form is DEPRECATED and no '
@@ -130,9 +133,9 @@ def main():
                 phenotype_df = pd.read_csv(args.phenotypes, sep='\t', index_col=0)
             phenotype_pos_df = None
     elif args.mode.startswith('hapmixqtl'):
-        for f in [args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt]:
+        for f in [args.hap_A, args.hap_T, args.hap_Va]:
             if f is None:
-                raise ValueError("hapmixqtl modes require --hap_A, --hap_T, --hap_Va, --hap_Vt")
+                raise ValueError("hapmixqtl modes require --hap_A, --hap_T, --hap_Va")
         logger.write('  * reading hapmixQTL inputs')
         hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df, hap_Cat_df, phenotype_pos_df = \
             hapmixqtl.read_hapmixqtl_inputs(args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_Cat)
@@ -144,7 +147,9 @@ def main():
 
     if args.mode.startswith('hapmixqtl'):
         ase_covariates = hapmixqtl.SAME_COVARIATES if args.ase_covariates == 'shared' else None
-        logger.write(f'  * hapmixQTL DEFAULT MODE: Var(eps_i) = sigma^2 v_i '
+        total_weight = ('explicit --hap_Vt override' if args.hap_Vt is not None
+                        else 'unit total working variance (half-read split default)')
+        logger.write(f'  * hapmixQTL DEFAULT MODE: ASE Gibbs-variance weighting with {total_weight} '
                      f'(tau_mode={HAPMIX_TAU_MODE!r}, se_mode={args.se_mode!r})')
         covariates_df = None
         if args.covariates is not None:
