@@ -1,103 +1,45 @@
 """
-hapmixQTL: cis-QTL mapping using haplotype-resolved expression posteriors.
+hapmixQTL: cis-QTL mapping using haplotype-resolved expression.
 
-Combines two information channels via inverse-variance meta-analysis:
-  1. Allelic contrast (ASE): log(yL + kappa) - log(yR + kappa), weighted by
-     inferential uncertainty from Gibbs draws
-  2. Total expression: log((yL + yR)/2 + kappa), similarly weighted
+The production default (2026-09-29) is half-read split preprocessing:
+prepare_default_inputs constructs ASE log2((pL+0.5)/(pR+0.5)), its admitted
+Gibbs/count-noise variances, total log2((pT+0.5)/(Leff+1)*1e6), and unit total
+working variances. Salmon point estimates supply the expression values.
+Existing expression PCs are retained as fixed covariates. The older
+summaries_from_point_estimates and compute_summaries_from_gibbs functions
+remain available for reproducing earlier analyses.
 
-Method A performs separate WLS regressions per channel (ASE on signed het
-indicator s, total on g/2) and combines via inverse-variance meta-analysis.
-The slope estimates log allelic fold change (log aFC).
+The mapping APIs consume explicitly supplied phenotypes and variances; they
+do not transform counts or replace caller-provided weights. Their defaults
+are tau_mode='zero' and se_mode='fitted': relative inverse-variance weights
+are accompanied by empirical per-channel residual scales. Unit Vt therefore
+gives unweighted total-expression regression with a fitted residual SE, not
+an assertion that total expression has known error variance one.
 
-WLS is implemented via the sqrt-weight transform: multiplying both response
-and predictors by sqrt(w_i) converts WLS into OLS, enabling efficient
-GPU-vectorized computation across all cis variants simultaneously.
+Separate regressions fit ASE on signed heterozygosity s=xL-xR and total on
+g/2, then combine the effects with the existing inverse-variance weighting,
+Meier correction and Welch-Satterthwaite reference. The sqrt-weight transform
+and matrix multiplication evaluate all cis variants on the GPU. The half-read
+change does not alter these regression or permutation kernels.
 
-Inferential variances from Gibbs draws propagate into weights as
-w_i = 1 / Var(e_i), where v_inf_i is the across-draw variance of the
-transformed expression for sample i. Three variance models are selectable
-(``variance_model`` on every mapping function; VARIANCE_MODELS):
+Total expression uses covariates_df plus an intercept. ASE's default
+ase_covariates_df=None is through-origin; SAME_COVARIATES reuses total
+covariates. Insufficiently informative channels are disabled; fitted combined
+mapping also applies min_allelic_donors. Genotype-tied covariates remain tied
+to genotypes during permutation; RNA records and their weights move together
+under the fitted record-permutation null. See map_nominal/map_cis for exact
+reference distributions and admission rules.
 
-  additive        Var(e_i) = v_inf_i + tau                  (the default)
-  two_component   Var(e_i) = c v_inf_i + tau
-  library_scaled  Var(e_i) = d_i (c v_inf_i + tau)
+Phase determines s: +1 for ALT on L, -1 for ALT on R, zero for homozygous or
+unphased samples. Phase frames must have exactly the genotype sample order;
+_assert_phase_columns checks this at each mapping entry point. Without phase,
+the ASE channel contributes nothing and mapping uses total expression alone.
 
-tau is a per-phenotype, per-channel between-sample variance, c a per-gene
-factor by which the draws understate the measurement error, and d_i a
-per-library factor shared by every gene (estimate_library_factors). Under
-'additive' tau is the moment estimate of _estimate_tau, fitted under the
-channel's null model (the total automatic intercept and covariates, or the
-ASE through-origin/covariate design, no genotype term) on the samples that
-carry information (v_inf > 0), with the exact leverage denominator
-sum_i w_i(1 - h_i) -- DerSimonian-Laird's form for an intercept-only design.
-Under the other two models (c, tau) are fitted jointly by _estimate_c_tau,
-a damped iterated weighted least squares of the leverage-corrected squared
-null residuals on [v, 1], clamped at zero by default or, with
-``variance_prior`` (estimate_variance_priors), shrunk toward the gene's
-expression bin by an empirical-Bayes prior in place of the clamp. The models
-govern the ALLELIC channel; the total
-channel keeps v_t + tau_t under every model, because v_t is nearly constant
-across samples so c_t is not identifiable, and d_i was measured on the
-allelic channel. tau_mode='estimate' is the DEFAULT. tau_mode='zero' asserts
-the Gibbs variance is the entire error variance, which is severely
-anticonservative on real data; it is retained only to reproduce earlier
-results, warns when used, and is only accepted with the additive model.
-Measured on BrainVar (deprecated_models/estimator_ablation_20260916, deprecated_models/estimator_ablation_tiers_20260917):
-the additive model is anticonservative at low expression (type-I 0.068 at
-nominal 0.05) and conservative at high (0.022); the two other models are
-0.029-0.041 in every tier with the same null width and calls; only
-library_scaled leaves whitened residuals with no per-library spread.
-
-Four further things shape what the mapping functions do:
-
-  * Per-channel covariate designs. covariates_df is the TOTAL channel's;
-    ase_covariates_df is the ALLELIC channel's -- SAME_COVARIATES reuses the
-    total channel's, while its public default None is through-origin. The
-    allelic contrast is a within-sample difference in which covariates
-    acting on both haplotypes alike cancel, so None is the usual choice on
-    real data: each column projected out costs one informative sample.
-    scripts/compare_pipelines.py defaults its allelic channel to a
-    through-origin (--ase-covariates none).
-  * A sparse-channel rule. A channel with fewer informative samples than its
-    design has columns plus two is switched off (all weights zero) and the
-    meta-analysis falls back to the other channel.
-  * map_cis's permutation null is Freedman-Lane in whitened space: each
-    channel's null residuals are leverage-standardized and permuted among
-    that channel's own informative samples. map_cis therefore REQUIRES
-    se_mode='model' and raises otherwise -- the permutation statistic is the
-    known-variance GLS statistic and has no sandwich counterpart; robust
-    standard errors are available in map_nominal only.
-  * map_cis(tau_refit=True) re-estimates each channel's tau with the lead's
-    predictor in the design and reports the lead's slope, SE and nominal p
-    on that scale ALONE. pval_perm and pval_beta stay on the scan scale,
-    where they are calibrated, and map_nominal stays on the null-model scale.
-
-docs/hapmixqtl_methods.md specifies all of this for reproduction.
-
-Phase determines the signed heterozygote indicator s_i = xL_i - xR_i:
-  s = +1 if ALT allele is on haplotype L
-  s = -1 if ALT allele is on haplotype R
-  s =  0 if homozygous (or phase unknown)
-When phase is unavailable (s=0 for all samples), the ASE channel contributes
-nothing and results match total-channel-only regression. The phase frames are
-indexed POSITIONALLY by the genotype frame's column order; _assert_phase_columns
-guards that at every entry point, because the same samples in a different order
-silently corrupts the allelic channel while leaving the total channel correct.
-
-Cat, the a-t inferential covariance, is INTENTIONALLY UNUSED.
-compute_summaries_from_gibbs returns it and read_hapmixqtl_inputs / --hap_Cat
-accept it, for completeness and so it can be inspected, but no mapping function
-consumes it. The scalar inverse-variance meta-analysis assumes the two channel
-estimators are independent, and they are, even when the a and t noise is
-strongly correlated: the ASE predictor s = xL - xR is orthogonal to the total
-predictor g/2 under random phase (E[s | g=1] = 0), so the two regressions
-project any shared noise onto orthogonal directions. Measured:
-corr(beta_a, beta_t) = +0.01 / -0.03 / -0.02 at a-t noise correlation
-rho = 0 / 0.5 / 0.9 (95% CIs all cover zero), unchanged under 50% phasing error
-(docs/ase_validation.md sec 3 and 7f; tests/test_hapmixqtl_calibration.py
-asserts it in the test suite). Adding a 2*w_a*w_t*Cat term to the combined SE would
-change a statistic that is correct as written -- do not "fix" this.
+Cat is inspection-only and is not consumed by the channel combination. The
+new default helper does not calculate it. Historical summarizers and the BED
+reader retain optional Cat support for compatibility. Nondefault variance
+models and known-variance/robust modes remain available for historical work;
+see docs/hapmixqtl_methods.md and the individual function documentation.
 """
 
 import torch
@@ -119,18 +61,24 @@ from core import *
 #  I/O utilities
 # ---------------------------------------------------------------------------
 
-def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
+def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed=None, cat_bed=None):
     """
     Load precomputed hapmixQTL summary matrices in BED-like format.
 
     Each file follows the tensorQTL phenotype BED convention:
     chr, start, end, phenotype_id, sample1, sample2, ...
 
+    The default split-weight method expects half-read log-CPM in T and the
+    admitted ASE variances from prepare_default_inputs in Va. Omitting vt_bed
+    supplies unit total-expression working variances. An explicit vt_bed is
+    preserved as a custom-weight override. BED inputs have no raw counts or
+    library sizes, so this reader cannot construct or verify the transform.
+
     Returns:
         A_df:   allelic contrast a_i [phenotypes x samples]
         T_df:   log total t_i [phenotypes x samples]
         Va_df:  inferential variance of a [phenotypes x samples]
-        Vt_df:  inferential variance of t [phenotypes x samples]
+        Vt_df:  total working variance [phenotypes x samples]; ones by default
         Cat_df: inferential covariance a,t [phenotypes x samples] (or None).
                 Loaded for inspection only: it is INTENTIONALLY UNUSED by every
                 mapping function (see the module docstring for why).
@@ -139,7 +87,10 @@ def read_hapmixqtl_inputs(a_bed, t_bed, va_bed, vt_bed, cat_bed=None):
     A_df, pos_df = read_phenotype_bed(a_bed)
     T_df, _ = read_phenotype_bed(t_bed)
     Va_df, _ = read_phenotype_bed(va_bed)
-    Vt_df, _ = read_phenotype_bed(vt_bed)
+    if vt_bed is None:
+        Vt_df = pd.DataFrame(1.0, index=T_df.index, columns=T_df.columns)
+    else:
+        Vt_df, _ = read_phenotype_bed(vt_bed)
 
     assert A_df.index.equals(T_df.index), "Phenotype IDs must match across A and T"
     assert A_df.index.equals(Va_df.index), "Phenotype IDs must match across A and Va"
@@ -424,6 +375,72 @@ def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=True):
 
 
 LN2 = float(np.log(2.0))
+
+
+def half_read_log_cpm(counts, eff_lib_size):
+    """Transform point counts [features, samples] with a half-read offset.
+
+    The offset is in read units, before normalization, rather than one CPM:
+    ``log2((counts + 0.5) / (eff_lib_size + 1) * 1e6)``. Zero counts remain
+    finite. Effective library sizes are the existing edgeR/TMM values.
+    """
+    counts = np.asarray(counts, dtype=float)
+    L = np.asarray(eff_lib_size, dtype=float)
+    if counts.ndim != 2:
+        raise ValueError('counts must be [features, samples]')
+    if not np.all(np.isfinite(counts)) or np.any(counts < 0):
+        raise ValueError('counts must be finite and nonnegative')
+    if L.shape != (counts.shape[1],) or not np.all(np.isfinite(L)) or not np.all(L > 0):
+        raise ValueError('eff_lib_size must be one finite positive value per sample')
+    return np.log2((counts + 0.5) / (L[None, :] + 1.0) * 1e6)
+
+
+def prepare_default_inputs(pL, pR, pT, eff_lib_size, yL, yR,
+                           kappa=0.5, count_noise=True):
+    """Prepare the half-read split default adopted on 2026-09-29.
+
+    Values come from Salmon point estimates. A and its Gibbs/count-noise
+    variance retain the historical point-estimate definition; T uses
+    half_read_log_cpm and Vt is a unit *working* variance, not an estimate of
+    total measurement uncertainty. With tau_mode='zero', se_mode='fitted',
+    the mapper fits empirical residual scales for both channels.
+
+    pL/pR are paired-transcript counts; pT includes ALL transcripts and must
+    not be substituted with pL+pR. Counts have shape [features, samples];
+    yL/yR are the corresponding [features, samples, draws] Gibbs arrays.
+    No total Gibbs transform or unused ASE-total covariance is computed.
+
+    ASE admission matches the evaluated split arm: variance must exceed
+    1e-12, no-coverage donor-gene pairs are excluded, and exactly one haplotype below
+    0.5 reads excludes that donor-gene pair. An excluded pair has Va=0.
+    Total expression retains every donor, including zero-count donors.
+    Existing expression PCs are retained as fixed covariates.
+
+    Returns A, T, Va, Vt. The historical summaries_from_point_estimates
+    utility and mapping APIs accepting explicit variances remain unchanged.
+    """
+    pL, pR, pT = (np.asarray(x, dtype=float) for x in (pL, pR, pT))
+    yL, yR = (np.asarray(x, dtype=float) for x in (yL, yR))
+    if any(x.ndim != 2 for x in (pL, pR, pT)) or not (pL.shape == pR.shape == pT.shape):
+        raise ValueError('point counts must have matching [features, samples] shapes')
+    if (yL.ndim != 3 or yR.shape != yL.shape or
+            yL.shape[:2] != pL.shape or yL.shape[2] == 0):
+        raise ValueError('Gibbs draws must be nonempty [features, samples, draws] matching point counts')
+    for name, values in (('pL', pL), ('pR', pR), ('pT', pT), ('yL', yL), ('yR', yR)):
+        if not np.all(np.isfinite(values)) or np.any(values < 0):
+            raise ValueError(f'{name} counts must be finite and nonnegative')
+    if not np.isscalar(kappa) or not np.isfinite(kappa) or kappa <= 0:
+        raise ValueError('kappa must be finite and positive')
+    T = half_read_log_cpm(pT, eff_lib_size)
+    A = np.log2((pL + kappa) / (pR + kappa))
+    a_d = np.log2((yL + kappa) / (yR + kappa))
+    Va = a_d.var(axis=2, ddof=0)
+    if count_noise:
+        Va += (1.0 / (pL + kappa) + 1.0 / (pR + kappa)) / LN2 ** 2
+    keep_a = ((Va > 1e-12) & ((pL + pR) > 0) &
+              ~((pL < 0.5) ^ (pR < 0.5)))
+    Va = np.where(keep_a, Va, 0.0)
+    return A, T, Va, np.ones_like(T)
 
 
 def summaries_from_point_estimates(pL, pR, pT, eff_lib_size, yL, yR, yT,

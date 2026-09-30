@@ -47,7 +47,8 @@ def test_importing_hapmixqtl_does_not_import_the_quarantine():
         "import sys; sys.path.insert(0, 'tensorqtl');"
         "import hapmixqtl;"
         "print('fitted_variance' in sys.modules)")
-    assert out == 'False', 'importing hapmixqtl pulled in the quarantine'
+    # An optional R/qvalue import warning can precede the membership result.
+    assert out.splitlines()[-1] == 'False', 'importing hapmixqtl pulled in the quarantine'
 
 
 def test_a_default_mode_map_cis_never_imports_the_quarantine():

@@ -41,11 +41,10 @@ WHAT IT DOES
      filter and lib.size x norm.factors is the effective library size.
      Every VALUE comes from the point estimates and the draws give only its
      measurement variance (rule of 2026-09-25), through
-     summaries_from_point_estimates: allelic A = log2((L + 1/2)/(R + 1/2)),
-     total T = log2(CPM + 1) with CPM on the effective library size, and
-     Va / Vt the across-draw variance of the same transforms plus a
-     counting term (--count-noise / --no-count-noise), which also floors a
-     zero-read total donor at the counting variance of count + 1/2.
+     prepare_default_inputs: allelic A = log2((L + 1/2)/(R + 1/2)), total
+     T = log2((total + 1/2)/(effective_library_size + 1) * 1e6), the
+     half-read split transform. Va is the allelic across-draw variance plus
+     optional counting noise; the total working variance Vt is one.
   4. Reads phased genotypes from the VCF -> dosages and the signed het
      indicator s = xL - xR.
   5. GATES on reference_bias_diagnostic. hapmixQTL does not model reference
@@ -56,8 +55,9 @@ WHAT IT DOES
      given is orient_haplotypes over each GENE's own feature sites rather than
      one cohort-wide orientation. --force proceeds anyway (not recommended).
   6. Runs hapmixqtl.map_cis in DEFAULT MODE, which is the only hapmixQTL
-     configuration this driver offers: Var(eps_i) = sigma^2 * v_i, the Gibbs
-     across-draw variance as a SHAPE with the residual scale fitted
+     configuration this driver offers: ASE uses Gibbs across-draw variance as
+     a SHAPE with the residual scale fitted; the half-read total channel has
+     unit working variance.
      (tau_mode='zero', se_mode='fitted'; module constants, not flags, because
      there is nothing to choose -- the fitted-variance alternatives and the
      known-variance standard error are deprecated, see
@@ -143,13 +143,13 @@ import pandas as pd
 warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
-    from tensorqtl.hapmixqtl import (compute_summaries_from_gibbs, summaries_from_point_estimates,
+    from tensorqtl.hapmixqtl import (prepare_default_inputs,
                                      count_cutoff_masks,
                                      reference_bias_diagnostic, orient_haplotypes, map_cis,
                                      map_str_curvature, map_multiallelic)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
-    from hapmixqtl import (compute_summaries_from_gibbs, summaries_from_point_estimates,
+    from hapmixqtl import (prepare_default_inputs,
                            count_cutoff_masks,
                            reference_bias_diagnostic, orient_haplotypes, map_cis,
                            map_str_curvature, map_multiallelic)
@@ -158,8 +158,8 @@ except ImportError:
 ASC_CUTOFF, TRC_CUTOFF, MIN_SAMPLES = 5, 20, 30
 
 # DEFAULT MODE, and the only hapmixQTL configuration this driver runs:
-# Var(eps_i) = sigma^2 * v_i, the Gibbs across-draw variance as a SHAPE with the
-# residual scale fitted. Not flags, because there is nothing to choose: the
+# ASE Gibbs variance is a SHAPE with the residual scale fitted; the half-read
+# total channel has unit working variance. Not flags, because there is nothing to choose: the
 # fitted-variance alternatives are deprecated (tensorqtl/fitted_variance.py) and
 # the known-variance standard error is one of them. The other shipped mode is
 # mixQTL mode, which is a different estimator entirely -- the NumPy port in
@@ -827,6 +827,18 @@ def build_eval_bundle(res_df, diag, meta):
     return b
 
 
+def default_input_provenance(pL, pR, count_noise):
+    """Aggregate-only provenance for the adopted half-read input policy."""
+    one_sided = np.logical_xor(np.asarray(pL) < 0.5, np.asarray(pR) < 0.5)
+    return {
+        'total_transform': 'log2((total+0.5)/(effective_library_size+1)*1e6)',
+        'total_working_variance': 'unit',
+        'ase_count_noise': bool(count_noise),
+        'ase_one_sided_threshold': 0.5,
+        'n_ase_one_sided_excluded': int(one_sided.sum()),
+        'n_ase_donor_gene_pairs': int(one_sided.size)}
+
+
 # ---------------------------------------------------------------------------
 #  NON-STANDARD, OPT-IN: STRs and multi-ALT sites (off unless asked for)
 # ---------------------------------------------------------------------------
@@ -1002,11 +1014,11 @@ def read_edger_dir(edger_dir, samples):
 
 
 def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=False):
-    """The expression-PC gene set must equal the eQTL gene set, and the PCs
-    must be in the same unit (log2 CPM + 1 on the same effective library
-    sizes). build_covariates.py --point-estimates records where its PCs came
-    from in covariate_build.json; compare that to this run. Refuses on a
-    mismatch or a missing record unless ``override``."""
+    """The expression-PC gene set must equal the eQTL gene set, and fixed
+    benchmark-held PCs must remain in their existing log2(CPM + 1) unit, on
+    the same effective library sizes. build_covariates.py --point-estimates
+    records where its PCs came from in covariate_build.json; compare that to
+    this run. Refuses on a mismatch or a missing record unless ``override``."""
     j = Path(cov_path).parent / 'covariate_build.json'
     why = None
     if not j.exists():
@@ -1016,7 +1028,7 @@ def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=
         pe = meta.get('point_estimates')
         if not pe:
             why = ('the covariates carry the pre-2026-09-25 expression PCs (log1p of raw '
-                   'counts on genes nonzero in half the samples), not log2(CPM+1) on the '
+                   'counts on genes nonzero in half the samples), not log2(CPM + 1) on the '
                    'eQTL gene set')
         else:
             pc_genes = (Path(pe) / 'edger' / 'calibration_genes.txt').read_text().split()
@@ -1028,7 +1040,7 @@ def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=
             elif not np.allclose(pc_lib, eff_lib, rtol=1e-6, atol=0):
                 why = 'the expression PCs used different edgeR effective library sizes'
     if why is None:
-        print('  covariate provenance: expression PCs on the eQTL gene set, same library sizes')
+        print('  covariate provenance: fixed expression PCs on the eQTL gene set, same log2(CPM + 1) unit and library sizes')
         return
     if not override:
         raise SystemExit(f'covariate check failed: {why}.\nRebuild with scripts/build_covariates.py '
@@ -1141,8 +1153,8 @@ def main():
     ap.add_argument('--hap-suffix', default='_hapA,_hapB')
     ap.add_argument('--count-noise', action=argparse.BooleanOptionalAction,
                     default=True,
-                    help='per-sample Poisson counting noise in the Gibbs '
-                         'variances; see summaries_from_point_estimates')
+                    help='per-sample Poisson counting noise in the allelic '
+                         'Gibbs variance (Va) only; see prepare_default_inputs')
     ap.add_argument('--covariates',
                     help='TSV [samples x covariates], index = sample id, e.g. '
                          'build_covariates.py --point-estimates output. Required: every '
@@ -1254,9 +1266,9 @@ def main():
                     else list(totals_all.index))
         eff_lib, eqtl_genes = edger_normalize(totals_all, restrict, out / 'edger')
 
-    print('Computing summaries: values from point estimates, variance from the Gibbs draws')
-    A, T, Va, Vt, Cat = summaries_from_point_estimates(
-        pL, pR, pT, eff_lib, YL, YR, YT, count_noise=args.count_noise)
+    print('Computing default half-read inputs: point-estimate values, ASE Gibbs variance, unit total variance')
+    A, T, Va, Vt = prepare_default_inputs(
+        pL, pR, pT, eff_lib, YL, YR, count_noise=args.count_noise)
     del YL, YR, YT
     # The eQTL gene filter. Genes that pass it but carry no haplotype-paired
     # transcript in any donor have no Gibbs draws from load_counts and cannot
@@ -1273,6 +1285,12 @@ def main():
     keep = [samples.index(s) for s in order]
     A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
     pL, pR, pT, eff_lib = pL[:, keep], pR[:, keep], pT[:, keep], eff_lib[keep]
+    input_provenance = default_input_provenance(pL, pR, args.count_noise)
+    print('  default provenance: total log2((total+0.5)/(effective_library_size+1)*1e6), '
+          f'unit total working variance; count_noise={args.count_noise}; '
+          f'ASE one-sided threshold <0.5 excludes '
+          f'{input_provenance["n_ase_one_sided_excluded"]:,}/'
+          f'{input_provenance["n_ase_donor_gene_pairs"]:,} donor-gene pairs')
 
     cov = pd.read_csv(args.covariates, sep='\t', index_col=0)
     cov.index = cov.index.astype(str)
@@ -1394,7 +1412,7 @@ def main():
               f'donor-gene pairs ({sub_t.sum() / sub_t.size:.1%})')
 
     print(f'\nRunning map_cis on {len(common)} genes in DEFAULT MODE '
-          f'(Var(eps_i) = sigma^2 v_i on the Gibbs variance: '
+          f'(ASE Gibbs-variance weighting; half-read total unit variance: '
           f'tau_mode={TAU_MODE!r}, se_mode={SE_MODE!r}'
           f"{', count cutoffs' if keep_a_df is not None else ''})")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
@@ -1414,10 +1432,13 @@ def main():
         'n_samples': len(order), 'n_genes_tested': int(len(common)),
         'n_variants': int(len(vdf)), 'n_gibbs_draws': n_draws,
         'n_covariates_rna': int(cov.shape[1]), 'n_covariates_genotype': len(gcols),
-        'phenotype': 'point estimates; allelic log2((L+0.5)/(R+0.5)), total log2(CPM+1) '
-                     'with edgeR effective library size; Gibbs variance for weights',
+        'phenotype': 'point estimates; allelic log2((L+0.5)/(R+0.5)), total half-read '
+                     'log2((total+0.5)/(effective_library_size+1)*1e6); ASE Gibbs variance '
+                     'for weights and unit total working variance',
+        'default_input_provenance': input_provenance,
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
-        'mode': 'default', 'tau_mode': TAU_MODE, 'se_mode': SE_MODE,
+        'mode': 'default_half_read_split', 'tau_mode': TAU_MODE, 'se_mode': SE_MODE,
+        'total_working_variance': 'unit',
         'tau_refit': True})
     if vtype is not None:
         print('\nNon-standard second pass')

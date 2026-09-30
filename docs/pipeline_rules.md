@@ -1,6 +1,7 @@
 # Pipeline rules: values, units, gene filter, permutation
 
-User decisions of 2026-09-25. They apply to both modes (mixQTL mode and
+User decisions of 2026-09-25, amended by the half-read split adoption on
+2026-09-29. They apply to both modes (mixQTL mode and
 default mode) and stand until the user changes them. This page states each
 rule, where it is implemented, what was built to satisfy it, what is not yet
 switched over, and which recorded results predate it.
@@ -9,13 +10,13 @@ switched over, and which recorded results predate it.
 
 1. **Every value comes from Salmon point estimates** (`quant.sf` NumReads):
    the allelic ratio, total expression, CPM, count cutoffs, expression PCs
-   and mixQTL's inputs. The 200 Gibbs draws are used only for each
-   observation's measurement variance, computed through the identical
-   transform as the value. Before this, the phenotype was the mean over Gibbs
+   and mixQTL's inputs. The 200 Gibbs draws are used only for ASE measurement
+   variance; the default total working variance is one. Before this, the phenotype was the mean over Gibbs
    draws of the log (`compute_summaries_from_gibbs`, kept so dated scripts
    reproduce).
 
-2. **The unit is log2(CPM + 1) at every step.** CPM is count divided by the
+2. **Expression PCs remain log2(CPM + 1); the default total phenotype is the
+   half-read split.** CPM is count divided by the
    effective library size, times 1e6. The effective library size is computed
    by edgeR itself: `lib.size` times the TMM factor. TMM (trimmed mean of
    M-values) is edgeR's normalization factor; it scales each library so that
@@ -26,7 +27,10 @@ switched over, and which recorded results predate it.
    samples, and a total count of at least 15); intersection with the gene
    restriction; subsetting with `keep.lib.sizes=FALSE`, so `lib.size` is
    recomputed from the kept genes; `calcNormFactors(method='TMM')`.
-   Exception (user decision): the allelic ratio is
+   The default total phenotype is
+   `log2((point_count + 0.5)/(effective_library_size + 1)*1e6)`. The
+   expression-PC construction remains `log2(CPM + 1)` intentionally. The
+   allelic ratio is
    log2((L + 0.5) / (R + 0.5)) of point-estimate haplotype counts, because
    library size cancels within a sample. mixQTL mode keeps its published
    natural-log response log(count / 2 / L) with the same L, so its raw betas
@@ -34,7 +38,7 @@ switched over, and which recorded results predate it.
    What the "+ 1" costs effect sizes (a 1-CPM pseudocount is effective
    library / 1e6 reads) is measured in
    `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
-   (2026-09-29); the rule itself is unchanged.
+   (2026-09-29); the half-read default adoption follows that evaluation.
 
 3. **The expression-PC gene filter equals the eQTL gene filter actually
    used.** Calibration phase (user decision, explicitly temporary while the
@@ -50,19 +54,18 @@ switched over, and which recorded results predate it.
 5. **mixQTL mode never touches the Gibbs draws**, not even through their
    mean. It is the no-draws comparator only on that condition.
 
-6. **A zero-read total donor keeps a counting-variance floor**: the
-   delta-method Poisson variance of log2(CPM + 1), that is the first-order
-   Taylor approximation to the variance of the transformed count, evaluated
-   at count + 0.5. It is added to every donor under `count_noise=True`, as
-   the old `q` was, so the open item "drop `q` for donors with reads"
-   (CLAUDE.md, Known and unfixed) is still open. In the 100-gene calibration
-   set 32 of 9,200 donor-gene pairs have zero total reads.
+6. **ASE keeps its original Gibbs variance and counting-noise rule.** Under
+   `count_noise=True`, the allelic delta-method term is added at the point
+   estimate. No-coverage ASE rows remain excluded (`Va = 0`), and the default
+   admission also excludes an exclusive one-sided point estimate (`pL < .5`
+   XOR `pR < .5`). The total channel has unit working variance, so it has no
+   total draw variance, total counting floor, or `Cat` contribution.
 
 ## Where each rule is implemented
 
 | Rule | Code | Pinned by |
 |---|---|---|
-| 1, 2, 6 | `tensorqtl/hapmixqtl.py` `summaries_from_point_estimates` | `tests/test_hapmixqtl_point_estimates.py` |
+| 1, 2, 6 | `tensorqtl/hapmixqtl.py` `prepare_default_inputs` | `tests/test_half_read_default.py`, `tests/test_half_read_runner.py` |
 | 2, 3 | `scripts/edger_library_normalization.R`; `run_hapmixqtl_from_salmon.py` `edger_normalize`, `read_edger_dir` | runner `--selftest` |
 | 3 | runner `check_covariate_provenance`: refuses covariates whose `covariate_build.json` names another gene set or other library sizes; `--covariates-unverified` overrides | runner `--selftest` |
 | 4, default mode | `map_cis`/`map_nominal` `genotype_covariates_df`; `_combine_covariates` puts those columns last; `WeightedResidualizer.n_fixed_cov` tells `_record_permutation_channel` how many trailing columns stay fixed | `test_genotype_tied_covariates_permute_with_the_genotypes` (relabeling identity: equals permuting genotype columns and genotype-PC rows together by the inverse permutation) |
@@ -78,6 +81,12 @@ Drivers on the rules: `scripts/run_hapmixqtl_from_salmon.py` (default mode;
 beside it) and `scripts/compare_mixqtl_replication.py`
 (`load_point_estimate_inputs`; output `$MIXQTL_OUT`, default
 `brainvar_hapmix_deploy/mixqtl_replication_point_estimates_20260925/`).
+
+**Raw BED CLI contract (2026-09-29).** `hapmixqtl` CLI modes require
+`--hap_A`, `--hap_T`, and `--hap_Va`. `--hap_Vt` is optional: omission creates
+unit total working variance, while a supplied BED is an exact custom override.
+Raw BED input cannot establish that `T` used the half-read transform or that
+the ASE mask was applied; callers must provide those semantics themselves.
 
 ## Not yet switched over
 
@@ -108,6 +117,11 @@ cache build of about 45 minutes and makes them testable in the total channel,
 or to accept 11,747 genes and record why.
 
 ## Open decision: Salmon point estimates put one haplotype at exactly zero
+
+**Current default admission (2026-09-29):** half-read split excludes an ASE
+donor-gene pair when exactly one point-estimate haplotype is below 0.5 reads.
+The older observations and options below are retained as evidence; the choice
+of a different allelic estimator remains separate from this admission rule.
 
 Found 2026-09-25 by the first corrected run of the mixQTL driver. Salmon
 1.10.3 ran with default options (`cmd_info.json`: no `--useEM`), so its point
@@ -488,7 +502,15 @@ high-effect high-se 0.051 / 0.063 / 0.050. The pattern of the random 100
 genes holds in both sets. This is a permutation null: it does not test
 whether a weighting removes the observed spurious hits these genes carry.
 
-## Open decision: which weighting configuration ships
+## Decision: which weighting configuration ships
+
+**Settled for the default on 2026-09-29:** the user adopted half-read split:
+original admitted Gibbs ASE weighting, half-read total expression, unit total
+weights, and fitted residual scales. Existing expression PCs stay fixed. This
+accepts the measured beta/precision tradeoff without claiming uniform precision
+improvement. The dated comparisons below describe the evidence available before
+adoption. See `docs/CURRENT_SCIENTIFIC_STATE.md` and
+`brainvar_hapmix_deploy/half_read_default_adoption_20260929/verification.json`.
 
 Not decided; the results directly above are measurement only. On the
 corrected pipeline's 100-gene, 200-permutation null

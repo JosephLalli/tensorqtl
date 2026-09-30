@@ -8,9 +8,9 @@ open.
 
 > **SUPERSEDED IN PART, 2026-09-23.** hapmixQTL now ships exactly **two modes**:
 > **mixQTL mode** (the published estimator on posterior-mean counts, no draws,
-> `tensorqtl/mixqtl_replication.py`) and **default mode**
-> (`Var(eps_i) = sigma^2 v_i` — the Gibbs across-draw variance as a shape with
-> the residual scale fitted, no additive floor; `tau_mode='zero'` +
+> `tensorqtl/mixqtl_replication.py`) and **default mode** (Gibbs-shape ASE
+> variance with fitted residual scale, plus half-read total phenotype and unit
+> total working variance; no additive floor; `tau_mode='zero'` +
 > `se_mode='fitted'`).
 >
 > Wherever this document discusses choosing among `additive`, `two_component`
@@ -631,8 +631,8 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   ratios are 0.691 deep and 0.673 low. This result was measured and rejected
   then as a blanket default under the strict accuracy-plus-uniform-precision
   goal. That historical conclusion is superseded by the user's explicit
-  2026-09-29 decision to adopt half-read split as the default; implementation,
-  validation, commit, and merge remain pending.
+  2026-09-29 decision to adopt half-read split as the default; see the accepted
+  implementation and validation record below.
 
   Reused completed causal coverage was:
   `beta_shortfall_20260929/refits_corrected_null_store_20260925.{json,parquet}`
@@ -735,15 +735,22 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   0.168227/0.131105/0.134455, respectively. The gene-bootstrap intervals are
   wide; these values establish no universal winner.
 
-  **Accepted default decision (2026-09-29; implementation pending):** the user
+  **Accepted default decision (2026-09-29; implemented and validated):** the user
   explicitly authorized half-read split as the default despite the absence of
   uniform precision superiority. Its required semantics are total phenotype
   `log2((point_count + .5) / (effective_library_size + 1) * 1e6)`; original
   point-estimate ASE; original Gibbs ASE variances and admission; unit total
   working weights; fitted residual scales; Meier combination; and retained GPU
-  matrix multiplication. The published mixQTL comparator is unchanged. This
-  checkpoint does not claim the change is implemented, validated, committed,
-  or merged; those are the next authorized steps.
+  matrix multiplication. The published mixQTL comparator is unchanged.
+  `prepare_default_inputs` implements this contract; the Salmon driver uses it
+  and the BED CLI supplies unit total variance when `--hap_Vt` is omitted,
+  preserving explicit overrides. Existing log2(CPM+1) expression PCs remain
+  fixed. The selected integration branch is `simulation-benchmark`. Validation
+  receipts are in `brainvar_hapmix_deploy/half_read_default_adoption_20260929/`:
+  exact manual-arm nominal/permutation parity, unchanged existing GPU fitting
+  functions and legacy summarizer, the regression suite, and the full Salmon
+  runner self-test (including opt-in STR/multiallelic paths). The decision
+  accepts the beta/precision tradeoff; it does not claim uniform precision improvement.
 - **Completed comparison.** [Mohammadi et al. (2017)](https://genome.cshlp.org/content/27/11/1872)
   reports population-expression aFC estimates 6.35% smaller than ASE estimates
   overall; this is not known truth or a universal factor.

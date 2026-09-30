@@ -543,6 +543,16 @@ refuses covariates whose expression PCs used another gene set or other
 library sizes, and keeps the columns in `genotype_covariates.txt` with the
 genotypes under permutation:
 
+**Default input contract (2026-09-29).** The runner constructs the total phenotype as
+`log2((point_count + .5)/(effective_library_size + 1)*1e6)` and gives that
+channel unit working variance. It retains point-estimate ASE, its original
+Gibbs variance and admission (`Va > 1e-12`, excluding `pL < .5` XOR `pR <
+.5`), fitted residual scales, Meier combination, and GPU matrix multiplication.
+It does not use total draw variance or `Cat`. Expression PCs intentionally stay
+`log2(CPM+1)`, and the same gene-set/effective-library-size provenance check
+therefore remains required. The published mixQTL comparator is unchanged. The
+accepted change is a beta/precision tradeoff, not uniform precision improvement.
+
 `--gene-pos` is read as gene, chromosome, TSS, start, end. `annot/genes.tsv`
 is gene, chromosome, start, end, TSS, so reorder it first; passed as it is,
 the runner would take each gene's start as its TSS without complaint.

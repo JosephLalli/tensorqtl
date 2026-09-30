@@ -179,6 +179,21 @@ class TestHapmixQTLDefaults:
         assert '--tau_mode' not in result.stdout
         assert '--variance_model' not in result.stdout
 
+    def test_half_read_total_defaults_and_explicit_override_are_wired(self):
+        """All hapmixQTL modes may omit Vt for the unit-variance default,
+        while a supplied Vt remains available for compatibility."""
+        from tensorqtl.tensorqtl import build_parser
+        parser = build_parser()
+        for mode in ('hapmixqtl_nominal', 'hapmixqtl', 'hapmixqtl_susie'):
+            args = parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', mode,
+                                      '--hap_A', 'a.bed', '--hap_T', 't.bed',
+                                      '--hap_Va', 'va.bed'])
+            assert args.hap_Vt is None
+            override = parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', mode,
+                                          '--hap_A', 'a.bed', '--hap_T', 't.bed',
+                                          '--hap_Va', 'va.bed', '--hap_Vt', 'vt.bed'])
+            assert override.hap_Vt == 'vt.bed'
+
 
 class TestRasqualRowParsing:
     """A malformed RASQUAL output line must not kill a multi-hour run."""
