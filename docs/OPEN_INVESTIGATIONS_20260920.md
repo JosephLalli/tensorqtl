@@ -1,15 +1,15 @@
-# Open investigations: proposed work, not results
+# Historical investigations: proposed work as of 2026-09-20
 
-2026-09-20. This file holds work that is **proposed and not yet run**. It is
+2026-09-20. This file held work that was **proposed and not yet run**. It is
 deliberately separate from `CLAUDE.md`, which records observed facts, and from
 `docs/CURRENT_SCIENTIFIC_STATE.md`, which routes between things already
 established. When an item is run, its result
 belongs in a report and its conclusion in `CLAUDE.md`; this file then loses the
 item rather than accumulating it.
 
-One open item. The first entry below was run and closed on 2026-09-20 and is
-kept only as a pointer; the remaining work is a correctness cleanup with no
-open question attached.
+No item here is current work. The first entry was closed on 2026-09-20; the
+second predates the accepted 2026-09-29 `prepare_default_inputs` route and is
+kept only for historical unit-conversion context.
 
 ---
 
@@ -25,10 +25,11 @@ so the mechanism is refuted. Conclusion in `CLAUDE.md`; numbers in
 The six-mechanism catalogue is closed; this file keeps the entry only as a
 pointer and no longer lists it as work to do.
 
-## Open: log2 unit migration in `compute_summaries_from_gibbs`
+## Historical proposal: log2 unit migration in `compute_summaries_from_gibbs`
 
-**Status.** Proposed, not started. Deferred deliberately — inert for testing,
-wrong units for anything reported.
+**Historical status.** Proposed, not started. This does not apply to the
+current default, which constructs log2 point-estimate inputs through
+`prepare_default_inputs`; the helper discussed below is not that route.
 
 The project convention, set 2026-09-15, is that expression, allele-specific
 expression ratios, allelic fold change and all their uncertainties are in

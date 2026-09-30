@@ -1,5 +1,10 @@
 # Plasmode cis-eQTL benchmark (scripts/plasmode)
 
+> **Historical benchmark labels.** `split` is this pipeline's dated
+> `log2(CPM+1)` arm and `gibbs (shipped)` means shipped at that record's date.
+> Neither is the 2026-09-29 half-read default. Do not relabel stored results
+> or use these arms to claim uniform superiority.
+
 ## Purpose
 
 Datasets with known cis effects built from the BrainVar cohort's own Salmon quantification, and

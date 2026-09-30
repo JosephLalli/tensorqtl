@@ -10,8 +10,8 @@ summaries_from_point_estimates and compute_summaries_from_gibbs functions
 remain available for reproducing earlier analyses.
 
 The mapping APIs consume explicitly supplied phenotypes and variances; they
-do not transform counts or replace caller-provided weights. Their defaults
-are tau_mode='zero' and se_mode='fitted': relative inverse-variance weights
+do not transform counts or replace caller-provided weights. Nominal and permutation mapping default
+to tau_mode='zero' and se_mode='fitted': relative inverse-variance weights
 are accompanied by empirical per-channel residual scales. Unit Vt therefore
 gives unweighted total-expression regression with a fitted residual SE, not
 an assertion that total expression has known error variance one.
@@ -299,6 +299,11 @@ def orient_haplotypes(sign_sites, depth_sites=None):
 
 def compute_summaries_from_gibbs(yL, yR, kappa=0.5, yT=None, count_noise=True):
     """
+    Historical natural-log Gibbs-mean summaries, retained for reproduction.
+    For the current point-estimate half-read split route use
+    prepare_default_inputs. The behavior described below is this helper's
+    historical contract, not the production association default.
+
     Compute hapmixQTL summary statistics from Gibbs draws.
 
     Args:
@@ -445,8 +450,11 @@ def prepare_default_inputs(pL, pR, pT, eff_lib_size, yL, yR,
 
 def summaries_from_point_estimates(pL, pR, pT, eff_lib_size, yL, yR, yT,
                                    kappa=0.5, count_noise=True):
-    """The phenotype since 2026-09-25: VALUES from Salmon's point estimates,
-    VARIANCE from the Gibbs draws, in log2.
+    """Historical 2026-09-25 summaries, retained for reproduction.
+
+    For the current half-read split default use prepare_default_inputs. This
+    older helper uses log2(CPM+1) totals and Gibbs variances in both channels.
+    VALUES come from Salmon point estimates; VARIANCE from the Gibbs draws.
 
     User rules (2026-09-25): every value is computed from the point estimates
     (quant.sf NumReads); the Gibbs draws are used ONLY for the measurement
@@ -544,9 +552,10 @@ def count_cutoff_masks(yL, yR, yT=None, asc_cutoff=None, asc_cap=None,
                        trc_cutoff=None):
     """Per-channel admission masks from mixQTL-style count cutoffs.
 
-    hapmixQTL has no count cutoffs of its own: every donor with allelic
-    information enters the allelic channel and every donor enters the total
-    channel. This builds the masks that reproduce mixQTL's count thresholds,
+    These optional masks are additional to prepare_default_inputs' fixed
+    ASE admission rule (no coverage, negligible Va, or one-sided counts below
+    0.5 reads are excluded). Total expression otherwise keeps every donor.
+    This builds the masks that reproduce mixQTL's count thresholds,
     so the two estimators can be run on a MATCHED donor set. It is the caller's
     job to pass the masks on; nothing here is applied by default.
 
@@ -722,23 +731,17 @@ class WeightedResidualizer:
 
 def _wls_regression(y_star_t, x_star_t, residualizer, robust=False, fitted=False):
     """
-    Known-variance GLS on sqrt-weight-transformed data.
+    Regression on sqrt-weight-transformed data, evaluated by dot products.
 
-    The Gibbs inferential variances are treated as *known* measurement
-    variances: Var(error_i) = v_inf_i + tau. Under the sqrt-weight transform
-    (y* = sqrt(w) y, x* = sqrt(w) x, w_i = 1/(v_inf_i + tau)), the estimator
-    reduces to ordinary dot products, but the standard error is the
-    known-variance GLS SE
+    The production association mappers call this with fitted=True. They use
+    relative weights (Gibbs/count-noise ASE variances or unit total working
+    variances) and estimate Var(beta_hat) = sigma2_hat / xx from residuals.
+    Rescaling all weights leaves that fitted SE and the slope unchanged.
 
-        Var(beta_hat) = (x*' x*)^-1 = 1 / xx
-
-    rather than the estimated-dispersion WLS SE sqrt(sigma2_hat / xx). This is
-    the key difference from standard WLS and is what lets the inferential
-    uncertainty propagate into beta_se in absolute terms: uniformly inflating
-    all v_inf shrinks the weights, shrinks xx, and inflates the SE (an
-    estimated-dispersion SE would instead absorb the scale into sigma2_hat and
-    be invariant to it, so a channel with huge inferential variance could never
-    be down-weighted -- see the huge-Va test).
+    The low-level default fitted=False retains known-variance GLS for
+    historical callers: Var(beta_hat) = 1 / xx assumes the supplied weights
+    are absolute precisions. robust=True instead selects HC1 unless fitted
+    takes precedence. These branches are not the default association model.
 
     Args:
         y_star_t: [1, N] sqrt(w) * phenotype
@@ -1990,6 +1993,10 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     """
     hapmixQTL cis-QTL mapping: nominal associations for all variant-phenotype pairs.
 
+    Inputs are already prepared. Use prepare_default_inputs for half-read
+    split (Gibbs-informed ASE weights, unit total weights). Explicit caller
+    phenotypes and variances are preserved; Vt_df remains required here.
+
     ``genotype_covariates_df`` (the genotype PCs) enters the design exactly as
     ``covariates_df`` does; the split exists for map_cis's permutation, where
     genotype-tied covariates stay with the genotypes. Pass it here too so the
@@ -2026,7 +2033,8 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         A_df:             allelic contrast [phenotypes x samples]
         T_df:             log total expression [phenotypes x samples]
         Va_df:            inferential variance for a [phenotypes x samples]
-        Vt_df:            inferential variance for t [phenotypes x samples]
+        Vt_df:            total working variance [phenotypes x samples];
+                          supply ones for half-read split
         phenotype_pos_df: phenotype positions [phenotypes x (chr, pos)]
         xL_df:            haplotype L ALT allele (0/1) [variants x samples] or None
         xR_df:            haplotype R ALT allele (0/1) [variants x samples] or None
@@ -2048,54 +2056,17 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
                           results (see _prepare_channels)
         maf_threshold:    minimum minor allele frequency
         window:           cis-window size in bases
-        tau_mode:         'estimate' (default) or 'zero'.
-
-            'estimate' adds a moment-estimated overdispersion term tau to the
-            per-sample variance, so the weights are w_i = 1/(v_inf_i + tau).
-
-            'zero' uses w_i = 1/v_inf_i, i.e. it asserts the Gibbs inferential
-            variance is the ENTIRE error variance. That is essentially never
-            true of real data -- a quantifier's posterior captures only
-            allelic-assignment uncertainty conditional on the observed total,
-            not the counts' sampling variance and not biological variance -- so
-            the weights come out uniformly too large, the known-variance GLS SE
-            (Var(beta) = 1/xx) collapses, and p-values are severely
-            anticonservative. Measured: up to 107x the nominal type-I error at
-            alpha=1e-3 on Gaussian simulations and ~100% false positives on
-            count-level simulations (lambda_GC -> inf); nominal 95% CIs cover
-            64.5%. At matched empirical type-I error it also loses all the power
-            the allele-specific channel provides, performing no better than
-            total-count-only. See docs/ase_validation.md.
-
-            The parent method makes the same point differently: mixQTL (Liang
-            et al. 2021) writes the ASE error as N(0, sigma^2 * (1/Y1 + 1/Y2)),
-            where the counts set only the SHAPE of the weights and sigma^2 is a
-            free scale parameter inferred from the data (Supplementary Notes
-            5.2). 'zero' drops that free parameter; 'estimate' restores a free
-            parameter, but ADDITIVELY (v_inf + tau) rather than multiplicatively
-            (sigma^2 * v_inf), so it is not mixQTL's variance model. A
-            multiplicative scale suits quantification noise of the right shape
-            and the wrong size; an additive term suits biological variance,
-            which does not shrink with read depth. The two have NOT been
-            compared: docs/ase_validation.md sec 7b runs no-tau, a weight cap,
-            additive tau and the nested sigma^2 * v_inf + tau, and has no
-            multiplicative arm. This contrast applies to the ALLELE-SPECIFIC
-            channel only; mixQTL's total-count channel carries a single flat
-            variance that hapmixQTL's v_t + tau_t decomposes rather than
-            departs from (docs/hapmixqtl_methods.md sec 3.2).
-
-            'zero' is retained only for reproducing prior results and emits a
-            warning.
-        se_mode:          'model' (default; known-variance 1/sqrt(xx)),
-                          'robust' (HC1 sandwich), or 'fitted'
-                          (estimated dispersion sigma_hat/sqrt(xx), which
-                          makes the weights a shape only -- Var(eps) =
-                          sigma^2 * v under tau_mode='zero')
-                          Statistics are on the null-model tau scale (tau
-                          estimated once per gene without a genotype term);
-                          map_cis(tau_refit=True) reports its lead with tau
-                          re-estimated under the alternative, so a strong
-                          gene's lead pair is larger there than here.
+        tau_mode:         'zero' (default), no additive floor. Together with
+                          se_mode='fitted', working variances set relative
+                          weights and each channel estimates a residual scale.
+                          'estimate' is a deprecated compatibility path in
+                          fitted_variance.py, not the production default.
+        se_mode:          'fitted' (default), estimated-dispersion SE;
+                          'robust', HC1 sandwich for nominal mapping only;
+                          or deprecated 'model', known-variance 1/sqrt(xx).
+                          The historical invalid zero-tau/known-variance
+                          pairing is not the zero-tau/fitted default. See
+                          docs/ase_validation.md for those dated results.
         total_variance_model: the TOTAL channel's variance function,
                           'additive' (default, v_t + tau_t -- what every
                           earlier result used) or 'two_component'
@@ -2398,6 +2369,14 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             genotype_covariates_df=None, min_allelic_donors=MIN_ALLELIC_DONORS):
     """
     hapmixQTL cis-QTL mapping with permutation-based empirical p-values.
+
+    Current association defaults are tau_mode='zero', se_mode='fitted' and
+    perm_scheme='records_signflip'. Prepare half-read split inputs with
+    prepare_default_inputs; explicit caller inputs and weights are preserved.
+    Both channels fit residual scales. tau_refit has no effect at zero tau.
+
+    The variance-model/tau-refit descriptions in the next two paragraphs
+    apply to deprecated tau_mode='estimate' compatibility paths only.
 
     ``variance_model`` selects the allelic channel's error variance:
     'additive' (default) v + tau, 'two_component' c v + tau, or
@@ -2871,12 +2850,14 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     ``tensorqtl.susie.susie`` unchanged, so any improvement to the core SuSiE
     implementation is inherited automatically.
 
-    ``estimate_residual_variance`` defaults to ``False`` (with an implied
-    residual variance of 1): the sqrt-weight transform already whitens the
-    noise to unit variance using the *known* Gibbs inferential variances, which
-    is consistent with the known-variance GLS standard errors used elsewhere in
-    this module. Set it to ``True`` to let SuSiE re-estimate a scalar
-    dispersion instead (matching the default individual-level ``susie.map``).
+    This is a separate legacy stacked-design path, not the association
+    mappers' fitted-SE calculation. It has no se_mode argument. Its direct
+    API defaults to tau_mode='estimate' and estimate_residual_variance=False
+    (fixed residual variance one); the CLI instead passes tau_mode='zero'.
+    Setting estimate_residual_variance=True fits one scalar dispersion.
+    Unit Vt supplied by half-read preparation is a working variance and does
+    not establish known unit error variance in this stack. Half-read nominal
+    and permutation validation does not establish credible-set calibration.
 
     Args mirror ``susie.map``; hapmixQTL-specific inputs (A/T/Va/Vt and the
     optional phase matrices xL/xR) match ``map_cis``.
@@ -3093,9 +3074,11 @@ def fine_mapping_provenance(summary):
     """
     Classify a ``map_susie`` summary (a DataFrame, or the path of the parquet
     or tab-delimited file the CLI writes) by the tau_mode it was produced
-    under.
+    under. This legacy classifier marks any recorded 'zero' as 'stale',
+    missing tau_mode as 'unknown', and other recorded modes as 'ok'. It does
+    not inspect the phenotype transform or certify half-read calibration.
 
-    Fine-mapping run under ``tau_mode='zero'`` is invalid, not merely
+    Historical calibration motivating this classifier: fine-mapping run under ``tau_mode='zero'`` is invalid, not merely
     miscalibrated: nominal 95% credible sets covered the causal variant 36.8%
     of the time and PIP-0.98 variants were causal 34% of the time
     (docs/ase_validation.md sec 7g). Such results should be redone, not

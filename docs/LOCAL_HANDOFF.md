@@ -1,3 +1,12 @@
+# Historical handoff: pre-2026-09-29 default adoption
+
+This file records an older transfer state. It does not describe the live
+worktree, which was `simulation-benchmark` at merge `86b947f` when reconciled
+on 2026-09-29. The branch was ahead of origin by three commits, was not
+pushed, and contained untracked `scripts/beta_postfit_adjustment.py`; verify
+live Git state before acting. For current behavior read `CLAUDE.md`, then
+`docs/CURRENT_SCIENTIFIC_STATE.md` and `docs/hapmixqtl_methods.md`.
+
 # Moving this work to a local server
 
 A Claude Code cloud session cannot be relocated — it is server-side state. What
@@ -6,7 +15,7 @@ the cloud container is load-bearing except the git history, and that is pushed.
 
 ## 1. What is already portable
 
-Everything. The working tree is clean and pushed to
+Historical claim only: the referenced working tree was clean and pushed to
 `claude/hapmixqtl-gibbs-uncertainty-IQ6Za`. That includes:
 
 - SUPERSEDED 2026-09-21, and the alternatives DEPRECATED 2026-09-23: there are now two modes only, mixQTL mode and default mode (`tau_mode='zero'` + `se_mode='fitted'`),
@@ -205,16 +214,10 @@ Open:
 
 ## 6. Before touching phenotypes, covariates or the permutation null
 
-Read `docs/pipeline_rules.md`: the 2026-09-25 rules (values from Salmon point
-estimates, Gibbs draws only for variance; log2(CPM + 1) on edgeR's effective
-library size; expression-PC gene filter = eQTL gene filter; genotype PCs tied
-to the genotypes under permutation; mixQTL never touches the draws), where
-each is implemented, what is not yet switched, and four open decisions (as of
-2026-09-26: the two original ones — 1,208 filtered genes without Gibbs draws,
-and Salmon point estimates that put one haplotype at exactly zero — plus
-which weighting configuration ships and how the genotype-PC permutation tie
-interacts with the weights, both added after the corrected-pipeline null and
-its before/after decomposition were run that week).
+Read `CLAUDE.md` for the accepted 2026-09-29 default: point-estimate values,
+half-read total `log2((pT+.5)/(Leff+1)*1e6)`, legacy ASE variance/admission,
+and unit `Vt`. Existing expression PCs remain fixed log2(CPM+1) covariates.
+The 2026-09-25 pipeline rules below are historical context.
 
 ## 7. State as of 2026-09-27
 
@@ -227,9 +230,8 @@ variance estimate) with Meier's first-order correction of the combined
 standard error for weights estimated from the same residuals, and a
 15-donor allelic floor; rule in
 `docs/hapmixqtl_methods.md` Section 4.5), the benchmark code
-(`scripts/plasmode/README.md`), the result pages, what was running (nothing)
-and what is open, including the weighting decision, for which the two
-benchmark pages are now the known-effect evidence.
+(`scripts/plasmode/README.md`) and the result pages. The weighting decision
+was open at that date and is superseded by the accepted 2026-09-29 default.
 
 ## 8. State as of 2026-09-29
 
@@ -239,6 +241,5 @@ alignment-based counts TReCASE and the `split_native` control now read
 (phASER rebuilt to its own assumptions, then WASP), the held-out replication
 referee on real data, the fixed external benchmark harness, the diagnosis of
 why TReCASE and RASQUAL rank below total-only tensorQTL, the two summary
-pages, what was running (nothing) and what is open: the weighting decision,
-and the shortfall of the estimated slope against the planted effect, which
-is the question of the next phase.
+pages and the effect-size shortfall evidence. The weighting decision in this
+historical section is superseded by the accepted 2026-09-29 default.

@@ -6,6 +6,10 @@ If you use tensorQTL in your research, please cite the following paper:
 [Taylor-Weiner, Aguet, et al., *Genome Biol.*, 2019](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1836-7).</br>
 Empirical beta-approximated p-values are computed as described in [Ongen et al., *Bioinformatics*, 2016](https://academic.oup.com/bioinformatics/article/32/10/1479/1742545).
 
+### Current work
+
+This branch develops hapmixQTL. Start with the [current scientific state](docs/CURRENT_SCIENTIFIC_STATE.md), then the [compact decision and evidence index](CLAUDE.md#which-document-answers-which-question). The [hapmixQTL guide below](#hapmixqtl-cis-qtl-mapping-with-haplotype-resolved-expression), [pipeline rules](docs/pipeline_rules.md), and [Salmon deployment runbook](docs/brainvar_deploy_runbook.md) describe the current half-read split default. Dated benchmark reports retain the method configuration used for each measurement.
+
 ### Install
 You can install tensorQTL using pip:
 ```
@@ -179,88 +183,100 @@ python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode trans
 ```
 
-#### hapmixQTL: *cis*-QTL mapping with haplotype-resolved expression and inferential uncertainty
-hapmixQTL is a generalization of [mixQTL](https://www.nature.com/articles/s41467-022-29123-9) that maps *cis*-QTLs using haplotype-resolved expression posteriors — e.g. [Salmon](https://combine-lab.github.io/salmon/) Gibbs draws obtained by quantifying reads against a personalized diploid transcriptome. The inferential (measurement) uncertainty captured by the Gibbs draws is propagated directly into the effect size and its standard error.
+#### hapmixQTL: cis-QTL mapping with haplotype-resolved expression
 
-For each sample *i* and feature *f*, two information channels are combined:
+hapmixQTL extends [mixQTL](https://www.nature.com/articles/s41467-022-29123-9) with donor-specific Gibbs-informed ASE weights. The **default since 2026-09-29 is half-read split**: Salmon point estimates supply expression values, Gibbs draws inform ASE weights, and total expression uses unit weights. These instructions refer to this branch's source checkout. The published mixQTL implementation remains a separate, unchanged comparator.
 
-1. **Allelic contrast (ASE)** channel, using the posterior-mean expression of each haplotype (`L`, `R`) with pseudocount `κ`:
-   `a_i = log(yL_i + κ) − log(yR_i + κ)`, regressed **through the origin** on the **signed heterozygote indicator** `s_i = xL_i − xR_i ∈ {−1, 0, +1}` (from phased genotypes; `s_i = 0` if unphased/homozygous). The ASE regression and its tau estimator add no intercept, preserving the fit under paired expression/genotype H1/H2 relabeling within donors.
-2. **Total expression** channel:
-   `t_i = log((yL_i + yR_i)/2 + κ)`, regressed on the **half dosage** `g_i/2` so that both channels estimate the same quantity — the log allelic fold change (log aFC).
+For each gene and donor, let `pL` and `pR` be point-estimate counts from paired haplotype transcripts, `pT` the total over **all** transcripts, and `Leff` the edgeR effective library size (`lib.size × TMM factor`). Do not substitute `pL + pR` for `pT`.
 
-Per-sample inferential variances are computed across the `B` Gibbs draws:
-`v_a_i = Var_b(a_i^(b))`, `v_t_i = Var_b(t_i^(b))`, the **Gibbs across-draw variances**. In **default mode** they enter each channel's weighted regression as a SHAPE, `w = 1/v`, with no additive floor, and the residual scale is fitted per variant: `Var(eps_i) = sigma^2 v_i`. Weighting is implemented via the sqrt-weight transform (`y* = sqrt(w) y`, `x* = sqrt(w) x`), which turns weighted least squares into ordinary dot products that vectorize across all *cis* variants on the GPU. Because the scale is fitted, rescaling every weight in a gene leaves beta and its SE unchanged, so only the within-gene shape of the Gibbs variances reaches the answer -- which is also why default mode is insensitive to a uniform error in the absolute scale of `v`.
+| Channel | Phenotype | Working weights | Regression |
+| --- | --- | --- | --- |
+| ASE | `A = log2((pL + 0.5)/(pR + 0.5))` | `1/Va` on admitted donors | Signed heterozygosity `xL − xR`, through the origin |
+| Total | `T = log2((pT + 0.5)/(Leff + 1) × 1e6)` | One for every donor | Half dosage `g/2`, with an intercept and total covariates |
 
-The two channel estimates are merged by inverse-variance meta-analysis:
+`Va` is the across-draw variance of the same allelic log2 ratio, plus the existing Poisson counting term when `count_noise=True` (the preparation helper's default). ASE admission requires `Va > 1e-12`, positive haplotype-informative coverage, and exclusion when **exactly one** of `pL`, `pR` is below 0.5 reads. Excluded donor-gene pairs have `Va=0`. Both counts below 0.5 do not by themselves trigger the one-sided exclusion. Total-expression zeros remain finite and keep unit weight.
+
+The half-read offset is added **before** library normalization. In `log2(CPM+1)`, the added one CPM corresponds to `Leff/1e6` reads; the new numerator always adds half a read. Existing expression PCs remain based on `log2(CPM+1)` on the same gene set and effective library sizes. The change improves beta recovery in the measured benchmarks, with somewhat larger reported SEs; it was accepted as an accuracy/precision tradeoff, not uniform precision improvement. See the [decision and evidence](docs/CURRENT_SCIENTIFIC_STATE.md).
+
+**Fitting and uncertainty.** `map_nominal` and `map_cis` default to `tau_mode='zero', se_mode='fitted'`: both channels estimate a residual scale for their SEs. Unit total working variance does **not** mean the total noise variance or SE is fixed at one. The sqrt-weight transform retains the existing GPU matrix multiplication across cis variants. The combined slope uses inverse squared channel SEs. When both channels are admitted, its reported SE includes Meier's correction:
+
+```text
+wa = 1 / se_a²; wt = 1 / se_t²
+beta = (wa * beta_a + wt * beta_t) / (wa + wt)
+fa = wa / (wa + wt); ft = wt / (wa + wt)
+M = 1 + 4 * fa * ft * (1 / dof_a + 1 / dof_t)
+se = sqrt(M / (wa + wt))
 ```
-beta = (beta_a/se_a² + beta_t/se_t²) / (1/se_a² + 1/se_t²)
-se   = sqrt(1 / (1/se_a² + 1/se_t²))
-```
-`beta` is interpretable as the log allelic fold change per ALT allele. When phase is unavailable (`s_i = 0` for all samples) the ASE channel is uninformative and the result reduces to the total-expression channel alone.
 
-**Inputs.** hapmixQTL consumes five phenotype-like matrices (phenotypes × samples, in the same BED format as `read_phenotype_bed`), plus phased haplotype genotypes:
+Nominal p-values use the existing per-channel and Welch–Satterthwaite references. The combined scan requires at least 15 informative ASE donors when total expression is available; otherwise it uses total expression alone. Missing phase also removes ASE information. Slopes are on a log2 allelic fold-change scale, subject to the documented transform and estimation limitations. [Methods](docs/hapmixqtl_methods.md) and [output definitions](docs/outputs.md) give the exact rules.
+
+**Prepare inputs in Python.** Counts are arrays with shape `[features, samples]`; haplotype Gibbs draws have shape `[features, samples, draws]`:
+
+```python
+import pandas as pd
+from tensorqtl import hapmixqtl
+
+A, T, Va, Vt = hapmixqtl.prepare_default_inputs(
+    pL, pR, pT, effective_library_sizes, yL, yR, count_noise=True)
+A_df, T_df, Va_df, Vt_df = [
+    pd.DataFrame(x, index=phenotype_ids, columns=sample_ids)
+    for x in (A, T, Va, Vt)
+]
+```
+
+The direct mapping APIs require all four matrices and preserve supplied values and weights. They do not normalize counts automatically. `summaries_from_point_estimates` retains historical `log2(CPM+1)` totals and Gibbs total variance; `compute_summaries_from_gibbs` retains the older natural-log draw-mean summaries. Neither is the current default preparation helper. The [Salmon runner](docs/brainvar_deploy_runbook.md) constructs current inputs directly from quantification files.
+
+**BED CLI inputs.** Matrices use the usual phenotype BED layout and identical gene/sample ordering. Phase columns must match genotype sample order exactly.
 
 | Argument | Description |
 | --- | --- |
-| `--hap_A` | Allelic contrast `a_i` (BED) |
-| `--hap_T` | Log total expression `t_i` (BED) |
-| `--hap_Va` | Inferential variance of `a_i` (BED) |
-| `--hap_Vt` | Inferential variance of `t_i` (BED) |
-| `--hap_Cat` | Inferential covariance of `a_i,t_i` (optional; loaded for inspection only and **intentionally unused**: the two channel estimators are orthogonal under random phase, so the scalar meta-analysis is exact without it — see the `hapmixqtl` module docstring and `docs/ase_validation.md` §3) |
-| `--phase_xL` | ALT allele on haplotype L (0/1), variants × samples, tab-delimited (optional) |
-| `--phase_xR` | ALT allele on haplotype R (0/1), variants × samples, tab-delimited (optional) |
-| `--ase_covariates` | What `--covariates` are projected out of the **allelic** channel: `none` (default, through-origin with no nuisance columns) or `shared` (the supplied total-channel covariates, without an automatic ASE intercept). Custom allelic nuisance predictors require an explicit biological interpretation and consistent sign under H1/H2 relabeling. The total channel retains its intercept. |
-| `--tau_refit` | `hapmixqtl` mode only. τ is estimated once per gene under the null model, so a strong cis effect inflates it and shrinks every nominal statistic in the window by a common factor. With this flag each channel's τ is re-estimated with the lead's predictor in the model and the lead's `slope`, `slope_se`, `pval_nominal` and per-channel diagnostics are reported on that scale; `pval_perm` and `pval_beta` stay on the scan scale, where they are calibrated |
-| `--se_mode` | `fitted` (**default**): the estimated-dispersion SE `sigma_hat/sqrt(xx)`. Together with the fixed `tau_mode='zero'` weighting this is **default mode**, `Var(eps_i) = sigma^2 v_i` -- mixQTL's Eq 11 form, in which the Gibbs variances are a SHAPE and their absolute scale cancels. `robust` is the HC1 sandwich, `map_nominal` only. `map_cis` accepts `fitted`, which refits a per-channel residual scale at every permutation exactly as mixQTL's permutation path does, and rejects `robust`, which has no permutation counterpart. The known-variance form is DEPRECATED and no longer selectable (`tensorqtl/fitted_variance.py`) |
+| `--hap_A` | Required point-estimate ASE contrast |
+| `--hap_T` | Required precomputed half-read total expression |
+| `--hap_Va` | Required ASE working variance, with excluded donor-gene pairs set to zero |
+| `--hap_Vt` | Optional total working-variance override; omission supplies ones, a supplied file is preserved |
+| `--hap_Cat` | Optional covariance matrix, loaded for inspection only and unused by mapping |
+| `--phase_xL`, `--phase_xR` | Optional paired ALT haplotype genotype matrices, variants × samples |
+| `--ase_covariates` | `none` (default, through-origin) or `shared`; total expression retains its intercept |
+| `--se_mode` | `fitted` (default) for nominal/permutation mapping; `robust` HC1 is nominal-only; this option is not passed to `map_susie` |
+| `--tau_refit` | Legacy compatibility flag; no tau refit occurs in the current `tau_mode='zero'` CLI path |
 
-The summary matrices can be precomputed from Gibbs draws with `hapmixqtl.compute_summaries_from_gibbs(yL, yR, kappa=0.5)`, where `yL`/`yR` are `[features, samples, draws]` arrays. Two optional arguments matter on real data: `yT` supplies the gene total summed over **all** transcripts (against a personalized diploid transcriptome `yL + yR` is a heterozygous-transcript subtotal, and using it makes `t` a two-point mixture determined by local heterozygosity, which is in LD with the variants being tested), and `count_noise=True` adds the plug-in Poisson variance of a log count to `Va`/`Vt`, without which a zero-count sample has `v_inf = 0` and so the largest weight in the gene. Both drivers under `scripts/` turn counting noise on by default; the library default is off, and it should stay off for bootstrap draws, which resample the reads and already carry counting noise. The positional `${expression_bed}` argument is still required by the CLI but ignored in hapmixQTL modes (all phenotype inputs come from the `--hap_*` flags).
+BED files contain no raw counts or library sizes, so the CLI cannot verify the half-read transform or the ASE admission rule. Supply matrices prepared under the contract above. The positional `${expression_bed}` argument remains required by the parser but is ignored in hapmixQTL modes.
 
-**Nominal mapping** (all *cis* variant–phenotype pairs) writes one parquet per chromosome, `${output_dir}/${prefix}.hapmixqtl_pairs.${chr}.parquet`, with the combined `slope`/`slope_se`/`pval_nominal` plus the per-channel `slope_a`/`slope_a_se`/`pval_a` and `slope_t`/`slope_t_se`/`pval_t`, and `pval_cis_trans`, a Wald test that the two channels estimate the same effect (a diagnostic for effects that are not purely cis — see `hapmixqtl.cis_trans_diagnostic`):
-```
+**Nominal mapping** writes `${prefix}.hapmixqtl_pairs.${chr}.parquet` with combined and per-channel effects, SEs, p-values, degrees of freedom, and channel diagnostics:
+
+```bash
 python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode hapmixqtl_nominal \
-    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
+    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} \
     --phase_xL ${xL_file} --phase_xR ${xR_file} \
     --covariates ${covariates_file}
 ```
-In Python:
-```
-from tensorqtl import hapmixqtl
-hapmixqtl.map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
-                      phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-                      prefix=prefix, covariates_df=covariates_df, output_dir='.')
-```
 
-**Permutation mapping** (top association per phenotype with empirical/beta-approximated p-values), analogous to `cis`, writes `${output_dir}/${prefix}.hapmixqtl.txt.gz`. Each gene's row also carries the lead variant's per-channel slopes, `alpha_cis = slope_a/slope_t` and `pval_cis_trans`: a small `pval_cis_trans` means the ASE and total channels disagree, so the combined slope should not be read as a cis log aFC (a trans component, reference mapping bias or phasing error attenuate it — `docs/ase_validation.md` §7c). It is a diagnostic column, not a filter.
-
-Each row also reports the τ actually used, `tau_a`/`tau_t`, alongside the scan's null-model τ, `tau_a_null`/`tau_t_null`, and the flag `tau_refit`. Without `--tau_refit` these pairs are equal and everything is on the scan scale; with it, `slope`, `slope_se` and `pval_nominal` are on the refit scale while `pval_perm` and `pval_beta` remain on the scan scale. A lead's `pval_nominal` is never a gene-level p (it is the best of the window) — `pval_beta` is:
-```
-python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
-    --mode hapmixqtl \
-    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
-    --phase_xL ${xL_file} --phase_xR ${xR_file} \
-    --covariates ${covariates_file}
-```
-In Python:
-```
-res_df = hapmixqtl.map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
-                           phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-                           covariates_df=covariates_df)
-```
-
-**SuSiE fine-mapping** identifies credible sets of candidate causal variants from the combined ASE + total evidence. Because both channels estimate the same shared effect (log aFC), the two sqrt-weighted, covariate-residualized channels are stacked into a single whitened design and passed to tensorQTL's existing [SuSiE](https://rss.onlinelibrary.wiley.com/doi/full/10.1111/rssb.12388) implementation (`tensorqtl.susie.susie`) unchanged, so any improvements to the core SuSiE code are inherited automatically. The sqrt-weight transform whitens each channel using the Gibbs inferential variances, so `estimate_residual_variance` defaults to `False`; set it to `True` to let SuSiE re-estimate a scalar dispersion instead. Outputs mirror `cis_susie`: a credible-set summary parquet (`${prefix}.hapmixqtl_SuSiE_summary.parquet`) and a pickle of the full per-phenotype results. The summary carries a `tau_mode` column and each pickle entry a `tau_mode` key, as provenance. Fine-mapping produced under `tau_mode='zero'` WITH the deprecated known-variance SE is invalid (`docs/ase_validation.md` sec 7g) and should be redone; note the scope, because default mode also uses `'zero'` but pairs it with `se_mode='fitted'`, which does not carry that defect -- read the PAIRING, never the `tau_mode` alone. `hapmixqtl.fine_mapping_provenance(summary_or_path)` classifies a results file as `ok`, `stale`, or `unknown` (no provenance column, i.e. produced before it was recorded).
-```
-python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
-    --mode hapmixqtl_susie \
-    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
-    --phase_xL ${xL_file} --phase_xR ${xR_file} \
-    --covariates ${covariates_file} --max_effects 10
-```
-In Python:
-```
-summary_df, susie_res = hapmixqtl.map_susie(
+```python
+hapmixqtl.map_nominal(
     genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-    covariates_df=covariates_df, L=10, summary_only=False)
+    prefix=prefix, covariates_df=covariates_df, output_dir='.')
 ```
+
+**Permutation mapping** uses donor-record permutations with random haplotype-label swaps (`records_signflip`). RNA covariates move with donor records; genotype-tied covariates stay with genotypes when supplied separately through the Python API or Salmon runner. It writes the top association per gene to `${prefix}.hapmixqtl.txt.gz`:
+
+```bash
+python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
+    --mode hapmixqtl \
+    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} \
+    --phase_xL ${xL_file} --phase_xR ${xR_file} \
+    --covariates ${covariates_file}
+```
+
+```python
+res_df = hapmixqtl.map_cis(
+    genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
+    phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
+    covariates_df=covariates_df,
+    genotype_covariates_df=genotype_covariates_df)
+```
+
+The lead's `pval_nominal` is a selected variant-level p-value, not a gene-level p-value; `pval_perm` and `pval_beta` account for the cis scan. `pval_cis_trans` measures disagreement between channels and is a diagnostic, not a filter. Legacy tau output fields remain for compatibility; current zero-tau mapping does not perform a tau refit.
+
+**SuSiE compatibility path.** `map_susie` stacks weighted, covariate-residualized ASE and total inputs and has its own variance settings. It has no `se_mode` argument: the direct API retains `tau_mode='estimate'` and `estimate_residual_variance=False`, whereas the CLI passes `tau_mode='zero'`. Selecting `--se_mode fitted` does not change that fine-mapping path. Half-read nominal/permutation validation does not establish credible-set calibration. See the [fine-mapping limitations](docs/hapmixqtl_methods.md) before interpreting its results. The `fine_mapping_provenance` helper checks recorded `tau_mode`; it does not establish the input transform or validate the half-read method.

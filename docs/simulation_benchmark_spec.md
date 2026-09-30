@@ -22,6 +22,11 @@
 > not followed: on 2026-09-28 (commit 9369bb1) `hapmix_pval` itself was fixed
 > and now runs default mode, and the three harnesses that used its removed
 > arm stop (record `external_benchmark_current_20260928/`).
+>
+> **2026-09-29 historical-label boundary.** `split` remains the recorded
+> `log2(CPM+1)` arm and `gibbs (shipped)` means the implementation shipped at
+> that run's date. Neither is the current half-read association default; this
+> benchmark does not establish uniform superiority or SuSiE calibration.
 
 Date: 2026-09-26, revised the same day after two review passes. Status:
 specification only; nothing in it is implemented.

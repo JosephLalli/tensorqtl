@@ -40,9 +40,11 @@ explanation of equation (4). The counting formula remains in the implementation
 pending a separate variance-model decision; it is not justified by that
 explanation. See the [corrected algorithm review](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/REPORT.md).
 
-**Current default input contract (2026-09-29).** User rule: every VALUE below — the
+**Current default input contract (2026-09-29).** The association runner calls
+`prepare_default_inputs(pL, pR, pT, Leff, yL, yR, kappa=.5,
+count_noise=True) -> A, T, Va, Vt`. Every default-mode VALUE below — the
 per-sample summaries $a_i$, $t_i$ of Section 2, the total-channel CPM
-normalization, mixQTL's inputs, count cutoffs and expression PCs — must come
+normalization, count cutoffs and expression PCs — must come
 from Salmon's point estimates (`quant.sf` `NumReads`), never from a mean over
 the Gibbs draws (a "posterior-mean count"); the draws are used ONLY for ASE
 variance. `prepare_default_inputs` in `tensorqtl/hapmixqtl.py`
@@ -61,18 +63,32 @@ still uses. Rules, code map and open decisions: `docs/pipeline_rules.md`.
 For raw BED CLI input, `--hap_A`, `--hap_T`, and `--hap_Va` are required;
 omitting optional `--hap_Vt` creates unit total working variance, while a
 supplied `--hap_Vt` is an exact custom override. Those files alone cannot
-verify the half-read total transform or ASE admission mask.
+verify the half-read total transform or ASE admission mask. Direct mapping
+APIs consume their supplied inputs and require explicit `Vt`.
+
+> **Historical-method boundary.** Sections 1--8 retain the former
+> Gibbs-draw/natural-log and tau-based method record. A dated `split` result
+> remains its recorded `log2(CPM+1)` arm, and `gibbs (shipped)` means shipped
+> at that record's date; neither label means the 2026-09-29 half-read default.
+> Association checks do not validate the separate stacked `map_susie` path,
+> which retains `tau_mode='estimate'` and fixed residual variance by default.
 
 ### Summary
 
 **Project unit convention (2026-09-15):** use log2 for expression, ASE ratios,
 aFC, and associated uncertainty. beta=1 denotes a twofold effect; variance and
 covariance use squared log2 units. Runtime conversion is DONE for the
-default-mode runner as of 2026-09-25 (`summaries_from_point_estimates`, the
-paragraph above). Equations (2)-(4) and the historical results below are in
+default-mode runner since 2026-09-25. Since 2026-09-29 its preparation
+helper is `prepare_default_inputs`, with half-read totals and unit total weights;
+`summaries_from_point_estimates` remains the older log2(CPM+1) helper. Equations (2)-(4) and the historical results below are in
 natural-log units. See the [conversion record](/mnt/ssd/lalli/brainvar_hapmix_deploy/mixqtl_algorithm_review_20260914/salmon_variance_theory_20260915/LOG2_CONVENTION.md).
 
-For each gene, hapmixQTL takes two measurements per sample from the posterior draws of a diploid (personalized) quantification: the log ratio of the two haplotypes' expression, and the log total. Both are regressed on the phased genotype of each cis variant in a known-variance generalized least squares (GLS) whose per-sample error variance is the sum of the quantifier's inferential variance, a Poisson counting term, and a per-gene between-sample variance $\tau$ estimated across samples. The two regressions estimate the same parameter, the log allelic fold change of the ALT haplotype relative to the REF haplotype, and are combined by inverse-variance weighting. The lead variant is the maximum of the combined statistic over the window; its gene-level significance is empirical, from a Freedman-Lane permutation of leverage-standardized whitened residuals, with a Beta approximation of the permutation distribution. Effect sizes are reported at the lead with $\tau$ re-estimated under the alternative so that a gene's own signal does not shrink its reported scale.
+For the current association default, point-estimate haplotype counts define
+the log2 ASE value; Gibbs variance plus optional Poisson noise defines `Va`.
+Point-estimate total counts and edgeR effective library sizes define the
+half-read total, with unit working `Vt`. GPU fitting, fitted scales and Meier
+combination are unchanged. The remaining detailed prose is historical unless
+it explicitly names the current contract above.
 
 ## 1. Notation and inputs
 
@@ -398,7 +414,7 @@ still importable from `hapmixqtl` for historical scripts, with a
 `DeprecationWarning`; a default-mode run never loads that module at all, which
 `tests/test_fitted_variance_quarantine.py` pins.
 
-Functions: `compute_summaries_from_gibbs` (Section 2; the pre-2026-09-25 phenotype), `summaries_from_point_estimates` (Section 2 box; the deployed phenotype since 2026-09-25), `_prepare_channels` and `_channel_weights` (4.1, 4.3), `WeightedResidualizer` and its `n_fixed_cov` (4.1, 5.3), `_wls_regression` (4.2), `_estimate_tau`, `_estimate_c_tau`, `estimate_library_factors`, `estimate_variance_priors` (4.3), `calculate_hapmixqtl_nominal` and `_combined_tstat2` (4.4), `_meier_factor` (4.5), `calculate_hapmixqtl_permutations`, `_leverage_standardized`, `_permute_within_informative`, `_combine_covariates` and `genotype_covariates_df` (5.3), `map_cis` (5), `map_nominal` (per-pair statistics on the null-model $\tau$ scale), `cis_trans_diagnostic` (6.2), `orient_haplotypes` and `reference_bias_diagnostic` (6.3), `calculate_beta_approx_pval` in `core.py` (5.3).
+Functions: `compute_summaries_from_gibbs` (Section 2; the pre-2026-09-25 phenotype), `summaries_from_point_estimates` (historical log2(CPM+1) reproduction helper), `half_read_log_cpm` and `prepare_default_inputs` (current half-read split input contract), `_prepare_channels` and `_channel_weights` (4.1, 4.3), `WeightedResidualizer` and its `n_fixed_cov` (4.1, 5.3), `_wls_regression` (4.2), `_estimate_tau`, `_estimate_c_tau`, `estimate_library_factors`, `estimate_variance_priors` (4.3), `calculate_hapmixqtl_nominal` and `_combined_tstat2` (4.4), `_meier_factor` (4.5), `calculate_hapmixqtl_permutations`, `_leverage_standardized`, `_permute_within_informative`, `_combine_covariates` and `genotype_covariates_df` (5.3), `map_cis` (5), `map_nominal` (per-pair fitted-scale statistics; null-model $\tau$ scale only in the deprecated estimated-tau path), `cis_trans_diagnostic` (6.2), `orient_haplotypes` and `reference_bias_diagnostic` (6.3), `calculate_beta_approx_pval` in `core.py` (5.3).
 
 ## References
 

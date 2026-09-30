@@ -87,6 +87,21 @@ a { color: var(--hap); }
       the truth is known, and replication in 135 donors that no method saw.</p>
   </header>
 
+  <section aria-label="Current method status">
+    <h2>Method status: half-read split adopted</h2>
+    <p>On 29 September 2026, half-read split became the production association default:
+      point-estimate ASE with Gibbs-informed weights, total expression
+      <code>log2((count + 0.5)/(effective library size + 1) × 10<sup>6</sup>)</code>,
+      unit total weights, and fitted residual scales. Existing expression PCs remain fixed.</p>
+    <p>This page preserves the earlier measurements. Here, <b>split</b> uses the original
+      <code>log2(CPM + 1)</code> total phenotype; <b>gibbs</b> is the prior default with Gibbs
+      weights in both channels. These results were not rerun under the new default.
+      See the <a href="../half_read_unit_power_pr_20260929/index.html">half-read comparison</a>
+      and <a href="../half_read_default_adoption_20260929/verification.json">implementation checks</a>.
+      Adoption accepts improved beta recovery with a precision tradeoff; it does not establish
+      uniform precision improvement or SuSiE credible-set calibration.</p>
+  </section>
+
   <section aria-labelledby="h-find">
     <h2 id="h-find">Where things stand</h2>
     <div class="findings" id="findings"></div>
@@ -178,7 +193,7 @@ a { color: var(--hap); }
       <dt>hapmixQTL</dt><dd>This project's method: it combines total expression with allele-specific expression from
         Salmon on each donor's personalized transcriptome, weighting each donor by how uncertain its measurement is.</dd>
       <dt>gibbs, split, unit, 1/(v+1)</dt><dd>The four hapmixQTL weightings. v is a donor's Gibbs variance (Salmon's
-        measurement uncertainty). gibbs weights by 1/v in both channels and is the shipped default; split uses 1/v for the
+        measurement uncertainty). gibbs weights by 1/v in both channels and was the default for these recorded runs; split uses 1/v for the
         allelic channel and equal weights for total expression; unit uses equal weights; 1/(v+1) damps the largest
         weights.</dd>
       <dt>mixQTL</dt><dd>The published method hapmixQTL extends, run from Salmon point estimates with its published read
@@ -205,7 +220,7 @@ a { color: var(--hap); }
 <script>
 const DATA = /*DATA*/null;
 const ARM = {
-  split: ['split', 'hap'], plus_one: ['1/(v+1)', 'hap'], unit: ['unit', 'hap'], gibbs: ['gibbs (shipped)', 'hap'],
+  split: ['split', 'hap'], plus_one: ['1/(v+1)', 'hap'], unit: ['unit', 'hap'], gibbs: ['gibbs (prior default)', 'hap'],
   split_native: ['split, alignment counts', 'hap'], mixqtl_permissive: ['mixQTL, permissive', 'std'],
   mixqtl: ['mixQTL, published', 'std'], tensorqtl: ['tensorQTL, total only', 'std'], rasqual: ['RASQUAL', 'joint'],
   trecase: ['TReCASE', 'joint'], trecase_native: ['TReCASE, alignment counts', 'joint'] };
@@ -282,7 +297,7 @@ function findings() {
   const hapK = k => ['gibbs', 'split', 'unit', 'plus_one'].map(a => R.paired[a][k].share);
   const items = [
     [`${f3(pw('split'))} vs ${f3(pw('tensorqtl'))}`, 'On planted effects, three hapmixQTL weightings find the most true genes',
-     `Deep set, effect 0.4: split ${f3(pw('split'))}, 1/(v+1) ${f3(pw('plus_one'))}, unit ${f3(pw('unit'))} against tensorQTL ${f3(pw('tensorqtl'))}. The shipped gibbs weighting finds ${f3(pw('gibbs'))} and rejects ${f3(P.null.gibbs.rate)} of null tests at 0.05.`],
+     `Deep set, effect 0.4: split ${f3(pw('split'))}, 1/(v+1) ${f3(pw('plus_one'))}, unit ${f3(pw('unit'))} against tensorQTL ${f3(pw('tensorqtl'))}. The prior-default gibbs weighting finds ${f3(pw('gibbs'))} and rejects ${f3(P.null.gibbs.rate)} of null tests at 0.05.`],
     [`${f3(R.tensorqtl['200'])}`, 'On real data, tensorQTL\'s top 200 genes replicate best; deeper, hapmixQTL\'s do',
      `Top 200: the hapmixQTL weightings trail tensorQTL by ${f3(-Math.max(...hapK('200')))} to ${f3(-Math.min(...hapK('200')))} in replication share. Top 1,565: they lead it by ${f3(Math.min(...hapK('1565')))} to ${f3(Math.max(...hapK('1565')))}.`],
     [`${f3(DATA.plasmode.deep.power.trecase_native['0.4'].power)}`, 'TReCASE on its own counts: level with tensorQTL, and anticonservative',

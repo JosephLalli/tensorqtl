@@ -1,4 +1,11 @@
-# Implementation status — 2026-09-16
+# Historical implementation status — 2026-09-16
+
+This dated inventory predates the accepted half-read default. It is retained
+as proposal and prototype evidence; it is not current implementation status.
+For the live contract, use `CLAUDE.md` and
+`docs/CURRENT_SCIENTIFIC_STATE.md` (2026-09-29): point-estimate values,
+half-read total, legacy ASE variance/admission, unit `Vt`, fitted residual
+scales, Meier combination, and unchanged GPU kernels.
 
 This inventory distinguishes settled directions, current source, bounded
 prototype evidence, and deferred extension work. The current gate is a

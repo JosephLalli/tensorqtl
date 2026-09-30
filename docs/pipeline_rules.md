@@ -1,8 +1,8 @@
 # Pipeline rules: values, units, gene filter, permutation
 
 User decisions of 2026-09-25, amended by the half-read split adoption on
-2026-09-29. They apply to both modes (mixQTL mode and
-default mode) and stand until the user changes them. This page states each
+2026-09-29. They apply to the hapmixQTL association default; published mixQTL
+is an unchanged comparator. This page states each
 rule, where it is implemented, what was built to satisfy it, what is not yet
 switched over, and which recorded results predate it.
 
@@ -10,7 +10,7 @@ switched over, and which recorded results predate it.
 
 1. **Every value comes from Salmon point estimates** (`quant.sf` NumReads):
    the allelic ratio, total expression, CPM, count cutoffs, expression PCs
-   and mixQTL's inputs. The 200 Gibbs draws are used only for ASE measurement
+   and the default's inputs. The 200 Gibbs draws are used only for ASE measurement
    variance; the default total working variance is one. Before this, the phenotype was the mean over Gibbs
    draws of the log (`compute_summaries_from_gibbs`, kept so dated scripts
    reproduce).
@@ -32,9 +32,8 @@ switched over, and which recorded results predate it.
    expression-PC construction remains `log2(CPM + 1)` intentionally. The
    allelic ratio is
    log2((L + 0.5) / (R + 0.5)) of point-estimate haplotype counts, because
-   library size cancels within a sample. mixQTL mode keeps its published
-   natural-log response log(count / 2 / L) with the same L, so its raw betas
-   are hapmixQTL's times ln 2.
+   library size cancels within a sample. Published mixQTL input construction
+   and interpretation are unchanged by this default adoption.
    What the "+ 1" costs effect sizes (a 1-CPM pseudocount is effective
    library / 1e6 reads) is measured in
    `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
@@ -51,8 +50,8 @@ switched over, and which recorded results predate it.
    RIN and the expression PCs travel with the donor's RNA record; the
    genotype PCs stay in genotype order.
 
-5. **mixQTL mode never touches the Gibbs draws**, not even through their
-   mean. It is the no-draws comparator only on that condition.
+5. **The published mixQTL comparator is unchanged.** This adoption does not
+   relabel its dated inputs or results.
 
 6. **ASE keeps its original Gibbs variance and counting-noise rule.** Under
    `count_noise=True`, the allelic delta-method term is added at the point
@@ -70,7 +69,7 @@ switched over, and which recorded results predate it.
 | 3 | runner `check_covariate_provenance`: refuses covariates whose `covariate_build.json` names another gene set or other library sizes; `--covariates-unverified` overrides | runner `--selftest` |
 | 4, default mode | `map_cis`/`map_nominal` `genotype_covariates_df`; `_combine_covariates` puts those columns last; `WeightedResidualizer.n_fixed_cov` tells `_record_permutation_channel` how many trailing columns stay fixed | `test_genotype_tied_covariates_permute_with_the_genotypes` (relabeling identity: equals permuting genotype columns and genotype-PC rows together by the inverse permutation) |
 | 4, mixQTL mode | `mixqtl_scan`/`mixqtl_permutation_scan` `genotype_covariates`: the two-step offset is refitted on each permuted dataset (divergence 12 in the module docstring) | `test_genotype_covariates_stay_with_the_genotypes_under_permutation` |
-| 5 | `tensorqtl/mixqtl_replication.py` `inputs_from_point_estimates` (refuses a draws axis); `summaries_from_gibbs_posterior_mean` deprecated with a warning | `test_point_estimate_inputs_refuse_a_draws_axis` |
+| 5 | published mixQTL comparator | its recorded input provenance |
 
 In the default through-origin allelic design (`ase_covariates_df=None`) the
 allelic channel has no covariates, so rule 4 acts on the total channel only.
@@ -515,7 +514,7 @@ adoption. See `docs/CURRENT_SCIENTIFIC_STATE.md` and
 Not decided; the results directly above are measurement only. On the
 corrected pipeline's 100-gene, 200-permutation null
 (`total_channel_decomposition_20260926/`, `hybrid_weights_null_20260926/`,
-`gibbs_weight_benefit_by_gene_20260926/`): the shipped default, Gibbs `1/v`
+`gibbs_weight_benefit_by_gene_20260926/`): the historical default, Gibbs `1/v`
 weights in both channels, is anticonservative in the total channel and in the
 combined statistic; unit weights in the total channel with Gibbs weights kept
 in the allelic channel ("split weighting") calibrates both channels and the
@@ -528,11 +527,11 @@ Neither the zero-haplotype drop nor a total-channel weight override is wired
 into `tensorqtl/hapmixqtl.py` or the `scripts/run_hapmixqtl_from_salmon.py`
 CLI; both exist only in `scripts/hybrid_weights_null.py` and
 `scripts/drop_zero_haplotype_cost.py`. Choosing among these configurations —
-or leaving the shipped default as is — is a user decision. Since the
+or leaving the historical default as is — is a user decision. Since the
 per-channel t references of 2026-09-27 the three alternatives' combined
 rates at 0.001 are 0.0012 / 0.0012 / 0.0011 (split / unit / 1/(v+1)),
 above 0.001 for reasons shared by all three (the Welch-Satterthwaite
-reference and the total channel's own 1.15x); the shipped default's is
+reference and the total channel's own 1.15x); the historical default's is
 0.0041 (see "After the per-channel t references" above,
 `brainvar_hapmix_deploy/allelic_df_fix_20260927/`). Those rates were
 measured before Meier's correction, which acts on the first of the two
@@ -542,7 +541,7 @@ reasons and not the second; the stored nulls have not been re-run under it
 **Known-effect evidence, 2026-09-27.** The null runs above are no longer the
 only evidence. The benchmark in `scripts/plasmode/` (its `README.md`) builds
 datasets with injected cis effects from the cohort's own Salmon output and
-scores the four weightings (Gibbs in both channels, the shipped default;
+scores the four weightings (Gibbs in both channels, the historical default;
 split; unit; 1/(v+1)) beside mixQTL mode, total-only tensorQTL, RASQUAL and
 TReCASE; its precision ratios are taken against unit weights. Two pages,
 both on the current library (per-channel t references, the 15-donor allelic
@@ -565,7 +564,7 @@ floor and Meier's correction, commit a1b2ef4), under
 
 These pages are evidence for the decision, not the decision; the choice
 remains the user's. User decision 2026-09-27: the candidates are Gibbs
-variance in both channels (the shipped default), split and 1/(v+1); unit
+variance in both channels (the historical default), split and 1/(v+1); unit
 weights stay as the reference of the efficiency ratios only.
 
 Since 2026-09-28 both pages also carry TReCASE and split weighting on
@@ -587,7 +586,7 @@ The one-page summary of both kinds of evidence is
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
 explains why every weighting's plasmode slope falls short of the planted
 effect. For this decision it adds that Gibbs `1/v` weights in the allelic
-channel (the shipped default and split) pull the allelic slope toward zero
+channel (the historical default and split) pull the allelic slope toward zero
 under a true effect, while unit weights do not; its section "What it means for
 the wider claims" sets that against the allelic null calibration. Evidence, not
 the decision.

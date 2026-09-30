@@ -17,6 +17,11 @@ This directory contains a comprehensive test suite for tensorQTL, covering all m
 
 ### Specialized Tests
 - **`test_edge_cases.py`** - Edge cases, error handling, and performance benchmarks
+- **`test_half_read_default.py`** - Production default input construction:
+  point-estimate ASE and half-read total values, ASE mask, and unit working
+  total variance.
+- **`test_half_read_runner.py`** - Runner integration and its self-test
+  contract for the half-read default.
 
 ### Test Infrastructure
 - **`conftest.py`** - Shared pytest fixtures

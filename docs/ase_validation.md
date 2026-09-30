@@ -2,6 +2,13 @@
 
 > ## READ FIRST — this is the historical validation record
 >
+> **Current association default (2026-09-29).** `prepare_default_inputs`
+> supplies point-estimate `A`, half-read `T`, Gibbs-plus-optional-Poisson
+> `Va` with no-coverage and one-sided masking, and unit working `Vt`.
+> Fitted scales, GPU kernels and Meier combination are unchanged. These tests
+> do not establish uniform superiority or validate the separate stacked SuSiE
+> PIP/credible-set path.
+>
 > **As of 2026-09-23 hapmixQTL ships exactly TWO MODES**, and most of what
 > follows compares configurations that are no longer among them.
 >
@@ -38,7 +45,7 @@
 
 ---
 
-## Headline
+## Historical headline
 
 > **The original default, `tau_mode='zero'`, was anticonservative, severely so on
 > realistic data — up to 107× the nominal type-I error at α = 1e-3 on Gaussian

@@ -79,6 +79,21 @@ a { color: var(--hap); }
       them in one place.</p>
   </header>
 
+  <section aria-label="Current method status">
+    <h2>Method status: half-read split adopted</h2>
+    <p>On 29 September 2026, half-read split became the production association default:
+      point-estimate ASE with Gibbs-informed weights, total expression
+      <code>log2((count + 0.5)/(effective library size + 1) × 10<sup>6</sup>)</code>,
+      unit total weights, and fitted residual scales. Existing expression PCs remain fixed.</p>
+    <p>This page preserves the earlier measurements. Here, <b>split</b> uses the original
+      <code>log2(CPM + 1)</code> total phenotype; <b>gibbs</b> is the prior default with Gibbs
+      weights in both channels. These results were not rerun under the new default.
+      See the <a href="../half_read_unit_power_pr_20260929/index.html">half-read comparison</a>
+      and <a href="../half_read_default_adoption_20260929/verification.json">implementation checks</a>.
+      Adoption accepts improved beta recovery with a precision tradeoff; it does not establish
+      uniform precision improvement or SuSiE credible-set calibration.</p>
+  </section>
+
   <section aria-labelledby="h-verdict">
     <h2 id="h-verdict">The verdict</h2>
     <div class="cards" id="verdict"></div>
@@ -192,7 +207,7 @@ const DATA = /*DATA*/null;
 const NS = 'http://www.w3.org/2000/svg';
 const state = { set: 'deep', alpha: '0.05' };
 const SETNAME = { deep: 'Deep set', lowcov: 'Low-coverage set' };
-const NAME = { split: 'hapmixQTL split', gibbs: 'hapmixQTL gibbs (shipped)', unit: 'hapmixQTL unit', plus_one: 'hapmixQTL 1/(v+1)',
+const NAME = { split: 'hapmixQTL split', gibbs: 'hapmixQTL gibbs (prior default)', unit: 'hapmixQTL unit', plus_one: 'hapmixQTL 1/(v+1)',
   split_native: 'hapmixQTL split, alignment counts', trecase: 'TReCASE, Salmon estimates', trecase_native: 'TReCASE, alignment counts',
   tensorqtl: 'tensorQTL, total only' };
 const FAM = { split: 'hap', gibbs: 'hap', unit: 'hap', plus_one: 'hap', split_native: 'hap', trecase: 'tre', trecase_native: 'tre', tensorqtl: 'std' };

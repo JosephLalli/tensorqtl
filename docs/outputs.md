@@ -72,6 +72,14 @@ Column | Description
 
 #### Mode `hapmixqtl_nominal`
 One parquet per chromosome, `${prefix}.hapmixqtl_pairs.${chr}.parquet`.
+
+**Current association-input provenance (2026-09-29).** The production runner
+uses `prepare_default_inputs`: point-estimate log2 ASE `A`, half-read log2 CPM
+`T`, Gibbs-plus-optional-Poisson `Va` with its ASE mask, and unit working
+`Vt`. Raw CLI BED runs require `A`, `T`, and `Va`; omitted `Vt` becomes ones
+and supplied `Vt` is used exactly. BEDs cannot verify the total transform or
+ASE mask.
+
 Column | Description
 --- | ---
 `phenotype_id` | Phenotype ID
@@ -100,7 +108,17 @@ Column | Description
 
 In default mode (`tau_mode='zero'`, `se_mode='fitted'`) no tau exists: every statistic uses each channel's residual scale fitted per variant. Under the deprecated `tau_mode='estimate'` the statistics are on the null-model tau scale (tau estimated once per phenotype per channel without a genotype term), and `map_cis(tau_refit=True)` is the only entry point that reports a lead on a refit scale.
 
-**Units.** From `run_hapmixqtl_from_salmon.py` since 2026-09-25, `slope`/`slope_a`/`slope_t` are log2 effect sizes (beta=1 is a twofold effect): the phenotype is `summaries_from_point_estimates` (`docs/pipeline_rules.md`). Tables written before 2026-09-25, and by `compare_pipelines.py` until it is switched, are natural-log effect sizes from `compute_summaries_from_gibbs`.
+**Units and input version.** The runner has reported log2 effect sizes since
+2026-09-25. Since 2026-09-29 it uses `prepare_default_inputs`: point-estimate
+ASE, half-read total expression and unit total working variance. The earlier
+`summaries_from_point_estimates` route used `log2(CPM+1)` totals and Gibbs total
+variance. Tables written before 2026-09-25, and by the historical
+`compare_pipelines.py`, use natural-log effects from
+`compute_summaries_from_gibbs`. The Salmon runner's `eval_bundle.json` records
+`mode=default_half_read_split` and `default_input_provenance` (total transform,
+working variance, ASE counting-noise option and one-sided admission count).
+The standard association table does not by itself identify its input transform;
+retain the input-preparation provenance with it.
 
 #### Mode `hapmixqtl`
 Top association per phenotype with permutation and Beta-approximated p-values, written to `${prefix}.hapmixqtl.txt.gz`. The columns of `cis` are all present (plus `qval` and `pval_nominal_threshold` when rpy2/qvalue is available), where `slope`/`slope_se`/`pval_nominal` are the combined ASE + total estimates and `slope` is interpretable as the log allelic fold change per ALT allele. `beta_shape1`, `beta_shape2`, `true_df`, `pval_true_df` and `pval_beta` are NaN when `--disable_beta_approx` is set or the Beta fit fails. The following columns are additional to `cis`:
@@ -128,6 +146,11 @@ Two scales coexist in this table. `pval_perm` and `pval_beta` are always on the 
 `pval_nominal` (and `pval_a`, `pval_t`) is anticonservative under a donor-record permutation null, measured 2026-09-25 on 46 BrainVar genes at a fixed variant with 2,000 permutations: the combined statistic rejects at 0.068 / 0.0175 / 0.0028 at nominal 0.05 / 0.01 / 0.001, and the allelic channel transcriptome-wide (20,281 genes) at about 1.3x / 1.8x / 3.3x / 8.5x nominal at 0.05 / 0.01 / 0.001 / 1e-4. The cause is a per-gene mismatch between the reported variance and the realized one, set by how each gene's Gibbs weights pair with its residual sizes; the estimator itself is correct when `Var(eps) = sigma^2 v` holds. `pval_perm` and `pval_beta` are the detection calls and are unaffected by that scale error, but a call can rest on a single donor record (CLAUDE.md, "Known and unfixed"). See CLAUDE.md, "What the 2026-09-25 hypothesis round established". Those rates were measured on the pre-correction pipeline under the shared 73-df reference; the rates after the per-channel references of 2026-09-27, on the corrected pipeline's 100-gene null, are in `docs/pipeline_rules.md` ("After the per-channel t references").
 
 #### Mode `hapmixqtl_susie`
+**Separate legacy path.** `map_susie` has its own `tau_mode='estimate'`
+default and `estimate_residual_variance=False`; it has no association-mapper
+`se_mode`. Half-read association checks do not establish PIP or credible-set
+calibration. Its provenance records the supplied tau mode only.
+
 SuSiE fine-mapping of the combined ASE + total signal. Two files are written: a credible-set summary parquet `${prefix}.hapmixqtl_SuSiE_summary.parquet` and a pickle `${prefix}.hapmixqtl_SuSiE.pickle` with the full per-phenotype SuSiE results (PIPs, credible sets, log Bayes factors, ELBO, convergence).
 Summary columns:
 Column | Description
@@ -137,4 +160,4 @@ Column | Description
 `pip` | Posterior inclusion probability
 `af` | In-sample ALT allele frequency of the variant
 `cs_id` | Credible-set index (the SuSiE single-effect `L` this variant belongs to)
-`tau_mode` | Provenance of the fine-mapping run. In **default mode** this is `'zero'`, paired with `se_mode='fitted'`, i.e. `Var(eps_i) = sigma^2 v_i`. Results produced under `'zero'` **with the deprecated known-variance SE** are invalid (`docs/ase_validation.md` §7g), so read the PAIRING and never the `tau_mode` alone; `hapmixqtl.fine_mapping_provenance()` classifies a file as `ok`, `stale` or `unknown`
+`tau_mode` | Supplied fine-mapping tau mode. `hapmixqtl.fine_mapping_provenance()` reports `ok` when no recorded mode is `zero`, `stale` when one is `zero`, and `unknown` when the column is absent; this is literal provenance classification, not validation of the current association default

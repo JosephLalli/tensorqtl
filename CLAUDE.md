@@ -31,10 +31,10 @@ across-draw variance**, used as a SHAPE only, and `sigma^2` is the residual
 scale fitted per variant. The total channel is
 `log2((point_count + .5)/(effective_library_size + 1)*1e6)` with unit working
 variance. There is no additive floor. Reached by `tau_mode='zero'` +
-`se_mode='fitted'`, which are the defaults everywhere and are not worth
-overriding. Driver
-`scripts/run_hapmixqtl_from_salmon.py`, which offers no other hapmixQTL
-configuration.
+`se_mode='fitted'` in the default association route. The Salmon driver fixes
+that pairing and offers no other hapmixQTL configuration. `map_susie` is a
+separate legacy fine-mapping stack: it has no `se_mode`, defaults to
+`tau_mode='estimate'`, and is not validated for this default.
 
 **Default-input contract (2026-09-29).** `prepare_default_inputs` retains the original point-estimate ASE
 contrast, Gibbs ASE variance, no-coverage handling, `Va > 1e-12` support, and
@@ -155,8 +155,9 @@ status as current practice is.
 | How do I run the BrainVar deployment end to end? | `docs/brainvar_deploy_runbook.md` |
 | What was measured, and how do I know it is calibrated? | `docs/ase_validation.md` — includes withdrawn claims |
 | What do the output columns mean? | `docs/outputs.md` |
-| What does a new session need to pick this up? | `docs/LOCAL_HANDOFF.md` |
+| What does a new session need to pick this up? | `docs/CURRENT_SCIENTIFIC_STATE.md` and this decision index; `docs/LOCAL_HANDOFF.md` is historical |
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
+| What merged the half-read default, and what was verified? | `brainvar_hapmix_deploy/half_read_default_adoption_20260929/verification.json` and `integration.json`: merge `86b947f`, 159 selected tests passed across the initial run and assertion-harness rerun, 15 targeted rerun tests passed, and the Salmon self-test passed including STR/multiallelic paths. This verifies association-input and mapping parity; it does not validate fine-mapping credible sets or PIPs. |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
 | How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/README.md` (run order `run_all.sh`, acceptance `99_acceptance.py`; native-input arms, its section of that name). Pages `<root>/report/plasmode_report.html` under `brainvar_hapmix_deploy/`: current library (commit a1b2ef4) `plasmode_meier_20260927` (deep set) and `plasmode_lowcov_meier_20260927` (low-coverage set, 30-100 reads); earlier code and library `plasmode_20260926`, `plasmode_stratum30_100_20260927`. The thinning rule against Salmon itself: `salmon_half_depth_20260927/salmon_half_depth.html` |
@@ -770,7 +771,7 @@ GTEx overdispersion, depth and zero-inflation structure.
   second-pass path) still charge the ASE channel `1 + n_cov` columns, so the
   robust SE there is ~6% conservative. `map_cis`/`map_nominal` are unaffected.
 - The log2 migration is done for the default-mode runner's point-estimate
-  path (`summaries_from_point_estimates`, since 2026-09-25) but not for
+  path (`prepare_default_inputs`, half-read since 2026-09-29) but not for
   `compute_summaries_from_gibbs`, `compare_pipelines.py`, or the dated
   scripts that import it — see the "Use log2..." bullet above and
   `docs/pipeline_rules.md`.

@@ -1,12 +1,9 @@
-# Covariate variance screen: pre-measurement state (2026-09-25)
+# Covariate variance screen: completed bounded result (2026-09-25)
 
 ## Scope and status
 
-This documentation checkpoint precedes the authorized exploratory screen of
-RIN and available donor covariates against residual variability. No screen has
-run, no association is claimed, and this record does not change weights,
-default mode, or shipped behavior. Experimental methods and thresholds remain
-for the parent to fix before execution. Planned outputs are
+The authorized exploratory screen was completed. It did not change weights,
+the default mode, or shipped behavior. Outputs are
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/covariate_variance_screen_20260925/`.
 
 ## Observations already established
@@ -19,8 +16,9 @@ for the parent to fix before execution. Planned outputs are
   variance follows a per-gene scale and approximately `Var(e) ~ v_t^0.66`.
   That is evidence about a records null, not about a causal RIN, age, sex, PC,
   or unmeasured-batch effect.
-- The current estimator has only published posterior-mean-count mixQTL and
-  default Gibbs-shape variance with fitted residual scale. Deprecated
+- The current estimator has published point-estimate mixQTL and the accepted
+  half-read default: legacy ASE Gibbs variance/admission with fitted residual
+  scales and unit total working variance. Deprecated
   per-gene fitted variance-function modes remain excluded; the count-scale
   result did not authorize a weighting or default-mode change.
 
@@ -40,17 +38,17 @@ three genotype PCs, and ten expression PCs. No batch covariate is available.
 Expression PCs are outcome-derived, so an association with residual variability
 is conditioned descriptive evidence, not an independent causal exposure.
 
-## Authorized question and required safeguards
+## Completed question and result
 
-The exploratory question is whether RIN or another available covariate is
-associated with residual variability after accounting for gene scale. ASE and
-total are separate outcomes; no pooled-channel conclusion is licensed. The
-execution design must retain donor-level uncertainty, assess single-donor
-sensitivity, and correct across the tested covariate/outcome family. Before
-inspection, it must define gene-scale adjustment, donor clustering or
-resampling, deletion rule, and multiple-testing family.
+The screen tested whether RIN or another available covariate associated with
+residual variability after accounting for gene scale, with ASE and total kept
+separate. It used 20,281 genes, 92 donors, 17 covariates, 100,000 shared donor
+permutations, and 100 fixed-design Gaussian replicates. RIN was not compelling:
+ASE rho 0.108945 (p 0.300717; max-p 0.999960) and total rho 0.167760
+(p 0.108349; max-p 0.959130). These descriptive results authorize no causal
+claim or weighting/default change.
 
-## Hypotheses, not findings
+## Historical hypotheses
 
 Low RIN may be associated with excess residual variability, motivated by
 `221_D1`. It may instead be a donor-specific outlier, confounding by another

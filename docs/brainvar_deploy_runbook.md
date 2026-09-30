@@ -6,6 +6,14 @@ input it was designed for. This document is the operating procedure. The
 method rationale is in `docs/ase_validation.md`; the port of the work onto a
 local server is in `docs/LOCAL_HANDOFF.md`.
 
+> **Operating boundary (2026-09-29).** The production association command in
+> this runbook uses the half-read default described below. The older
+> `compare_pipelines.py` comparison, its tau/refit discussion, and its quoted
+> pilots are retained as dated records and still use their recorded
+> Gibbs-mean path. They must not be relabeled as half-read results. The
+> association check supports a beta/precision tradeoff; it does not establish
+> uniform superiority or calibrate the separate stacked SuSiE path.
+
 ## Where this runs, and why that is a governance question, not a preference
 
 On the machine that holds BrainVar. The data does not move.
@@ -657,6 +665,11 @@ now what the driver does by default:
 
 ### Low-count genes: counting noise and the expression floor
 
+**Historical pilot mechanism.** The examples below used Gibbs total variances
+and estimated tau. In the current half-read default, every total donor has
+unit working variance, including zero-count donors; `count_noise` changes ASE
+variance only. The historical helper retains its original counting terms.
+
 The comparison found a hapmixQTL failure that the self-tests, built on
 Poisson(30) counts, could not: the Gibbs across-draw variance is
 read-assignment uncertainty only, so a sample whose count is identical in
@@ -712,6 +725,12 @@ one, covariates projected out of both channels, is resolved in the next
 section.
 
 ### Covariates per channel, the sparse-channel rule and the permutation null
+
+**Current settings:** the association APIs and CLI use `None`/`none` for a
+through-origin ASE fit, without an automatic intercept. The Salmon runner
+requires total covariates and preserves genotype-PC provenance. The `shared`
+CLI default, ASE intercept and absent runner covariates described in the
+pilot narrative below are superseded historical behavior.
 
 hapmixQTL used to project the same covariate set out of both channels,
 whereas RASQUAL applies covariates to its total-count model only. The
@@ -810,6 +829,11 @@ gates use about 70 and the 12 BrainVar genes had 46-85, so the floor is
 untested below that.
 
 ### What tau is, what the Gibbs draws are not, and the lead refit
+
+**Historical estimated-tau path.** Current association mapping uses
+`tau_mode='zero'`, fitted residual scales and donor-record/sign-flip
+permutations. It does not estimate or refit tau, even if the compatibility
+flag is set. The observations below explain the former estimated-tau model.
 
 The weight of a sample is `1/(v_inf + tau)`. `v_inf` is the Gibbs
 inferential variance, the ambiguity of that sample's read assignment, plus

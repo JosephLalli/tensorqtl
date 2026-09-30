@@ -16,9 +16,9 @@ from core import *
 from post import *
 import genotypeio, cis, trans, susie, nbqtl, hapmixqtl
 
-# hapmixQTL DEFAULT MODE: the Gibbs across-draw variance weights the fit as a
-# SHAPE (tau_mode='zero', no additive floor) and --se_mode supplies the fitted
-# residual scale, together giving Var(eps_i) = sigma^2 * v_i. Fixed rather than
+# hapmixQTL association default: admitted Gibbs ASE weights and unit total
+# working weights on half-read expression; --se_mode supplies fitted residual
+# scales with tau_mode='zero'. The separate map_susie path has no se_mode. Fixed rather than
 # exposed, because the alternatives are deprecated: fitting a variance function
 # from a gene's own residuals, or asserting the draws are the whole error
 # variance, both live in tensorqtl/fitted_variance.py now.
@@ -77,7 +77,7 @@ def build_parser():
     parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional; loaded for inspection only -- intentionally unused by the method, see the hapmixqtl module docstring)')
     parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
-    parser.add_argument('--tau_refit', action='store_true', help="hapmixqtl mode: re-estimate each channel's tau with the lead variant in the model and report the lead's slope, SE and nominal p on that scale (tau estimated under the null absorbs a strong cis effect and shrinks the nominal scale; pval_perm and pval_beta are unaffected either way)")
+    parser.add_argument('--tau_refit', action='store_true', help="Legacy compatibility flag; no tau refit occurs in the current hapmixqtl CLI, which fixes tau_mode='zero'")
     parser.add_argument('--perm_scheme', default='records_signflip', type=str, choices=['records_signflip', 'records', 'residuals'], help="hapmixqtl modes: the permutation null of map_cis. 'records_signflip' (default) permutes each donor's phenotype value, weight and covariate row together with the genotypes fixed, and swaps each permuted record's haplotype labels L/R at random, which negates its allelic log ratio (L/R is arbitrary phase order, so this is a symmetry of the allelic null; the total channel is unaffected); 'records' is the same without the swap, the FastQTL/tensorQTL null with per-donor weights; 'residuals' permutes leverage-standardized whitened residuals at fixed weights (the scheme before 2026-09-17, conservative where weights vary)")
     parser.add_argument('--ase_covariates', default='none', type=str, choices=['shared', 'none'], help="hapmixqtl modes: what --covariates are projected out of the allelic channel. 'none' (default) fits ASE through the origin; 'shared' applies the supplied covariates to both channels. No ASE intercept is added; the total channel retains its intercept. Allelic nuisance predictors must have a meaningful orientation under H1/H2 relabeling")
     parser.add_argument('--se_mode', default='fitted', type=str,
@@ -88,7 +88,8 @@ def build_parser():
                              'together with the fixed tau_mode=\'zero\' weighting this is '
                              'Var(eps_i) = sigma^2 v_i. \'robust\' is the HC1 sandwich, for '
                              'map_nominal only. The known-variance form is DEPRECATED and no '
-                             'longer selectable here (tensorqtl/fitted_variance.py)')
+                             'longer selectable here (tensorqtl/fitted_variance.py). This option is '
+                             'not passed to the separate hapmixqtl_susie path.')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     return parser
 

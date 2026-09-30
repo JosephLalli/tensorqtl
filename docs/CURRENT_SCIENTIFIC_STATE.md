@@ -1,13 +1,19 @@
 # Current scientific state: hapmixQTL
 
-Reconciled 2026-09-16, updated 2026-09-18; dated sections for 2026-09-25,
-2026-09-27 and 2026-09-28/29 added since (the latest state is the last dated
-section). A router
-to the current state: what is implemented, what was measured, and what is
-open.
+Reconciled 2026-09-16 and updated through the accepted 2026-09-29 half-read
+default. This is a router: the latest current behavior is the 2026-09-29
+entry below; earlier dated sections retain their evidence and historical
+decisions.
 
-> **SUPERSEDED IN PART, 2026-09-23.** hapmixQTL now ships exactly **two modes**:
-> **mixQTL mode** (the published estimator on posterior-mean counts, no draws,
+Documentation was reconciled after merge `86b947f`: the README, current
+method/API and output guides, runbook, internal handoffs, report templates,
+and linked local report pages now distinguish half-read split from historical
+`log2(CPM+1)` results. Documentation checks and preserved report payloads are
+recorded under `brainvar_hapmix_deploy/half_read_default_adoption_20260929/docs_sync/`.
+No numerical results or estimator behavior changed in this documentation pass.
+
+> **Current modes, updated 2026-09-29.** hapmixQTL ships exactly **two modes**:
+> **mixQTL mode** (the published estimator on point-estimate counts, no draws,
 > `tensorqtl/mixqtl_replication.py`) and **default mode** (Gibbs-shape ASE
 > variance with fitted residual scale, plus half-read total phenotype and unit
 > total working variance; no additive floor; `tau_mode='zero'` +
@@ -39,14 +45,14 @@ open.
   records the scope and targeted validation. Measured on the 29 calibration
   genes (`/mnt/ssd/lalli/brainvar_hapmix_deploy/deprecated_models/estimator_ablation_20260916/REPORT.md`):
   median |change| in the lead statistic 0.42, one borderline call (TCF4) added.
-- **Current source behavior:** Gibbs summaries use natural logs and add an
-  extra Poisson q term when `count_noise=True`; runtime migration to log2 is
-  pending. (SUPERSEDED 2026-09-25 for the default-mode runner, whose phenotype
-  is `summaries_from_point_estimates` in log2 units; see "Pipeline
-  correction, 2026-09-25" below.) It computes cross-channel Gibbs covariance `Cat` but the scan does
-  not use it. See `tensorqtl/hapmixqtl.py:349` (`compute_summaries_from_gibbs`;
-  CORRECTED 2026-09-18 from a stale `:325`, which is inside
-  `orient_haplotypes`) and the method map in `docs/hapmixqtl_methods.md`.
+- **Current default-input behavior (2026-09-29):**
+  `prepare_default_inputs` uses Salmon point estimates: `A` is the legacy
+  pseudocounted log2 ratio; `T = log2((pT + .5)/(Leff + 1)*1e6)`; `Va` is the
+  legacy Gibbs ASE variance plus optional count noise; and `Vt = 1`.
+  ASE retains `Va > 1e-12`, positive haplotype-count, and non-exclusive-
+  one-sided admission. `Cat` and total draw variance are absent from this
+  default. The retained `compute_summaries_from_gibbs` helper is historical
+  summary behavior, not the default-input route.
 - **Why 57.8% of donor-gene pairs carry zero allele-specific information
   (established 2026-09-18):** a Salmon-indexing and pipeline-ingest fact,
   not a low-expression one. `salmon index` runs without `--keepDuplicates`
@@ -513,9 +519,9 @@ paths under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   correction) and `plasmode_stratum30_100_20260927` (low-coverage set, before
   Meier's correction). `plasmode2_acceptance_20260927` and
   `plasmode2_stratum_acceptance_20260927` are acceptance roots, not results.
-- **Open.** Which weighting ships (`docs/pipeline_rules.md`, "Open decision:
-  which weighting configuration ships"); the two benchmark pages are now its
-  known-effect evidence. The residual of the corrected reference in the tail,
+- **Historical open state (2026-09-27).** Which weighting would ship was then
+  open; the 2026-09-29 accepted-default entry supersedes that question. The
+  residual of the corrected reference in the tail,
   and the unit-weighted total channel's own excess at 0.001, which the
   correction does not touch (`docs/hapmixqtl_methods.md` Sections 4.5 and 7;
   `CLAUDE.md`, "Known and unfixed").
@@ -586,9 +592,10 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
 - **Run state.** Nothing of this project was running when this section was
   written, on 2026-09-29 before the effect-size work below began (the WASP
   rerun chain, `wasp_rerun_chain_20260928.log`, ends "done" at 03:02).
-- **Open.**
-  - Which weighting ships (`docs/pipeline_rules.md`); the referee is now its
-    real-data evidence beside the two benchmark pages.
+- **Historical open state (before the 2026-09-29 adoption).**
+  - Which weighting would ship; the referee was its real-data evidence beside
+    the two benchmark pages. The accepted half-read default below supersedes
+    that decision question.
   - **The effect-size shortfall.** Measured 2026-09-28/29, explained
     2026-09-29 (below); the decisions it feeds are open. The statistic is 06's `bias_count`: per non-null gene
     unit, the slope at the planted causal variant divided by the count-scale
@@ -792,18 +799,14 @@ including the weighting ablation that answers what the Gibbs draws buy, is
 (regenerated 2026-09-20 under mixQTL's published cutoffs; the permissive
 configuration is preserved beside it as a sensitivity arm).
 
-Work that is **proposed and not yet run** is kept out of this document and out
-of `CLAUDE.md`, both of which record what is established. It lives in
-[OPEN_INVESTIGATIONS_20260920.md](OPEN_INVESTIGATIONS_20260920.md): currently
-the per-channel residual sigma test (the last untested of the six mixQTL
-disagreement mechanisms) and the pending log2 unit migration. (The residual-
-sigma test was itself closed 2026-09-20, refuted; that file keeps it only as
-a pointer and no longer lists it as open work — this sentence was not
-updated when that happened.)
+`OPEN_INVESTIGATIONS_20260920.md` is a dated historical proposal record. Its
+residual-sigma item was closed, and its log2 migration proposal does not
+describe the current `prepare_default_inputs` route.
 
-Worktree as of 2026-09-16: `hapmix-runbook-local`; the through-origin change
-is commit `bea450c` on top of `f11d586`. Current work (the last two dated
-sections above) is on branch `simulation-benchmark`. The estimator ablation
+Historical worktree state as of 2026-09-16 was `hapmix-runbook-local`; the
+through-origin change was commit `bea450c` on top of `f11d586`. The accepted
+default is merged at `86b947f` on `simulation-benchmark`; verify current Git
+state before acting. The estimator ablation
 (`deprecated_models/estimator_ablation_20260916`) is complete and reproducible from its scripts. Neither completed pilot nor audit implemented
 final TMM normalization, production association mapping, or biological-residual
 calibration. Applying phASER error correction before constructing quantification

@@ -162,6 +162,12 @@
 <div class="wrap">
 
 <header class="mast">
+  <p class="vnote"><strong>Historical validation record.</strong> The current
+  2026-09-29 association default uses point-estimate ASE, a half-read total,
+  Gibbs-plus-optional-Poisson ASE variance, and unit working total variance.
+  This report's `tau` comparisons and its old default labels remain dated
+  evidence; they do not establish uniform superiority or calibrate the
+  separate stacked SuSiE path.</p>
   <div class="eyebrow">
     <span>tensorQTL · hapmixQTL</span><span>2026-09-07 · revised 2026-09-11</span>
     <span>N = 200 · 1,500 reps/cell</span><span>30,000 null p-values/cell</span>
@@ -175,7 +181,7 @@
     <div class="verdict fail">
       <div class="vlabel">Old default — now fixed</div>
       <div class="vstate"><span class="dot"></span>Was invalid</div>
-      <div class="vnote"><code>tau_mode='zero'</code> made <em>every</em> null test significant on real GTEx data (λ=3020). Default is now <code>'estimate'</code>.</div>
+      <div class="vnote"><code>tau_mode='zero'</code> made <em>every</em> null test significant on real GTEx data (λ=3020). This is a historical comparison, not the current half-read default.</div>
     </div>
     <div class="verdict pass">
       <div class="vlabel">With <code>tau_mode='estimate'</code></div>

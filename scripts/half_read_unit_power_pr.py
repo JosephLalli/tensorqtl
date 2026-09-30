@@ -387,6 +387,11 @@ def report(output, summary, power, ap):
         'img{width:100%;height:auto}table{border-collapse:collapse;font-size:14px;margin:20px 0}th,td{padding:6px 12px;border-bottom:1px solid #ddd}'
         'a{color:#075b9b}summary{cursor:pointer;font-weight:bold}code{font-size:90%}</style>',
         '<h1>Half-read, unit weights, and gene discovery</h1><p>2026-09-29 · Five methods · Two coverage sets · Three effect datasets per nonzero beta.</p>',
+        '<p><b>Current status:</b> half-read split was adopted as the production association default on 2026-09-29 '
+        '(implementation 6f8ad35; merge 86b947f into simulation-benchmark). This accepts improved beta recovery with the measured '
+        'SE/precision tradeoff. Existing expression PCs and the GPU fitting kernels are unchanged. '
+        '<a href="../half_read_default_adoption_20260929/verification.json">Implementation validation</a> covers association outputs, '
+        'not SuSiE credible-set calibration. The comparisons and figures below retain their original data.</p>',
         '<p><b>Half-read and split retain similar association evidence and discovery power.</b> Unit weights have lower broad-depth power and are close to split at low coverage. '
         'These are descriptive point estimates with uncertainty across the selected genes, not evidence of a universal winner.</p>',
         '<p>Half-read changes only total expression to log₂((count + 0.5)/(effective library size + 1) × 10⁶), retaining Gibbs ASE weights. '
