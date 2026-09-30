@@ -10,6 +10,10 @@ Empirical beta-approximated p-values are computed as described in [Ongen et al.,
 
 This branch develops hapmixQTL. Start with the [current scientific state](docs/CURRENT_SCIENTIFIC_STATE.md), then the [compact decision and evidence index](CLAUDE.md#which-document-answers-which-question). The [hapmixQTL guide below](#hapmixqtl-cis-qtl-mapping-with-haplotype-resolved-expression), [pipeline rules](docs/pipeline_rules.md), and [Salmon deployment runbook](docs/brainvar_deploy_runbook.md) describe the current half-read split default. Dated benchmark reports retain the method configuration used for each measurement.
 
+The [half-read analysis guide](docs/half_read_analysis.md) provides one command
+to regenerate the beta/SE/p-value/power/PR reports from recorded benchmark
+inputs, with pinned versions and exact comparisons to the saved tables.
+
 ### Install
 You can install tensorQTL using pip:
 ```

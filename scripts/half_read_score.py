@@ -13,11 +13,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from half_read_io import DEPLOY, atomic_path
 
-REFIT_ROOT = Path("/mnt/ssd/lalli/brainvar_hapmix_deploy/beta_shortfall_20260929")
+REFIT_ROOT = DEPLOY / 'beta_shortfall_20260929'
 SETS = {
-    "corrected_null_store_20260925": Path("/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_meier_20260927"),
-    "stratum30_100": Path("/mnt/ssd/lalli/brainvar_hapmix_deploy/plasmode_lowcov_meier_20260927"),
+    "corrected_null_store_20260925": DEPLOY / 'plasmode_meier_20260927',
+    "stratum30_100": DEPLOY / 'plasmode_lowcov_meier_20260927',
 }
 KEY = ["gene", "variant_id", "scenario", "rep", "arm"]
 CONFIGS = ("observed", "voom", "target", "target_voom")
@@ -242,8 +243,10 @@ def main():
                        "n_ase_admitted": int(g.observed_allelic_admitted.sum()),
                        "n_nonnull_genes_per_replicate": 50, "n_units_across_three_replicates": int(len(g)),
                        "n_unique_gene_clusters": int(g.gene.nunique())}
-    comparison.to_parquet(targets[0], index=False)
-    targets[1].write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    with atomic_path(targets[0]) as temporary:
+        comparison.to_parquet(temporary, index=False)
+    with atomic_path(targets[1]) as temporary:
+        temporary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     print(f"wrote {targets[0]} ({len(comparison)} rows)")
     print(f"wrote {targets[1]}")
 

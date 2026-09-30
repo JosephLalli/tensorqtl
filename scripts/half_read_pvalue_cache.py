@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DEPLOY = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
+from half_read_io import DEPLOY, atomic_path, digest
 SETS = {
     'deep': 'corrected_null_store_20260925',
     'low': 'stratum30_100',
@@ -23,10 +23,6 @@ SETS = {
 KEY = ['gene', 'variant_id', 'beta_abs', 'rep']
 OUT_COLUMNS = KEY + ['pval_nominal', 'dof_nominal', 'slope', 'slope_se',
                      'pval_a', 'pval_t', 'dof_a', 'dof_t', 'allelic_admitted']
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def digest_arrays(dataset):
@@ -135,14 +131,17 @@ def main():
                    'pval_nominal_zero': int((finite_p == 0).sum()),
                    'pval_nominal_min_positive': (float(finite_p[finite_p > 0].min())
                                                   if (finite_p > 0).any() else None)}
-    result.to_parquet(output_file, index=False)
+    with atomic_path(output_file) as temporary:
+        result.to_parquet(temporary, index=False)
     source_dir.mkdir()
-    source_paths = [Path(__file__), Path(half_read.__code__.co_filename), Path(C.__file__),
+    source_paths = [Path(__file__), Path(__file__).with_name('half_read_io.py'),
+                    Path(half_read.__code__.co_filename), Path(C.__file__),
                     Path(C.map_nominal.__code__.co_filename)]
     source_hashes = {}
     for source in source_paths:
         target = source_dir/source.name
-        shutil.copy2(source, target)
+        with atomic_path(target) as temporary:
+            shutil.copy2(source, temporary)
         source_hashes[source.name] = digest(source)
     manifest = {'stratum': args.stratum, 'gene_set': C.GENE_SET,
                 'scope': 'unchanged half-read split fit; prespecified causal units only',
@@ -156,7 +155,8 @@ def main():
                 'max_slope_se_normalized_difference': max_se_delta,
                 'diagnostics': diagnostics, 'torch_version': torch.__version__,
                 'gpu': torch.cuda.get_device_name()}
-    manifest_file.write_text(json.dumps(manifest, indent=2) + '\n')
+    with atomic_path(manifest_file) as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2) + '\n')
     shutil.rmtree(scratch)
 
 

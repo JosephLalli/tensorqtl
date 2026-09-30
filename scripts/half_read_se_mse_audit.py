@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from half_read_io import RESULTS, atomic_path
 
-SOURCE = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy/half_read_trial_20260929')
+SOURCE = RESULTS / 'half_read_trial_20260929'
 SETS = ('corrected_null_store_20260925', 'stratum30_100')
 SCENARIOS = ('beta0.4', 'beta0.8')
 OUTS = ('mse_audit.tsv', 'mse_examples.tsv', 'mse_audit.json')
@@ -85,16 +86,20 @@ def main():
                                    'error_old', 'error_half', 'square_old', 'square_half']])
 
     audit = pd.DataFrame(rows)
-    audit.to_csv(args.output / 'mse_audit.tsv', sep='\t', index=False, float_format='%.17g')
-    pd.concat(examples, ignore_index=True).to_csv(args.output / 'mse_examples.tsv', sep='\t', index=False,
-                                                   float_format='%.17g')
-    (args.output / 'mse_audit.json').write_text(json.dumps({
+    with atomic_path(args.output / 'mse_audit.tsv') as temporary:
+        audit.to_csv(temporary, sep='\t', index=False, float_format='%.17g')
+    with atomic_path(args.output / 'mse_examples.tsv') as temporary:
+        pd.concat(examples, ignore_index=True).to_csv(temporary, sep='\t', index=False,
+                                                    float_format='%.17g')
+    receipt = {
         'source': str(SOURCE), 'arm': 'split', 'scope': 'sealed prior 150-unit non-null support only',
         'error': 'combined slope minus signed allelic_truth',
         'reported_se': 'arithmetic mean of reported combined slope SE',
         'sqrt_mean_se_squared': 'separate root-mean-square SE; it is not the arithmetic mean SE',
         'source_mse_verification': checks, 'rows': rows,
-    }, indent=2) + '\n')
+    }
+    with atomic_path(args.output / 'mse_audit.json') as temporary:
+        temporary.write_text(json.dumps(receipt, indent=2) + '\n')
     print(f'wrote {args.output / OUTS[0]}')
     print(f'wrote {args.output / OUTS[1]}')
     print(f'wrote {args.output / OUTS[2]}')

@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import false_discovery_control
 
-from unit_power_inputs import BETAS, COLORS, D, KEY, LABELS, METHODS, SETS, add_bands, digest, extract
+from unit_power_inputs import BETAS, COLORS, KEY, LABELS, METHODS, SETS, add_bands, extract
+from half_read_io import RESULTS, atomic_path, digest
 
 NBOOT = 2000
 BANDS = {'deep': ['<100', '100–999', '≥1000'], 'low': ['<30', '30–49', '50–99']}
@@ -25,7 +26,7 @@ def cluster_mean(q, column):
 
 
 def comparison(output):
-    prior = pd.read_parquet(D/'half_read_pvalue_comparison_20260929/pvalue_units.parquet')
+    prior = pd.read_parquet(RESULTS/'half_read_pvalue_comparison_20260929/pvalue_units.parquet')
     cols = KEY+['variant_id', 'method', 'is_null', 'coverage_reads', 'slope', 'slope_se', 'pval_nominal']
     base = pd.read_parquet(output/'baseline_fixed.parquet')
     unit = base[base.method.eq('unit') & (base.beta_abs.eq(0) | ~base.is_null)]
@@ -37,7 +38,8 @@ def comparison(output):
     x['common_se'] = x.groupby(KEY).valid.transform('all')
     x['common_p'] = x.common_se & x.groupby(KEY).valid_p.transform('all')
     x['neg_log10_p'] = -np.log10(x.pval_nominal.where(x.valid_p))
-    x.to_parquet(output/'comparison_units.parquet', index=False)
+    with atomic_path(output/'comparison_units.parquet') as temporary:
+        x.to_parquet(temporary, index=False)
     rows = []
     for (st, beta), full in x.groupby(['stratum', 'beta_abs']):
         for band in ['all']+BANDS[st]:
@@ -49,7 +51,8 @@ def comparison(output):
                     rows.append(dict(stratum=st, beta_abs=beta, coverage_band=band, method=method,
                         metric=metric, mean=mean, lo=lo, hi=hi, n_units=len(z), n_genes=z.gene.nunique()))
     result = pd.DataFrame(rows)
-    result.to_csv(output/'comparison_summary.tsv', sep='\t', index=False)
+    with atomic_path(output/'comparison_summary.tsv') as temporary:
+        result.to_csv(temporary, sep='\t', index=False)
     return x, result
 
 
@@ -198,12 +201,13 @@ def discovery(output):
                     global_true_calls=tp, global_false_calls=fp,
                     global_fdp=fp/(tp+fp) if tp+fp else np.nan))
         leads.loc[leads.stratum.eq(st) & leads.beta_abs.eq(beta) & leads.method.eq(method), 'oracle_called'] = oracle
-    leads.to_parquet(output/'gene_discovery_units.parquet', index=False)
+    with atomic_path(output/'gene_discovery_units.parquet') as temporary:
+        leads.to_parquet(temporary, index=False)
     power, pr, ap = pd.DataFrame(powers), pd.concat(curves, ignore_index=True), pd.DataFrame(aps)
-    power.to_csv(output/'power_summary.tsv', sep='\t', index=False)
-    pr.to_csv(output/'precision_recall_points.tsv', sep='\t', index=False)
-    ap.to_csv(output/'average_precision.tsv', sep='\t', index=False)
-    pd.DataFrame(nulls).to_csv(output/'null_gene_calls.tsv', sep='\t', index=False)
+    for frame, name in [(power, 'power_summary.tsv'), (pr, 'precision_recall_points.tsv'),
+                        (ap, 'average_precision.tsv'), (pd.DataFrame(nulls), 'null_gene_calls.tsv')]:
+        with atomic_path(output/name) as temporary:
+            frame.to_csv(temporary, sep='\t', index=False)
     return leads, power, pr, ap
 
 
@@ -219,7 +223,8 @@ def make_plots(output, summary, power, pr, ap):
 
     def save(fig, stem):
         for ext in ('png', 'pdf', 'svg'):
-            fig.savefig(output/f'{stem}.{ext}', dpi=200)
+            with atomic_path(output/f'{stem}.{ext}') as temporary:
+                fig.savefig(temporary, dpi=200)
         plt.close(fig)
 
     def finish(fig, title, caption, bands):
@@ -428,7 +433,8 @@ def report(output, summary, power, ap):
     body.append('</details><p><a href="comparison_summary.tsv">SE / log-p data</a> · <a href="power_summary.tsv">Power data</a> · '
         '<a href="precision_recall_points.tsv">PR points</a> · <a href="average_precision.tsv">Average precision</a> · '
         '<a href="manifest.json">Provenance</a> · <a href="baseline_acceptance.json">Baseline checks</a></p></html>')
-    (output/'index.html').write_text('\n'.join(body)+'\n')
+    with atomic_path(output/'index.html') as temporary:
+        temporary.write_text('\n'.join(body)+'\n')
 
 
 def main():
@@ -452,7 +458,8 @@ def main():
         conditioning='Paired truth-pattern-stratified gene bootstrap across this selected gene set, carrying three stored datasets and preserving truth prevalence; not independent new-cohort replicates',
         input_sha256={p.name:digest(p) for p in [args.output/'baseline_fixed.parquet', args.output/'baseline_leads.parquet',
             args.output/'gene_design_units.parquet', *[args.output/f'half_read_leads_{s}.parquet' for s in SETS]]})
-    (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+    with atomic_path(args.output/'manifest.json') as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2)+'\n')
     print(power[power.coverage_band.eq('all')][['stratum','beta_abs','method','rule','power','true_calls','false_calls','realized_fdp']].to_string(index=False))
 
 

@@ -7,9 +7,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from half_read_io import DEPLOY, RESULTS, atomic_path
 
-ROOT = Path("/mnt/ssd/lalli/brainvar_hapmix_deploy/half_read_trial_20260929")
-ARCHIVE = Path("/mnt/ssd/lalli/brainvar_hapmix_deploy/beta_balance_trial_20260929")
+ROOT = RESULTS / 'half_read_trial_20260929'
+ARCHIVE = DEPLOY / 'beta_balance_trial_20260929'
 STRAINS = {"deep": "corrected_null_store_20260925", "low": "stratum30_100"}
 ARMS = ("original", "half_read")
 NBOOT = 2000
@@ -150,7 +151,8 @@ def main():
         raise AssertionError("unexpected low beta0.4 combined MSE result")
     summary["causal_note"] = ("Low beta0.4 combined MSE ratio is 1.257 [1.064, 1.470]; bias improvement alone does not meet a uniform accuracy goal. "
                               f"The unique comparison units have {bad_total_truth} zero/nonfinite total-truth row before finite scoring.")
-    (ROOT / "repeated_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    with atomic_path(ROOT / "repeated_summary.json") as temporary:
+        temporary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     lines = ["# Half-read trial report", "", "This report aggregates completed outputs only. The original trial tested a uniform-precision criterion; the later 2026-09-29 decision adopted half-read split as an accuracy/precision tradeoff (implementation 6f8ad35, merge 86b947f). See ../half_read_default_adoption_20260929/verification.json and ../half_read_unit_power_pr_20260929/index.html. Numerical results below remain the original trial evidence.", "",
              "The independent NB results are a total-only oracle-response diagnostic. They contain no Salmon ambiguity, ASE channel, or resampled Gibbs weights. Record-null variance is conditional on the observed records; its transform-scale variance ratios are descriptive, not a common precision scale or evidence of gene independence.", "",
              "The causal counterfactual has 50 non-null genes per replicate and 150 units across three replicates (88 unique gene clusters). Deep total has 149 finite-scored units because one planted total truth is zero/nonfinite. Low beta=0.4 combined MSE is 1.257 [1.064, 1.470], so bias improvement alone does not meet the uniform-accuracy goal.", "",
@@ -177,7 +179,8 @@ def main():
         h = timing[timing.arm == "half_read"].seconds.mean()
         lines.append(f"| {s} | {o:.3f} | {h:.3f} | {int(timing.pairs.iloc[0]):,} |")
     lines += ["", "Archived split-original null outputs reproduce numerically (finite patterns identical; maximum finite absolute difference at most 1e-10). Detailed screens and all rates are in `repeated_summary.json`."]
-    (ROOT / "REPORT.md").write_text("\n".join(lines) + "\n")
+    with atomic_path(ROOT / "REPORT.md") as temporary:
+        temporary.write_text("\n".join(lines) + "\n")
     print(f"wrote {targets[0]} and {targets[1]}")
 
 

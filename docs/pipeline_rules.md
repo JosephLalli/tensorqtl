@@ -8,12 +8,20 @@ switched over, and which recorded results predate it.
 
 ## The rules
 
+This is the authoritative input and estimator contract. The
+[half-read analysis guide](half_read_analysis.md) describes report reproduction
+and its checks; dated reports retain their original method settings.
+
 1. **Every value comes from Salmon point estimates** (`quant.sf` NumReads):
    the allelic ratio, total expression, CPM, count cutoffs, expression PCs
    and the default's inputs. The 200 Gibbs draws are used only for ASE measurement
    variance; the default total working variance is one. Before this, the phenotype was the mean over Gibbs
    draws of the log (`compute_summaries_from_gibbs`, kept so dated scripts
    reproduce).
+   The default Salmon runner aggregates only allelic Gibbs arrays. Historical
+   callers of `load_counts` can still request total Gibbs aggregation; the
+   half-read route reads totals from point estimates. Fractional Salmon expected
+   counts are valid and are not rounded to integers.
 
 2. **Expression PCs remain log2(CPM + 1); the default total phenotype is the
    half-read split.** CPM is count divided by the

@@ -36,6 +36,36 @@ No numerical results or estimator behavior changed in this documentation pass.
 > RTA comparison, the draw-count adequacy, the `squeezeVar` diagnostics — remain
 > live: they measure the Gibbs variance itself, not a choice among models.
 
+## Engineering-cleanup checkpoint, 2026-09-30 (implemented)
+
+The authorized cleanup is implemented in the working tree. The default Salmon
+runner skips total-Gibbs `YT` allocation/aggregation; two historical callers
+retain it through `load_counts(include_total=True)`. Benchmark lead extraction
+rejects malformed/domain-invalid p-values, records untestable pairs, and checks
+that every fixed gene has a valid lead. Analysis outputs use atomic writes;
+baseline cache reuse verifies expected inputs, relevant sources, and every
+output. The [analysis guide](half_read_analysis.md) provides a supplied-root
+driver, exact environment pins, and the authoritative interpretation of its
+checks. [Pipeline rules](pipeline_rules.md) remain the current method contract.
+
+Validation: 39 targeted tests passed; the Salmon runner self-test passed,
+including STR/multiallelic paths. All 16 regenerated numerical tables match
+the saved results exactly. Lead extraction matches both the original function
+and saved lead values on 1,004,830 recorded pairs spanning two 100-gene scans.
+These are engineering/regression checks; no estimator, GPU mapping kernel,
+scientific conclusion, or benchmark scan changed. Reproduction receipts,
+source snapshots, environment, logs, and plots are under
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/half_read_cleanup_20260930/final/`
+(`run_manifest.json`); adjacent `lead_validation.json` and
+`cache_reuse_validation.json` record the additional boundary checks.
+
+The 2026-09-29 adoption evidence remains in
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/half_read_default_adoption_20260929/verification.json`
+and `docs_sync/`. Historical outputs are preserved. Optional scan-producing
+scripts still depend on the historical plasmode input layout; the new driver
+reproduces reports from recorded inputs and does not relocate those older
+genotype/Salmon dependencies. No new scientific phase is opened by this cleanup.
+
 ## State at a glance
 
 - **Implemented, committed (bea450c, 2026-09-16):** ASE regression, null tau,
@@ -623,8 +653,11 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
     together.
 - **Next-phase gate (2026-09-29).** The completed plasmode evidence and its
   report above are the current local record; the Meier correction introduced
-  by `a1b2ef4` remains implemented at current worktree HEAD `afae3ea`, and no
-  `postfit_<set>.json` completed receipts exist. Fixed donor-gene full balance
+  by `a1b2ef4` remains implemented. Post-fit effect-size adjustments on the
+  half-read default were measured on 2026-09-30 (plasmode only; every p-value
+  unchanged): `beta_shortfall_20260929/beta_postfit.html`, receipts
+  `postfit_<set>.json`, script `scripts/beta_postfit_adjustment.py`. No
+  adjustment is adopted. Fixed donor-gene full balance
   is rejected for adoption (below). Its source is archived at
   `brainvar_hapmix_deploy/beta_balance_trial_20260929/`. Its four live trial
   source files were deleted after those archive copies matched SHA256;

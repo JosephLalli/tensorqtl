@@ -27,9 +27,9 @@ WHAT IT DOES
 ============
   1. Reads each sample's Salmon output including aux_info/bootstrap
      (--numGibbsSamples 200), giving a [transcript x draw] matrix per sample.
-  2. Pairs haplotype transcripts, aggregates to gene level per haplotype per
-     draw -> yL / yR [genes x samples x draws], and separately sums EVERY
-     transcript of the gene, paired or not, into the total yT. A
+  2. Pairs haplotype transcripts and aggregates to gene level per haplotype
+     per draw -> yL / yR [genes x samples x draws]. The point-estimate total
+     remains the sum of every transcript, paired or unpaired. A
      personalized diploid transcriptome emits the second copy only where
      the sample is heterozygous, so yL + yR is a heterozygous-transcript
      subtotal whose pattern tracks local heterozygosity -- which is in LD
@@ -1048,7 +1048,7 @@ def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=
     print(f'  WARNING (--covariates-unverified): {why}')
 
 
-def load_counts(manifest, tx2gene, suffixes, out):
+def load_counts(manifest, tx2gene, suffixes, out, include_total=True):
     rows = [l.split('\t') for l in Path(manifest).read_text().strip().split('\n')
             if l.strip() and not l.startswith('#')]
     samples = [r[0].strip() for r in rows]
@@ -1098,7 +1098,8 @@ def load_counts(manifest, tx2gene, suffixes, out):
             nd = boot.shape[1]
             YL = np.zeros((len(genes), len(samples), nd))
             YR = np.zeros((len(genes), len(samples), nd))
-            YT = np.zeros((len(genes), len(samples), nd))
+            if include_total:
+                YT = np.zeros((len(genes), len(samples), nd))
             print(f'  {len(pairs)} haplotype pairs -> {len(genes)} genes '
                   f'(union over {len(samples)} samples), {nd} draws')
         elif boot.shape[1] != nd:
@@ -1112,36 +1113,43 @@ def load_counts(manifest, tx2gene, suffixes, out):
                 continue
             YL[gi[g], si, :] += boot[ia]
             YR[gi[g], si, :] += boot[ib]
-        # The TOTAL must cover every transcript, not only the ones quantified
-        # per haplotype. A personalized diploid transcriptome emits the second
-        # copy only where the sample is heterozygous, so an unpaired transcript
-        # is one whose haplotypes are identical -- its single row already
-        # carries BOTH haplotypes' expression. Summing only the pairs made the
-        # total a heterozygous-transcript subtotal, and a gene-sample with no
-        # heterozygous transcript collapsed to an exact structural zero rather
-        # than to a missing value. That pattern tracks local heterozygosity,
-        # which is in LD with the cis variants under test.
-        for idx, nm in enumerate(names):
-            base = nm
-            for suf in suffixes:
-                if nm.endswith(suf):
-                    base = nm[:-len(suf)]
-                    break
-            else:
-                n_unpaired_tx += 1
-            g = t2g.get(base)
-            if g is None or g not in gi:
-                continue
-            YT[gi[g], si, :] += boot[idx]
+        if include_total:
+            # The TOTAL must cover every transcript, not only the ones quantified
+            # per haplotype. A personalized diploid transcriptome emits the second
+            # copy only where the sample is heterozygous, so an unpaired transcript
+            # is one whose haplotypes are identical -- its single row already
+            # carries BOTH haplotypes' expression. Summing only the pairs made the
+            # total a heterozygous-transcript subtotal, and a gene-sample with no
+            # heterozygous transcript collapsed to an exact structural zero rather
+            # than to a missing value. That pattern tracks local heterozygosity,
+            # which is in LD with the cis variants under test.
+            for idx, nm in enumerate(names):
+                base = nm
+                for suf in suffixes:
+                    if nm.endswith(suf):
+                        base = nm[:-len(suf)]
+                        break
+                else:
+                    n_unpaired_tx += 1
+                g = t2g.get(base)
+                if g is None or g not in gi:
+                    continue
+                YT[gi[g], si, :] += boot[idx]
         print(f'  [{si+1}/{len(samples)}] {s}', flush=True)
     empty_ase = int((YL.sum(axis=2) + YR.sum(axis=2) == 0).sum())
-    empty_tot = int((YT.sum(axis=2) == 0).sum())
-    cells = YT.shape[0] * YT.shape[1]
-    print(f'  totals cover all transcripts: {empty_tot}/{cells} '
-          f'({100*empty_tot/cells:.1f}%) gene-samples have no expression at '
-          f'all, against {empty_ase}/{cells} ({100*empty_ase/cells:.1f}%) with '
-          f'no HAPLOTYPE-RESOLVED expression')
-    return np.array(genes), samples, YL, YR, YT
+    cells = YL.shape[0] * YL.shape[1]
+    if include_total:
+        empty_tot = int((YT.sum(axis=2) == 0).sum())
+        print(f'  Gibbs totals cover all transcripts: {empty_tot}/{cells} '
+              f'({100*empty_tot/cells:.1f}%) gene-samples have no expression at '
+              f'all, against {empty_ase}/{cells} ({100*empty_ase/cells:.1f}%) with '
+              f'no HAPLOTYPE-RESOLVED expression')
+        return np.array(genes), samples, YL, YR, YT
+    print(f'  Gibbs allelic draws: {empty_ase}/{cells} '
+          f'({100*empty_ase/cells:.1f}%) gene-samples have no '
+          f'HAPLOTYPE-RESOLVED expression; total expression is read from '
+          'quant.sf NumReads')
+    return np.array(genes), samples, YL, YR
 
 
 def main():
@@ -1249,8 +1257,8 @@ def main():
     sufs = tuple(args.hap_suffix.split(','))
 
     print('Reading Salmon Gibbs quantifications (measurement variance only)')
-    genes, samples, YL, YR, YT = load_counts(args.manifest, args.tx2gene,
-                                             sufs, out)
+    genes, samples, YL, YR = load_counts(args.manifest, args.tx2gene,
+                                         sufs, out, include_total=False)
     n_draws = int(YL.shape[2])
 
     # Values come from Salmon's POINT estimates (quant.sf NumReads); the Gibbs
@@ -1258,6 +1266,10 @@ def main():
     print('Reading Salmon point estimates (every value in the analysis)')
     pL, pR, pT, totals_all = load_point_estimates(args.manifest, args.tx2gene, sufs,
                                                   list(genes), samples)
+    empty_point_total = int((pT == 0).sum())
+    print(f'  point-estimate totals: {empty_point_total}/{pT.size} '
+          f'({100 * empty_point_total / pT.size:.1f}%) gene-samples have '
+          '0 quant.sf NumReads summed over all transcripts')
     print('edgeR library normalization (filterByExpr, keep.lib.sizes=FALSE, TMM)')
     if args.edger_dir:
         eff_lib, eqtl_genes = read_edger_dir(args.edger_dir, samples)
@@ -1269,7 +1281,7 @@ def main():
     print('Computing default half-read inputs: point-estimate values, ASE Gibbs variance, unit total variance')
     A, T, Va, Vt = prepare_default_inputs(
         pL, pR, pT, eff_lib, YL, YR, count_noise=args.count_noise)
-    del YL, YR, YT
+    del YL, YR
     # The eQTL gene filter. Genes that pass it but carry no haplotype-paired
     # transcript in any donor have no Gibbs draws from load_counts and cannot
     # be given a variance, so they are reported, not tested.
@@ -1601,8 +1613,8 @@ def selftest(extra=()):
     seen = []
     for tag, rows in (('A,B', [ra, rb]), ('B,A', [rb, ra])):
         (ud / f'man_{tag}.tsv').write_text('\n'.join(rows))
-        gset, _, yl, _, _ = load_counts(ud / f'man_{tag}.tsv', ud / 't2g.tsv',
-                                     ('_hapA', '_hapB'), ud)
+        gset, _, yl, _ = load_counts(ud / f'man_{tag}.tsv', ud / 't2g.tsv',
+                                      ('_hapA', '_hapB'), ud, include_total=False)
         assert set(gset) == want, (tag, sorted(set(gset)), sorted(want))
         assert yl.shape[0] == len(want), (tag, yl.shape)
         seen.append(tuple(gset))

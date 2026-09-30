@@ -1,6 +1,5 @@
 """Mean -log10 nominal p at the same matched units as the reported-SE figure."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
@@ -8,21 +7,27 @@ import numpy as np
 import pandas as pd
 
 from half_read_se_plot import SETS, METHODS, LABELS, COLORS, BETAS, D
+from half_read_io import RESULTS, atomic_path, cache_receipt, digest, reuse_cache
 
-SOURCE = D/'half_read_se_comparison_20260929/comparison_units.parquet'
+SOURCE = RESULTS/'half_read_se_comparison_20260929/comparison_units.parquet'
 KEY = ['stratum', 'gene', 'variant_id', 'beta_abs', 'rep', 'method']
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def baselines(output):
     target = output/'baseline_pvalues.parquet'
-    if target.exists():
-        return
     u = pd.read_parquet(SOURCE)
-    rows, inputs = [], [SOURCE]
+    manifest_path = output/'baseline_manifest.json'
+    outputs = [target]
+    inputs = [SOURCE, Path(__file__), Path(__file__).with_name('half_read_se_plot.py'),
+              Path(__file__).with_name('half_read_io.py')]
+    expected_paths = []
+    for (stratum, beta, rep, method), _ in u[u.method != 'half_read'].groupby(
+            ['stratum', 'beta_abs', 'rep', 'method']):
+        expected_paths.append(D/SETS[stratum][1]/f'results/beta{beta}/{method}/nominal_rep{rep:03d}.parquet')
+    inputs.extend(expected_paths)
+    if reuse_cache(manifest_path, inputs, outputs):
+        return
+    rows = []
     for (stratum, beta, rep, method), g in u[u.method != 'half_read'].groupby(
             ['stratum', 'beta_abs', 'rep', 'method']):
         path = D/SETS[stratum][1]/f'results/beta{beta}/{method}/nominal_rep{rep:03d}.parquet'
@@ -34,11 +39,12 @@ def baselines(output):
         if not (q._merge == 'both').all():
             raise AssertionError(f'missing baseline keys: {path}')
         rows.append(q.drop(columns='_merge'))
-        inputs.append(path)
-    pd.concat(rows, ignore_index=True).to_parquet(target, index=False)
-    (output/'baseline_manifest.json').write_text(json.dumps(dict(
-        input_sha256={str(p): digest(p) for p in inputs}, rows=sum(len(x) for x in rows),
-        source_sha256=digest(Path(__file__)), note='Selected saved p-values; no baseline regressions rerun'), indent=2)+'\n')
+    with atomic_path(target) as temporary:
+        pd.concat(rows, ignore_index=True).to_parquet(temporary, index=False)
+    manifest = dict(**cache_receipt(inputs, outputs), rows=sum(len(x) for x in rows),
+                    note='Selected saved p-values; no baseline regressions rerun')
+    with atomic_path(manifest_path) as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2)+'\n')
     print(f'Baseline p-values cached: {target}', flush=True)
 
 
@@ -67,7 +73,8 @@ def collect(output):
     floor = np.finfo(np.float64).tiny
     q['p_underflow'] = q.valid_p & q.pval_nominal.eq(0)
     q['neg_log10_p'] = np.where(q.valid_p, -np.log10(q.pval_nominal.clip(lower=floor)), np.nan)
-    q.to_parquet(output/'pvalue_units.parquet', index=False)
+    with atomic_path(output/'pvalue_units.parquet') as temporary:
+        q.to_parquet(temporary, index=False)
     return q, floor
 
 
@@ -138,7 +145,8 @@ def plot(summary, output):
              'Matched finite units; no significance filter. * β=0 uses null sentinels; β>0 uses planted causal variants in three datasets.', fontsize=9)
     fig.subplots_adjust(top=.76, bottom=.22, left=.08, right=.98, wspace=.26)
     for ext in ('png', 'pdf', 'svg'):
-        fig.savefig(output/f'mean_neg_log10_p.{ext}', dpi=200)
+        with atomic_path(output/f'mean_neg_log10_p.{ext}') as temporary:
+            fig.savefig(temporary, dpi=200)
     plt.close(fig)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
@@ -154,7 +162,8 @@ def plot(summary, output):
              'Bars: 95% gene-bootstrap CI of mean −log₁₀(p). * β=0 uses null sentinels. These are nominal association p-values.', fontsize=9)
     fig.subplots_adjust(top=.85, bottom=.18, left=.065, right=.98, wspace=.20, hspace=.5)
     for ext in ('png', 'pdf', 'svg'):
-        fig.savefig(output/f'mean_neg_log10_p_by_read_band.{ext}', dpi=200)
+        with atomic_path(output/f'mean_neg_log10_p_by_read_band.{ext}') as temporary:
+            fig.savefig(temporary, dpi=200)
     plt.close(fig)
 
 
@@ -169,8 +178,10 @@ def main():
         return
     data, floor = collect(args.output)
     summary, pairs = summarize(data)
-    summary.to_csv(args.output/'summary.tsv', sep='\t', index=False)
-    pairs.to_csv(args.output/'paired_half_minus_split.tsv', sep='\t', index=False)
+    with atomic_path(args.output/'summary.tsv') as temporary:
+        summary.to_csv(temporary, sep='\t', index=False)
+    with atomic_path(args.output/'paired_half_minus_split.tsv') as temporary:
+        pairs.to_csv(temporary, sep='\t', index=False)
     plot(summary, args.output)
     selected = data[data.plot_common]
     manifest = dict(source_sha256=digest(Path(__file__)),
@@ -184,7 +195,8 @@ def main():
         max_observed_logp=float(selected.neg_log10_p.max()),
         p_underflow_note='If saved p is exactly zero, use float64 smallest positive normal as a conservative display bound; count reported above',
         null_note='Beta0 uses stored null dataset sentinels, not the separate 2000-record precision experiment')
-    (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+    with atomic_path(args.output/'manifest.json') as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2)+'\n')
     print(summary[summary.coverage_band == 'all'][['stratum','beta_abs','method','n_units','mean_logp']].to_string(index=False))
     print('Half-read minus split:', flush=True)
     print(pairs[pairs.coverage_band == 'all'].to_string(index=False))

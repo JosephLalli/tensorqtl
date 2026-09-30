@@ -16,18 +16,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DEPLOY = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
+from half_read_io import DEPLOY, atomic_path, digest
 SETS = {'deep': 'corrected_null_store_20260925', 'low': 'stratum30_100'}
 KEY = ['gene', 'variant_id', 'beta_abs', 'rep']
 FIXED_COLUMNS = ['stratum', 'gene', 'variant_id', 'beta_abs', 'rep', 'is_null',
                  'slope', 'slope_se', 'pval_nominal']
 LEAD_COLUMNS = ['stratum', 'gene', 'beta_abs', 'rep', 'lead_variant', 'lead_p',
                 'lead_absstat', 'is_null']
-EXPECTED_MAPPER = '5bac2bf029a01272a5f829e9a1318eb6d6a1629fdee08eacaf8efa90af8990b6'
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def digest_arrays(dataset):
@@ -55,8 +50,25 @@ def check_exact_cache(selected, cached, stratum, beta, rep):
 
 def leads(fitted, fixed):
     scan = fitted[['gene', 'variant_id', 'pval_nominal', 'slope', 'slope_se']].copy()
-    scan['pval_nominal'] = pd.to_numeric(scan['pval_nominal'], errors='coerce')
-    valid = np.isfinite(scan.pval_nominal) & scan.pval_nominal.between(0, 1)
+    if not pd.api.types.is_numeric_dtype(scan['pval_nominal']):
+        bad = scan.loc[scan['pval_nominal'].map(lambda value: isinstance(value, str)),
+                       ['gene', 'variant_id', 'pval_nominal']]
+        if len(bad):
+            row = bad.iloc[0]
+            raise ValueError(f"malformed nominal p-value for gene={row.gene} variant={row.variant_id}: {row.pval_nominal!r}")
+        raise ValueError('nominal p-value column must be numeric')
+    finite = np.isfinite(scan.pval_nominal)
+    infinite = np.isinf(scan.pval_nominal)
+    if infinite.any():
+        row = scan.loc[infinite, ['gene', 'variant_id', 'pval_nominal']].iloc[0]
+        raise ValueError(f'nonfinite nominal p-value for gene={row.gene} variant={row.variant_id}: {row.pval_nominal!r}')
+    invalid = finite & ~scan.pval_nominal.between(0, 1)
+    if invalid.any():
+        row = scan.loc[invalid, ['gene', 'variant_id', 'pval_nominal']].iloc[0]
+        raise ValueError(f'out-of-domain nominal p-value for gene={row.gene} variant={row.variant_id}: {row.pval_nominal!r}')
+    valid = finite
+    exclusions = scan.loc[~valid, ['gene', 'variant_id', 'pval_nominal']].copy()
+    exclusions['exclusion'] = 'untestable_nonfinite_nominal_p'
     scan = scan.loc[valid].copy()
     scan['absstat'] = np.abs(scan.slope / scan.slope_se)
     scan['absstat'] = scan['absstat'].where(np.isfinite(scan.absstat), -np.inf)
@@ -67,7 +79,11 @@ def leads(fitted, fixed):
                                    'absstat': 'lead_absstat'})
                   [['gene', 'lead_variant', 'lead_p', 'lead_absstat']])
     result = fixed[['gene', 'is_null']].merge(chosen, on='gene', how='left', validate='one_to_one')
-    return result
+    no_lead = result.lead_variant.isna()
+    if no_lead.any():
+        genes = ', '.join(result.loc[no_lead, 'gene'].astype(str).head(5))
+        raise AssertionError(f'no valid nominal lead for gene(s): {genes}')
+    return result, exclusions
 
 
 def main():
@@ -77,10 +93,11 @@ def main():
     args = parser.parse_args()
     fixed_file = args.output / f'half_read_fixed_{args.stratum}.parquet'
     lead_file = args.output / f'half_read_leads_{args.stratum}.parquet'
+    exclusion_file = args.output / f'half_read_pvalue_exclusions_{args.stratum}.tsv'
     manifest_file = args.output / f'manifest_{args.stratum}.json'
     source_dir = args.output / f'source_{args.stratum}'
     scratch = args.output / f'scratch_{args.stratum}'
-    targets = (fixed_file, lead_file, manifest_file, source_dir, scratch)
+    targets = (fixed_file, lead_file, exclusion_file, manifest_file, source_dir, scratch)
     if any(path.exists() for path in targets):
         raise SystemExit(f'refusing overwrite for {args.stratum} under {args.output}')
     args.output.mkdir(parents=True, exist_ok=True)
@@ -94,8 +111,6 @@ def main():
     if C.GENE_SET != SETS[args.stratum]:
         raise AssertionError('stratum environment did not select requested set')
     mapper_hash = digest(Path(C.map_nominal.__code__.co_filename))
-    if mapper_hash != EXPECTED_MAPPER:
-        raise AssertionError(f'mapper hash {mapper_hash} differs from required {EXPECTED_MAPPER}')
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = False
     previous_file = (DEPLOY / 'half_read_pvalue_comparison_20260929' /
@@ -109,7 +124,7 @@ def main():
     meta = json.loads(meta_path.read_text())
     I, _, _ = C.load()
     S = C.setup(I)
-    fixed_rows, lead_rows, runs, inputs = [], [], [], []
+    fixed_rows, lead_rows, exclusion_rows, runs, inputs = [], [], [], [], []
     exact_rows = 0
     for beta in (0.0, 0.2, 0.4, 0.8):
         for rep in range(meta['n_datasets'][str(beta)]):
@@ -134,20 +149,23 @@ def main():
             check_exact_cache(check, previous, args.stratum, beta, rep)
             exact_rows += len(check)
             fixed_rows.append(fixed)
-            lead_rows.append(leads(fitted, fixed).assign(beta_abs=beta, rep=rep))
-            finite = fitted.pval_nominal[np.isfinite(fitted.pval_nominal)]
-            if not finite.between(0, 1).all():
-                raise AssertionError(f'{args.stratum} beta={beta:g} rep={rep}: invalid finite nominal p-value')
+            leads_for_run, excluded = leads(fitted, fixed)
+            lead_rows.append(leads_for_run.assign(beta_abs=beta, rep=rep))
+            excluded = excluded.assign(stratum=args.stratum, beta_abs=beta, rep=rep)
+            exclusion_rows.append(excluded)
             inputs.append({'path': str(dataset_path), 'file_sha256': digest(dataset_path),
                            'array_sha256': digest_arrays(dataset_path),
                            'split_input_fingerprint': actual_fingerprint,
                            'baseline_split_input_fingerprint': baseline_fingerprint})
             runs.append({'beta_abs': beta, 'rep': rep, 'scan_pairs': len(fitted), 'fixed_rows': len(fixed),
                          'lead_rows': len(lead_rows[-1]), 'nonfinite_pval_nominal': int((~np.isfinite(fitted.pval_nominal)).sum())})
-            print(f'{args.stratum} beta={beta:g} rep={rep}: {len(fitted):,} pairs; 100 fixed; 100 leads; exact cache match', flush=True)
+            print(f'{args.stratum} beta={beta:g} rep={rep}: {len(fitted):,} pairs; '
+                  f'{len(excluded)} untestable pairs excluded from lead selection; '
+                  f'{len(fixed)} fixed; {len(leads_for_run)} leads; exact cache match', flush=True)
 
     fixed = pd.concat(fixed_rows, ignore_index=True).assign(stratum=args.stratum)[FIXED_COLUMNS]
     lead = pd.concat(lead_rows, ignore_index=True).assign(stratum=args.stratum)[LEAD_COLUMNS]
+    exclusions = pd.concat(exclusion_rows, ignore_index=True)
     expected_truth = sum(100 * meta['n_datasets'][str(beta)] for beta in (0.0, 0.2, 0.4, 0.8))
     if len(fixed) != expected_truth or len(lead) != expected_truth:
         raise AssertionError(f'expected {expected_truth} fixed and lead rows, got {len(fixed)} and {len(lead)}')
@@ -159,15 +177,21 @@ def main():
     finite = fixed.pval_nominal[np.isfinite(fixed.pval_nominal)]
     if not finite.between(0, 1).all():
         raise AssertionError('fixed cache has invalid finite nominal p-value')
-    fixed.to_parquet(fixed_file, index=False)
-    lead.to_parquet(lead_file, index=False)
+    with atomic_path(fixed_file) as temporary:
+        fixed.to_parquet(temporary, index=False)
+    with atomic_path(lead_file) as temporary:
+        lead.to_parquet(temporary, index=False)
+    with atomic_path(exclusion_file) as temporary:
+        exclusions.to_csv(temporary, sep='\t', index=False)
     source_dir.mkdir()
-    source_paths = [Path(__file__), Path(half_read.__code__.co_filename), Path(C.__file__),
+    source_paths = [Path(__file__), Path(__file__).with_name('half_read_io.py'),
+                    Path(half_read.__code__.co_filename), Path(C.__file__),
                     Path(C.map_nominal.__code__.co_filename)]
     source_hashes = {}
     for source in source_paths:
         target = source_dir / source.name
-        shutil.copy2(source, target)
+        with atomic_path(target) as temporary:
+            shutil.copy2(source, temporary)
         source_hashes[source.name] = digest(source)
     manifest = {'stratum': args.stratum, 'gene_set': C.GENE_SET,
                 'scope': 'unchanged half-read split fit; all fixed units and one nominal lead per gene',
@@ -178,11 +202,14 @@ def main():
                 'meta_sha256': digest(meta_path), 'input_fingerprints': inputs, 'runs': runs,
                 'exact_cache_matches': {'rows': exact_rows, 'expected_rows': 550, 'columns': ['slope', 'slope_se', 'pval_nominal']},
                 'nan_p_counts': {'fixed': int((~np.isfinite(fixed.pval_nominal)).sum()),
-                                 'leads': int((~np.isfinite(lead.lead_p)).sum())},
+                                 'leads': int((~np.isfinite(lead.lead_p)).sum()),
+                                 'untestable_scan_pairs': len(exclusions)},
+                'pvalue_exclusions': exclusion_file.name,
                 'truth_counts': {'rows': expected_truth, 'null': int(fixed.is_null.sum()),
                                  'nonnull': int((~fixed.is_null).sum())},
                 'torch_version': torch.__version__, 'gpu': torch.cuda.get_device_name()}
-    manifest_file.write_text(json.dumps(manifest, indent=2) + '\n')
+    with atomic_path(manifest_file) as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2) + '\n')
     shutil.rmtree(scratch)
 
 

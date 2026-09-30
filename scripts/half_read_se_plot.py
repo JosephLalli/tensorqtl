@@ -4,7 +4,6 @@ The figure plots arithmetic mean reported SE, not empirical SD or RMSE.
 Only beta 0/.2 require new half-read fits; existing .4/.8 fits are reused.
 """
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -15,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
+from half_read_io import DEPLOY as D, atomic_path, digest
 SETS = {
     'deep': ('corrected_null_store_20260925', 'plasmode_meier_20260927',
              'corrected_null_store_20260925', 'Broad-depth set (previously “deep”)'),
@@ -28,10 +27,6 @@ COLORS = ['#0072B2', '#D55E00', '#009E73', '#CC79A7']
 BETAS = [0., .2, .4, .8]
 KEY = ['gene', 'variant_id', 'beta_abs', 'rep']
 FIELDS = ['phenotype_id', 'variant_id', 'slope', 'slope_se']
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def common_module(stratum):
@@ -88,8 +83,10 @@ def fill_missing(args):
             receipts.append(dict(beta=beta, rep=rep, scan_pairs=len(fitted), selected_units=len(q),
                 original_ase_exact=True, dataset_sha256=digest(C.DATASETS/f'beta{beta}/rep{rep:03d}.npz')))
             print(f'{args.stratum} beta {beta} rep {rep}: {len(fitted):,} pairs, {len(q)} selected', flush=True)
-    pd.concat(rows, ignore_index=True).to_parquet(target, index=False)
-    (args.output/f'half_read_extra_{args.stratum}.json').write_text(json.dumps(dict(
+    with atomic_path(target) as temporary:
+        pd.concat(rows, ignore_index=True).to_parquet(temporary, index=False)
+    with atomic_path(args.output/f'half_read_extra_{args.stratum}.json') as temporary:
+        temporary.write_text(json.dumps(dict(
         gene_set=C.GENE_SET, source_sha256=digest(Path(__file__)), runs=receipts,
         mapper_sha256=digest(Path(C.map_nominal.__code__.co_filename)),
         scope='half-read total only, original ASE weights, unit total, unchanged GPU mapper'), indent=2)+'\n')
@@ -154,7 +151,8 @@ def collect(args):
             raise AssertionError('low coverage band overflow')
         data.loc[ix, 'coverage_band'] = pd.cut(data.loc[ix, 'coverage_reads'], bins=bins,
                                               labels=labels, right=False).astype(str)
-    data.to_parquet(args.output/'comparison_units.parquet', index=False)
+    with atomic_path(args.output/'comparison_units.parquet') as temporary:
+        data.to_parquet(temporary, index=False)
     return data, inputs
 
 
@@ -227,7 +225,8 @@ def plots(summary, output):
              '* β=0: one fixed sentinel per gene, one dataset. β>0: planted causal variants, three datasets. n counts gene–dataset units.', fontsize=9)
     fig.subplots_adjust(top=.76, bottom=.22, left=.08, right=.98, wspace=.26)
     for ext in ('png', 'pdf', 'svg'):
-        fig.savefig(output/f'mean_reported_se.{ext}', dpi=200)
+        with atomic_path(output/f'mean_reported_se.{ext}') as temporary:
+            fig.savefig(temporary, dpi=200)
     plt.close(fig)
 
     handles.clear()
@@ -244,7 +243,8 @@ def plots(summary, output):
              'Panel y scales differ. Matched finite units. Bars: 95% gene-bootstrap CI of mean SE. * β=0 uses null sentinels.', fontsize=9)
     fig.subplots_adjust(top=.85, bottom=.18, left=.065, right=.98, wspace=.20, hspace=.5)
     for ext in ('png', 'pdf', 'svg'):
-        fig.savefig(output/f'mean_reported_se_by_read_band.{ext}', dpi=200)
+        with atomic_path(output/f'mean_reported_se_by_read_band.{ext}') as temporary:
+            fig.savefig(temporary, dpi=200)
     plt.close(fig)
 
 
@@ -267,11 +267,13 @@ def main():
         manifest = json.loads(manifest_path.read_text())
         manifest['plot_source_sha256'] = digest(Path(__file__))
         manifest['plot_note'] = 'Independent panel y limits include every confidence bar; original computation source archived separately'
-        manifest_path.write_text(json.dumps(manifest, indent=2)+'\n')
+        with atomic_path(manifest_path) as temporary:
+            temporary.write_text(json.dumps(manifest, indent=2)+'\n')
         return
     data, inputs = collect(args)
     summary = summarize(data)
-    summary.to_csv(args.output/'summary.tsv', sep='\t', index=False)
+    with atomic_path(args.output/'summary.tsv') as temporary:
+        summary.to_csv(temporary, sep='\t', index=False)
     plots(summary, args.output)
     manifest = dict(source_sha256=digest(Path(__file__)), input_sha256={str(p): digest(p) for p in sorted(set(inputs))},
         methods=dict(zip(METHODS, LABELS)), statistic='Arithmetic mean of reported slope_se on common finite units',
@@ -281,7 +283,8 @@ def main():
         mse='mean((slope - planted_truth)**2); total truth for tensorQTL, allelic truth for combined estimators',
         no_significance_filter=True, all_available_sensitivity='summary.tsv support=available',
         bootstrap_note='Cells resample genes, carrying all dataset observations for that gene; no empirical repeated-sample SD inferred')
-    (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+    with atomic_path(args.output/'manifest.json') as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2)+'\n')
     print(summary[(summary.support == 'common') & (summary.coverage_band == 'all')][
         ['stratum', 'beta_abs', 'method', 'n_units', 'mean_se', 'lo', 'hi']].to_string(index=False))
 

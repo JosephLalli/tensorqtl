@@ -9,20 +9,13 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from half_read_se_plot import BETAS, D, SETS
+from half_read_io import atomic_path, cache_receipt, reuse_cache
 
 BASELINES = ['split', 'unit', 'mixqtl', 'tensorqtl']
 METHODS = ['half_read', 'split', 'unit', 'mixqtl', 'tensorqtl']
 LABELS = ['Half-read + split', 'Split', 'Unit weights', 'mixQTL', 'tensorQTL total only']
 COLORS = ['#0072B2', '#D55E00', '#666666', '#009E73', '#CC79A7']
 KEY = ['stratum', 'gene', 'beta_abs', 'rep']
-
-
-def digest(path):
-    h = hashlib.sha256()
-    with path.open('rb') as f:
-        for block in iter(lambda: f.read(1024 * 1024), b''):
-            h.update(block)
-    return h.hexdigest()
 
 
 def fingerprint(ds, arm):
@@ -46,9 +39,23 @@ def add_bands(frame):
 
 def extract(output):
     output.mkdir(parents=True, exist_ok=True)
-    if (output/'baseline_manifest.json').exists():
+    manifest_path = output/'baseline_manifest.json'
+    outputs = [output/'baseline_fixed.parquet', output/'baseline_leads.parquet', output/'gene_design_units.parquet']
+    expected_inputs = [Path(__file__), Path(__file__).with_name('half_read_se_plot.py'),
+                       Path(__file__).with_name('half_read_io.py')]
+    for st, (_, rootname, designpath, _) in SETS.items():
+        root = D/rootname
+        meta_path, design_path = root/'datasets/meta.json', D/designpath/'gene_design.tsv'
+        meta = json.loads(meta_path.read_text())
+        expected_inputs += [meta_path, design_path, root/'eigenmt_m_eff.tsv']
+        for beta in BETAS:
+            for rep in range(meta['n_datasets'][str(beta)]):
+                expected_inputs.append(root/f'datasets/beta{beta}/rep{rep:03d}.npz')
+                expected_inputs.extend(root/f'results/beta{beta}/{arm}/nominal_rep{rep:03d}.parquet'
+                                       for arm in BASELINES)
+    if reuse_cache(manifest_path, expected_inputs, outputs):
         return
-    fixed, leads, units, inputs, audits = [], [], [], {}, []
+    fixed, leads, units, audits = [], [], [], []
     for st, (_, rootname, designpath, _) in SETS.items():
         root = D/rootname
         meta_path, design_path = root/'datasets/meta.json', D/designpath/'gene_design.tsv'
@@ -56,8 +63,6 @@ def extract(output):
         gd = pd.read_csv(design_path, sep='\t').set_index('gene')
         meff_path = root/'eigenmt_m_eff.tsv'
         meff = pd.read_csv(meff_path, sep='\t').set_index('gene').m_eff
-        for p in (meta_path, design_path, meff_path):
-            inputs[str(p)] = digest(p)
         for beta in BETAS:
             for rep in range(meta['n_datasets'][str(beta)]):
                 ds_path = root/f'datasets/beta{beta}/rep{rep:03d}.npz'
@@ -70,7 +75,6 @@ def extract(output):
                 u['m_eff'] = u.gene.map(meff)
                 assert u.coverage_reads.notna().all() and u.m_eff.gt(0).all()
                 units.append(u)
-                inputs[str(ds_path)] = digest(ds_path)
                 # Unit weights retain this pre-existing support rule. Record its scope.
                 count_admitted = ~((ds['pL'] < .5) ^ (ds['pR'] < .5)) & ((ds['pL'] + ds['pR']) > 0)
                 audits.append(dict(stratum=st, beta_abs=beta, rep=rep,
@@ -99,18 +103,18 @@ def extract(output):
                         on='gene', how='left', validate='one_to_one')
                     assert len(lead) == 100 and lead.variant_id.notna().all()
                     leads.append(lead.rename(columns={'variant_id': 'lead_variant'}).assign(method=arm))
-                    inputs[str(p)] = digest(p)
                 print(f'Baselines {st} beta={beta:g} rep={rep}: four saved arms summarized', flush=True)
     all_fixed, all_leads, design = pd.concat(fixed), pd.concat(leads), add_bands(pd.concat(units))
     assert len(design) == 2000 and len(all_fixed) == len(all_leads) == 8000
     for q in (all_fixed, all_leads):
         assert not q.duplicated(KEY+['method']).any()
-    all_fixed.to_parquet(output/'baseline_fixed.parquet', index=False)
-    all_leads.to_parquet(output/'baseline_leads.parquet', index=False)
-    design.to_parquet(output/'gene_design_units.parquet', index=False)
-    (output/'baseline_manifest.json').write_text(json.dumps(dict(input_sha256=inputs,
-        source_sha256=digest(Path(__file__)), baseline_rows=len(all_fixed), gene_units=len(design),
-        baseline_regressions_rerun=False, admission_audit=audits), indent=2)+'\n')
+    for frame, path in zip((all_fixed, all_leads, design), outputs):
+        with atomic_path(path) as temporary:
+            frame.to_parquet(temporary, index=False)
+    manifest = dict(**cache_receipt(expected_inputs, outputs), baseline_rows=len(all_fixed), gene_units=len(design),
+                    baseline_regressions_rerun=False, admission_audit=audits)
+    with atomic_path(manifest_path) as temporary:
+        temporary.write_text(json.dumps(manifest, indent=2)+'\n')
 
 
 if __name__ == '__main__':

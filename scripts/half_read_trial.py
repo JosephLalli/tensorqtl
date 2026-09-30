@@ -6,7 +6,6 @@ Run in the existing benchmark environment with PLASMODE_GENE_SET set per stratum
 """
 import argparse
 import hashlib
-import json
 import shutil
 import sys
 import time
@@ -16,6 +15,8 @@ import numpy as np
 import pandas as pd
 import torch
 from scipy import stats
+
+from half_read_io import atomic_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
 import common as C
@@ -121,7 +122,8 @@ def independent_counts(I, R, tested, output, reps, tensor, S, anchor):
                         **summary))
         if (k+1) % 20 == 0:
             print(f'NB counts: {k+1}/{len(I["genes"])} genes', flush=True)
-    pd.DataFrame(rows).to_parquet(output/'independent_nb.parquet', index=False)
+    with atomic_path(output/'independent_nb.parquet') as temporary:
+        pd.DataFrame(rows).to_parquet(temporary, index=False)
     counts = np.asarray(check_counts)
     checks = []
     # A total-only scan with no ASE support verifies the independent-count instrument.
@@ -209,7 +211,8 @@ def main():
         for col in C.COLS[2:]:
             np.testing.assert_array_equal(np.isfinite(reference[(m, 'original')][col]),
                                           np.isfinite(reference[(m, 'half_read')][col]))
-    pd.DataFrame(timings).to_csv(args.output/'mapper_timing.tsv', sep='\t', index=False)
+    with atomic_path(args.output/'mapper_timing.tsv') as temporary:
+        pd.DataFrame(timings).to_csv(temporary, sep='\t', index=False)
     p_t, f_t = torch.as_tensor(perm, device=device), tensor(flip)
     cov = tensor(np.column_stack([I['cov_df'], I['geno_cov_df']]))
     ones = tensor(np.ones(N))
@@ -264,7 +267,8 @@ def main():
                         counts[z+1] += good & (pv[2:] < alpha)
         if (k+1) % 20 == 0:
             print(f'record null: {k+1}/{G} genes; {time.perf_counter()-start:.1f}s', flush=True)
-    pd.DataFrame(rows).to_parquet(args.output/'per_gene_null.parquet', index=False)
+    with atomic_path(args.output/'per_gene_null.parquet') as temporary:
+        pd.DataFrame(rows).to_parquet(temporary, index=False)
     mc_rows = []
     for (arm, channel, scope), counts in mc.items():
         for z, alpha in enumerate(C.ALPHAS):
@@ -276,7 +280,8 @@ def main():
                 delta = rate-old[z+1]/old[0]
                 rec.update(paired_delta=float(delta.mean()), paired_mc_se=float(delta.std(ddof=1)/np.sqrt(args.nperm)))
             mc_rows.append(rec)
-    pd.DataFrame(mc_rows).to_csv(args.output/'null_monte_carlo.tsv', sep='\t', index=False)
+    with atomic_path(args.output/'null_monte_carlo.tsv') as temporary:
+        pd.DataFrame(mc_rows).to_csv(temporary, sep='\t', index=False)
     nb = independent_counts(I, R, tested, args.output, args.count_reps, tensor, S, anchor)
     C.write_json(args.output/'manifest.json', dict(gene_set=C.GENE_SET, genes=G, donors=N,
         random_replicates=args.nperm, seed=20260929, additional_anchor_arrangements=2,

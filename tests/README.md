@@ -21,7 +21,17 @@ This directory contains a comprehensive test suite for tensorQTL, covering all m
   point-estimate ASE and half-read total values, ASE mask, and unit working
   total variance.
 - **`test_half_read_runner.py`** - Runner integration and its self-test
-  contract for the half-read default.
+  contract for the half-read default; fractional paired/unpaired Gibbs fixture
+  for the allelic-only and retained legacy aggregation paths.
+- **`test_half_read_io.py`** - Interrupted output writes and detection of
+  partial caches or changed inputs, code, and outputs.
+- **`test_half_read_analysis_inputs.py`** - Known-answer lead selection,
+  malformed p-value rejection, explicit untestable pairs, and gene-family checks.
+
+The [half-read analysis driver](../docs/half_read_analysis.md) also runs the
+known-answer precision–recall check and exact saved-table comparisons. Mapping
+parity verifies integration; it is not an independent statistical-calibration
+test.
 
 ### Test Infrastructure
 - **`conftest.py`** - Shared pytest fixtures
