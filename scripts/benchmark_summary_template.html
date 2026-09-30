@@ -83,7 +83,7 @@ a { color: var(--hap); }
     <div class="eyebrow">BrainVar · 92 donors · T2T · 29 September 2026</div>
     <h1>eQTL Method Benchmark</h1>
     <p class="sub">Which cis-eQTL method finds real effects in this cohort: the four hapmixQTL weightings, mixQTL,
-      total-only tensorQTL, RASQUAL and TReCASE. Two tests answer it: effects planted into the cohort's own data, where
+      total-only tensorQTL, RASQUAL and TReCASE. Two tests answer it: effects simulated into the cohort's own data, where
       the truth is known, and replication in 135 donors that no method saw.</p>
   </header>
 
@@ -110,10 +110,10 @@ a { color: var(--hap); }
   <section aria-labelledby="h-tests">
     <h2 id="h-tests">The two tests</h2>
     <div class="tests">
-      <div class="test"><h3>Planted effects (plasmode)</h3>
+      <div class="test"><h3>Simulated effects (plasmode)</h3>
         <p>The cohort's real expression records are shuffled against the genotypes, which erases every real eQTL but keeps
           the real noise. Then one causal variant per gene is given a known effect in half of 100 genes, by removing reads
-          from one haplotype. Methods are scored on how many of the planted genes they find. Two gene sets: the deep set
+          from one haplotype. Methods are scored on how many of the simulated genes they find. Two gene sets: the deep set
           (well-covered genes) and the low-coverage set (30 to 100 allele-resolved reads per donor).</p></div>
       <div class="test"><h3>Held-out replication (referee)</h3>
         <p>Every method maps the real 92 donors. Each method's top K genes are then checked in 135 other BrainVar donors:
@@ -123,17 +123,17 @@ a { color: var(--hap); }
   </section>
 
   <section aria-labelledby="h-plant">
-    <h2 id="h-plant">Planted effects: how many true genes each method finds</h2>
+    <h2 id="h-plant">Simulated effects: how many true genes each method finds</h2>
     <div class="controls" role="group" aria-label="Plasmode filters">
       <div class="seg" id="seg-set"><span>Gene set</span></div>
-      <div class="seg" id="seg-beta"><span>Planted effect</span></div>
+      <div class="seg" id="seg-beta"><span>Simulated effect</span></div>
     </div>
     <div class="card">
       <h3 id="t-power"></h3>
       <div class="legend" id="legend-power"></div>
       <div class="chart" id="c-power"></div>
-      <p class="caption">Power is the share of the 150 planted gene units (50 genes × 3 datasets) a method calls when its
-        ranking is cut where 5% of its calls are genes with no planted effect. It moves in steps of 1/150 = 0.007 and has
+      <p class="caption">Power is the share of the 150 gene units with a simulated effect (50 genes × 3 datasets) that a method calls when its
+        ranking is cut where 5% of its calls are genes with no simulated effect. It moves in steps of 1/150 = 0.007 and has
         no interval, so differences of one or two hundredths are not meaningful. Bars run from 0; the hairline marks
         tensorQTL.</p>
       <details><summary>Table</summary><div class="tbl" id="tb-power"></div></details>
@@ -141,7 +141,7 @@ a { color: var(--hap); }
     <div class="card">
       <h3 id="t-null"></h3>
       <div class="chart" id="c-null"></div>
-      <p class="caption">Share of tested gene-variant pairs with nominal p &lt; 0.05 on the dataset with no planted effect.
+      <p class="caption">Share of tested gene-variant pairs with nominal p &lt; 0.05 on the dataset with no simulated effect.
         A calibrated method sits at 0.05 (vertical line); above it, the method reports more false positives than it
         promises. Whiskers: 95% interval from resampling genes.</p>
       <details><summary>Table</summary><div class="tbl" id="tb-null"></div></details>
@@ -173,7 +173,7 @@ a { color: var(--hap); }
   <section aria-labelledby="h-native">
     <h2 id="h-native">Giving TReCASE its own inputs</h2>
     <p>RASQUAL and TReCASE are written for read counts from alignments, not Salmon estimates. So TReCASE was also run on
-      counts from the RNA BAMs (featureCounts totals and phASER allele counts), with the same planted effects. Those
+      counts from the RNA BAMs (featureCounts totals and phASER allele counts), with the same simulated effects. Those
       allele counts were rebuilt twice: first per RNA strand at exonic SNVs with the HLA genes and hard-to-map regions
       excluded, then with WASP, which drops reads whose mapping depends on the allele they carry. The split weighting run
       on the same counts is the control.</p>
@@ -200,7 +200,7 @@ a { color: var(--hap); }
         cutoffs, and with permissive cutoffs.</dd>
       <dt>tensorQTL (total only)</dt><dd>Standard eQTL mapping on total expression alone; the baseline.</dd>
       <dt>RASQUAL, TReCASE</dt><dd>Joint likelihood models of total and allele-specific read counts.</dd>
-      <dt>Planted effect</dt><dd>log2 fold change: 0.2, 0.4 and 0.8 are 1.15-, 1.32- and 1.74-fold.</dd>
+      <dt>Simulated effect β</dt><dd>log2 allelic fold change: 0.2, 0.4 or 0.8.</dd>
       <dt>eigenMT</dt><dd>A correction that multiplies a gene's best p-value by its number of effectively independent
         tests, estimated from the correlation between its variants.</dd>
     </dl>
@@ -209,8 +209,8 @@ a { color: var(--hap); }
   <section aria-labelledby="h-links">
     <h2 id="h-links">Full reports</h2>
     <div class="links">
-      <a href="https://claude.ai/artifact/GCsqMLuQda8nsnbpBs6ST6">Planted effects, deep set</a>
-      <a href="https://claude.ai/artifact/2ML5oViHNW22v8jGUaYrko">Planted effects, low-coverage set</a>
+      <a href="https://claude.ai/artifact/GCsqMLuQda8nsnbpBs6ST6">Simulated effects, deep set</a>
+      <a href="https://claude.ai/artifact/2ML5oViHNW22v8jGUaYrko">Simulated effects, low-coverage set</a>
       <a href="https://claude.ai/artifact/9YyKMojo4WAcgUK1VGZFE9">Held-out replication referee</a>
     </div>
   </section>
@@ -296,12 +296,12 @@ function findings() {
   const pw = a => P.power[a]['0.4'].power;
   const hapK = k => ['gibbs', 'split', 'unit', 'plus_one'].map(a => R.paired[a][k].share);
   const items = [
-    [`${f3(pw('split'))} vs ${f3(pw('tensorqtl'))}`, 'On planted effects, three hapmixQTL weightings find the most true genes',
+    [`${f3(pw('split'))} vs ${f3(pw('tensorqtl'))}`, 'On simulated effects, three hapmixQTL weightings find the most true genes',
      `Deep set, effect 0.4: split ${f3(pw('split'))}, 1/(v+1) ${f3(pw('plus_one'))}, unit ${f3(pw('unit'))} against tensorQTL ${f3(pw('tensorqtl'))}. The prior-default gibbs weighting finds ${f3(pw('gibbs'))} and rejects ${f3(P.null.gibbs.rate)} of null tests at 0.05.`],
     [`${f3(R.tensorqtl['200'])}`, 'On real data, tensorQTL\'s top 200 genes replicate best; deeper, hapmixQTL\'s do',
      `Top 200: the hapmixQTL weightings trail tensorQTL by ${f3(-Math.max(...hapK('200')))} to ${f3(-Math.min(...hapK('200')))} in replication share. Top 1,565: they lead it by ${f3(Math.min(...hapK('1565')))} to ${f3(Math.max(...hapK('1565')))}.`],
     [`${f3(DATA.plasmode.deep.power.trecase_native['0.4'].power)}`, 'TReCASE on its own counts: level with tensorQTL, and anticonservative',
-     `Planted effects, deep set, effect 0.4: ${f3(DATA.plasmode.deep.power.trecase_native['0.4'].power)} against tensorQTL ${f3(pw('tensorqtl'))} and split ${f3(pw('split'))}; null rate ${f3(P.null.trecase_native.rate)} at 0.05. Real data, top 200 of 1,500 genes: ${sg(sub.paired.trecase_native['200'].share)} over tensorQTL.`],
+     `Simulated effects, deep set, effect 0.4: ${f3(DATA.plasmode.deep.power.trecase_native['0.4'].power)} against tensorQTL ${f3(pw('tensorqtl'))} and split ${f3(pw('split'))}; null rate ${f3(P.null.trecase_native.rate)} at 0.05. Real data, top 200 of 1,500 genes: ${sg(sub.paired.trecase_native['200'].share)} over tensorQTL.`],
     [`${f3(st.wasp.ref_share[0])}–${f3(st.wasp.ref_share[1])}`, 'Cleaning TReCASE\'s inputs removed most reference-allele bias',
      `Per-donor share of reads carrying the reference allele (0.5 = unbiased): ${f3(st.before.ref_share[0])}–${f3(st.before.ref_share[1])} before, ${f3(st.wasp.ref_share[0])}–${f3(st.wasp.ref_share[1])} after. It also cut allele-specific reads by about two thirds, mostly intronic ones.`]];
   const host = document.getElementById('findings');
@@ -313,7 +313,7 @@ function findings() {
 
 function powerChart() {
   const P = DATA.plasmode[state.set], b = state.beta;
-  document.getElementById('t-power').textContent = `${SETNAME[state.set]}, planted effect ${b}: power at 5% realized false-discovery proportion`;
+  document.getElementById('t-power').textContent = `${SETNAME[state.set]}, simulated effect ${b}: power at 5% realized false-discovery proportion`;
   const arms = Object.keys(ARM).sort((a, c) => P.power[c][b].power - P.power[a][b].power);
   const W = width('c-power'), lab = W < 520 ? 150 : 190, right = 56, rowH = 28, top = 8, H = top + arms.length * rowH + 28;
   const x = v => lab + v * (W - lab - right);
@@ -326,7 +326,7 @@ function powerChart() {
     if (w > 0) el('path', { d: `M${x(0)},${y0}h${Math.max(0, w - 4)}a4,4 0 0 1 4,4v${h - 8}a4,4 0 0 1 -4,4h${-Math.max(0, w - 4)}z`, fill: col(fam) }, svg);
     txt(svg, x(v.power) + 6, y + rowH / 2 + 4, f3(v.power), { class: 'strong' });
     const hit = el('rect', { x: 0, y, width: W, height: rowH, fill: 'transparent' }, svg);
-    hover(hit, `${name}: ${f3(v.power)}`, [[fam, `${v.called} called, ${v.false} of them null genes`], [null, `${v.non_null} planted gene units`]]);
+    hover(hit, `${name}: ${f3(v.power)}`, [[fam, `${v.called} called, ${v.false} of them null genes`], [null, `${v.non_null} gene units with a simulated effect`]]);
   });
   const t = x(P.power.tensorqtl[b].power);
   el('line', { x1: t, x2: t, y1: top - 4, y2: top + arms.length * rowH, stroke: 'var(--ink-2)', 'stroke-width': 1 }, svg);
@@ -338,7 +338,7 @@ function powerChart() {
 
 function nullChart() {
   const N = DATA.plasmode[state.set].null;
-  document.getElementById('t-null').textContent = `${SETNAME[state.set]}, no planted effect: false-positive rate at nominal 0.05`;
+  document.getElementById('t-null').textContent = `${SETNAME[state.set]}, no simulated effect: false-positive rate at nominal 0.05`;
   const arms = Object.keys(ARM).sort((a, c) => N[a].rate - N[c].rate);
   const W = width('c-null'), lab = W < 520 ? 150 : 190, right = 24, rowH = 26, top = 8, H = top + arms.length * rowH + 28;
   const lo = 0.03, hi = 0.11, x = v => lab + (v - lo) / (hi - lo) * (W - lab - right);

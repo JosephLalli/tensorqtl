@@ -66,7 +66,7 @@ ARMS = HAPMIX + MIX + (TQ,) + TRECASE
 CIS_P = {a: 'pval_perm' if a in MIX else 'pval_beta' for a in HAPMIX + MIX + (TQ,)}   # 06_score.CIS_P
 STEP = {a: RR.MIX_BLOCK if a in MIX else RR.BLOCK for a in ARMS}
 PLASMODE = C.D / 'plasmode_meier_20260927' / 'summary.json'   # the deep-set plasmode run under Meier (06_score.py's summary)
-PLASMODE_BETAS = ('0.4', '0.8')   # its middle and largest planted effects
+PLASMODE_BETAS = ('0.4', '0.8')   # its middle and largest simulated effects
 THREADS = 1                  # this process's CPU threads, beside referee_trecase.py's 96 R processes
 RANKINGS = {'perm': 'permutation p', 'eigenmt': 'eigenMT p'}
 STRATA = ('at tensorQTL\'s lead', 'elsewhere')   # the channel control's strata: is the arm's lead tensorQTL's lead for the gene
@@ -942,9 +942,9 @@ def MEANING(S):
             for b in PLASMODE_BETAS] + ref + [iv(B['paired'][a][K_SHOW]) if a in B['paired'] else '-'])
     return (
         '<h2>What it means for the wider claims</h2>'
-        '<p>The plasmode benchmark (deep gene set, plasmode_meier_20260927) ranks genes by lead p within each planted '
+        '<p>The plasmode benchmark (deep gene set, plasmode_meier_20260927) ranks genes by lead p within each simulated '
         'dataset and reports power at a 5% realized false-discovery proportion; the referee ranks the observed genes and '
-        'counts replications. Both ask whose ranking puts real effects first, with different truths: planted effects of '
+        'counts replications. Both ask whose ranking puts real effects first, with different truths: simulated effects of '
         'known size on 100 high-coverage genes there, held-out total expression here. TReCASE\'s plasmode entry is its '
         'trecase_native arm, on the same native counts as the referee\'s TReCASE run (thinned there to plant the effects, '
         'on the same datasets as every other arm), with its Salmon-input trecase arm in parentheses.</p>' +
@@ -1163,7 +1163,7 @@ def page_text(S, figs):
             f'replication scan), scripts/referee_trecase.py (TReCASE), scripts/referee_score.py (this page). Every number: '
             f'{OUT}/score/score.json.</p>', SUMMARY(S)]
     body.append(
-        '<h2>Why this was needed</h2><p>The plasmode benchmark plants effects of known size into real records and scores '
+        '<h2>Why this was needed</h2><p>The plasmode benchmark simulates effects of known size in real records and scores '
         'recovery of them. Its truth is the generator\'s, so it cannot say whether the genes an arm ranks first on the '
         'observed data carry real cis effects. A held-out cohort can: an eQTL that is real in the 92 discovery donors '
         'should show the same direction of effect at the same variant in unrelated donors. The BrainVar eQTL cohort has '

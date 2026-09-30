@@ -1,9 +1,9 @@
-"""Counterfactual refits behind the plasmode slope's shortfall from the planted effect (the budget of
+"""Counterfactual refits behind the plasmode slope's shortfall from the simulated effect (the budget of
 beta_shortfall_budget.py says where it sits; these say why). Every fit is common.run_nominal, the shipped map_nominal in
 default mode, on a dataset's arrays with one ingredient changed:
 
   observed     the dataset as stored (known answer: reproduces the stored causal-variant slopes exactly)
-  target       A and T replaced by the noise-free planted shifts on the pipeline scale (a*, t* of
+  target       A and T replaced by the noise-free simulated shifts on the pipeline scale (a*, t* of
                02_make_datasets.pipeline_truth), weights and admission as observed: what the estimator's own design,
                covariates and weights estimate when there is no noise
   va_real      the allelic Gibbs variance of the unthinned record (Va at f = 1); admission as observed
@@ -19,7 +19,7 @@ setting: the transform and the admission rule are standing user decisions (docs/
 
 Scores (means over causal units with 06_score.py's gene-clustered interval, per read band): each channel's slope over the
 count-scale truth (beta allelic, the per-gene total truth total, beta combined); target over the same; the noise bias
-(slope - target) / beta; paired differences between configurations; the signed z (slope / se in the planted direction)
+(slope - target) / beta; paired differences between configurations; the signed z (slope / se in the simulated direction)
 of the combined and total tests, observed and voom. The combined target is the inverse-variance combination of the
 channel targets at the observed run's channel se.
 

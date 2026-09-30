@@ -52,14 +52,24 @@ was not intended.
 - **Validated.** The 7 metadata and genotype-PC columns are identical to the
   2026-09-25 build; the old and new 10-PC spaces have canonical correlations
   0.974 to 0.9999. Refitting the half-read split default on the plasmode's
-  no-effect dataset and three 1.74-fold datasets per gene set with the old and
+  no-effect dataset and three β = 0.8 datasets per gene set with the old and
   new covariates: median slope change 0.04 to 0.05 standard errors (largest
   0.51 to 0.67), correlation of -log10 p 0.993 to 0.9996, combined null rate
   at 0.05 / 0.01 / 0.001 0.0443 / 0.0079 / 0.0009 against 0.0444 / 0.0078 /
   0.0008 (deep) and 0.0484 / 0.0098 / 0.0014 against 0.0486 / 0.0095 / 0.0015
-  (low coverage), causal slope / planted +0.001 to +0.004
+  (low coverage), causal slope / simulated +0.001 to +0.004
   (`scripts/expression_pc_unit_impact.py`, output
   `expression_pc_unit_impact.log` in the build directory).
+- **Effect-size recovery on the corrected pipeline** (half-read split with
+  half-read PCs; `scripts/beta_recovery_current.py`, output
+  `brainvar_hapmix_deploy/beta_recovery_current_20260930/`; plasmode only).
+  Combined slope / simulated effect: deep set 0.983 [0.937, 1.033] at beta
+  0.4 and 0.986 [0.960, 1.013] at beta 0.8 (TReCASE on alignment counts 0.991
+  / 0.984); low-coverage set 0.925 [0.849, 0.997] and 0.943 [0.907, 0.981]
+  (TReCASE 0.941 / 0.958). The low-coverage shortfall is almost all allelic
+  (allelic slope 0.751 / 0.806; total channel 0.980 / 0.988), and TReCASE
+  falls short by about as much in the 30-100-read bands; no paired
+  hapmixQTL-TReCASE interval was computed; beta 0.2 not measured.
 - **Not re-run.** Every stored result made before 2026-09-30 (both plasmode
   roots and all their arms including TReCASE and RASQUAL, the held-out
   referee, the half-read trial and comparisons, the beta-shortfall refits)
@@ -659,8 +669,8 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
     that decision question.
   - **The effect-size shortfall.** Measured 2026-09-28/29, explained
     2026-09-29 (below); the decisions it feeds are open. The statistic is 06's `bias_count`: per non-null gene
-    unit, the slope at the planted causal variant divided by the count-scale
-    truth (`allelic_truth`, the planted effect, for a combined or joint
+    unit, the slope at the simulated causal variant divided by the count-scale
+    truth (`allelic_truth`, the simulated effect, for a combined or joint
     slope; `total_truth` for tensorQTL, whose one slope is a total-channel
     slope), averaged over a scenario's finite units (at most 150: 50 genes x
     3 datasets), 95% interval from resampling genes (`summary.json`,
@@ -742,7 +752,7 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   not empirical repeated-sampling SDs. The historical sealed 150-unit MSE
   audit remains separate from those common-support plot values: low beta=0.4
   MSE is 0.04165115581010687 to 0.052374121291368585 (+25.7447%), while RMSE
-  rises about 12.1%. MSE is planted-effect error (bias squared plus variance),
+  rises about 12.1%. MSE is simulated-effect error (bias squared plus variance),
   not pure precision. The prior 1.10 variance-retention margin was an internal
   exploratory criterion, not a user-stipulated hard threshold; a 15.9%
   variance change is about a 7.7% SD change. Missing half-read beta=0 and

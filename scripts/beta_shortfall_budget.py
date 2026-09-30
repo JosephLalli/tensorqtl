@@ -1,9 +1,9 @@
-"""Where the combined slope's shortfall from the planted effect comes from, per plasmode gene set, hapmixQTL arm, effect size
+"""Where the combined slope's shortfall from the simulated effect comes from, per plasmode gene set, hapmixQTL arm, effect size
 and read band, from the stored causal-variant results alone (no refit).
 
 Per causal unit (dataset, non-null gene, at its causal variant) the combined slope is the inverse-variance combination of
 the channel slopes, slope = pa * slope_a + pt * slope_t with pa = wa / (wa + wt), wa = 1 / slope_a_se^2 where the allelic
-channel is admitted (else 0), wt = 1 / slope_t_se^2. With planted beta, the pipeline-scale truths ta (allelic, with the
+channel is admitted (else 0), wt = 1 / slope_t_se^2. With simulated beta, the pipeline-scale truths ta (allelic, with the
 0.5 pseudocount) and tt (total, on log2(CPM + 1)) and the count-scale total truth tc (the least-squares slope of the exact
 log2 total fold on dosage / 2), the shortfall 1 - slope / beta is the exact sum of five parts:
   allelic_pseudocount  pa (beta - ta) / beta     the allelic truth lost to the 0.5 pseudocount

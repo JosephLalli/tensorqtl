@@ -100,26 +100,25 @@ a { color: var(--hap); }
   </section>
 
   <section aria-labelledby="h-plant">
-    <h2 id="h-plant">Planted effects: who finds more true genes</h2>
+    <h2 id="h-plant">Simulated effects: who finds more true genes</h2>
     <p>Real expression records from this cohort, shuffled against the genotypes so no real eQTL remains, with a known
-      effect planted at one variant in half of 100 genes. TReCASE was run twice: on Salmon estimates, as the other methods
+      effect simulated at one variant in half of 100 genes. TReCASE was run twice: on Salmon estimates, as the other methods
       are, and on its own alignment counts (featureCounts totals, phASER allele counts, per strand, WASP-filtered). The
       middle panel gives both methods the same alignment counts, so any gap there is the model, not the input.</p>
     <div class="controls"><div class="seg" id="seg-set"><span>Gene set</span></div></div>
     <div class="card">
       <div class="legend" id="lg-power"></div>
       <div class="grid3" id="c-power"></div>
-      <p class="caption">Power: the share of the 150 planted gene units a method calls when its ranking is cut where 5% of
-        its calls are genes with no planted effect. Steps of 1/150 = 0.007; no interval. Planted effect is a log2 fold:
-        0.2, 0.4, 0.8 are 1.15-, 1.32- and 1.74-fold. hapmixQTL shown with the split weighting (1/Gibbs variance for
+      <p class="caption">Power: the share of the 150 gene units with a simulated effect that a method calls when its ranking is cut where 5% of
+        its calls are genes with no simulated effect. Steps of 1/150 = 0.007; no interval. The simulated effect β is a log2 allelic fold change (0.2, 0.4, 0.8). hapmixQTL shown with the split weighting (1/Gibbs variance for
         the allelic channel, equal weights for total expression); the table has all four weightings.</p>
       <details><summary>Table</summary><div class="tbl" id="tb-power"></div></details>
     </div>
   </section>
 
   <section aria-labelledby="h-fp">
-    <h2 id="h-fp">False positives on data with no planted effect</h2>
-    <p>On the dataset with nothing planted, a calibrated method rejects at its nominal rate. Shown as a multiple of that
+    <h2 id="h-fp">False positives on data with no simulated effect</h2>
+    <p>On the dataset with nothing simulated, a calibrated method rejects at its nominal rate. Shown as a multiple of that
       rate, so 1× is correct and 2× means twice as many false positives as promised.</p>
     <div class="card">
       <div class="controls"><div class="seg" id="seg-alpha"><span>Nominal level</span></div></div>
@@ -130,8 +129,8 @@ a { color: var(--hap); }
   </section>
 
   <section aria-labelledby="h-bias">
-    <h2 id="h-bias">Effect size: how close the estimate is to the planted value</h2>
-    <p>Mean estimated effect divided by the planted effect at the causal variant, for a 1.32-fold planted effect. 1.0 is
+    <h2 id="h-bias">Effect size: how close the estimate is to the simulated value</h2>
+    <p>Mean estimated effect divided by the simulated effect at the causal variant, for β = 0.4. 1.0 is
       unbiased. Genes are grouped by their read depth.</p>
     <div class="card">
       <div class="chart" id="c-bias"></div>
@@ -190,9 +189,9 @@ a { color: var(--hap); }
   <section aria-labelledby="h-limits">
     <h2 id="h-limits">What this comparison cannot show</h2>
     <ul class="limits">
-      <li>The planted effects follow TReCASE's own assumption (one cis effect acting equally on total and allele-specific
+      <li>The simulated effects follow TReCASE's own assumption (one cis effect acting equally on total and allele-specific
         reads), so the plasmode does not tilt toward hapmixQTL.</li>
-      <li>Planted-effect power has no interval; each effect size rests on 150 planted gene units.</li>
+      <li>Simulated-effect power has no interval; each effect size rests on 150 gene units with a simulated effect.</li>
       <li id="lim-ref"></li>
       <li>The simulation from TReCASE's model is one depth setting with no covariates.</li>
       <li>Run times compare a GPU with CPU processes.</li>
@@ -309,8 +308,8 @@ function rowsChart(id, rows, dom, ticks, fmt, ref, refLabel) {
 function verdict() {
   const P = DATA.plasmode.deep, L = DATA.plasmode.lowcov, pw = (S, a, b) => S.power[a][b].power, M = DATA.mirror, R = DATA.referee;
   const host = document.getElementById('verdict');
-  card(host, 'Planted effects', `${f3(pw(P, 'split', '0.4'))} vs ${f3(pw(P, 'trecase_native', '0.4'))}`,
-    `hapmixQTL finds more true genes. Deep set, 1.32-fold: split ${f3(pw(P, 'split', '0.4'))} against TReCASE on its own counts ${f3(pw(P, 'trecase_native', '0.4'))}; 1.74-fold: ${f3(pw(P, 'split', '0.8'))} against ${f3(pw(P, 'trecase_native', '0.8'))}; low-coverage set, 1.74-fold: ${f3(pw(L, 'split', '0.8'))} against ${f3(pw(L, 'trecase_native', '0.8'))}. Given the same alignment counts, split finds ${f3(pw(P, 'split_native', '0.4'))}, so the gap is the model, not the input.`);
+  card(host, 'Simulated effects', `${f3(pw(P, 'split', '0.4'))} vs ${f3(pw(P, 'trecase_native', '0.4'))}`,
+    `hapmixQTL finds more true genes. Deep set, β = 0.4: split ${f3(pw(P, 'split', '0.4'))} against TReCASE on its own counts ${f3(pw(P, 'trecase_native', '0.4'))}; β = 0.8: ${f3(pw(P, 'split', '0.8'))} against ${f3(pw(P, 'trecase_native', '0.8'))}; low-coverage set, β = 0.8: ${f3(pw(L, 'split', '0.8'))} against ${f3(pw(L, 'trecase_native', '0.8'))}. Given the same alignment counts, split finds ${f3(pw(P, 'split_native', '0.4'))}, so the gap is the model, not the input.`);
   card(host, 'False positives', `${f2(P.null.trecase_native['0.001'].rate / 0.001)}× vs ${f2(P.null.split['0.001'].rate / 0.001)}×`,
     `TReCASE's p-values are too small on real-noise data. At nominal 0.001 it rejects ${f2(P.null.trecase_native['0.001'].rate / 0.001)} times as often as it should on the deep set (hapmixQTL split ${f2(P.null.split['0.001'].rate / 0.001)} times); at 0.05, ${f3(P.null.trecase_native['0.05'].rate)} against ${f3(P.null.split['0.05'].rate)}.`);
   const m2 = M['200'].power, m9 = M['92'].power;
@@ -320,7 +319,7 @@ function verdict() {
   card(host, 'Real data', `${sg(R.vs_split['200'].share)} at top 200`,
     `Replication in held-out donors, TReCASE minus hapmixQTL split: ${iv(R.vs_split['200'])} at the top 200, ${iv(R.vs_split['400'])} at the top 400. Over total-only tensorQTL at the top 200: split ${iv(R.split_vs_tensorqtl['200'])}, TReCASE ${iv(R.vs_tensorqtl['200'])}.`);
   card(host, 'Effect size', `${f2(P.bias.trecase_native['0.4'].all.mean)} vs ${f2(P.bias.split['0.4'].all.mean)}`,
-    `TReCASE's estimates are closer to the planted size: ${f2(P.bias.trecase_native['0.4'].all.mean)} of it on the deep set against hapmixQTL's ${f2(P.bias.split['0.4'].all.mean)}, and ${f2(L.bias.trecase_native['0.4'].all.mean)} against ${f2(L.bias.split['0.4'].all.mean)} on the low-coverage set.`);
+    `TReCASE's estimates are closer to the simulated size: ${f2(P.bias.trecase_native['0.4'].all.mean)} of it on the deep set against hapmixQTL's ${f2(P.bias.split['0.4'].all.mean)}, and ${f2(L.bias.trecase_native['0.4'].all.mean)} against ${f2(L.bias.split['0.4'].all.mean)} on the low-coverage set.`);
   const t = DATA.hapmix_timing, perGene = t.seconds / t.genes;
   card(host, 'Cost', `${f2(perGene)} s vs ${Math.round(R.trecase_seconds_median)} s per gene`,
     `hapmixQTL: ${t.seconds} s for ${t.genes} genes on one GPU, covering four weightings and tensorQTL with 1,000 permutations each. TReCASE: median ${Math.round(R.trecase_seconds_median)} s per gene on one CPU process, with no permutations.`);
@@ -361,7 +360,7 @@ function biasChart() {
   bands.forEach(b => { rows.push({ group: true, label: bandName(b) });
     ['split', 'trecase_native'].forEach(a => { const v = P.bias[a]['0.4'][b];
       rows.push({ label: NAME[a], fam: FAM[a], shape: FAM[a] === 'tre' ? 'sq' : null, v: v.mean, lo: v.lo, hi: v.hi,
-        show: `${f2(v.mean)} of planted`, detail: `95% interval ${f2(v.lo)} to ${f2(v.hi)}` }); }); });
+        show: `${f2(v.mean)} of simulated`, detail: `95% interval ${f2(v.lo)} to ${f2(v.hi)}` }); }); });
   rowsChart('c-bias', rows, [0.5, 1.3], [0.6, 0.8, 1.0, 1.2], f2, 1, 'unbiased');
   table('tb-bias', ['Method', ...bands.map(bandName)],
     ['split', 'split_native', 'trecase', 'trecase_native'].map(a => [NAME[a], ...bands.map(b => f2(P.bias[a]['0.4'][b].mean))]));
@@ -401,13 +400,13 @@ function refChart() {
 function whyChart() {
   const D = DATA.plasmode.deep, L = DATA.plasmode.lowcov;
   document.getElementById('why-text').textContent =
-    `TReCASE reports its joint test only when the joint fit returns a p-value; otherwise it reports its total-count (negative-binomial) test. The joint p is missing for ${(100 * D.joint_na.trecase_native).toFixed(0)}% of tests on the deep set and ${(100 * L.joint_na.trecase_native).toFixed(0)}% on the low-coverage set (alignment counts). The total-count test is weaker than plain tensorQTL here (deep set, 1.32-fold: ${f3(D.parts.trecase_native['0.4'].trec)} against ${f3(D.power.tensorqtl['0.4'].power)}) and rejects ${f3(D.components.trecase_native.trec)} of null tests at 0.05. Where the joint fit succeeds, its p alone reaches ${f3(D.parts.trecase_native['0.4'].joint)}, still below hapmixQTL split's ${f3(D.power.split['0.4'].power)}.`;
+    `TReCASE reports its joint test only when the joint fit returns a p-value; otherwise it reports its total-count (negative-binomial) test. The joint p is missing for ${(100 * D.joint_na.trecase_native).toFixed(0)}% of tests on the deep set and ${(100 * L.joint_na.trecase_native).toFixed(0)}% on the low-coverage set (alignment counts). The total-count test is weaker than plain tensorQTL here (deep set, β = 0.4: ${f3(D.parts.trecase_native['0.4'].trec)} against ${f3(D.power.tensorqtl['0.4'].power)}) and rejects ${f3(D.components.trecase_native.trec)} of null tests at 0.05. Where the joint fit succeeds, its p alone reaches ${f3(D.parts.trecase_native['0.4'].joint)}, still below hapmixQTL split's ${f3(D.power.split['0.4'].power)}.`;
   const rows = [['deep', 'trecase'], ['deep', 'trecase_native'], ['lowcov', 'trecase'], ['lowcov', 'trecase_native']].map(([gs, a]) => {
     const v = DATA.plasmode[gs].joint_na[a];
     return { label: `${SETNAME[gs]}, ${a === 'trecase' ? 'Salmon estimates' : 'alignment counts'}`, fam: 'tre', shape: 'sq', v, lo: v, hi: v,
       show: `${(100 * v).toFixed(0)}% of tests`, detail: 'share of all tested variants, pooled over the gene set\'s datasets' }; });
   rowsChart('c-why', rows, [0, 0.6], [0, 0.2, 0.4, 0.6], v => (100 * v).toFixed(0) + '%', 0, null);
-  table('tb-why', ['Gene set, input', 'Test', 'Power, 1.32-fold', 'Power, 1.74-fold', 'False positives at 0.05'],
+  table('tb-why', ['Gene set, input', 'Test', 'Power, β = 0.4', 'Power, β = 0.8', 'False positives at 0.05'],
     [['deep', 'trecase'], ['deep', 'trecase_native'], ['lowcov', 'trecase'], ['lowcov', 'trecase_native']].flatMap(([gs, a]) =>
       [['trec', 'total-count test alone'], ['joint', 'joint test alone (where fitted)'], ['ase', 'allelic test alone']].map(([c, nm]) =>
         [`${SETNAME[gs]}, ${a === 'trecase' ? 'Salmon' : 'alignment counts'}`, nm, f3(DATA.plasmode[gs].parts[a]['0.4'][c]),

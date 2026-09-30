@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The beta-shortfall page: where hapmixQTL's plasmode slope falls short of the planted effect and why. Reads the budget
+"""The beta-shortfall page: where hapmixQTL's plasmode slope falls short of the simulated effect and why. Reads the budget
 (beta_shortfall_budget.py), the counterfactual refits (beta_shortfall_refits.py), each plasmode root's datasets for the
 noise-free total-channel compression against gene CPM, and the stored recovery of TReCASE for reference; embeds them as
 JSON into beta_shortfall_template.html.
