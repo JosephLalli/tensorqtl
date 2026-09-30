@@ -36,6 +36,37 @@ No numerical results or estimator behavior changed in this documentation pass.
 > RTA comparison, the draw-count adequacy, the `squeezeVar` diagnostics — remain
 > live: they measure the Gibbs variance itself, not a choice among models.
 
+## Expression-PC unit, 2026-09-30 (implemented)
+
+User decision: the expression PCs must be in the default total phenotype's
+unit. The 2026-09-29 half-read adoption had left them on log2(CPM + 1), which
+was not intended.
+
+- **Implemented.** `scripts/build_covariates.py --point-estimates` builds the
+  PCs on the half-read log-CPM (`half_read_log_cpm`) and records
+  `expression_pc_unit` in `covariate_build.json`; the Salmon runner's
+  covariate provenance check refuses PCs in any other unit (self-test case
+  added). Current build `brainvar_hapmix_deploy/cov/half_read_point_calibration_20260930/`
+  (same command and inputs as the 2026-09-25 build); the shared loader
+  `scripts/compare_mixqtl_replication.py` (`COV`) reads it.
+- **Validated.** The 7 metadata and genotype-PC columns are identical to the
+  2026-09-25 build; the old and new 10-PC spaces have canonical correlations
+  0.974 to 0.9999. Refitting the half-read split default on the plasmode's
+  no-effect dataset and three 1.74-fold datasets per gene set with the old and
+  new covariates: median slope change 0.04 to 0.05 standard errors (largest
+  0.51 to 0.67), correlation of -log10 p 0.993 to 0.9996, combined null rate
+  at 0.05 / 0.01 / 0.001 0.0443 / 0.0079 / 0.0009 against 0.0444 / 0.0078 /
+  0.0008 (deep) and 0.0484 / 0.0098 / 0.0014 against 0.0486 / 0.0095 / 0.0015
+  (low coverage), causal slope / planted +0.001 to +0.004
+  (`scripts/expression_pc_unit_impact.py`, output
+  `expression_pc_unit_impact.log` in the build directory).
+- **Not re-run.** Every stored result made before 2026-09-30 (both plasmode
+  roots and all their arms including TReCASE and RASQUAL, the held-out
+  referee, the half-read trial and comparisons, the beta-shortfall refits)
+  used the log2(CPM + 1) PCs of `cov/log2cpm1_point_calibration_20260925/`,
+  which is kept. A reproduction through the shared loader now uses the new
+  PCs and will differ from those stored results by the amounts above.
+
 ## Engineering-cleanup checkpoint, 2026-09-30 (implemented)
 
 The authorized cleanup is implemented in the working tree. The default Salmon
@@ -783,8 +814,9 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   matrix multiplication. The published mixQTL comparator is unchanged.
   `prepare_default_inputs` implements this contract; the Salmon driver uses it
   and the BED CLI supplies unit total variance when `--hap_Vt` is omitted,
-  preserving explicit overrides. Existing log2(CPM+1) expression PCs remain
-  fixed. The selected integration branch is `simulation-benchmark`. Validation
+  preserving explicit overrides. Existing log2(CPM+1) expression PCs remained
+  fixed (superseded 2026-09-30: not intended; see "Expression-PC unit" below).
+  The selected integration branch is `simulation-benchmark`. Validation
   receipts are in `brainvar_hapmix_deploy/half_read_default_adoption_20260929/`:
   exact manual-arm nominal/permutation parity, unchanged existing GPU fitting
   functions and legacy summarizer, the regression suite, and the full Salmon

@@ -67,7 +67,7 @@ INPUTS SINCE 2026-09-25 (user rules)
     hapmixQTL's values are log2((L+0.5)/(R+0.5)) and log2(CPM+1); mixQTL keeps
     its published natural-log response log(YT/2/L). Both use the SAME
     effective library size L, edgeR lib.size x TMM factor. Covariates are
-    cov/log2cpm1_point_calibration_20260925/: the genotype PCs listed in its
+    cov/half_read_point_calibration_20260930/: the genotype PCs listed in its
     genotype_covariates.txt stay with the genotypes under permutation and
     every other column moves with the RNA record. Genes must pass the eQTL
     gene filter the expression PCs were built on (edger/calibration_genes.txt).
@@ -109,7 +109,7 @@ D = '/mnt/ssd/lalli/brainvar_hapmix_deploy'
 OUT = os.environ.get('MIXQTL_OUT', f'{D}/mixqtl_replication_point_estimates_20260925')
 CACHE = f'{D}/cache/gibbs_56b63c3b37ed5df8'
 PE = f'{CACHE}/point_estimates'
-COV = f'{D}/cov/log2cpm1_point_calibration_20260925'
+COV = f'{D}/cov/half_read_point_calibration_20260930'   # 2026-09-30: expression PCs in the half-read unit (was log2cpm1_point_calibration_20260925)
 NP_NULL = int(os.environ.get('NP', '40'))
 WIN, MAF, NPERM = 1_000_000, 0.05, 1000
 # Master seed for every random draw here. Child streams are derived as
@@ -200,7 +200,7 @@ def load_inputs(gene_list=None, regions=None):
                 cov_df=cov_df, lib_size=lib_size)
 
 
-def load_point_estimate_inputs(gene_list=None, regions=None):
+def load_point_estimate_inputs(gene_list=None, regions=None, cov=COV):
     """The inputs under the 2026-09-25 rules; new work uses this, not load_inputs.
 
     ``load_inputs`` is the PRE-CORRECTION loader (old covariates with every
@@ -211,7 +211,9 @@ def load_point_estimate_inputs(gene_list=None, regions=None):
 
       pL, pR, pT   Salmon point estimates [genes, cache samples]; every VALUE
       lib_size     edgeR effective library size (lib.size x TMM), VCF order
-      cov_df       RNA-tied covariates from cov/log2cpm1_point_calibration_20260925
+      cov_df       RNA-tied covariates from ``cov`` (default COV, the current
+                   half-read build; a dated script reproducing a stored run
+                   passes the build that run used)
       geno_cov_df  the genotype PCs its genotype_covariates.txt lists, which
                    stay with the genotypes under permutation
 
@@ -233,10 +235,10 @@ def load_point_estimate_inputs(gene_list=None, regions=None):
     eff_lib, _ = H.read_edger_dir(f'{PE}/edger', samples)
     I['eff_lib'] = eff_lib                           # cache sample order
     I['lib_size'] = eff_lib[I['keep']]               # VCF order
-    cov_all = pd.read_csv(f'{COV}/covariates.tsv', sep='\t', index_col=0)
+    cov_all = pd.read_csv(f'{cov}/covariates.tsv', sep='\t', index_col=0)
     cov_all.index = cov_all.index.astype(str)
     cov_all = cov_all.loc[I['order']]
-    gcols = open(f'{COV}/genotype_covariates.txt').read().split()
+    gcols = open(f'{cov}/genotype_covariates.txt').read().split()
     I['geno_cov_df'] = cov_all[gcols]
     I['cov_df'] = cov_all.drop(columns=gcols)
     return I

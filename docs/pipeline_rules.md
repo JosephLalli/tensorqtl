@@ -23,8 +23,8 @@ and its checks; dated reports retain their original method settings.
    half-read route reads totals from point estimates. Fractional Salmon expected
    counts are valid and are not rounded to integers.
 
-2. **Expression PCs remain log2(CPM + 1); the default total phenotype is the
-   half-read split.** CPM is count divided by the
+2. **The default total phenotype and the expression PCs share one unit, the
+   half-read log-CPM.** CPM is count divided by the
    effective library size, times 1e6. The effective library size is computed
    by edgeR itself: `lib.size` times the TMM factor. TMM (trimmed mean of
    M-values) is edgeR's normalization factor; it scales each library so that
@@ -36,9 +36,12 @@ and its checks; dated reports retain their original method settings.
    restriction; subsetting with `keep.lib.sizes=FALSE`, so `lib.size` is
    recomputed from the kept genes; `calcNormFactors(method='TMM')`.
    The default total phenotype is
-   `log2((point_count + 0.5)/(effective_library_size + 1)*1e6)`. The
-   expression-PC construction remains `log2(CPM + 1)` intentionally. The
-   allelic ratio is
+   `log2((point_count + 0.5)/(effective_library_size + 1)*1e6)`, and the
+   expression PCs are built on the same transform (user decision 2026-09-30:
+   the 2026-09-29 adoption left them on `log2(CPM + 1)`, which was not
+   intended). `build_covariates.py` records the unit as `expression_pc_unit`
+   in `covariate_build.json` and the Salmon runner refuses covariates whose
+   PCs are in another unit. The allelic ratio is
    log2((L + 0.5) / (R + 0.5)) of point-estimate haplotype counts, because
    library size cancels within a sample. Published mixQTL input construction
    and interpretation are unchanged by this default adoption.
@@ -513,7 +516,9 @@ whether a weighting removes the observed spurious hits these genes carry.
 
 **Settled for the default on 2026-09-29:** the user adopted half-read split:
 original admitted Gibbs ASE weighting, half-read total expression, unit total
-weights, and fitted residual scales. Existing expression PCs stay fixed. This
+weights, and fitted residual scales. Expression PCs were left on log2(CPM + 1)
+by that adoption, which was not intended; since 2026-09-30 they are in the
+same half-read unit (rule 2). This
 accepts the measured beta/precision tradeoff without claiming uniform precision
 improvement. The dated comparisons below describe the evidence available before
 adoption. See `docs/CURRENT_SCIENTIFIC_STATE.md` and
@@ -619,7 +624,14 @@ All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
   the 34,457 cache genes; `totals_all.tsv.gz` for 41,552 genes;
   `edger/edger_samples.tsv`, `edger/calibration_genes.txt` (12,955 genes);
   `summary.json` with the reader gates.
-- `cov/log2cpm1_point_calibration_20260925/` from
+- `cov/half_read_point_calibration_20260930/` (current, 2026-09-30): the same
+  build command and inputs as the entry below, with the expression PCs on the
+  half-read log-CPM (`expression_pc_unit: half_read_log_cpm`); the 7 metadata
+  and genotype-PC columns are identical to the entry below, and the two
+  10-PC spaces have canonical correlations 0.974 to 0.9999 (each new PC
+  predicted by the old ten with R^2 0.955 to 0.9996). Every result stored
+  before 2026-09-30 used the entry below.
+- `cov/log2cpm1_point_calibration_20260925/` (historical) from
   `scripts/build_covariates.py --point-estimates`: `covariates.tsv` (14
   RNA-tied columns: age_days, age_days_sq, rin, sex, expr_pc1-10; 3
   genotype-tied: geno_pc1-3), `genotype_covariates.txt`,

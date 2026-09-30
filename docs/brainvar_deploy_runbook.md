@@ -519,8 +519,10 @@ python3 scripts/build_covariates.py --metadata <metadata_v1.4.tsv> \
     --point-estimates <gibbs_cache>/point_estimates --out cov/
 ```
 
-With `--point-estimates`, expression PCs are `log2(CPM+1)` of the point
-estimates on the edgeR-computed calibration gene set (12,955 genes in the
+With `--point-estimates`, expression PCs are the half-read log-CPM
+`log2((count + 0.5)/(eff_lib + 1)*1e6)` of the point estimates (the default
+total phenotype's unit, since 2026-09-30; builds before that used
+`log2(CPM+1)`) on the edgeR-computed calibration gene set (12,955 genes in the
 2026-09-25 build: `filterByExpr` AND protein-coding AND autosomal — a
 calibration-phase filter only, per user decision; the deployment filter may
 differ), each gene centred (not scaled) and residualized on metadata plus
@@ -528,10 +530,13 @@ genotype PCs before the top 10 are kept; without it, `build_covariates.py`
 falls back to the pre-2026-09-25 behavior above. The output additionally
 carries `genotype_covariates.txt` (the genotype-PC column names) and
 `covariate_build.json` (the exact columns, the genotype-tied/RNA-tied split,
-and every input path), for the 2026-09-25 permutation rule in `CLAUDE.md`
-("Pipeline rules, 2026-09-25", rule d). A build run this way is at
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/cov/log2cpm1_point_calibration_20260925/`;
-the pre-correction `cov/covariates.tsv` is kept unchanged beside it as the
+and every input path, and `expression_pc_unit`, which the runner checks), for
+the 2026-09-25 permutation rule in `CLAUDE.md`. The current build is at
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/cov/half_read_point_calibration_20260930/`
+(run with `--out cov/half_read_point_calibration_20260930`); the 2026-09-25
+build in `log2(CPM+1)`, `cov/log2cpm1_point_calibration_20260925/`, is kept
+as the record of every result stored before 2026-09-30, and the runner now
+refuses it; the pre-correction `cov/covariates.tsv` is kept unchanged beside it as the
 before-baseline (its genotype PCs were built from a different VCF snapshot:
 old PC1 correlates with the corrected PC1 at r=0.985, old PC3 with
 -(corrected PC2) at r=-0.973, old PC2 has no counterpart in the corrected
@@ -570,7 +575,7 @@ awk -v OFS='\t' '{print $1, $2, $5, $3, $4}' annot/genes.tsv > <run_dir>/gene_po
 python3 scripts/run_hapmixqtl_from_salmon.py --vcf prepped/analysis.snps.maf01.vcf.gz \
     --manifest cohort/salmon.tsv --tx2gene annot/tx2gene.tsv --hap-suffix _L,_R \
     --gene-pos <run_dir>/gene_pos.tsv \
-    --covariates cov/log2cpm1_point_calibration_20260925/covariates.tsv \
+    --covariates cov/half_read_point_calibration_20260930/covariates.tsv \
     --edger-dir cache/gibbs_56b63c3b37ed5df8/point_estimates/edger --out <run_dir>
 ```
 

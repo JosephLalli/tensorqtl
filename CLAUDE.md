@@ -176,8 +176,9 @@ status as current practice is.
 
 Both modes: every value from Salmon point estimates. Default mode uses Gibbs
 draws only for ASE measurement variance, half-read total expression with unit
-total weights, and retained log2(CPM + 1) expression PCs on edgeR's effective
-library sizes (allelic ratio log2((L+0.5)/(R+0.5)); mixQTL keeps its natural-log response);
+total weights, and expression PCs in the same half-read unit on edgeR's effective
+library sizes (since 2026-09-30; they were log2(CPM + 1) before, which was not
+intended) (allelic ratio log2((L+0.5)/(R+0.5)); mixQTL keeps its natural-log response);
 expression-PC gene filter = eQTL gene filter; genotype PCs stay with the
 genotypes under permutation, every other covariate moves with the RNA record;
 mixQTL never touches the draws. Full statement, code map, built inputs, what

@@ -72,9 +72,10 @@ WHAT IT DOES
      permutation null the genotype-tied columns (--genotype-covariates,
      default the genotype_covariates.txt beside --covariates: the genotype
      PCs) stay with the genotypes and every other column moves with the RNA
-     record. The expression PCs must be built on the same gene set and
-     library sizes as this run (build_covariates.py --point-estimates);
-     check_covariate_provenance refuses otherwise.
+     record. The expression PCs must be built on the same gene set, library
+     sizes and half-read unit as this run's total phenotype
+     (build_covariates.py --point-estimates); check_covariate_provenance
+     refuses otherwise.
   7. Optionally runs the REAL RASQUAL binary on the same genes (--rasqual)
      for a side-by-side comparison.
   8. Writes an EVAL BUNDLE of aggregate statistics only.
@@ -1014,11 +1015,12 @@ def read_edger_dir(edger_dir, samples):
 
 
 def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=False):
-    """The expression-PC gene set must equal the eQTL gene set, and fixed
-    benchmark-held PCs must remain in their existing log2(CPM + 1) unit, on
+    """The expression PCs must be in the default total phenotype's unit, the
+    half-read log-CPM (user decision 2026-09-30), on the eQTL gene set and
     the same effective library sizes. build_covariates.py --point-estimates
-    records where its PCs came from in covariate_build.json; compare that to
-    this run. Refuses on a mismatch or a missing record unless ``override``."""
+    records where its PCs came from, and their unit, in covariate_build.json;
+    compare that to this run. Refuses on a mismatch or a missing record
+    unless ``override``."""
     j = Path(cov_path).parent / 'covariate_build.json'
     why = None
     if not j.exists():
@@ -1026,10 +1028,14 @@ def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=
     else:
         meta = json.loads(j.read_text())
         pe = meta.get('point_estimates')
+        unit = meta.get('expression_pc_unit')
         if not pe:
             why = ('the covariates carry the pre-2026-09-25 expression PCs (log1p of raw '
-                   'counts on genes nonzero in half the samples), not log2(CPM + 1) on the '
-                   'eQTL gene set')
+                   'counts on genes nonzero in half the samples), not the half-read log-CPM '
+                   'on the eQTL gene set')
+        elif unit != 'half_read_log_cpm':
+            why = (f'the expression PCs are in {unit or "an unrecorded unit (builds before 2026-09-30 used log2(CPM + 1))"}, '
+                   'not the half-read log-CPM of the default total phenotype')
         else:
             pc_genes = (Path(pe) / 'edger' / 'calibration_genes.txt').read_text().split()
             pc_lib, _ = read_edger_dir(Path(pe) / 'edger', samples)
@@ -1040,7 +1046,7 @@ def check_covariate_provenance(cov_path, eqtl_genes, eff_lib, samples, override=
             elif not np.allclose(pc_lib, eff_lib, rtol=1e-6, atol=0):
                 why = 'the expression PCs used different edgeR effective library sizes'
     if why is None:
-        print('  covariate provenance: fixed expression PCs on the eQTL gene set, same log2(CPM + 1) unit and library sizes')
+        print('  covariate provenance: expression PCs on the eQTL gene set, half-read log-CPM unit, same library sizes')
         return
     if not override:
         raise SystemExit(f'covariate check failed: {why}.\nRebuild with scripts/build_covariates.py '
@@ -1579,11 +1585,12 @@ def selftest(extra=()):
     edger_normalize(tot_all, list(tot_all.index[:-3]), td / 'pe_other' / 'edger')
     cov_ = pd.DataFrame({'rin': rng.normal(size=N), 'expr_pc1': rng.normal(size=N),
                          'geno_pc1': rng.normal(size=N)}, index=samples)
-    for tag, pe in (('cov', td / 'pe'), ('cov_other', td / 'pe_other')):
+    for tag, pe, unit in (('cov', td / 'pe', 'half_read_log_cpm'), ('cov_other', td / 'pe_other', 'half_read_log_cpm'),
+                          ('cov_log2cpm', td / 'pe', 'log2_cpm_plus_1')):
         (td / tag).mkdir()
         cov_.to_csv(td / tag / 'covariates.tsv', sep='\t')
         (td / tag / 'genotype_covariates.txt').write_text('geno_pc1\n')
-        (td / tag / 'covariate_build.json').write_text(json.dumps({'point_estimates': str(pe)}))
+        (td / tag / 'covariate_build.json').write_text(json.dumps({'point_estimates': str(pe), 'expression_pc_unit': unit}))
 
     # A personalized diploid transcriptome is built per sample from that
     # sample's own variants, so transcript sets differ BETWEEN samples. Build
@@ -1643,16 +1650,17 @@ def selftest(extra=()):
     assert gene_orientation(['GX'], gt_, vdf_, xL_, xR_, ['s0', 's1']).tolist() == [[0.0, -1.0]]
     assert gene_orientation(['GX'], gt_[['chr', 'pos']], vdf_, xL_, xR_, ['s0', 's1']).tolist() == [[1.0, 0.0]]
 
-    # expression PCs built on a different gene set than the eQTL filter: refused
-    sys.argv = [a if a != str(td / 'cov' / 'covariates.tsv') else str(td / 'cov_other' / 'covariates.tsv')
-                for a in argv]
-    sys.argv[sys.argv.index('--out') + 1] = str(td / 'out_refused')
-    try:
-        main()
-        raise AssertionError('covariates built on another gene set must be refused')
-    except SystemExit as e:
-        assert 'covariate check failed' in str(e), e
-    print('covariate provenance check: PCs on another gene set are refused')
+    # expression PCs built on a different gene set than the eQTL filter, or in log2(CPM + 1): refused
+    for tag, what in (('cov_other', 'on another gene set'), ('cov_log2cpm', 'in log2(CPM + 1)')):
+        sys.argv = [a if a != str(td / 'cov' / 'covariates.tsv') else str(td / tag / 'covariates.tsv')
+                    for a in argv]
+        sys.argv[sys.argv.index('--out') + 1] = str(td / f'out_refused_{tag}')
+        try:
+            main()
+            raise AssertionError(f'covariates with PCs {what} must be refused')
+        except SystemExit as e:
+            assert 'covariate check failed' in str(e), e
+        print(f'covariate provenance check: PCs {what} are refused')
     sys.argv = argv + list(extra)
 
     print('running the real pipeline on the fabricated inputs (standard: biallelic SNPs)...\n')

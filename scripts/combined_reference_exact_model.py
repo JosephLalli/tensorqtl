@@ -188,7 +188,8 @@ def load():
         raise SystemExit(f'hapmixqtl from {HM.__file__}: not this checkout')
     with contextlib.redirect_stdout(io.StringIO()):
         I = CM.load_point_estimate_inputs(gene_list=str(CNS.OUT / 'genes.txt'),
-                                          regions=str(CNS.OUT / 'regions.bed'))
+                                          regions=str(CNS.OUT / 'regions.bed'),
+                                          cov=f'{CM.D}/cov/log2cpm1_point_calibration_20260925')   # the build the stored 2026-09-27 run used
     keep, order = I['keep'], I['order']
     A, T, Va, Vt, _ = HM.summaries_from_point_estimates(I['pL'], I['pR'], I['pT'], I['eff_lib'],
                                                         I['YL'], I['YR'], I['YT'])

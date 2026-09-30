@@ -5,7 +5,8 @@ The production default (2026-09-29) is half-read split preprocessing:
 prepare_default_inputs constructs ASE log2((pL+0.5)/(pR+0.5)), its admitted
 Gibbs/count-noise variances, total log2((pT+0.5)/(Leff+1)*1e6), and unit total
 working variances. Salmon point estimates supply the expression values.
-Existing expression PCs are retained as fixed covariates. The older
+Expression PCs are built on the same half-read log-CPM
+(scripts/build_covariates.py, since 2026-09-30). The older
 summaries_from_point_estimates and compute_summaries_from_gibbs functions
 remain available for reproducing earlier analyses.
 
@@ -419,7 +420,8 @@ def prepare_default_inputs(pL, pR, pT, eff_lib_size, yL, yR,
     1e-12, no-coverage donor-gene pairs are excluded, and exactly one haplotype below
     0.5 reads excludes that donor-gene pair. An excluded pair has Va=0.
     Total expression retains every donor, including zero-count donors.
-    Existing expression PCs are retained as fixed covariates.
+    Expression PCs are built on the same half-read log-CPM
+    (scripts/build_covariates.py, since 2026-09-30).
 
     Returns A, T, Va, Vt. The historical summaries_from_point_estimates
     utility and mapping APIs accepting explicit variances remain unchanged.

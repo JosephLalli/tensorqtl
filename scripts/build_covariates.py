@@ -45,6 +45,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # this repo's tensorqtl, not an installed upstream copy
+from tensorqtl.hapmixqtl import half_read_log_cpm             # noqa: E402
+
 
 def _open(p):
     return gzip.open(p, 'rt') if str(p).endswith('.gz') else open(p)
@@ -217,25 +220,26 @@ def expression_pcs(expr, base, n_pc=10, min_samples_expressed=0.5, seed=0):
     return pcs
 
 
-def expression_pcs_log2cpm(totals_all, eff_lib, genes, base, n_pc=10):
-    """Expression PCs in the pipeline's unit, on the eQTL gene set.
+def expression_pcs_point(totals_all, eff_lib, genes, base, n_pc=10):
+    """Expression PCs in the default total phenotype's unit, on the eQTL gene set.
 
-    User rules, 2026-09-25: values come from Salmon's POINT estimates; the unit
-    is log2(CPM + 1) at every step, with CPM from edgeR's effective library
-    size (lib.size x TMM norm.factors); the expression-PC gene filter is the
-    eQTL gene filter. So: log2(count / eff_lib * 1e6 + 1) over exactly
-    ``genes`` (edgeR's calibration_genes.txt), each gene CENTRED but not
-    scaled (scaling to unit variance would change the unit), residualized on
+    User rules: values come from Salmon's POINT estimates, and the expression
+    PCs are built on the same unit as the default total phenotype, the
+    half-read log-CPM log2((count + 0.5) / (eff_lib + 1) * 1e6) with edgeR's
+    effective library size (lib.size x TMM norm.factors) (2026-09-30; before
+    that the PCs were log2(CPM + 1)); the expression-PC gene filter is the
+    eQTL gene filter. So: the half-read log-CPM over exactly ``genes``
+    (edgeR's calibration_genes.txt), each gene CENTRED but not scaled
+    (scaling to unit variance would change the unit), residualized on
     ``base`` (metadata and genotype PCs) so the PCs are orthogonal to it, then
     the top ``n_pc`` right singular vectors.
     """
-    Y = totals_all.loc[list(genes)].to_numpy(dtype=float)       # [genes, samples]
-    Y = np.log2(Y / np.asarray(eff_lib, float)[None, :] * 1e6 + 1.0)
+    Y = half_read_log_cpm(totals_all.loc[list(genes)].to_numpy(dtype=float), eff_lib)   # [genes, samples]
     Y = Y - Y.mean(1, keepdims=True)
     Yr = residualize(Y, np.asarray(base, float))
     U, S, Vt = np.linalg.svd(Yr / np.sqrt(Yr.shape[0]), full_matrices=False)
     var = (S ** 2 / (S ** 2).sum())[:n_pc]
-    print(f'  expression PCs (log2 CPM+1, point estimates) from {Y.shape[0]} genes; '
+    print(f'  expression PCs (half-read log-CPM, point estimates) from {Y.shape[0]} genes; '
           f'top-{n_pc} residual variance {100*var.sum():.1f}%')
     return Vt[:n_pc].T
 
@@ -255,8 +259,8 @@ def build(metadata, pairing, salmon, tx2gene, vcf, n_expr_pc=10, n_geno_pc=3,
         missing = [s for s in samples if s not in totals.columns or s not in es.index]
         if missing:
             raise SystemExit(f'{len(missing)} samples lack point estimates or edgeR sizes, e.g. {missing[:3]}')
-        epc = expression_pcs_log2cpm(totals[samples], es.loc[samples, 'eff_lib_size'].values,
-                                     genes, base.values, n_pc=n_expr_pc)
+        epc = expression_pcs_point(totals[samples], es.loc[samples, 'eff_lib_size'].values,
+                                 genes, base.values, n_pc=n_expr_pc)
         epc = pd.DataFrame(epc, index=samples,
                            columns=[f'expr_pc{i+1}' for i in range(n_expr_pc)])
         return pd.concat([base, epc], axis=1)
@@ -283,10 +287,10 @@ def main(argv=None):
     ap.add_argument('--hap-suffix', default='_L,_R')
     ap.add_argument('--point-estimates',
                     help="the point_estimates/ folder from build_point_estimate_cache.py. "
-                         "When given, expression PCs are log2(CPM+1) of Salmon point "
+                         "When given, expression PCs are the half-read log-CPM of Salmon point "
                          "estimates with edgeR effective library sizes, on edgeR's "
-                         "calibration_genes.txt (the eQTL gene set), per the 2026-09-25 "
-                         "rules; without it the pre-2026-09-25 PCs are built "
+                         "calibration_genes.txt (the eQTL gene set), per the pipeline rules "
+                         "(half-read unit since 2026-09-30); without it the pre-2026-09-25 PCs are built "
                          "(log1p of raw counts, genes nonzero in half the samples)")
     ap.add_argument('--out', default='cov')
     a = ap.parse_args(argv)
@@ -307,7 +311,8 @@ def main(argv=None):
         columns=list(C.columns), genotype_tied=geno_cols,
         rna_tied=[c for c in C.columns if c not in geno_cols],
         permutation_rule='genotype_tied columns stay with the genotypes; all others move with the RNA record',
-        expression_pcs=('log2(CPM+1) of Salmon point estimates, edgeR effective library size '
+        expression_pc_unit='half_read_log_cpm' if a.point_estimates else 'log1p_raw_counts',   # checked by the runner
+        expression_pcs=('half-read log-CPM log2((count + 0.5)/(eff_lib + 1)*1e6) of Salmon point estimates, edgeR effective library size '
                         '(lib.size x TMM), genes = edgeR calibration_genes.txt, centred not scaled, '
                         'residualized on metadata + genotype PCs') if a.point_estimates else
                        'PRE-2026-09-25: log1p of raw Salmon NumReads, genes nonzero in half the samples, '
@@ -424,6 +429,14 @@ def selftest():
     worst = max(abs(np.corrcoef(epc[:, k], base.values[:, j])[0, 1])
                 for k in range(epc.shape[1]) for j in range(base.shape[1]))
     assert worst < 1e-6, f'max |corr| with a base covariate is {worst:.2e}'
+    # production PCs are those of the half-read log-CPM, the default total phenotype's unit (written out here)
+    lib = rng.uniform(1e7, 3e7, N)
+    tot = pd.DataFrame(np.floor(expr), index=[f'g{i}' for i in range(G)])
+    ep = expression_pcs_point(tot, lib, list(tot.index), base.values, n_pc=5)
+    Y = np.log2((tot.values + 0.5) / (lib + 1.0) * 1e6)
+    Y = residualize(Y - Y.mean(1, keepdims=True), base.values)
+    ref = np.linalg.svd(Y / np.sqrt(G), full_matrices=False)[2][:5].T
+    assert np.allclose(np.abs(ep), np.abs(ref), atol=1e-10), 'point-estimate PCs are not the half-read log-CPM PCs'
     print('SELF-TEST: covariate construction\n')
     # the binary must be covariate-major for RASQUAL
     import tempfile as _tf
