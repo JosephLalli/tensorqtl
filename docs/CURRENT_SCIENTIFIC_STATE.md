@@ -653,11 +653,10 @@ paths are under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
     together.
 - **Next-phase gate (2026-09-29).** The completed plasmode evidence and its
   report above are the current local record; the Meier correction introduced
-  by `a1b2ef4` remains implemented. Post-fit effect-size adjustments on the
-  half-read default were measured on 2026-09-30 (plasmode only; every p-value
-  unchanged): `beta_shortfall_20260929/beta_postfit.html`, receipts
-  `postfit_<set>.json`, script `scripts/beta_postfit_adjustment.py`. No
-  adjustment is adopted. Fixed donor-gene full balance
+  by `a1b2ef4` remains implemented. Post-fit adjustments of an estimated
+  slope (rescaling it after fitting) are not part of the analysis (user
+  decision 2026-09-30); a measurement of them made that day was removed with
+  its outputs. Fixed donor-gene full balance
   is rejected for adoption (below). Its source is archived at
   `brainvar_hapmix_deploy/beta_balance_trial_20260929/`. Its four live trial
   source files were deleted after those archive copies matched SHA256;
