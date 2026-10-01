@@ -4,6 +4,16 @@
 > `log2(CPM+1)` arm and `gibbs (shipped)` means shipped at that record's date.
 > Neither is the 2026-09-29 half-read default. Do not relabel stored results
 > or use these arms to claim uniform superiority.
+>
+> **The delivered pages and this code read different expression PCs.** The two
+> delivered roots (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`)
+> predate commit a2f4314 (2026-09-30) and used the covariates of
+> `cov/log2cpm1_point_calibration_20260925`; this code reads
+> `cov/half_read_point_calibration_20260930` (`common.COV`). On it, with the
+> committed joint results staged and 05b not run, `08_report.py` stops
+> (2026-10-01): sentences of its sections 3.4, 3.5 and 5 no longer hold
+> (`brainvar_hapmix_deploy/release_closure_20261001/plasmode_reference/08_report.log`).
+> The page is not regenerated until they are reworded.
 
 ## Purpose
 
@@ -15,10 +25,11 @@ weighting as the control; section Native-input arms). The question it answers: o
 donor structure, how well does each arm rank non-null genes, discover them at a controlled
 false-discovery rate (on its own permutation p where it has one, and on eigenMT's p for every arm),
 estimate the injected slope, state its standard error, and place the lead variant on the causal one.
-The hapmixQTL arms carry Meier's correction of the combined standard error (commit a1b2ef4). It bears on which weighting ships
-(`docs/pipeline_rules.md`, "Open decision: which weighting configuration ships").
+The hapmixQTL arms carry Meier's correction of the combined standard error (commit a1b2ef4). It was part of the evidence for
+the weighting decision (`docs/pipeline_rules.md`, "Decision, 2026-09-29: half-read split is the default weighting
+configuration").
 
-This directory is the analysis-tier rewrite (2026-09-27) of the previous benchmark code, the twelve scripts that lived here until commit fc238df: the same design,
+This directory is the analysis-tier rewrite (2026-09-27) of the previous benchmark code, the twelve scripts that lived in `scripts/plasmode` until commit fc238df: the same design,
 about 2,600 lines of pipeline code (common.py and scripts 01-07, run_trecase.R) plus a report script of
 about 2,400 lines and the acceptance test, one check script, no per-dataset re-validation, no
 command-line options; `select_stratum_genes.py` made the 30-100-read gene set once.
@@ -26,14 +37,20 @@ command-line options; `select_stratum_genes.py` made the 30-100-read gene set on
 predate Meier's correction and the tensorqtl arm, so it is a refactoring check that needs references made by the
 same statistics.
 
+The benchmark is standalone (2026-10-01): it moved from `scripts/plasmode` to `benchmark/plasmode` (commit e68865d),
+and `common.py` carries its own copies of the loader and helpers it used to import from `scripts/` (commit 938d28c;
+its section "Inputs and helpers this benchmark carries itself" names each source). `05b_native_arms.py` runs a
+byte-identical copy of `scripts/edger_library_normalization.R` kept here. The only repository code it imports is the
+`tensorqtl` package.
+
 ## Data provenance
 
 Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy` (`common.D`):
 
 - `cache/gibbs_56b63c3b37ed5df8`: Salmon 1.10.3 point estimates and 200 Gibbs draws per transcript
   copy for 92 donors, personalized diploid transcriptome (g2gtools `_L`/`_R` copies), read through
-  `scripts/compare_mixqtl_replication.load_point_estimate_inputs` with the cohort genotypes, phase,
-  covariates (14 RNA-tied, 3 genotype PCs) and edgeR effective library sizes.
+  `common.load_point_estimate_inputs` with the cohort genotypes, phase, covariates (14 RNA-tied,
+  3 genotype PCs; `common.COV`) and edgeR effective library sizes.
 - `common.GENE_SET` (default `corrected_null_store_20260925`) names the gene set; `common.GENE_SETS`
   holds, per gene set, the directory under `D` (`genes.txt`, 100 genes; `regions.bed`;
   `gene_design.tsv` with median allele-resolved reads and admitted allelic donors; that set's stored
@@ -57,8 +74,9 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json` and the committed
   stratum run's `run_arms.log` (its dataset blocks).
 - `cohort/salmon.tsv`, `annot/tx2gene.tsv` and donor 100_D1's dumped equivalence classes (the Salmon
-  premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, through
-  `corrected_null_store.OLD`).
+  premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, `common.OLD`).
+  Check d reproduces those stored nulls with the covariates they were made with,
+  `cov/log2cpm1_point_calibration_20260925` (`01_check_inputs.REPRO_COV`), not `common.COV`.
 
 Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
 `plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `PLASMODE_ACCEPTANCE=1` before
@@ -115,7 +133,8 @@ Inputs: `native_counts_wasp_20260928` (scripts/native_counts.py): featureCounts 
 (`brainvar_hapmix_deploy/wasp_20260928/README.md`), a = b = 0 where a + b exceeds the total; donors joined on the DNA
 library id. Earlier stages of these counts: `native_counts_20260928` (unstranded gene spans) and
 `native_counts_stranded_20260928` (no WASP).
-Native effective library sizes: featureCounts over every gene through `scripts/edger_library_normalization.R` with the
+Native effective library sizes: featureCounts over every gene through `edger_library_normalization.R` (here, a byte-identical
+copy of `scripts/edger_library_normalization.R`, the pipeline's own normalization) with the
 Salmon cache's `restrict_calibration.txt`, the Salmon run's rule (12,874 genes kept; native / Salmon 0.62-1.27 across donors).
 Per dataset: the dataset's `perm` and `swap` applied by 02's `move_records`, a thinned by `fL`, b by `fR`, the remainder by
 `(fL + fR) / 2` with 02's `thin_haplotypes` (exact binomial on integers), stream `SeedSequence(42, (7, r, round(1000 |beta|)))`;
@@ -234,7 +253,6 @@ runs; without it about 27 min on the default set when every step reruns (01-08 t
 
 `requirements.txt` (pip freeze of the packages used; python 3.11.14), R 4.5.2 with asSeq 0.99.501
 in `/mnt/ssd/lalli/usr/local/lib/R/library` (run with `R_LD_LIBRARY_PATH` and `LD_LIBRARY_PATH` as
-`05_run_trecase.R_ENV` sets them), the RASQUAL binary named in `04_run_rasqual.RASQUAL` (its sha256
-pinned there), and the repository's `tensorqtl` package plus `scripts/compare_mixqtl_replication.py`,
-`corrected_null_store.py`, `hybrid_weights_null.py`, `null_permutation_instrument.py` and
-`compare_pipelines.py` (imported, not modified).
+`05_run_trecase.R_ENV` sets them), the RASQUAL binary named in `04_run_rasqual.RASQUAL`
+(`/mnt/ssd/lalli/usr/local/rasqual/bin/rasqual`, its sha256 pinned there), and the repository's `tensorqtl`
+package (imported, not modified). Nothing under `scripts/` is imported or run.

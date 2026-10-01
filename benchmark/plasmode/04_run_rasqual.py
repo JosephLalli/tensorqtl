@@ -8,8 +8,8 @@ AS 0,0. The tested variants carry the real phased genotypes xL|xR, with AS 0,0 o
 they are (the NB density goes through lgamma on doubles); K = eff_lib / mean(eff_lib) for every
 gene (makeOffset.R builds a gene-constant size factor; main.c:347-351 divides by the row mean);
 -x = the RNA-tied covariates in record order and the genotype PCs in place. Column i of every
-array is real record perm[i], as in every other arm. Options: compare_pipelines.rasqual_arm's
-line with -h 0 (the rSNP Hardy-Weinberg filter, default 1e-8, removed 6,318 tested variants and
+array is real record perm[i], as in every other arm. Options: the command line of rasqual_arm in the
+retired compare_pipelines.py (archived in brainvar_hapmix_deploy/retired_scripts_20261001/) with -h 0 (the rSNP Hardy-Weinberg filter, default 1e-8, removed 6,318 tested variants and
 9 of 450 causal variants; these genotypes are the truth and no other arm filters on it).
 
 Per tested variant with a converged row: chisq (field 11), pval_nominal = chi2.sf(chisq, 1),
