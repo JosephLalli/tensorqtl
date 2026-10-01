@@ -194,7 +194,7 @@ pairs a transcript only when both suffixed rows exist, so a donor-gene pair
 with no heterozygous transcript has no allelic information at all, however
 well expressed the gene is; its total expression still counts in the total
 channel. The consequences for the share of donor-gene pairs with allelic
-information are recorded in `CLAUDE.md` ("Why 57.8% of donor-gene pairs have
+information are recorded in `docs/measurement_record.md` ("Why 57.8% of donor-gene pairs have
 no allele-specific information").
 
 **Known limit of the Gibbs variance (kept as a caveat by user decision,

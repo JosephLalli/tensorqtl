@@ -52,7 +52,7 @@ COMPARATORS (implemented here directly, no R or C dependency)
               summaries_from_point_estimates, the runner's phenotype.
               Emulated draws: allelic yL ~ Binomial(n_as, frac) with
               yR = n_as - yL; total yT ~ Poisson(T), because gene-level Gibbs
-              variance of a total is Poisson (CLAUDE.md, RTA entry). With
+              variance of a total is Poisson (docs/measurement_record.md, the RTA entry). With
               count_noise the delta-method counting term is added on top in
               both channels, as production adds it to Salmon draws that
               already carry shot noise.

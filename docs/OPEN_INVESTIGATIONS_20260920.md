@@ -28,7 +28,7 @@ Was the last untested of the six disagreement mechanisms. Tested by adding
 only the standard-error form, which is exactly the replacement its written
 refutation criterion named. The combined beta correlates with the shipped
 arm at 0.9978 with a median |beta| ratio of 1.011 — essentially unchanged,
-so the mechanism is refuted. Conclusion in `CLAUDE.md`; numbers in
+so the mechanism is refuted. Conclusion in `CLAUDE.md` (since 2026-10-01 in `docs/measurement_record.md`); numbers in
 `/mnt/ssd/lalli/brainvar_hapmix_deploy/deprecated_models/from_mixqtl_replication_20260919/HAPMIXQTL_FITTED_SE.md`.
 The six-mechanism catalogue is closed; this file keeps the entry only as a
 pointer and no longer lists it as work to do.
@@ -73,7 +73,7 @@ reported effect size and every reported variance component.
 
 **The hazard that makes this worth doing carefully rather than quickly.** All
 historical numbers — the fitted `tau_a` of 0.0030 to 0.0049, the implied
-RASQUAL `rho`, every `tau` in `CLAUDE.md` and in the reports — are recorded in
+RASQUAL `rho`, every `tau` in `CLAUDE.md` (since 2026-10-01 `docs/measurement_record.md`) and in the reports — are recorded in
 squared natural-log units. A partial migration that converts the runtime but
 not the recorded comparisons would silently put a factor of 2.0814 between the
 code and its own validation record. The migration therefore needs a single

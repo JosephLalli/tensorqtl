@@ -70,7 +70,7 @@ The existing suite (`tests/test_hapmixqtl.py`, ~35 tests) is almost entirely:
 
 - **internal consistency** — "does the code compute the formula we wrote" (WLS matches a
   numpy reference, the inverse-variance formula is applied correctly, SE shrinks with n); and
-- **recovery** — "can it find a planted causal variant".
+- **recovery** — "can it find a simulated causal variant".
 
 Neither class of test can detect an invalid error rate. A method can pass every one of
 those 35 tests while producing p-values that are wrong by two orders of magnitude — which
@@ -221,7 +221,7 @@ weights blow up, `xx` blows up, and `Var(β) = 1/xx` collapses toward zero.
 [WITHDRAWN 2026-09-16 as a statement about real Salmon output; marked here 2026-10-01.
 Salmon's default Gibbs draw carries counting noise (`CollapsedGibbsSampler.cpp:122`), so
 its Gibbs variance is not assignment uncertainty only. The sentence describes this tier's
-multinomial emulation, which conditions on the total (CLAUDE.md, "Claims withdrawn";
+multinomial emulation, which conditions on the total (`docs/measurement_record.md`, "Claims withdrawn";
 record `brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`).]
 
 Because this is the regime real Salmon/mmseq input actually occupies, **`tau_mode='zero'`
@@ -891,7 +891,7 @@ individual genes rather than the dataset.
 
 Three variant classes, three treatments, one whitening. Encoder:
 `scripts/str_integrate.py`; models: `map_str_curvature` and `map_multiallelic` in
-`tensorqtl/hapmixqtl.py`. All numbers below are from `--selftest` (N = 200, planted
+`tensorqtl/hapmixqtl.py`. All numbers below are from `--selftest` (N = 200, simulated
 effects, real `map_cis` and real second-pass code on the same data).
 
 **Non-standard and opt-in.** Standard cis-QTL mapping tests biallelic SNPs, and that is
@@ -917,7 +917,7 @@ with no 0/1 assumption anywhere except `get_allele_stats` (reporting) and the MA
 | STR | xL/xR = repeat length per haplotype (reference-relative repeat units; unphased → xL = xR = mean, s = 0) | linear + curvature |
 | multi-ALT SNV / indel | one split row per ALT allele (allele-k indicator per haplotype), i.e. what `bcftools norm -m-` would test — these rows were previously **dropped entirely** by the VCF reader | categorical |
 
-STR leads recover β per repeat unit (0.339 / −0.302 / 0.336 for planted 0.35 / −0.30 /
+STR leads recover β per repeat unit (0.339 / −0.302 / 0.336 for simulated 0.35 / −0.30 /
 0.35, the third unphased and carried by the total channel alone); the eSNP path is
 unchanged; split rows can win the lead.
 
@@ -932,12 +932,12 @@ wanted back.
 **Second pass, STRs: linear + curvature.** Per haplotype `f(L) = b1 L + b2 L²`, centred
 and winsorized at the 1st/99th percentile so a few long alleles do not own the squared
 column. The centring is for conditioning only: `slope_at_ref` re-expresses the fitted curve's
-slope at the reference length (`b1 − 2·c·b2`, delta-method SE), so the planted `b1 = 0.10`
+slope at the reference length (`b1 − 2·c·b2`, delta-method SE), so the simulated `b1 = 0.10`
 at the reference comes back as 0.10 even though the cohort-centred `b1` reads 0.21. The square goes on the *haplotype*: the total row is `(f(L_A) + f(L_B))/2`, so the
 squared column is `(L_A² + L_B²)/2`, **not** `((L_A+L_B)/2)²` — the two differ by
 `(L_A − L_B)²/4`, a heterozygosity term the ASE channel cannot share. `b2` is a 1-df
 curvature test (same sign as `b1` = accelerating, opposite = saturating); the linear-only
-fit is reported alongside and equals the lead-scan slope to 3 decimals. Planted `b2 = 0.12`
+fit is reported alongside and equals the lead-scan slope to 3 decimals. Simulated `b2 = 0.12`
 recovered as 0.122 (phased, p = 2e-20) and 0.131 (unphased, total channel only, p = 5e-10);
 the three linear eSTRs show `b2` of −0.008 / 0.000 / −0.012 with p 0.55–0.98.
 
@@ -949,7 +949,7 @@ the joint F test on K−1 df asks whether allele identity matters with no orderi
 Alleles below `min_hap` carrier haplotypes are pooled into `other`, or treated as missing if
 even the pool is too small.
 
-| site | planted (ALT1, ALT2) | joint fit | lead-scan marginal row |
+| site | simulated (ALT1, ALT2) | joint fit | lead-scan marginal row |
 |---|---|---|---|
 | ALT2-only | (0, 0.5) | −0.077 ± 0.043, 0.476 ± 0.056; joint p = 6e-16 | 0.497 |
 | opposite | (0.4, −0.4) | 0.361 ± 0.051, −0.352 ± 0.052; joint p = 2e-22 | ALT1 row: **0.451** |
@@ -1161,7 +1161,7 @@ hapmixQTL-vs-RASQUAL runs have since happened repeatedly — 29/30-gene pilots
 under the now-deprecated configuration (`brainvar_hapmix_deploy/deprecated_models/`),
 and, under the shipped default mode, a 59-gene/3-stratum run with 30 null
 rounds (`brainvar_hapmix_deploy/rasqual_default_mode_20260923/`, findings in
-CLAUDE.md's "hapmixQTL against RASQUAL and mixQTL, measured" section: detection
+`docs/measurement_record.md`'s "hapmixQTL against RASQUAL and mixQTL, measured" section: detection
 counts indistinguishable, effect sizes related by a scale factor rather than
 equal, nominal-p miscalibration measured and its cause narrowed but not
 identified). None of that is the same measurement as the four items below —

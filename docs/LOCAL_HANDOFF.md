@@ -115,8 +115,8 @@ RUNS: the closed-form empirical-Bayes family — `squeezeVar`, `fitFDist`,
 least-squares routine. `fitFDistRobustly` in particular is testable here
 today (it is the published fix for hypervariable genes). Practical
 consequence: a `vooma`-style pooled-trend route needs the BLAS fixed first;
-a `squeezeVar`/`fitFDistRobustly` moderation route does not — see CLAUDE.md's
-"Relationship to limma, edgeR, sleuth, swish" section for the full account,
+a `squeezeVar`/`fitFDistRobustly` moderation route does not — see `docs/measurement_record.md`
+("Facts that are easy to get wrong") for the full account,
 where the non-crashing checks above were run directly and the rest were done
 against limma's formulas in numpy instead. `squeezeVar` was run against
 BrainVar data at
@@ -236,7 +236,7 @@ Open:
   UPDATE 2026-09-24: the run at scale has since happened, under the shipped
   default mode rather than the deprecated configuration the pilots above used
   — 59 genes across 3 coverage strata, 30 null rounds
-  (`brainvar_hapmix_deploy/rasqual_default_mode_20260923/`). See CLAUDE.md's
+  (`brainvar_hapmix_deploy/rasqual_default_mode_20260923/`). See `docs/measurement_record.md`'s
   "hapmixQTL against RASQUAL and mixQTL, measured (2026-09-24)" section for
   the findings and their bounds.
 - **Four axes blocked on genotypes** (§9): effect-size concordance against GTEx

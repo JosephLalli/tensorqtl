@@ -68,7 +68,7 @@ A bare `pytest tests/` collects 374 tests: the 249 of the self-test, the 16 anal
 
 ### Pre-existing failures
 
-`test_post.py`, `test_trans.py`, `test_genotypeio.py` and `test_integration.py` carry 46 pre-existing failures from drift between these tests and the upstream code they exercise (BED sort order, a missing `chr` column, a missing `pval_beta` column). None of the four files references hapmixQTL, and the upstream modules they test are unchanged from upstream tensorQTL, so their failures are not regressions of this fork's method. Run the self-test command to see the surface this fork owns.
+`test_post.py`, `test_trans.py`, `test_genotypeio.py` and `test_integration.py` carry 21 pre-existing failures among their 45 tests (counted 2026-10-01; earlier notes said 46) from drift between these tests and the upstream code they exercise (BED sort order, a missing `chr` column, a missing `pval_beta` column). None of the four files references hapmixQTL, and the upstream modules they test are unchanged from upstream tensorQTL, so their failures are not regressions of this fork's method. Run the self-test command to see the surface this fork owns.
 
 ### Test data and markers
 

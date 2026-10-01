@@ -1209,8 +1209,7 @@ def _warn_deprecated_variance_path(tau_mode, variance_model):
               "(c_g, tau_g) family fits its layer-1 variance from the residuals it "
               "then weights, which is why it is inferior and not merely older; "
               "efficiency comparisons do not rehabilitate it. Use it only to "
-              "reproduce historical results. See CLAUDE.md, 'The variance models "
-              "are deprecated'.",
+              "reproduce historical results. See brainvar_hapmix_deploy/deprecated_models/README.md.",
             DeprecationWarning, stacklevel=3)
 
 
@@ -1362,8 +1361,8 @@ def _prepare_channels(a_t, t_t, va_t, vt_t, covariates_t, tau_mode, device,
         intercept=True, variance_model=total_variance_model)
     # The allelic channel's zeroing is already done by
     # _zero_degenerate_ase_weights above, since va_t is now 0 there. The
-    # total channel has no such guard (CLAUDE.md, "The total channel has no
-    # zero-count guard"), so an excluded sample would otherwise keep the
+    # total channel has no such guard (docs/measurement_record.md, "Known and unfixed, as listed
+    # before the 2026-10-01 release pass"), so an excluded sample would otherwise keep the
     # finite weight 1/(1e-8 + tau_t). Zero it explicitly. This is scoped to
     # samples the caller's cutoffs excluded and introduces no zero-count rule
     # of its own.

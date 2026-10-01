@@ -115,7 +115,7 @@ def _estimate_tau_informative(y_t, v_inf_t, covariates_t, device, eps=1e-12,
 # free-c forms are additionally invariant to the absolute scale of the Gibbs
 # draws so the quantifier's calibration never reaches the answer. Per-gene
 # efficiency comparisons do not rehabilitate them; efficiency was never the
-# objection. See CLAUDE.md, "The variance models are deprecated".
+# objection. See brainvar_hapmix_deploy/deprecated_models/README.md.
 VARIANCE_MODELS = ('additive', 'two_component', 'library_scaled')
 
 def _check_variance_model(variance_model, tau_mode, library_factor_t, variance_prior=None):

@@ -202,7 +202,7 @@ def part_B(reps, N):
 def main():
     raise SystemExit("Not runnable since 2026-09-28 (user decision): tests/ase_external_benchmark.hapmix_pval now takes a "
                      "default-mode weighting (gibbs / split / plus_one), and this script called its removed tau_mode='estimate' "
-                     "arm, which is quarantined (CLAUDE.md, 'What was deprecated'). Its recorded results in "
+                     "arm, which is quarantined (brainvar_hapmix_deploy/deprecated_models/README.md). Its recorded results in "
                      "docs/ase_validation.md stand as records.")
     ap = argparse.ArgumentParser()
     ap.add_argument('--reps', type=int, default=300)
