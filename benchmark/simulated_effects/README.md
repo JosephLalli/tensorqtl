@@ -9,11 +9,13 @@
 > delivered roots (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`)
 > predate commit a2f4314 (2026-09-30) and used the covariates of
 > `cov/log2cpm1_point_calibration_20260925`; this code reads
-> `cov/half_read_point_calibration_20260930` (`common.COV`). On it, with the
-> committed joint results staged and 05b not run, `08_report.py` stops
-> (2026-10-01): sentences of its sections 3.4, 3.5 and 5 no longer hold
-> (`brainvar_hapmix_deploy/release_closure_20261001/plasmode_reference/08_report.log`).
-> The page is not regenerated until they are reworded.
+> `cov/half_read_point_calibration_20260930` (`common.COV`); the two builds
+> differ only in the ten expression PCs. The staged RASQUAL and TReCASE
+> results keep the earlier build, and the page says so in section 2. On this
+> code three of the page's fixed sentences (sections 3.4, 3.5 and 5) stopped
+> holding and were reworded on 2026-10-01; its run of the deep set, with the
+> committed joint results staged and 05b not run, is
+> `brainvar_hapmix_deploy/release_closure_20261001/plasmode_after_split/report/plasmode_report.html`.
 
 ## Purpose
 

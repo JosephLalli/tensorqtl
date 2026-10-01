@@ -46,6 +46,25 @@ ARMS = C.ARMS
 HAPMIX, JOINT, TQ = C.HAPMIX_ARMS, tuple(C.JOINT), C.TENSORQTL
 HM = HAPMIX + tuple(C.MIXQTL_ARMS)   # the hapmixQTL and mixQTL arms, the arms BEFORE scored
 ALL = ARMS + JOINT                   # the Salmon-input arms: the prose and check_claims are about these
+JOINT_COV = C.D / 'cov' / 'log2cpm1_point_calibration_20260925'   # the covariates of the committed runs whose RASQUAL and TReCASE results are reused (3aac315; both runs predate a2f4314)
+SAME_COV = C.COV == JOINT_COV        # whether the other arms' covariates are the joint models' (they are not since a2f4314)
+
+
+def cov_table(d):
+    """covariates.tsv of a covariate build: {column: values as floats}, in donor order."""
+    rows = [line.split('\t') for line in (d / 'covariates.tsv').read_text().splitlines()]
+    return {name: [float(r[i]) for r in rows[1:]] for i, name in enumerate(rows[0]) if i > 0}
+
+
+COV_DIFF = [] if SAME_COV else [c for c, v in cov_table(JOINT_COV).items() if cov_table(C.COV)[c] != v]
+COV_OF_JOINT = 'those of the other arms' if SAME_COV else "the committed run's (end of this paragraph)"
+JOINT_COV_PARA = '' if SAME_COV else (
+    f' Both joint models\' results are reused from {C.COMMITTED.name}, the committed run on these datasets, made with the '
+    f'covariates of {JOINT_COV.name}; the other arms use {C.COV.name}. The two builds differ only in {len(COV_DIFF)} of '
+    f'the 17 columns ({COV_DIFF[0]} to {COV_DIFF[-1]}), the expression principal components, which the joint models\' '
+    'build computes on log2(CPM + 1); the clinical covariates and the genotype principal components are identical.')
+JOINT_COV_NOTE = '' if SAME_COV else (' Both joint models ran with the committed run\'s covariates (section 2) and the other arms '
+                                      'with this code\'s, so every difference between them also contains that change.')
 NATIVE = SC.NATIVE_ARMS              # 05b_native_arms.py: split weighting and TReCASE on native alignment counts; () where C.NATIVE does not exist
 SHOWN = ALL + NATIVE                 # every arm in the section 3 tables and Figures 1-4
 LABEL = {'gibbs': 'gibbs (1/v both channels, shipped)', 'split': 'split (1/v allelic, unit total)',
@@ -259,6 +278,17 @@ def at_betas(bs):
     return 'no |beta|' if not bs else 'every |beta|' if len(bs) == len(BETAS) else '|beta| ' + ' and '.join(bs)
 
 
+def range_overlap_text(a, b_arm):
+    """Where the per-dataset AUC ranges of arm a and the higher arm b_arm overlap, and the gaps where they do not."""
+    ov = overlap(a, b_arm)
+    rest = [b for b in BETAS if b not in ov]
+    if not rest:
+        return 'overlap at every |beta|'
+    gaps = ' and '.join(f(auc(b, b_arm)['lo'] - auc(b, a)['hi'], 3) for b in rest)
+    return (f'{"overlap at " + at_betas(ov) + " and " if ov else ""}are separate at {at_betas(rest)}, by {gaps} '
+            'between the ranges of three datasets each')
+
+
 def all17():
     """Range over cutoffs and |beta| of the ladder's one-step all-17 total slope over the count-scale truth."""
     v = [LD['total_channel'][c][f'beta{b}']['one_step_all_trc']['all']['mean'] for c in ('published', 'permissive') for b in BETAS]
@@ -269,6 +299,7 @@ def all17():
 A_ = lambda a: per_beta(lambda b: auc(b, a)['mean'])                                              # noqa: E731
 P_ = lambda a: per_beta(lambda b: fdp(b, a)['all']['power'])                                      # noqa: E731
 R_ = lambda a: per_beta(lambda b: S['lead'][f'beta{b}'][a]['all']['r2_high'], 2)                  # noqa: E731
+dR = lambda a, b_arm: per_beta(lambda b: S['lead'][f'beta{b}'][a]['all']['r2_high'] - S['lead'][f'beta{b}'][b_arm]['all']['r2_high'])   # noqa: E731
 D_ = lambda a, ch='combined': per_beta(lambda b: S['detection'][f'beta{b}'][a][ch]['all']['0.001'], 2)   # noqa: E731
 B_ = lambda a, ch, key='bias_count', bn='all', n=2: per_beta(lambda b: bias(b, a, ch, key, bn)['mean'], n)   # noqa: E731
 E_ = lambda a, ch: per_beta(lambda b: prec(f'beta{b}', a, ch, 'nonnull', rkey(a))['value'], 2)     # noqa: E731
@@ -317,8 +348,12 @@ def check_claims():
             [a for a in ALL if a != TQ and all(inc1(d) for d in bp(a, 'combined', 'bias_count'))] == ['trecase']
             and not any(inc1(d) for d in bp('rasqual', 'combined', 'bias_count'))
             and bias('0.8', 'rasqual', 'combined', 'bias_count', '<100')['mean'] == min(bias('0.8', 'rasqual', 'combined', 'bias_count', bn)['mean'] for bn in BANDS[1:]),
-        '3.4 total sd(z): gibbs lower bounds at or above 1; split, unit and plus_one intervals include 1':
-            all(d['lo'] >= 1 for d in nz('gibbs', 'total')) and all(inc1(d) for a in ('split', 'unit', 'plus_one') for d in nz(a, 'total')),
+        '3.4 total sd(z): gibbs above split, unit and plus_one in point with lower bounds within 0.02 of 1, the others\' intervals '
+        'including 1; on the anchor gibbs\'s interval above 1 and unit\'s including 1':
+            all(g['value'] > max(P(b, a, 'total', 'nonnull', 'sd_z')['value'] for a in ('split', 'unit', 'plus_one')) and abs(g['lo'] - 1) <= 0.02
+                for b, g in zip(BETAS, nz('gibbs', 'total')))
+            and all(inc1(d) for a in ('split', 'unit', 'plus_one') for d in nz(a, 'total'))
+            and an('gibbs', 'total', 'sd_z')['lo'] > 1 and inc1(an('unit', 'total', 'sd_z')),
         '3.4 allelic sd(z) at the causal variant above 1 in point with intervals including 1, four arms; unit\'s excess below 100 reads':
             all(d['value'] > 1 and inc1(d) for a in HAPMIX for d in nz(a, 'allelic'))
             and min(P(b, 'unit', 'allelic', 'nonnull', 'sd_z', '<100')['value'] for b in BETAS) > max(zup),
@@ -345,8 +380,8 @@ def check_claims():
             and [(j, b) for j in JOINT for b in BETAS if ex(b, j)['value'] < ex(b, 'split')['value']] == [('trecase', '0.8')],
         '3.5 mixQTL published has the lowest r2 >= 0.8 share of the hapmixQTL and mixQTL arms at every |beta|':
             all(r2(b, 'mixqtl') < min(r2(b, a) for a in HM if a != 'mixqtl') for b in BETAS),
-        '3.5 TReCASE\'s r2 >= 0.8 share within 0.02 of unit\'s; RASQUAL\'s the lowest of the nine arms at 0.2 and 0.4; neither above split\'s':
-            all(abs(r2(b, 'trecase') - r2(b, 'unit')) <= 0.02 + 1e-12 for b in BETAS)   # shares of 150 units: 3/150 is 0.02 in float to 1e-17
+        '3.5 TReCASE\'s r2 >= 0.8 share below unit\'s at every |beta|; RASQUAL\'s the lowest of the nine arms at 0.2 and 0.4; neither above split\'s':
+            all(r2(b, 'trecase') < r2(b, 'unit') for b in BETAS)
             and all(r2(b, 'rasqual') < min(r2(b, a) for a in ALL if a != 'rasqual') for b in BETAS[:2])
             and all(r2(b, j) <= r2(b, 'split') for j in JOINT for b in BETAS),
         '3.6 RASQUAL\'s detection at 1e-3 below unit weights\' at every |beta|': all(det(b, 'rasqual') < det(b, 'unit') for b in BETAS),
@@ -371,9 +406,11 @@ def check_claims():
             all(auc(b, 'split')['mean'] > auc(b, m)['mean'] and pw(b, 'split') > pw(b, m) and r2(b, 'split') > r2(b, m)
                 and bias(b, 'split', 'total', 'bias_count')['mean'] > bias(b, m, 'total', 'bias_count')['mean'] and ex(b, 'split')['value'] < ex(b, m)['value']
                 for m in C.MIXQTL_ARMS for b in BETAS),
-        '5 mixQTL published has the lowest AUC of the hapmixQTL and mixQTL arms; permissive below split, ranges overlapping at 0.2 and 0.8 only':
+        '5 mixQTL published has the lowest AUC of the hapmixQTL and mixQTL arms; permissive below split at every |beta|, its per-dataset '
+        'range below split\'s wherever the two do not overlap':
             all(auc(b, 'mixqtl')['mean'] < min(auc(b, a)['mean'] for a in HM if a != 'mixqtl') for b in BETAS)
-            and all(auc(b, 'mixqtl_permissive')['mean'] < auc(b, 'split')['mean'] for b in BETAS) and overlap('mixqtl_permissive', 'split') == ['0.2', '0.8'],
+            and all(auc(b, 'mixqtl_permissive')['mean'] < auc(b, 'split')['mean'] for b in BETAS)
+            and all(auc(b, 'mixqtl_permissive')['hi'] < auc(b, 'split')['lo'] for b in BETAS if b not in overlap('mixqtl_permissive', 'split')),
         '5 allelic bias (count scale): mixQTL permissive and split intervals overlap at every |beta|':
             all(ovl(bias(b, 'mixqtl_permissive', 'allelic', 'bias_count'), bias(b, 'split', 'allelic', 'bias_count')) for b in BETAS)}
     failed = [k for k, v in claims.items() if not v]
@@ -1192,7 +1229,7 @@ reads to give it, each gene gets one pseudo feature SNP in its gene body, at whi
 arms admit to the allelic channel is heterozygous with allele counts equal to its thinned haplotype point estimates
 rounded to integers ({rq["het"][0]:,} to {rq["het"][1]:,} pairs per dataset); the tested variants carry the real phased
 genotypes, the total counts are the thinned Salmon totals as they are (fractional), the size factor is the effective
-library size, and the 17 covariates are those of the other arms. RASQUAL's defaults are kept except its
+library size, and the 17 covariates are {COV_OF_JOINT}. RASQUAL's defaults are kept except its
 Hardy-Weinberg filter on tested variants (a test that a variant's genotype counts match those expected from its allele
 frequency), turned off (-h 0) because these genotypes are the truth and no other arm filters on it (04_run_rasqual.py). <b>TReCASE</b> (asSeq 0.99.501) models total counts as negative binomial (TReC) and
 allele-specific counts as beta-binomial (ASE), fits both jointly, and runs a cis/trans test of whether the total and
@@ -1200,7 +1237,7 @@ allelic effects agree; asSeq's final p is the joint p when that test does not re
 otherwise, which is also what it reports when the joint fit fails. Its inputs are the same donor-gene pairs as allele-specific
 records (counts rounded per haplotype, because its beta-binomial needs integers), fractional totals, the log effective
 library size as offset, and the same 17 covariates; asSeq's defaults are kept except the p cutoff for writing a row
-(05_run_trecase.py).</p>
+(05_run_trecase.py).{JOINT_COV_PARA}</p>
 <p><b>One scale for every method.</b> Every slope on this page is a log2 allelic fold change (aFC), ALT over REF,
 where beta = 1 is a twofold effect. The table gives each arm's published effect, its conversion, and where its
 standard error comes from. RASQUAL and TReCASE report no standard error: it is derived as |slope| / &radic;&chi;<sup>2</sup>
@@ -1421,10 +1458,11 @@ def interp_precision():
     return f"""
 <p><b>Stated standard error.</b> The clean comparison is the total channel, where the hapmixQTL arms share the truth
 and the donors. At the causal variant sd(z) is {Z_('gibbs', 'total')} for gibbs against {Z_('split', 'total')} for
-split and unit and {Z_('plus_one', 'total')} for plus_one; gibbs's intervals start at or above 1 (lower bounds
-{lo('gibbs', 'total', 'sd_z')}), the others' include 1. On the anchor's null genes gibbs reads {Zn_('gibbs', 'total')}
-and unit {Zn_('unit', 'total')}. So the Gibbs-weighted total channel's slope varies more than its stated se says, by
-these factors, on genes with an effect as on genes without one, while unit weights state it correctly.</p>
+split and unit and {Z_('plus_one', 'total')} for plus_one; gibbs's intervals reach down to about 1 (lower bounds
+{lo('gibbs', 'total', 'sd_z')}), the others' include 1. On the anchor's null genes gibbs reads {Zn_('gibbs', 'total')},
+an interval above 1, and unit {Zn_('unit', 'total')}. So the Gibbs-weighted total channel's slope varies more than its
+stated se says: by the anchor's factor on genes without an effect, and by a similar point factor at the causal variant,
+where its interval reaches 1. Unit weights state it correctly.</p>
 <p>In the allelic channel the point value of sd(z) at the causal variant is above 1 for the four hapmixQTL arms
 (gibbs and split {Z_('gibbs', 'allelic')}, unit {Z_('unit', 'allelic')}, plus_one {Z_('plus_one', 'allelic')}), but every
 interval includes 1 (lower bounds gibbs and split {lo('gibbs', 'allelic', 'sd_z')}, unit
@@ -1935,8 +1973,9 @@ grows with beta<sup>2</sup>, while on the anchor's null genes, which carry no bi
 of unit weights' squared error. How much of the 0.8 value that bias accounts for was not separated.</p>""",
         lead=f"""
 <p>RASQUAL's share of leads within r<sup>2</sup> &ge; 0.8 of the causal variant is {R_('rasqual')} and TReCASE's
-{R_('trecase')}, against {R_('split')} for split and {R_('unit')} for unit, with no interval. TReCASE's shares are within
-0.02 of unit's; RASQUAL's are the lowest of the nine arms at |beta| 0.2 and 0.4.</p>""",
+{R_('trecase')}, against {R_('split')} for split and {R_('unit')} for unit, with no interval. TReCASE's shares are below
+unit's at every |beta|, by {dR('unit', 'trecase')}; RASQUAL's are the lowest of the nine arms at |beta| 0.2 and
+0.4.{JOINT_COV_NOTE}</p>""",
         detection=f"""
 <p>RASQUAL detects the causal variant at p &lt; 1e-3 in {D_('rasqual')} of non-null gene units and TReCASE in
 {D_('trecase')}, against {D_('split')} for split and {D_('unit')} for unit; a causal unit without a row is left out of a
@@ -2545,8 +2584,8 @@ and statistic, so only the direction is compared, not the magnitude.</p>
 mixQTL arms at every |beta| ({A_('mixqtl')}) and the lowest point share of leads within r<sup>2</sup> &ge; 0.8 of the causal variant
 ({R_('mixqtl')}, no interval), leaves some gene units without any finite p, and attenuates its slopes in both channels.
 With the permissive cutoffs it is closer to the hapmixQTL arms (AUC {A_('mixqtl_permissive')}) but below split's point
-estimates ({A_('split')}) at every |beta|; their ranges overlap at the smallest and the largest effect size and separate at
-the middle one. Its null-gene combined rates at 0.05 are {per_beta(lambda b: S['null'][f'beta{b}']['mixqtl']['combined']['all']['0.05']['rate'])} (published) and
+estimates ({A_('split')}) at every |beta|; their per-dataset ranges {range_overlap_text('mixqtl_permissive', 'split')}.
+Its null-gene combined rates at 0.05 are {per_beta(lambda b: S['null'][f'beta{b}']['mixqtl']['combined']['all']['0.05']['rate'])} (published) and
 {per_beta(lambda b: S['null'][f'beta{b}']['mixqtl_permissive']['combined']['all']['0.05']['rate'])} (permissive) at |beta| = 0.2 / 0.4 / 0.8, and
 {f(S['null']['beta0.0']['mixqtl']['combined']['all']['0.05']['rate'])} and
 {f(S['null']['beta0.0']['mixqtl_permissive']['combined']['all']['0.05']['rate'])} on the anchor. On its own permutation
