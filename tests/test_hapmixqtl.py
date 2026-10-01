@@ -918,6 +918,18 @@ class TestMapSusie:
         stale['tau_mode'] = 'zero'
         assert fine_mapping_provenance(stale)['status'] == 'stale'
 
+    def test_known_variance_paths_refuse_default_mode(self):
+        """map_susie and the second pass have no fitted residual scale, so
+        tau_mode='zero' would be the withdrawn known-variance pairing."""
+        d = _make_dataset(seed=123, n_samples=100, n_variants=15)
+        with pytest.raises(ValueError, match='not supported in default mode'):
+            map_susie(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                      d['Va_df'], d['Vt_df'], d['pos_df'], tau_mode='zero')
+        sites = pd.DataFrame({'chrom': ['chr1'], 'pos': [10000]}, index=['site'])
+        with pytest.raises(ValueError, match='not supported in default mode'):
+            hapmixqtl.map_multiallelic(np.zeros((1, 100, 2), int), sites, d['A_df'].columns,
+                                       d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'], d['pos_df'])
+
 
 # ---------------------------------------------------------------------------
 #  cis/trans diagnostic (sec 7c)
@@ -1664,6 +1676,88 @@ class TestKeepFrameValidation:
         A, keep = self._frames()
         with pytest.raises(ValueError, match='rows'):
             _assert_keep_frames(keep.loc[['g2', 'g1', 'g3']], None, A)
+
+
+class TestInputContract:
+    """Every case was accepted silently before 2026-10-01, most changing the
+    lead or dropping a channel (implementation_audit_20260914 sec 1-2)."""
+
+    @staticmethod
+    def _corrupt(d, case):
+        if case in ('A', 'T', 'Va', 'Vt'):
+            d[f'{case}_df'].iloc[0, 0] = np.nan
+        elif case == 'negative_Va':
+            d['Va_df'].iloc[0, 0] = -1.0
+        elif case == 'Va_columns_reordered':
+            d['Va_df'] = d['Va_df'].iloc[:, ::-1].copy()
+        elif case == 'phase_rows_reordered':
+            d['xL_df'] = d['xL_df'].iloc[::-1].copy()
+            d['xR_df'] = d['xR_df'].iloc[::-1].copy()
+        elif case == 'one_phase_frame':
+            d['xR_df'] = None
+        elif case == 'phase_nan':
+            d['xL_df'].iloc[0, 0] = np.nan
+        elif case == 'duplicated_covariate':
+            c = np.random.RandomState(42).normal(size=d['A_df'].shape[1])
+            d['cov'] = pd.DataFrame({'c': c, 'same_c': c}, index=d['A_df'].columns)
+        return d
+
+    @pytest.mark.parametrize('case, match', [
+        ('A', 'A_df has 1 missing'), ('T', 'T_df has 1 missing'),
+        ('Va', 'Va_df has 1 missing'), ('Vt', 'Vt_df has 1 missing'),
+        ('negative_Va', 'Va_df has 1 missing, non-finite or negative'),
+        ('Va_columns_reordered', 'Va_df columns'),
+        ('phase_rows_reordered', 'xL_df rows'),
+        ('one_phase_frame', 'both phase frames'),
+        ('phase_nan', 'xL_df has missing'),
+        ('duplicated_covariate', 'rank 2 of 3'),
+    ])
+    def test_invalid_input_raises(self, case, match):
+        d = self._corrupt(_make_dataset(seed=100), case)
+        with pytest.raises(ValueError, match=match):
+            map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                    d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                    xR_df=d['xR_df'], covariates_df=d.get('cov'), nperm=20,
+                    seed=42, verbose=False)
+
+    def test_zero_weights_that_make_a_covariate_constant_raise(self):
+        """Full rank over all donors, but the indicator is 1 on every donor
+        that carries weight, so it duplicates the intercept there."""
+        rng = np.random.RandomState(42)
+        ind = (np.arange(20) < 15).astype(float)
+        C = torch.tensor(np.column_stack([rng.normal(size=20), ind]))
+        WeightedResidualizer(C, torch.ones(20, dtype=torch.float64))
+        with pytest.raises(ValueError, match='1 of 3 columns dependent'):
+            WeightedResidualizer(C, torch.tensor(ind))
+
+
+class TestLeadInfluence:
+
+    def test_names_the_dominant_donor_and_matches_its_exclusion(self, temp_dir):
+        """A null gene with one heterozygote's record dominating the allelic
+        channel: map_cis must name that donor, and loo_pval_nominal must equal
+        map_nominal's p at the same lead with that donor excluded by mask."""
+        d = _make_dataset(seed=100)
+        keep = [d['A_df'].index[1]]
+        for k in ('A_df', 'T_df', 'Va_df', 'Vt_df', 'pos_df'):
+            d[k] = d[k].loc[keep].copy()
+        s = d['xL_df'].iloc[5] - d['xR_df'].iloc[5]
+        donor = s.index[s != 0][0]
+        d['A_df'].loc[keep[0], donor] = np.float32(6.0 * s[donor])
+        d['Va_df'].loc[keep[0], donor] = np.float32(1e-3)
+        args = (d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                d['Va_df'], d['Vt_df'], d['pos_df'])
+        row = map_cis(*args, xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=100,
+                      seed=42, verbose=False).iloc[0]
+        assert row['loo_donor'] == donor
+        assert row['loo_pval_nominal'] > 10 * row['pval_nominal']
+        mask = pd.DataFrame(True, index=d['A_df'].index, columns=d['A_df'].columns)
+        mask[donor] = False
+        map_nominal(*args, xL_df=d['xL_df'], xR_df=d['xR_df'], prefix='loo',
+                    output_dir=temp_dir, verbose=False, keep_a_df=mask, keep_t_df=mask)
+        pairs = pd.read_parquet(Path(temp_dir) / 'loo.hapmixqtl_pairs.chr1.parquet')
+        ref = pairs.loc[pairs['variant_id'] == row['variant_id'], 'pval_nominal'].iloc[0]
+        assert np.isclose(row['loo_pval_nominal'], ref, rtol=1e-4)
 
 
 class TestCountCutoffsEndToEnd:

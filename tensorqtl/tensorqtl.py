@@ -18,10 +18,11 @@ import genotypeio, cis, trans, susie, nbqtl, hapmixqtl
 
 # hapmixQTL association default: admitted Gibbs ASE weights and unit total
 # working weights on half-read expression; --se_mode supplies fitted residual
-# scales with tau_mode='zero'. The separate map_susie path has no se_mode. Fixed rather than
-# exposed, because the alternatives are deprecated: fitting a variance function
-# from a gene's own residuals, or asserting the draws are the whole error
-# variance, both live in tensorqtl/fitted_variance.py now.
+# scales with tau_mode='zero'. Fixed rather than exposed, because the
+# alternatives are deprecated: fitting a variance function from a gene's own
+# residuals, or asserting the draws are the whole error variance, both live in
+# tensorqtl/fitted_variance.py now. hapmixQTL fine-mapping (map_susie) has no
+# fitted scale and is not offered here (2026-10-01).
 HAPMIX_TAU_MODE = 'zero'
 
 
@@ -31,7 +32,7 @@ def build_parser():
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
     parser.add_argument('prefix', help='Prefix for output file names')
-    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl', 'hapmixqtl_susie'],
+    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl'],
                         help='Mapping mode. Default: cis')
     parser.add_argument('--covariates', default=None, help='Covariates file, tab-delimited (covariates x samples)')
     parser.add_argument('--paired_covariate', default=None, help='Single phenotype-specific covariate, tab-delimited (phenotypes x samples)')
@@ -88,8 +89,7 @@ def build_parser():
                              'together with the fixed tau_mode=\'zero\' weighting this is '
                              'Var(eps_i) = sigma^2 v_i. \'robust\' is the HC1 sandwich, for '
                              'map_nominal only. The known-variance form is DEPRECATED and no '
-                             'longer selectable here (tensorqtl/fitted_variance.py). This option is '
-                             'not passed to the separate hapmixqtl_susie path.')
+                             'longer selectable here (tensorqtl/fitted_variance.py).')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
     return parser
 
@@ -498,27 +498,6 @@ def main():
             calculate_qvalues(res_df, fdr=args.fdr, qvalue_lambda=args.qvalue_lambda, logger=logger)
         out_file = os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl.txt.gz')
         res_df.to_csv(out_file, sep='\t', float_format='%.6g')
-
-    elif args.mode == 'hapmixqtl_susie':
-        xL_df, xR_df = None, None
-        if args.phase_xL is not None and args.phase_xR is not None:
-            logger.write(f'  * reading phase genotypes')
-            xL_df = pd.read_csv(args.phase_xL, sep='\t', index_col=0)
-            xR_df = pd.read_csv(args.phase_xR, sep='\t', index_col=0)
-
-        summary_df, res = hapmixqtl.map_susie(
-            genotype_df, variant_df, hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df,
-            phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-            covariates_df=covariates_df, maf_threshold=maf_threshold,
-            L=args.max_effects, tau_mode=HAPMIX_TAU_MODE,
-            max_iter=500, window=args.window, summary_only=False,
-            logger=logger, verbose=True,
-            ase_covariates_df=ase_covariates,
-        )
-        logger.write('  * writing output')
-        summary_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl_SuSiE_summary.parquet'))
-        with open(os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl_SuSiE.pickle'), 'wb') as f:
-            pickle.dump(res, f)
 
     logger.write(f'[{datetime.now().strftime("%b %d %H:%M:%S")}] Finished mapping')
 

@@ -130,6 +130,49 @@ def _assert_phase_columns(xL_df, xR_df, genotype_df):
                 f'({len(df.columns)} vs {len(genotype_df.columns)} samples).')
 
 
+def _validate_inputs(genotype_df, A_df, T_df, Va_df, Vt_df, xL_df=None, xR_df=None):
+    """The input contract of map_nominal and map_cis, which read every frame
+    positionally after this point. Without it (implementation_audit_20260914,
+    sec 1, re-run on the default mode 2026-10-01) a NaN in A or T silently
+    dropped that channel and moved the lead, a negative or NaN Va was read as
+    "no information", Va columns or phase rows in another order were accepted
+    and changed the result, and one phase frame alone ran a total-only
+    analysis. prepare_default_inputs never produces any of these: A and T are
+    finite by construction and an excluded donor-gene pair has Va = 0."""
+    for name, df in (('A_df', A_df), ('T_df', T_df), ('Va_df', Va_df), ('Vt_df', Vt_df)):
+        if not df.columns.equals(A_df.columns):
+            raise ValueError(f'{name} columns (samples) differ from A_df columns in identity or order.')
+        if not df.index.equals(A_df.index):
+            raise ValueError(f'{name} rows (phenotypes) differ from A_df rows in identity or order.')
+        values = df.to_numpy(dtype=float)
+        bad = ~np.isfinite(values)
+        if name in ('Va_df', 'Vt_df'):
+            bad |= values < 0
+        if bad.any():
+            i, j = np.argwhere(bad)[0]
+            raise ValueError(
+                f'{name} has {int(bad.sum())} missing, non-finite'
+                f'{" or negative" if name in ("Va_df", "Vt_df") else ""} values '
+                f'(first: phenotype {df.index[i]}, sample {df.columns[j]}).'
+                + (' An excluded donor-gene pair is Va = 0 with a finite A, as '
+                   'prepare_default_inputs writes it.' if name in ('A_df', 'Va_df') else ''))
+    for what, ids in (('phenotype', A_df.index), ('sample', A_df.columns), ('variant', genotype_df.index)):
+        if ids.has_duplicates:
+            raise ValueError(f'duplicate {what} ids, e.g. {ids[ids.duplicated()][0]}')
+    if (xL_df is None) != (xR_df is None):
+        raise ValueError('pass both phase frames (xL_df and xR_df) or neither; one alone '
+                         'would silently run a total-only analysis.')
+    if xL_df is None:
+        return
+    _assert_phase_columns(xL_df, xR_df, genotype_df)
+    for name, df in (('xL_df', xL_df), ('xR_df', xR_df)):
+        if not df.index.equals(genotype_df.index):
+            raise ValueError(f'{name} rows (variants) differ from genotype_df rows in identity or '
+                             'order; phase is read by genotype row position.')
+        if not np.isfinite(df.to_numpy(dtype=float)).all():
+            raise ValueError(f'{name} has missing or non-finite phase values.')
+
+
 def _zero_degenerate_ase_weights(sqrt_wa_t, va_t, eps=1e-12):
     """Zero the ASE weight of samples carrying NO allele-specific information.
 
@@ -530,24 +573,41 @@ def _combine_covariates(covariates_df, genotype_covariates_df, samples, logger=N
     the permutation, where the genotype-tied columns stay with the genotypes
     (user rule, 2026-09-25). Returns the combined frame (or None) and the
     number of genotype-tied columns.
+
+    Rejects a design that is not finite or not of full column rank together
+    with the total channel's intercept: a QR of a deficient design returns a
+    basis direction the covariates do not span, which changes the projection
+    (L2 1.18 on a duplicated covariate; implementation_audit_20260914 sec 2)
+    and charges a degree of freedom for it.
     """
-    if genotype_covariates_df is None:
-        return covariates_df, 0
-    if not np.all(np.asarray(samples) == np.asarray(genotype_covariates_df.index)):
-        raise ValueError('genotype-covariate samples must match phenotype samples, in order')
-    if covariates_df is not None:
-        if not np.all(np.asarray(samples) == np.asarray(covariates_df.index)):
-            raise ValueError('covariate samples must match phenotype samples, in order')
-        clash = set(covariates_df.columns) & set(genotype_covariates_df.columns)
-        if clash:
-            raise ValueError(f'columns in both covariate frames: {sorted(clash)}')
-        combined = pd.concat([covariates_df, genotype_covariates_df], axis=1)
-    else:
-        combined = genotype_covariates_df.copy()
-    if logger is not None:
-        logger.write(f'  * {genotype_covariates_df.shape[1]} covariates tied to the genotypes '
-                     f'(stay with them under permutation): {list(genotype_covariates_df.columns)}')
-    return combined, int(genotype_covariates_df.shape[1])
+    n_genotype = 0
+    combined = covariates_df
+    if genotype_covariates_df is not None:
+        if not np.all(np.asarray(samples) == np.asarray(genotype_covariates_df.index)):
+            raise ValueError('genotype-covariate samples must match phenotype samples, in order')
+        if covariates_df is not None:
+            if not np.all(np.asarray(samples) == np.asarray(covariates_df.index)):
+                raise ValueError('covariate samples must match phenotype samples, in order')
+            clash = set(covariates_df.columns) & set(genotype_covariates_df.columns)
+            if clash:
+                raise ValueError(f'columns in both covariate frames: {sorted(clash)}')
+            combined = pd.concat([covariates_df, genotype_covariates_df], axis=1)
+        else:
+            combined = genotype_covariates_df.copy()
+        n_genotype = int(genotype_covariates_df.shape[1])
+        if logger is not None:
+            logger.write(f'  * {n_genotype} covariates tied to the genotypes '
+                         f'(stay with them under permutation): {list(genotype_covariates_df.columns)}')
+    if combined is not None:
+        design = np.column_stack([np.ones(len(combined)), combined.to_numpy(dtype=float)])
+        if not np.isfinite(design).all():
+            raise ValueError('covariates contain missing or non-finite values')
+        rank = int(np.linalg.matrix_rank(design))
+        if rank < design.shape[1]:
+            raise ValueError(
+                f'the covariate design (intercept plus {combined.shape[1]} covariates) has rank '
+                f'{rank} of {design.shape[1]}: drop a duplicated, constant or collinear column')
+    return combined, n_genotype
 
 
 def count_cutoff_masks(yL, yR, yT=None, asc_cutoff=None, asc_cap=None,
@@ -713,7 +773,21 @@ class WeightedResidualizer:
         self.n_fixed_cov = 0
         self.sqrt_w_t = sqrt_w_t
         if design.shape[1] > 0 and bool((sqrt_w_t != 0).any()):
-            self.Q_t, _ = torch.linalg.qr(design)
+            # _combine_covariates rejects a deficient covariate matrix; zero
+            # weights can still make one gene's weighted design deficient (a
+            # categorical covariate constant over the donors that carry weight,
+            # under ase_covariates or count cutoffs). A QR would add a direction
+            # the design does not span, here and in every permutation. A column
+            # in the span of the ones before it leaves a diagonal entry of R
+            # at rounding level relative to its own norm (scale-free per column).
+            self.Q_t, R = torch.linalg.qr(design)
+            tol = max(design.shape) * torch.finfo(design.dtype).eps
+            dependent = R.diagonal().abs() <= tol * torch.linalg.vector_norm(design, dim=0)
+            if bool(dependent.any()):
+                raise ValueError(
+                    f'weighted design has {int(dependent.sum())} of {design.shape[1]} columns '
+                    f'dependent on the others over the {int((sqrt_w_t != 0).sum())} donors with '
+                    'nonzero weight; drop the covariate that is constant or collinear over them')
         else:
             # A switched-off channel (every weight zero; see _prepare_channels)
             # has nothing to project. The QR of an all-zero design returns
@@ -1489,7 +1563,7 @@ DEFAULT_PERM_SCHEME = 'records_signflip'
 
 
 def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix_t, chunk=None,
-                                flip_t=None):
+                                flip_t=None, mask_t=None):
     """One channel's permutation statistics under the donor-record permutation.
 
     For each row s of ``permutation_ix_t`` [nperm, N], donor i receives donor
@@ -1518,6 +1592,10 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
     columns and the genotype-covariate rows together by the inverse
     permutation, with the records and their covariates fixed.
 
+    ``mask_t`` [nperm, N] of 0/1 multiplies the weight placed at each
+    position (each row a resample); _lead_influence passes the identity order
+    with one donor zeroed per row. None for the permutations.
+
     Returns xy [V, nperm], xx [V, nperm] (the denominator changes with the
     permutation) and yy [nperm]. A through-origin channel with no nuisance
     columns (the default allelic design) needs no re-residualization and
@@ -1540,11 +1618,15 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
     if p == 0:
         wy = w * y_t
         wy_perm = wy[permutation_ix_t]
+        w_perm = w[permutation_ix_t]
+        yy_perm = (y_star * y_star)[permutation_ix_t]
         if flip_t is not None:
             wy_perm = wy_perm * flip_t
+        if mask_t is not None:
+            wy_perm, w_perm, yy_perm = wy_perm * mask_t, w_perm * mask_t, yy_perm * mask_t
         xy = torch.mm(x_t, wy_perm.t())
-        xx = torch.mm(x_t * x_t, w[permutation_ix_t].t())
-        yy = (y_star * y_star)[permutation_ix_t].sum(1)   # a sign swap leaves squares alone
+        xx = torch.mm(x_t * x_t, w_perm.t())
+        yy = yy_perm.sum(1)                       # a sign swap leaves squares alone
         return xy, xx, yy
     if chunk is None:
         chunk = int(max(8, min(256, 2e7 // max(V * N, 1))))
@@ -1562,6 +1644,8 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
         ix = permutation_ix_t[s0:s0 + chunk]
         K = ix.shape[0]
         sw = sqrt_w_t[ix]                                              # [K, N]
+        if mask_t is not None:
+            sw = sw * mask_t[s0:s0 + K]
         cols = []
         if intercept:
             cols.append(sw.unsqueeze(2))
@@ -1572,6 +1656,8 @@ def _record_permutation_channel(x_t, y_t, sqrt_w_t, residualizer, permutation_ix
         design = torch.cat(cols, 2)                                    # [K, N, p]
         Q, _ = torch.linalg.qr(design)                                 # [K, N, p]
         ys = y_star[ix]                                                # [K, N]
+        if mask_t is not None:
+            ys = ys * mask_t[s0:s0 + K]
         if flip_t is not None:
             ys = ys * flip_t[s0:s0 + K]                                # swap before projecting
 
@@ -1929,6 +2015,70 @@ def _combined_tstat2(xy_a, xx_a, yy_a, xy_t, xx_t, yy_t, dof,
     return out if len(out) > 1 else tstat2
 
 
+def _lead_influence(g_lead, s_lead, a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a,
+                    residualizer_t, min_allelic_donors):
+    """Leave-one-donor-out at a fixed lead in default mode, vectorized like
+    the record permutations: resample k is the identity order with donor k's
+    weight zeroed in both channels, so one _record_permutation_channel call
+    per channel gives every refit's dot products. Under tau_mode='zero' an
+    exclusion changes no other donor's weight, so this is the exact refit
+    (map_cis with that donor masked out). The per-channel dof, the
+    sparse-channel rule (_channel_weights) and the allelic admission floor
+    (_allelic_admitted) depend only on the channels the donor was informative
+    in, so _combined_tstat2 is applied once per such class. A donor with
+    leverage 1 in a channel's null design (the only donor of a covariate
+    level) leaves that design rank-deficient when excluded and is skipped.
+
+    Returns (index of the donor whose exclusion moves the combined |t|
+    furthest toward zero, that |t|, its Welch-Satterthwaite dof), or
+    (None, nan, nan) when no donor can be evaluated.
+    """
+    N = sqrt_wa_t.shape[0]
+    on_a, on_t = sqrt_wa_t != 0, sqrt_wt_t != 0
+    donors = (on_a | on_t).nonzero().flatten()
+    K = donors.numel()
+    order = torch.arange(N, device=a_t.device).expand(K, N)
+    mask = torch.ones((K, N), dtype=a_t.dtype, device=a_t.device)
+    mask[torch.arange(K, device=a_t.device), donors] = 0
+    xy_a, xx_a, yy_a = _record_permutation_channel(s_lead, a_t, sqrt_wa_t, residualizer_a,
+                                                   order, mask_t=mask)
+    xy_t, xx_t, yy_t = _record_permutation_channel(g_lead / 2, t_t, sqrt_wt_t, residualizer_t,
+                                                   order, mask_t=mask)
+    evaluable = torch.ones(K, dtype=torch.bool, device=a_t.device)
+    for res in (residualizer_a, residualizer_t):
+        if res.Q_t.shape[1]:
+            leverage = (res.Q_t * res.Q_t).sum(1)[donors]
+            evaluable &= leverage < 1 - N * torch.finfo(res.Q_t.dtype).eps
+    n_a, n_t = int(on_a.sum()), int(on_t.sum())
+    best = (None, float('nan'), float('nan'))
+    for in_a in (True, False):
+        for in_t in (True, False):
+            cls = ((on_a[donors] == in_a) & (on_t[donors] == in_t) & evaluable).nonzero().flatten()
+            if not cls.numel():
+                continue
+            # the refit's channels: the sparse-channel rule switches one off
+            # below its design's columns plus two, leaving no weight and dof < 1
+            na, nt = n_a - in_a, n_t - in_t
+            live_a = na >= _min_informative(residualizer_a.C_t, intercept=residualizer_a.intercept)
+            live_t = nt >= _min_informative(residualizer_t.C_t, intercept=residualizer_t.intercept)
+            dof_a = na - 1 - residualizer_a.Q_t.shape[1] if live_a else -1
+            dof_t = nt - 1 - residualizer_t.Q_t.shape[1] if live_t else -1
+            admitted = dof_a >= 1 if dof_t < 1 else (na if live_a else 0) >= min_allelic_donors
+            ch = [xy_a[:, cls], xx_a[:, cls], yy_a[cls], xy_t[:, cls], xx_t[:, cls], yy_t[cls]]
+            if not live_a:
+                ch[:3] = [torch.zeros_like(x) for x in ch[:3]]
+            if not live_t:
+                ch[3:] = [torch.zeros_like(x) for x in ch[3:]]
+            tstat2, dof_nom = _combined_tstat2(*ch, None, fitted=True, dof_a=max(dof_a, 1),
+                                               dof_t=max(dof_t, 1), allelic=admitted,
+                                               return_dof=True)
+            t_abs = torch.sqrt(tstat2[0].clamp(min=0))
+            j = int(t_abs.argmin())
+            if best[0] is None or float(t_abs[j]) < best[1]:
+                best = (int(donors[cls[j]]), float(t_abs[j]), float(dof_nom[0, j]))
+    return best
+
+
 def cis_trans_diagnostic(slope_a, se_a, slope_t, se_t, dof, dof_a=None, dof_t=None):
     """
     Per-variant test of the assumption the meta-analysis rests on: that the
@@ -2102,12 +2252,7 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     samples = A_df.columns
     N = len(samples)
-    assert A_df.columns.equals(T_df.columns), "Sample mismatch between A and T"
-    assert A_df.columns.equals(Va_df.columns), "Sample mismatch between A and Va"
-    assert A_df.columns.equals(Vt_df.columns), "Sample mismatch between A and Vt"
-    assert A_df.index.equals(T_df.index), "Phenotype mismatch between A and T"
-    assert A_df.index.equals(Va_df.index), "Phenotype mismatch between A and Va"
-    assert A_df.index.equals(Vt_df.index), "Phenotype mismatch between A and Vt"
+    _validate_inputs(genotype_df, A_df, T_df, Va_df, Vt_df, xL_df, xR_df)
 
     logger.write('hapmixQTL mapping: nominal associations for all variant-phenotype pairs')
     logger.write(f'  * {N} samples')
@@ -2130,11 +2275,6 @@ def map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     has_phase = xL_df is not None and xR_df is not None
     if has_phase:
         logger.write('  * phase genotypes available (ASE + total channels)')
-        assert (xL_df.index == genotype_df.index).all(), \
-            "xL variant IDs must match genotype variant IDs"
-        assert (xR_df.index == genotype_df.index).all(), \
-            "xR variant IDs must match genotype variant IDs"
-        _assert_phase_columns(xL_df, xR_df, genotype_df)
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
@@ -2467,6 +2607,15 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     combined slope should not be read as a cis log aFC (a trans component,
     mapping bias or phasing error attenuate it; docs sec 7c). It is a
     diagnostic column, not a filter.
+
+    In default mode ``loo_donor`` and ``loo_pval_nominal`` are a
+    leave-one-donor-out check at the lead: the donor whose exclusion from
+    both channels moves the lead's combined |t| furthest toward zero, and the
+    lead's nominal p without it. Diagnostic only: the lead is held fixed
+    (excluding the donor can move it) and pval_perm is not recomputed. All
+    refits run as one batch through the permutation machinery
+    (_lead_influence; about 8 ms per gene at 92 donors). A donor that alone
+    identifies a covariate level is not evaluated.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -2475,8 +2624,7 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
 
     samples = A_df.columns
     N = len(samples)
-    assert A_df.columns.equals(T_df.columns)
-    assert A_df.index.equals(T_df.index)
+    _validate_inputs(genotype_df, A_df, T_df, Va_df, Vt_df, xL_df, xR_df)
 
     logger.write('hapmixQTL mapping: empirical p-values for phenotypes')
     logger.write(f'  * {N} samples')
@@ -2505,7 +2653,6 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     has_phase = xL_df is not None and xR_df is not None
     if has_phase:
         logger.write('  * phase genotypes available (ASE + total channels)')
-        _assert_phase_columns(xL_df, xR_df, genotype_df)
     else:
         logger.write('  * no phase genotypes (total channel only)')
 
@@ -2676,6 +2823,20 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         alpha_cis, pval_cis_trans = cis_trans_diagnostic(
             lead_a, lead_a_se, lead_t, lead_t_se, dof, **ct_dof)
 
+        # Leave-one-donor-out at the fixed lead (default mode; _lead_influence).
+        # A diagnostic, not a filter: the lead is held fixed and pval_perm is
+        # not recomputed. One donor's allelic record carried CALM2's
+        # gene-level call (2026-09-25).
+        loo_donor, loo_pval = None, np.nan
+        if se_mode == 'fitted' and tau_mode == 'zero' and np.isfinite(lead_tstat):
+            i, loo_t, loo_dof = _lead_influence(
+                g_lead, s_lead, a_t, t_t, sqrt_wa_t, sqrt_wt_t, residualizer_a,
+                residualizer_tc, min_allelic_donors)
+            if i is not None:
+                loo_donor = samples[i]
+                if np.isfinite(loo_dof):
+                    loo_pval = float(get_t_pval(loo_t, loo_dof))
+
         variant_id = variant_df.index[var_ix]
         start_distance = variant_df['pos'].values[var_ix] - igc.phenotype_start[phenotype_id]
         end_distance = variant_df['pos'].values[var_ix] - igc.phenotype_end[phenotype_id]
@@ -2755,6 +2916,8 @@ def map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
             ('n_genotype_covariates', n_genotype_cov),
             ('dof_nominal', float(dof_nominal)),
             ('allelic_admitted', bool(lead_ref['allelic_admitted'])),
+            ('loo_donor', loo_donor),
+            ('loo_pval_nominal', loo_pval),
         ]), name=phenotype_id)
 
         if beta_approx and np.isfinite(pval_perm):
@@ -2852,14 +3015,15 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
     ``tensorqtl.susie.susie`` unchanged, so any improvement to the core SuSiE
     implementation is inherited automatically.
 
-    This is a separate legacy stacked-design path, not the association
-    mappers' fitted-SE calculation. It has no se_mode argument. Its direct
-    API defaults to tau_mode='estimate' and estimate_residual_variance=False
-    (fixed residual variance one); the CLI instead passes tau_mode='zero'.
-    Setting estimate_residual_variance=True fits one scalar dispersion.
-    Unit Vt supplied by half-read preparation is a working variance and does
-    not establish known unit error variance in this stack. Half-read nominal
-    and permutation validation does not establish credible-set calibration.
+    NOT SUPPORTED IN DEFAULT MODE (2026-10-01). This is a legacy
+    stacked-design path with no per-channel residual scale and no se_mode:
+    by default it treats the working variances as the entire error variance,
+    and estimate_residual_variance=True fits one scale shared by both
+    channels, whose fitted scales differ by a median factor of five (the
+    stacked arm of 2026-09-24 rejected at 0.128 at nominal 0.05). With
+    tau_mode='zero' either is uncalibrated, so tau_mode='zero' is refused; the
+    deprecated tau_mode='estimate' default remains for reproducing earlier
+    results. Credible sets and PIPs have not been validated under any mode.
 
     Args mirror ``susie.map``; hapmixQTL-specific inputs (A/T/Va/Vt and the
     optional phase matrices xL/xR) match ``map_cis``.
@@ -2871,6 +3035,10 @@ def map_susie(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
         the invalid ``'zero'`` setting (docs/ase_validation.md sec 7g) can be
         identified later; see ``fine_mapping_provenance``.
     """
+    if tau_mode == 'zero':
+        raise ValueError(
+            "map_susie is not supported in default mode: with tau_mode='zero' its "
+            'stacked design has no per-channel residual scale and is not calibrated.')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if logger is None:
@@ -3356,7 +3524,17 @@ def _second_pass(kind, n_sites, site_chrom, site_pos, site_samples,
                  library_factor=None, variance_prior=None):
     """Shared per-phenotype driver: whiten once per gene, call fit_site for
     every site in the cis window, collect its row dicts. ``variance_model``
-    and ``library_factor`` as in map_cis."""
+    and ``library_factor`` as in map_cis.
+
+    Not available in default mode: _joint_gls has no fitted residual scale,
+    so with tau_mode='zero' its standard errors take the Gibbs variance and
+    the unit total working variance as the entire error variance, the
+    withdrawn pairing _warn_tau_zero describes."""
+    if tau_mode == 'zero':
+        raise ValueError(
+            f'the {kind} second pass has known-variance standard errors only, which with '
+            "tau_mode='zero' (default mode) are not calibrated; it is not supported in "
+            'default mode. STR and multi-allelic rows can still enter map_cis as scan rows.')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if logger is None:
         logger = SimpleLogger()
@@ -3442,7 +3620,8 @@ def map_multiallelic(hap_alleles, site_df, site_samples, A_df, T_df, Va_df, Vt_d
                      library_factor=None, variance_prior=None):
     """
     Categorical (per-allele) cis-QTL test for multiallelic non-repeat sites:
-    the K-1 split-biallelic rows of a site fitted jointly.
+    the K-1 split-biallelic rows of a site fitted jointly. Known-variance
+    standard errors only, so not supported in default mode (_second_pass).
 
     Args:
         hap_alleles: [n_sites, n_samples, 2] int allele index per haplotype
@@ -3520,6 +3699,8 @@ def map_str_curvature(str_len, str_phased, str_df, site_samples, A_df, T_df, Va_
     """
     Linear + curvature cis-QTL model for STRs: per haplotype
     f(L) = b1 (L - c) + b2 (L - c)^2 in repeat units, c = cohort mean length.
+    Known-variance standard errors only, so not supported in default mode
+    (_second_pass).
 
     The linear-only fit (slope_lin) is the same model the lead scan applies
     to the STR's linear-in-length row and should reproduce its slope (up to

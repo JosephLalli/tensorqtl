@@ -184,7 +184,9 @@ class TestHapmixQTLDefaults:
         while a supplied Vt remains available for compatibility."""
         from tensorqtl.tensorqtl import build_parser
         parser = build_parser()
-        for mode in ('hapmixqtl_nominal', 'hapmixqtl', 'hapmixqtl_susie'):
+        with pytest.raises(SystemExit):     # fine-mapping removed 2026-10-01: no fitted scale
+            parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', 'hapmixqtl_susie'])
+        for mode in ('hapmixqtl_nominal', 'hapmixqtl'):
             args = parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', mode,
                                       '--hap_A', 'a.bed', '--hap_T', 't.bed',
                                       '--hap_Va', 'va.bed'])

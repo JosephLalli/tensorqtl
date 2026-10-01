@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
 """
+RETIRED 2026-10-01 as a driver; main() refuses to run. Its hapmixQTL arm is
+the pre-correction pipeline (natural-log phenotype from Gibbs posterior means,
+known-variance second pass). The comparison it made is superseded by the
+plasmode benchmark (scripts/plasmode/run_all.sh) and the held-out referee
+(scripts/referee_replication.py, referee_trecase.py, referee_score.py). The
+RASQUAL output parsers (RASQUAL_FIELDS, best_rasqual_row) remain importable.
+What follows is the driver's original description, kept as the record of
+what its results measured.
+
 Which pipeline would you deploy?  RASQUAL vs hapmixQTL, each at its best.
 
 THE QUESTION THIS ANSWERS
@@ -1589,6 +1598,8 @@ def write_table(r, path):
 
 
 def main(argv=None):
+    raise SystemExit('compare_pipelines.py is retired (2026-10-01); see the module docstring for '
+                     'what superseded it. Its RASQUAL output parsers remain importable.')
     ap = argparse.ArgumentParser()
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--vcf'); ap.add_argument('--genes')
