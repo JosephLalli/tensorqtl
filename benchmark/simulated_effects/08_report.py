@@ -56,13 +56,13 @@ LIMITS = 'section 6' if INTERPRETED else 'the limits section'   # where the page
 
 def arms_cov(root):
     """The covariate build a run's hapmixQTL, mixQTL and tensorQTL arms used, and how that is known: 03_run_arms.py's record in
-    run_arms_facts.json, or, for a run made before 03 recorded it, the build of the code of the date its arms ran."""
+    run_arms_facts.json, or, for a run made before 03 recorded it, the build of the code of the date that file was written."""
     facts = root / 'results' / 'run_arms_facts.json'
     rec = json.loads(facts.read_text()).get('covariates')
     if rec:
         return Path(rec), 'recorded by 03_run_arms.py'
     ran = datetime.datetime.fromtimestamp(facts.stat().st_mtime, datetime.timezone.utc)
-    return (C.COV if ran >= HALF_READ_SINCE else JOINT_COV), f'inferred from the date its arms ran, {ran.date()}'
+    return (C.COV if ran >= HALF_READ_SINCE else JOINT_COV), f'inferred from when 03_run_arms.py wrote its run_arms_facts.json, {ran.date()}'
 
 
 ARMS_COV, ARMS_COV_HOW = arms_cov(C.ROOT)
@@ -1541,10 +1541,11 @@ def interp_ranking():
         steps = 'between the two, Meier\'s correction was added' + ('' if SAME_COV else ' and the expression principal components moved to the half-read build')
     else:
         (m1, a1), (m2, a2) = ranking_step(SA, SR), ranking_step(SR, S)
-        steps = (f'of that, adding Meier\'s correction ({REF_RUN.parent.name}, whose channel statistics equal the committed run\'s) '
-                 f'moves power by at most {f(m1)} and the AUC by at most {f(a1)}, and the half-read expression principal components '
-                 f'(this run, whose allelic statistics equal that run\'s) by at most {f(m2)} and {f(a2)} '
-                 '(release_closure_20261001/earlier_runs_chain.log)')
+        steps = ('taken one step at a time, each figure its own largest change over arms and |beta|, so that the two need not '
+                 f'add up to the whole, adding Meier\'s correction ({REF_RUN.parent.name}, whose channel statistics equal the '
+                 f'committed run\'s) moves power by at most {f(m1)} and the AUC by at most {f(a1)}, and moving to the half-read '
+                 f'expression principal components (this run, whose allelic statistics equal that run\'s) by at most {f(m2)} and '
+                 f'{f(a2)} (release_closure_20261001/earlier_runs_chain.log)')
     g1 = one_df_gene()
     return f"""
 <p>At |beta| = 0.2 / 0.4 / 0.8 the AUC is {A_('split')} for split and {A_('plus_one')} for plus_one,
@@ -1565,7 +1566,9 @@ four hapmixQTL arms (section 3.7), while mixQTL, RASQUAL and TReCASE all leave t
 earlier version of this page called the hapmixQTL ranking power a lower bound in the comparison with the other
 methods. Since the commit hapmixQTL leaves it out as well (below the floor its combined statistic is the total
 channel's), and that exposure is gone. On the committed run, whose datasets are this run's, scored before and after the
-commit on the same covariates and without Meier's correction, power at 5% realized FDP went from {Pb('split')} to
+commit on the same covariates and without Meier's correction (every channel statistic identical in the two scorings, and the
+combined one wherever both admit the allelic channel; release_closure_20261001/earlier_runs_chain.log), power at 5% realized
+FDP went from {Pb('split')} to
 {Pa('split')} for split, {Pb('unit')} to {Pa('unit')} for unit, {Pb('plus_one')} to {Pa('plus_one')} for plus_one and
 {Pb('gibbs')} to {Pa('gibbs')} for gibbs at |beta| = 0.2 / 0.4 / 0.8: at most {f(dP)} in either direction, and the AUC by at
 most {f(dA)}. That change mixes the floor with the per-pair reference of every other gene (the ranking is by lead p), so it

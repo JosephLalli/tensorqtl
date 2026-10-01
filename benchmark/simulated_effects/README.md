@@ -82,15 +82,16 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   Check d reproduces those stored nulls with the covariates they were made with,
   `cov/log2cpm1_point_calibration_20260925` (`01_check_inputs.REPRO_COV`), not `common.COV`.
 - Which covariate build a run's arms used: `03_run_arms.py` records it in `run_arms_facts.json`
-  (`covariates`); for an output directory made before that record, 08 infers it from the date the arms ran
+  (`covariates`); for an output directory made before that record, 08 infers it from when 03 wrote that file
   (commit a2f4314, 2026-09-30, moved the expression PCs to the half-read build) and says so. The stored
   null runs, their re-run under 8a06803, the committed run (the joint models included) and the delivered
   runs `plasmode_meier_20260927` and `plasmode_lowcov_meier_20260927` were made with `cov/log2cpm1_point_calibration_20260925` and, except the
   delivered runs, before Meier's correction. The allelic channel takes no covariates, so a comparison across
   builds is like for like in the allelic channel only; 08 says so at each such comparison and lists in its
   limits section what would have to run to make each like for like. The chain the report relies on (identical
-  datasets; the Meier run's channel statistics equal the committed run's, and this code's allelic statistics
-  the Meier run's) is checked in `release_closure_20261001/earlier_runs_chain.log`.
+  datasets; the committed run's channel statistics the same before and after 8a06803; the Meier run's channel
+  statistics equal the committed run's, and this code's allelic statistics the Meier run's) is checked in
+  `release_closure_20261001/earlier_runs_chain.log`.
 
 Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
 `plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `SIMULATED_EFFECTS_ACCEPTANCE=1` before
