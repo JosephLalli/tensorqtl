@@ -192,9 +192,10 @@ as `stage_stranded_nowasp_20260928/` (`brainvar_hapmix_deploy/wasp_20260928/READ
 
 | report item | made by | from |
 |---|---|---|
-| Section 2 tables: Fano factors by band, recovery estimates | `08_report.py` `sec_run` | `checks/check_generator.json` |
+| Section 3, run facts and checks: Fano factors by band, recovery estimates, the input checks' outcomes | `08_report.py` `sec_run_facts` | `checks/check_generator.json` |
 | Section 2 conversion-of-effects table | `tab_conversion` | fixed text (the methods' definitions), no file |
-| Section 2 eigenMT paragraph: what sets M_eff, M_eff against the Beta shape2, eigenMT p against pval_beta | `sec_run` | `summary.json` `eigenmt` (06 `eigenmt_structure` on the genotypes, `eigenmt_vs_permutation` on the cis and nominal files) |
+| Section 2, how the results are scored: the definition of every section 3 statistic | `sec_scoring` | fixed text, no file |
+| Section 3, run facts and checks, eigenMT paragraph: what sets M_eff, M_eff against the Beta shape2, eigenMT p against pval_beta | `sec_run_facts` | `summary.json` `eigenmt` (06 `eigenmt_structure` on the genotypes, `eigenmt_vs_permutation` on the cis and nominal files) |
 | Table 3.1 AUC and power at 5% FDP, band tables | `tab_ranking`, `tab_bands` | `summary.json` `ranking` (06 `ranking`) |
 | Figure 1: A AUC, B power at 5% realized FDP, C BH power on the permutation p, D power at 5% realized FDP and E realized FDP of the BH calls, both on the eigenMT p | `fig_ranking`, `eigenmt_panels` | `summary.json` `ranking`, `gene_level`, `gene_level_eigenmt` (D from its `fdp_matched`) |
 | Table 3.2 gene-level BH power and null rates, permutation p and eigenMT p, with the power at 5% realized FDP under each eigenMT entry | `tab_gene_level` | `summary.json` `gene_level` (06 `gene_level` on 03's `cis_*.parquet`), `gene_level_eigenmt` (on the nominal files and 03's `eigenmt_m_eff.tsv`; `fdp_matched`) |
@@ -203,8 +204,8 @@ as `stage_stranded_nowasp_20260928/` (`brainvar_hapmix_deploy/wasp_20260928/READ
 | Table 3.5 lead recovery, band table; Figure 4 | `tab_lead`, `tab_bands`, `fig_lead` | `summary.json` `lead` (06 `lead_recovery`) |
 | Table 3.6 detection | `tab_detection` | `summary.json` `detection` (06 `detection`) |
 | Tables 3.7 null rates and the anchor | `tab_null`, `tab_anchor` | `summary.json` `null`, `anchor` (06 `null_calibration`, `anchor`); `allelic_df_fix_20260927` draws |
-| Tables 3.8 mixQTL ladder | `sec_ladder` | `ladder/ladder.json` (07) |
-| Section 3.9 (deep set) / 3.8 (low-coverage set), native-input arms: inputs, admitted donors, ranking, calibration, recovered share, TReCASE's component tests | `sec_native` | `ROOT/native/facts.json`, `ROOT/native/results_trecase/summary.json`, the native counts' `facts.json`, `summary.json` `native_arms`, `trecase_parts`, `trecase_components`, `trecase_native_components` |
+| Tables 3.8 mixQTL ladder (its design in section 2) | `sec_ladder`, `ladder_method` | `ladder/ladder.json` (07) |
+| Section 3.9 (deep set) / 3.8 (low-coverage set), native-input arms: inputs, admitted donors, ranking, calibration, recovered share, TReCASE's component tests (their design in section 2, their limits in section 6) | `sec_native`, `native_method`, `native_limits` | `ROOT/native/facts.json`, `ROOT/native/results_trecase/summary.json`, the native counts' `facts.json`, `summary.json` `native_arms`, `trecase_parts`, `trecase_components`, `trecase_native_components` |
 | Section 6, the smoke run's largest theta gradient | `sec_limits` | `plasmode_20260926/results_trecase_asseq/smoke/summary.json` |
 | Stratum page: head, section 1 and "The low-coverage set against the deep set" with contrast figures A-C | `stratum_facts`, `sec_head`, `sec_why`, `sec_contrast`, `fig_contrast_calibration`, `fig_contrast_precision`, `fig_contrast_ranking` | `summary.json`, `plasmode_20260926/summary.json`, the gene directory's `select_stratum_genes.log` and `pool_stratum.tsv`, `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json`, `plasmode_stratum30_100_20260927/run_arms.log` |
 
