@@ -118,7 +118,7 @@ themselves.
 - `scripts/compare_pipelines.py`, the RASQUAL comparison on the pre-correction
   pipeline, was removed on 2026-10-01 and archived with its SHA256 in
   `retired_scripts_20261001/` (README there). Its comparison is now made by
-  the plasmode benchmark and the held-out referee.
+  the simulated-effects benchmark and the held-out referee.
 - The dated analysis scripts keep the pre-correction path on purpose. The
   mixQTL driver's `load_inputs` is the pre-correction loader and stays
   unchanged because dated scripts import it (46 when counted on 2026-09-25).
@@ -624,7 +624,7 @@ correction. User decision 2026-09-27: the candidates were Gibbs variance in
 both channels, split and 1/(v+1); unit weights stayed as the reference of the
 efficiency ratios only.
 
-**Known-effect evidence, 2026-09-27.** The benchmark now in `benchmark/plasmode/`
+**Known-effect evidence, 2026-09-27.** The benchmark now in `benchmark/simulated_effects/`
 (its `README.md`) builds datasets with simulated cis effects from the cohort's
 own Salmon output and scores the four weightings (Gibbs in both channels;
 split; unit; 1/(v+1)) beside mixQTL mode, total-only tensorQTL, RASQUAL and
@@ -640,14 +640,14 @@ allelic floor and Meier's correction) with the `log2(CPM + 1)` total and PCs:
 - `plasmode_lowcov_meier_20260927/report/plasmode_report.html`, the
   low-coverage set (100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100), each with at least 15 admitted
-  allelic donors; `benchmark/plasmode/select_stratum_genes.py`), set against
+  allelic donors; `benchmark/simulated_effects/select_stratum_genes.py`), set against
   the deep set in its section "The low-coverage set against the deep set".
   That section states the benchmark's limit at this depth, from the test of
   the thinning rule against Salmon itself
   (`salmon_half_depth_20260927/salmon_half_depth.html`).
 
 Since 2026-09-28 both pages also carry TReCASE and split weighting on
-alignment-based counts from the same BAMs (`benchmark/plasmode/README.md`,
+alignment-based counts from the same BAMs (`benchmark/simulated_effects/README.md`,
 "Native-input arms"); they were rescored on 2026-09-29 on the WASP-filtered
 counts, at the same paths.
 
@@ -661,7 +661,7 @@ scores allelic-led and total-led leads separately. The one-page summary of
 both kinds of evidence is `benchmark_summary_20260929/summary.html`.
 
 **Effect-size evidence, 2026-09-29.** `beta_shortfall_20260929/beta_shortfall.html`
-explains why every weighting's plasmode slope falls short of the simulated
+explains why every weighting's slope in the simulated-effects benchmark falls short of the simulated
 effect. For this decision it adds that Gibbs `1/v` weights in the allelic
 channel (Gibbs in both channels and split) pull the allelic slope toward zero
 under a true effect, while unit weights do not; its section "What it means for

@@ -1,4 +1,4 @@
-# Plasmode cis-eQTL benchmark (benchmark/plasmode)
+# Simulated-effects cis-eQTL benchmark (benchmark/simulated_effects)
 
 > **Historical benchmark labels.** `split` is this pipeline's dated
 > `log2(CPM+1)` arm and `gibbs (shipped)` means shipped at that record's date.
@@ -37,7 +37,7 @@ command-line options; `select_stratum_genes.py` made the 30-100-read gene set on
 predate Meier's correction and the tensorqtl arm, so it is a refactoring check that needs references made by the
 same statistics.
 
-The benchmark is standalone (2026-10-01): it moved from `scripts/plasmode` to `benchmark/plasmode` (commit e68865d),
+The benchmark is standalone (2026-10-01): it moved from `scripts/plasmode` to `benchmark/simulated_effects` (commit e68865d),
 and `common.py` carries its own copies of the loader and helpers it used to import from `scripts/` (commit 938d28c;
 its section "Inputs and helpers this benchmark carries itself" names each source). `05b_native_arms.py` runs a
 byte-identical copy of `scripts/edger_library_normalization.R` kept here. The only repository code it imports is the
@@ -61,7 +61,7 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   (the arms scored before that commit; a record the report compares against, not regenerable) and
   `plasmode_20260926/results_trecase_asseq/smoke/summary.json` (the TReCASE smoke run whose largest theta
   gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
-  stops every script at import. `PLASMODE_GENE_SET` in the environment selects the entry.
+  stops every script at import. `SIMULATED_EFFECTS_GENE_SET` in the environment selects the entry.
 - `stratum30_100`: the 30-100-read gene set, 100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100) with at least 15 admitted allelic donors, drawn once by
   `select_stratum_genes.py` into `plasmode_stratum30_100_20260927/gene_set` (with its log and
@@ -79,10 +79,10 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   `cov/log2cpm1_point_calibration_20260925` (`01_check_inputs.REPRO_COV`), not `common.COV`.
 
 Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
-`plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `PLASMODE_ACCEPTANCE=1` before
+`plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `SIMULATED_EFFECTS_ACCEPTANCE=1` before
 importing `common`, which makes `common.ROOT` the gene set's `acceptance_root` (`plasmode2_acceptance_20260927`,
 `plasmode2_stratum_acceptance_20260927`) for it and every step it runs, so the acceptance never writes into those two.
-Outside the acceptance, `PLASMODE_ROOT` in the environment sends every output to that directory instead (a fresh run to
+Outside the acceptance, `SIMULATED_EFFECTS_ROOT` in the environment sends every output to that directory instead (a fresh run to
 compare against a delivered one).
 
 ## Generator (02_make_datasets.py)
@@ -145,7 +145,7 @@ total has variance below asSeq's `converge`, which asSeq refuses, is not run and
 the Salmon datasets' count-scale truths, which depend on the causal genotypes and beta only (no pipeline-scale truth for
 these arms). The Salmon-input TReCASE arm carries hapmixQTL's zero-haplotype rule (`05_run_trecase.allelic_counts`,
 `common.allelic_kept`) and the native arms do not; 08 gives both inputs' informative pair counts, the admitted Salmon count
-and the median allele-specific depth from `facts.json`. asSeq runs `PLASMODE_NATIVE_JOBS` processes (environment; default
+and the median allele-specific depth from `facts.json`. asSeq runs `SIMULATED_EFFECTS_NATIVE_JOBS` processes (environment; default
 15, which with the driver is run_all.sh's cap of 16; the 2026-09-28 runs used 44 under a one-off allowance of 48). Outputs
 under `ROOT/native/` (`edger/`, `datasets/`, `results/`, `results_trecase/`, `trecase_work/`, `facts.json`); 06 scores them
 (`native_arms` and `trecase_parts` in `summary.json`), 08 adds them to the section 3 tables and figures and a subsection.
@@ -167,7 +167,7 @@ processes (~100 s of each Python step is loading the cache):
 | 3 | `03_run_arms.py` | `results/<scenario>/<arm>/nominal_*.parquet`, `cis_*.parquet` (every arm of 03), `mixqtl_permutation.json`, `run_arms_facts.json`, `eigenmt_m_eff.tsv` | 15-16 min (GPU 1 and 10 CPU worker processes; set by mixQTL's permutation scan, 240-520 s per dataset per arm; 2026-09-27, load 25-100) |
 | 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver) |
 | 5 | `05_run_trecase.py` + `run_trecase.R` | `results_trecase/.../nominal_*.parquet`, `summary.json`; inputs, asSeq files and trace logs under `trecase_work/` | ~15 process-h per dataset; 7 jobs (each budgeted as two processes; `Rscript` execs into `R`, so one is live per job) |
-| 5b | `05b_native_arms.py` | `native/`: native datasets, `split_native` and `trecase_native` results, `facts.json` | loading, datasets and split_native about 6 min (GPU 0, 18-20 s per dataset); asSeq on `PLASMODE_NATIVE_JOBS` processes (default 15), measured on 44: 46.1 min (deep set, 27.5 process-h against 134.4 for the Salmon inputs) and 42.4 min (low-coverage set, 25.1 against 33.3); 2026-09-28, load 50-70 |
+| 5b | `05b_native_arms.py` | `native/`: native datasets, `split_native` and `trecase_native` results, `facts.json` | loading, datasets and split_native about 6 min (GPU 0, 18-20 s per dataset); asSeq on `SIMULATED_EFFECTS_NATIVE_JOBS` processes (default 15), measured on 44: 46.1 min (deep set, 27.5 process-h against 134.4 for the Salmon inputs) and 42.4 min (low-coverage set, 25.1 against 33.3); 2026-09-28, load 50-70 |
 | 6 | `06_score.py` | `summary.json` | 4 min |
 | 7 | `07_mixqtl_ladder.py` | `ladder/ladder.json`, `total_channel_units.tsv`, rung files (a printed skip for a gene set without a ladder) | 3-4 min |
 | 8 | `08_report.py` | `report/plasmode_report.html` and four PNG figures; stops if any of its 26 fixed comparative sentences (`check_claims`) no longer holds on the summary | 0.3 min |

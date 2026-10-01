@@ -1,4 +1,4 @@
-"""Where the combined slope's shortfall from the simulated effect comes from, per plasmode gene set, hapmixQTL arm, effect size
+"""Where the combined slope's shortfall from the simulated effect comes from, per simulated-effects gene set, hapmixQTL arm, effect size
 and read band, from the stored causal-variant results alone (no refit).
 
 Per causal unit (dataset, non-null gene, at its causal variant) the combined slope is the inverse-variance combination of
@@ -14,7 +14,7 @@ log2 total fold on dosage / 2), the shortfall 1 - slope / beta is the exact sum 
 Each part divides by beta only. Means over units per band, with the gene-clustered interval of 06_score.py (same
 resampling indices, so the combined mean and interval equal summary.json's recovery bias_count exactly).
 
-  PLASMODE_GENE_SET=<set> python3 scripts/beta_shortfall_budget.py   # writes OUT/budget_<set>.json
+  SIMULATED_EFFECTS_GENE_SET=<set> python3 scripts/beta_shortfall_budget.py   # writes OUT/budget_<set>.json
 """
 import json
 import sys
@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C          # noqa: E402
 
 S6 = C.module('06_score')

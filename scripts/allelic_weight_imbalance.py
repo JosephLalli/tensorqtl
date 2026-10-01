@@ -14,7 +14,7 @@ formula). Per gene, Spearman correlation across its admitted heterozygotes betwe
 ratio in the effect's direction (sign(beta) (xL - xR) a; with no effect, (xL - xR) a); mean over genes with the
 gene-clustered interval. C: the same with weights from each record before the effect was simulated.
 
-  [PLASMODE_GENE_SET=stratum30_100] python3 scripts/allelic_weight_imbalance.py   # writes OUT/imbalance_<set>.json
+  [SIMULATED_EFFECTS_GENE_SET=stratum30_100] python3 scripts/allelic_weight_imbalance.py   # writes OUT/imbalance_<set>.json
 """
 import sys
 from pathlib import Path
@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C          # noqa: E402
 
 G2 = C.module('02_make_datasets')

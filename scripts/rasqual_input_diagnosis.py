@@ -1,7 +1,7 @@
-"""RASQUAL input diagnosis on the deep plasmode set (task of 2026-09-28): is RASQUAL's weak gene ranking there its
+"""RASQUAL input diagnosis on the simulated-effects benchmark's deep set (task of 2026-09-28): is RASQUAL's weak gene ranking there its
 total-count model on our Salmon totals, or the pseudo feature SNP's estimated error rate delta?
 
-Two variants of the committed RASQUAL arm (benchmark/plasmode/04_run_rasqual.py), each 04's command with ONE flag added
+Two variants of the committed RASQUAL arm (benchmark/simulated_effects/04_run_rasqual.py), each 04's command with ONE flag added
 and everything else identical (the same VCF text, pseudo feature SNP included, and Y / K / X binaries checked byte for
 byte against the committed arm's):
   population_only  --population-only: main.c:216 sets ASE = 0, main.c:516 then admits no feature SNP, so the allelic
@@ -10,7 +10,7 @@ byte against the committed arm's):
   fix_delta        --fix-delta: the full model with the sequencing / mapping error rate delta fixed at 0.01 (usage.c;
                    nbem.c:622, the mode (ad - 1) / (ad + bd - 2) of its Beta(1.01, 1.99) prior), RASQUAL's documented
                    fixed value; it has no option that fixes delta at zero.
-Datasets RUNS of the deep set (common.ROOT, PLASMODE_GENE_SET unset). Per gene a raw checkpoint (a gene whose raw file
+Datasets RUNS of the deep set (common.ROOT, SIMULATED_EFFECTS_GENE_SET unset). Per gene a raw checkpoint (a gene whose raw file
 exists is not rerun); assembled with 04's assemble (converged tested rows; pseudo row, non-converged and absent rows
 counted).
 
@@ -45,7 +45,7 @@ import pandas as pd
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt   # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C                # noqa: E402
 
 M4 = C.module('04_run_rasqual')

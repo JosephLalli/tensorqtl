@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-page summary with charts of the eQTL method benchmark: plasmode power and null calibration (both gene sets),
+"""One-page summary with charts of the eQTL method benchmark: simulated-effects power and null calibration (both gene sets),
 held-out replication (referee), and the native-count rebuild. Every number is read from the result files below and
 embedded as JSON into benchmark_summary_template.html; the page draws its charts from that JSON.
 
@@ -16,7 +16,7 @@ SETS = {'deep': D / 'plasmode_meier_20260927', 'lowcov': D / 'plasmode_lowcov_me
 GENES = {'deep': D / 'corrected_null_store_20260925' / 'genes.txt',
          'lowcov': D / 'plasmode_stratum30_100_20260927' / 'gene_set' / 'genes.txt'}
 REF = D / 'referee_replication_20260928'
-STAGES = {  # the native counts' three builds: plasmode summary, native-count directory, reference-share facts
+STAGES = {  # the native counts' three builds: simulated-effects summary, native-count directory, reference-share facts
     'before': dict(summary='native_unstranded_20260928/summary_before_stranded.json', counts=D / 'native_counts_20260928',
                    ref_share=(REF / 'facts.json', 'native_reference_share')),
     'stranded': dict(summary='stage_stranded_nowasp_20260928/summary.json', counts=D / 'native_counts_stranded_20260928',

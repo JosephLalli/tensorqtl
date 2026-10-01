@@ -5,7 +5,7 @@
 > simulator and benchmark driver pinned to commit `ac11b79`, and the user
 > decided the same day not to build it (rerunning or emulating Salmon per
 > dataset was judged too slow); the known-effect benchmark that exists instead
-> is the plasmode benchmark, `benchmark/plasmode/README.md` (donor records
+> is the simulated-effects benchmark, `benchmark/simulated_effects/README.md` (donor records
 > permuted against fixed genotypes with a random L/R swap, simulated cis
 > effects injected by binomial thinning of the haplotype carrying the
 > lower-expressed allele), whose delivered pages under

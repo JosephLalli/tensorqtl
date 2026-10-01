@@ -49,7 +49,7 @@ pip install -e .                                # replaces any upstream tensorqt
 python3 -c "import tensorqtl.hapmixqtl, tensorqtl.mixqtl_replication"
 ```
 
-The Salmon runner, `scripts/build_covariates.py`, the mixQTL driver and the plasmode benchmark put this repository first on `sys.path`, so they use this checkout even when an upstream copy is installed.
+The Salmon runner, `scripts/build_covariates.py`, the mixQTL driver and the simulated-effects benchmark put this repository first on `sys.path`, so they use this checkout even when an upstream copy is installed.
 
 Requirements beyond the Python packages in `pyproject.toml`:
 
@@ -206,11 +206,11 @@ The current list of what is validated, open and on hold is in [docs/CURRENT_SCIE
 | Which rules govern values, units, the gene filter and the permutation? | [docs/pipeline_rules.md](docs/pipeline_rules.md) |
 | What is implemented, validated, open and on hold? | [docs/CURRENT_SCIENTIFIC_STATE.md](docs/CURRENT_SCIENTIFIC_STATE.md) |
 | What was measured about calibration, including withdrawn claims? | [docs/ase_validation.md](docs/ase_validation.md) |
-| How are benchmark datasets with known effects made and scored? | [benchmark/plasmode/README.md](benchmark/plasmode/README.md) |
+| How are benchmark datasets with known effects made and scored? | [benchmark/simulated_effects/README.md](benchmark/simulated_effects/README.md) |
 | How are the half-read benchmark tables regenerated from recorded inputs? | [docs/half_read_analysis.md](docs/half_read_analysis.md) |
 | What does each test file cover? | [tests/README.md](tests/README.md) |
 
-The plasmode benchmark in `benchmark/plasmode/` builds datasets with known *cis* effects from the BrainVar cohort's own Salmon quantification and scores hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on them. Its delivered reports were made with earlier expression PCs (`log2(CPM + 1)`) and an earlier set of weighting arms; they are records of that configuration, not a run of the shipped default. Other `scripts/*.py` files are dated analyses kept as records; several are marked not runnable, with the reason. `docs/simulation_benchmark_spec.md` is a superseded design.
+The simulated-effects benchmark in `benchmark/simulated_effects/` builds datasets with known *cis* effects from the BrainVar cohort's own Salmon quantification and scores hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on them. Its delivered reports were made with earlier expression PCs (`log2(CPM + 1)`) and an earlier set of weighting arms; they are records of that configuration, not a run of the shipped default. Other `scripts/*.py` files are dated analyses kept as records; several are marked not runnable, with the reason. `docs/simulation_benchmark_spec.md` is a superseded design.
 
 ---
 

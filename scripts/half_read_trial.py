@@ -2,7 +2,7 @@
 
 Record-null variance is conditional on observed records. Independent NB sampling
 is a total-only sanity model, not a model of fresh Salmon assignment uncertainty.
-Run in the existing benchmark environment with PLASMODE_GENE_SET set per stratum.
+Run in the existing benchmark environment with SIMULATED_EFFECTS_GENE_SET set per stratum.
 """
 import argparse
 import hashlib
@@ -18,7 +18,7 @@ from scipy import stats
 
 from half_read_io import atomic_path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C
 import tensorqtl.hapmixqtl as HM
 

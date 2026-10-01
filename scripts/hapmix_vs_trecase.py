@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """hapmixQTL against TReCASE on one page with charts: simulated-effect power, false positives and effect-size recovery
-(plasmode, both gene sets), the simulation from TReCASE's own model (mirror benchmark), held-out replication (referee
+(simulated effects, both gene sets), the simulation from TReCASE's own model (mirror benchmark), held-out replication (referee
 subset), why TReCASE loses power, and run time. Every number is read from the result files below and embedded as
 JSON into hapmix_vs_trecase_template.html.
 

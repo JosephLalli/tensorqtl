@@ -35,7 +35,7 @@ OUT, PAGE = C.REPORT, C.REPORT / 'plasmode_report.html'
 INTERPRETED_SET = 'corrected_null_store_20260925'   # the gene set the interpretation prose (section 3 paragraphs, 3.8, 4-6, check_claims) was written for
 INTERPRETED = C.GENE_SET == INTERPRETED_SET
 REF_RUN = C.D / C.GENE_SETS[INTERPRETED_SET]['root'] / 'summary.json'   # the deep set's run of this code: the contrast on any other gene set's page (task 2026-09-27)
-FIRST_RUN = C.D / C.GENE_SETS[INTERPRETED_SET]['committed']            # the first plasmode run, on the deep set (a contrast page's section 1)
+FIRST_RUN = C.D / C.GENE_SETS[INTERPRETED_SET]['committed']            # the first simulated-effects run, on the deep set (a contrast page's section 1)
 REF_GENES = C.D / C.GENE_SETS[INTERPRETED_SET]['gene_dir'] / 'genes.txt'
 SELECT_LOG = C.GENE_DIR / 'select_stratum_genes.log'   # a stratum set's selection counts (select_stratum_genes.py)
 POOL = C.GENE_DIR / 'pool_stratum.tsv'                 # every eQTL-filter gene's median admitted reads (select_stratum_genes.py)
@@ -859,7 +859,7 @@ def sec_head():
         n_genes = S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z']['all']['genes']
         n_ds = S['n_datasets']
         ran = SF['lines'][0] * sum(n_ds.values()) // SF['lines'][1]   # datasets the arms ran on: blocks per scored dataset are the same for every dataset
-        return (f'<h1>Plasmode eQTL benchmark: the {THIS_SET} ({SF["lo"]}-{SF["hi"]} reads)</h1>'
+        return (f'<h1>Simulated-effects eQTL benchmark: the {THIS_SET} ({SF["lo"]}-{SF["hi"]} reads)</h1>'
                 f'<p class="sub">This page is the {THIS_SET}: {n_genes} genes drawn at random '
                 f'({SF["seed"]}) from the {SF["cand"]} of {SF["pool"]} eQTL-filter genes whose median haplotype-informative '
                 f'reads over admitted allelic donors lie in [{SF["lo"]}, {SF["hi"]}) and that have at least {SF["floor"]} '
@@ -884,7 +884,7 @@ def sec_head():
                 f'stream is keyed on the replicate index, so the kept replicates are unchanged), and its joint arms and '
                 f'scoring used those {sum(n_ds.values())}. This run\'s hapmixQTL, mixQTL and tensorQTL arms ran once, on its own '
                 f'{sum(n_ds.values())} datasets ({C.DATASETS}). Made by '
-                f'benchmark/plasmode/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
+                f'benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
                 f'{COMMITTED_RUN_LOG}, the check files that 01_check_inputs.py wrote into {C.CHECKS} on this run '
                 f'({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, and the '
                 f'joint models\' summaries in {C.JOINT["rasqual"]} and {C.JOINT["trecase"]}'
@@ -894,7 +894,7 @@ def sec_head():
                 f'{OUT}. The {REF_SET} page\'s interpretation paragraphs, its mixQTL ladder section '
                 f'and its closing sections (critique, meaning, limits) are not made for this set; the contrast section '
                 f'carries this set\'s comparisons, its limit and what it settles.</p>')
-    return ('<h1>Plasmode eQTL benchmark: recovering known cis effects</h1>'
+    return ('<h1>Simulated-effects eQTL benchmark: recovering known cis effects</h1>'
             '<p class="sub">hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on the BrainVar '
             'cohort\'s own Salmon output with injected effects'
             + (', and TReCASE and split weighting also on alignment counts from '
@@ -905,7 +905,7 @@ def sec_head():
             'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
             f'(commit a1b2ef4; section 2); RASQUAL and TReCASE of 2026-09-27, reused from {C.COMMITTED} because the '
             'correction does not touch them; units log2 aFC '
-            f'(beta = 1 is a twofold effect). Made by benchmark/plasmode/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
+            f'(beta = 1 is a twofold effect). Made by benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
             f'before commit 8a06803), {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
             f'01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, the joint models\' summaries in {C.JOINT["rasqual"]} '
             f'and {C.JOINT["trecase"]}, '
@@ -923,7 +923,7 @@ close its slope comes to the true slope, or how much the Gibbs variance buys in 
 carry no known effect. No dataset with known cis effects existed. Simulating Salmon itself was rejected as
 too slow, and datasets were built instead from the cohort's own Salmon output, keeping its depth, noise and
 donor structure and adding a known effect.</p>''' if SF is None else f'''
-<p>The first plasmode run ({FIRST_RUN.name}) built datasets with known cis effects from the cohort's own Salmon
+<p>The first simulated-effects run ({FIRST_RUN.name}) built datasets with known cis effects from the cohort's own Salmon
 output on 100 genes that are mostly deeper than this set: on the read measure that defines it (median
 haplotype-informative reads over admitted allelic donors) {SF["ref_in"]} of those genes lie in [{SF["lo"]},
 {SF["hi"]}), {SF["ref_below"]} below and {SF["ref_above"]} above it, median {SF["ref_median"]:.0f} reads
@@ -1769,7 +1769,7 @@ def sec_contrast():
     return f'''
 <h2>The {THIS_SET} against the {REF_SET}</h2>
 <p>Every gene of each set, each value with its own set's interval; no interval of the difference is computed. The
-{REF_SET} is this code's run ({REF_RUN}) on the datasets of the first plasmode run ({FIRST_RUN.name}), with Meier's
+{REF_SET} is this code's run ({REF_RUN}) on the datasets of the first simulated-effects run ({FIRST_RUN.name}), with Meier's
 correction as here: the same benchmark on the {INTERPRETED_SET} genes, {SF["ref_above"]} of
 which lie above this set's read range, scored by the same 06_score.py with {n_rep[REF_SET]} datasets per |beta|; the
 {THIS_SET} has {n_rep[THIS_SET]}. The two runs are not independent: the generator's streams are keyed on the replicate
@@ -2344,7 +2344,7 @@ def sec_ladder():
     return f'''
 <h3>3.8 Why mixQTL trails unit weights</h3>
 <p>Sections 3.3 and 3.4 found mixQTL's total slope attenuated at every depth and its squared error above that of unit
-weights. A separate run (benchmark/plasmode/07_mixqtl_ladder.py, output {C.LADDER / "ladder.json"}) went from the unit-weight arm to mixQTL one
+weights. A separate run (benchmark/simulated_effects/07_mixqtl_ladder.py, output {C.LADDER / "ladder.json"}) went from the unit-weight arm to mixQTL one
 change at a time, in the total channel, on the causal units where every step has a finite error: {per_beta(lambda b:
 cu[f"beta{b}"]["total"], 0)} of {cu["beta0.4"]["non_null"]} non-null units at |beta| = 0.2 / 0.4 / 0.8 (the <i>common
 set</i>). Every number in this section is read from that file.</p>
@@ -2696,7 +2696,7 @@ def main():
     tail = (sec_critique(), sec_meaning(), sec_limits()) if INTERPRETED else ()
     body = '\n'.join(head + (sec_run(), sec_results(figs)) + tail)
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
-            f'content="width=device-width, initial-scale=1"><title>Plasmode eQTL benchmark</title><style>{CSS}</style>'
+            f'content="width=device-width, initial-scale=1"><title>Simulated-effects eQTL benchmark</title><style>{CSS}</style>'
             f'</head><body><main>{body}</main></body></html>')
     C.write_atomic(PAGE, lambda fh: fh.write(page.encode()))
     print(f'wrote {PAGE} ({PAGE.stat().st_size:,} bytes) and {", ".join(p.name for p in figs.values())} in {OUT}')

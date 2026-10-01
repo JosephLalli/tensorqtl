@@ -45,7 +45,7 @@ import pyarrow.parquet as pq      # noqa: E402
 from scipy.stats import false_discovery_control   # noqa: E402
 from sklearn.isotonic import IsotonicRegression    # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C                # noqa: E402
 import referee_replication as RR  # noqa: E402
 import run_hapmixqtl_from_salmon as H   # noqa: E402
@@ -65,7 +65,7 @@ TRECASE = ('trecase_native',)   # the Salmon-input TReCASE is not scored (user d
 ARMS = HAPMIX + MIX + (TQ,) + TRECASE
 CIS_P = {a: 'pval_perm' if a in MIX else 'pval_beta' for a in HAPMIX + MIX + (TQ,)}   # 06_score.CIS_P
 STEP = {a: RR.MIX_BLOCK if a in MIX else RR.BLOCK for a in ARMS}
-PLASMODE = C.D / 'plasmode_meier_20260927' / 'summary.json'   # the deep-set plasmode run under Meier (06_score.py's summary)
+PLASMODE = C.D / 'plasmode_meier_20260927' / 'summary.json'   # the deep-set simulated-effects run under Meier (06_score.py's summary)
 PLASMODE_BETAS = ('0.4', '0.8')   # its middle and largest simulated effects
 THREADS = 1                  # this process's CPU threads, beside referee_trecase.py's 96 R processes
 RANKINGS = {'perm': 'permutation p', 'eigenmt': 'eigenMT p'}
@@ -1175,7 +1175,7 @@ def page_text(S, figs):
         'otherwise give: the question at matched K is only whose top genes are more often real.</p>')
     body.append(
         '<h2>What was run</h2><h3>Discovery, 92 donors, observed records</h3><p>Every arm mapped the observed data '
-        '(records in place, nothing thinned), with the settings of the plasmode benchmark (benchmark/plasmode/03_run_arms.py '
+        '(records in place, nothing thinned), with the settings of the plasmode benchmark (benchmark/simulated_effects/03_run_arms.py '
         'and 05_run_trecase.py).</p>' + table(['arm', 'what it fits', 'permutation p'], [[LABEL[a], d, p] for a, d, p in ARM_ROWS]))
     body.append(
         f'<h3>Genes, and the TReCASE subset</h3><p>The referee genes are the {N:,} genes of the eQTL gene filter with Gibbs '

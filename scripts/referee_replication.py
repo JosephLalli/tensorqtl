@@ -1,4 +1,4 @@
-"""Real-data referee, inputs and discovery: the plasmode's arms mapped on the observed 92-donor BrainVar data, and a
+"""Real-data referee, inputs and discovery: the simulated-effects benchmark's arms mapped on the observed 92-donor BrainVar data, and a
 replication scan in the BrainVar eQTL cohort's donors that none of the arms saw. TReCASE discovery and the scoring
 are the next stage's; this writes everything they read (facts.json lists the paths and counts).
 
@@ -23,7 +23,7 @@ filter) with a phenotype in the 225 run (our gene symbol is its universe's t2t_e
 phenotype BED end, checked), in one seeded order (SeedSequence(SEED, (ORDER_KEY,))), written in full so a later stage
 can take a nested prefix. Tested variants: biallelic phased SNPs of the analysis VCF within CM.WIN of the TSS at
 MAF >= CM.MAF over the 92 donors, present in the 225 genotype store under the same chr_pos_ref_alt. Two departures
-from the plasmode's loader, both decided 2026-09-28: gene bodies are kept (the loader drops every selected gene's
+from the benchmark's loader, both decided 2026-09-28: gene bodies are kept (the loader drops every selected gene's
 body, a rule of the RASQUAL comparison's genotype-permutation null; over thousands of genes it would drop most
 intragenic variants, each gene's own body included), and variants absent from the store are not tested, so every
 discovery test has a held-out counterpart (the store's filters are quality filters: missingness <= 5%, MAF >= 1%
@@ -74,13 +74,13 @@ import pyarrow.parquet as pq
 import torch
 from threadpoolctl import threadpool_limits
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C                                               # noqa: E402
 from select_stratum_genes import CACHE, CAL                      # noqa: E402  the pool: cache genes passing the eQTL gene filter
 from tensorqtl import cis as TQ                                  # noqa: E402
 from tensorqtl.hapmixqtl import summaries_from_point_estimates   # noqa: E402
 
-A3 = C.module('03_run_arms')   # the plasmode's arm functions and settings
+A3 = C.module('03_run_arms')   # the benchmark's arm functions and settings
 CM = C.CM
 
 OUT = C.D / 'referee_replication_20260928'   # every output (task, 2026-09-28)
@@ -93,13 +93,13 @@ IDENTITY_VARIANTS, IDENTITY_MAF = 20000, 0.2
 IDENTITY_MAX = 0.9     # measured here 2026-09-28: same donor 1.000, best unrelated match 0.43-0.49 on these variants
 MAP_AGREE_MIN = 0.99   # the 90 shared donors' store vs VCF dosages; measured 1.00000 (2026-09-28); a wrong row or donor bridge pairs unrelated genotypes
 PCA_TOL = 1e-6         # absolute, on PC scores up to ~177; the original code reproduced them to 9e-13 (2026-09-28)
-ORDER_KEY, MIX_PERM_KEY = 7, 8   # spawn keys no plasmode script uses (02: 1-3; 03: 4, 5; select_stratum_genes: 6; 01: 10-13; 06: 30, 33)
+ORDER_KEY, MIX_PERM_KEY = 7, 8   # spawn keys no benchmark script uses (02: 1-3; 03: 4, 5; select_stratum_genes: 6; 01: 10-13; 06: 30, 33)
 TIMING_GENES = 100     # task
 BUDGET_H = 6.0         # task: the full gene set if its discovery fits, else a prefix of the order
 BLOCK, MIX_BLOCK = 100, 20   # genes per GPU unit (03's per-call cost ~3 s) and per mixQTL unit; TIMING_GENES is a multiple of both
 POOL = 14              # mixQTL worker processes: with this process 15 of the 16 the task allows
 MAIN_THREADS = 2       # BLAS and torch CPU threads in this process
-TRECASE_PROCESS_H_PER_GENE = 0.15   # plasmode README: ~15 process-h per 100-gene dataset (median 4,695 tested variants per gene)
+TRECASE_PROCESS_H_PER_GENE = 0.15   # benchmark README: ~15 process-h per 100-gene dataset (median 4,695 tested variants per gene)
 MAF_BANDS = (0.05, 0.1, 0.2, 0.3, 0.5)
 PER_GENE = ('A', 'T', 'Va', 'Vt', 'pL', 'pR', 'pT')
 ARMS = C.HAPMIX_ARMS + (C.TENSORQTL,) + tuple(C.MIXQTL_ARMS)

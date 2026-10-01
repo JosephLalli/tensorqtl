@@ -1,5 +1,5 @@
 """Effect-size recovery of the current default (half-read total phenotype, split weighting, expression PCs in the
-half-read unit since 2026-09-30) on the plasmode causal units: each dataset at |beta| 0.4 and 0.8 fitted through
+half-read unit since 2026-09-30) on the simulated-effects causal units: each dataset at |beta| 0.4 and 0.8 fitted through
 common.run_nominal with the shared loader's covariates. Scores, per read band with 06_score.py's gene-clustered
 interval: combined slope / beta, allelic slope / beta, total slope / count-scale total truth, and the combined
 shortfall 1 - slope / beta split into its allelic and total parts (each channel's share of the inverse-variance weight
@@ -8,7 +8,7 @@ times its own shortfall). Stored TReCASE (alignment counts) recovery is printed 
 Known answer first: with the 2026-09-25 covariates the fits reproduce the stored half-read refits of
 beta_shortfall_refits.py (config voom, split) exactly.
 
-  [PLASMODE_GENE_SET=stratum30_100] CUDA_VISIBLE_DEVICES=1 python3 scripts/beta_recovery_current.py
+  [SIMULATED_EFFECTS_GENE_SET=stratum30_100] CUDA_VISIBLE_DEVICES=1 python3 scripts/beta_recovery_current.py
   # writes OUT/recovery_<set>.json
 """
 import json
@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C          # noqa: E402
 
 S6 = C.module('06_score')

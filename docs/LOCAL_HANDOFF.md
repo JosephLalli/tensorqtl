@@ -11,7 +11,7 @@
 > current method and state read CLAUDE.md, then
 > `docs/CURRENT_SCIENTIFIC_STATE.md`, `docs/hapmixqtl_methods.md`,
 > `docs/pipeline_rules.md` and `docs/outputs.md`; the known-effect benchmark
-> is `benchmark/plasmode/README.md`. Wrong to act on today: checking out that
+> is `benchmark/simulated_effects/README.md`. Wrong to act on today: checking out that
 > branch; `tau_mode='estimate'` and every configuration deprecated on
 > 2026-09-23; `compare_pipelines.py`, removed on 2026-10-01 (archive
 > `brainvar_hapmix_deploy/retired_scripts_20261001/`); the fine-mapping
@@ -265,7 +265,7 @@ variance estimate) with Meier's first-order correction of the combined
 standard error for weights estimated from the same residuals, and a
 15-donor allelic floor; rule in
 `docs/hapmixqtl_methods.md` Section 4.5), the benchmark code
-(`scripts/plasmode/README.md`, now `benchmark/plasmode/README.md`) and the result pages. The weighting decision
+(`scripts/plasmode/README.md`, now `benchmark/simulated_effects/README.md`) and the result pages. The weighting decision
 was open at that date and is superseded by the accepted 2026-09-29 default.
 
 ## 8. State as of 2026-09-29

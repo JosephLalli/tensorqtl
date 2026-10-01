@@ -1,9 +1,9 @@
 """What moving the expression PCs from log2(CPM + 1) to the half-read log-CPM (2026-09-30) does to the half-read split
-default: each plasmode dataset below is fitted twice through common.run_nominal, once with each covariate build,
+default: each simulated-effects dataset below is fitted twice through common.run_nominal, once with each covariate build,
 everything else fixed; prints the per-row slope change in standard errors, the agreement of nominal p-values, the
 nominal-p rate on the no-effect dataset and the causal slope over the simulated effect.
 
-  [PLASMODE_GENE_SET=stratum30_100] CUDA_VISIBLE_DEVICES=1 python3 scripts/expression_pc_unit_impact.py
+  [SIMULATED_EFFECTS_GENE_SET=stratum30_100] CUDA_VISIBLE_DEVICES=1 python3 scripts/expression_pc_unit_impact.py
 """
 import sys
 import tempfile
@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C          # noqa: E402
 
 BUILDS = {'log2cpm1': C.D / 'cov' / 'log2cpm1_point_calibration_20260925',

@@ -29,7 +29,7 @@ SALMON INPUT DROPPED (user decision 2026-09-28). After the timing block fixed th
 with 689 Salmon-input genes finished and restarted on the native input alone (RUN_INPUTS), JOBS R processes, every
 gene of the subset submitted in descending order of its tested variants so the largest genes do not straggle at the
 end. The Salmon input costs about five times the native one (530 against 107 process-seconds per gene in the timing
-block) and the plasmode benchmark already compares TReCASE on Salmon-derived input. The timing block's Salmon results
+block) and the simulated-effects benchmark already compares TReCASE on Salmon-derived input. The timing block's Salmon results
 (discovery/trecase_salmon/) and every finished per-gene checkpoint stay on disk; they are not scored.
 
 FAILURES. A gene whose Rscript exits non-zero is recorded (<tag>_failed.txt, with the log's last lines) and skipped
@@ -52,13 +52,13 @@ import numpy as np
 import pandas as pd
 from threadpoolctl import threadpool_limits
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C                                               # noqa: E402
 import referee_replication as RR                                 # noqa: E402
 import run_hapmixqtl_from_salmon as H                            # noqa: E402
 from tensorqtl.hapmixqtl import summaries_from_point_estimates   # noqa: E402
 
-T = C.module('05_run_trecase')   # the plasmode's TReCASE input writers, R call and output conversion
+T = C.module('05_run_trecase')   # the benchmark's TReCASE input writers, R call and output conversion
 CM = C.CM
 
 OUT = RR.OUT

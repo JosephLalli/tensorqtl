@@ -1,4 +1,4 @@
-"""RASQUAL on every plasmode dataset, nominal only (README: Joint models).
+"""RASQUAL on every simulated-effects dataset, nominal only (README: Joint models).
 
 There are no reads, so each gene gets ONE pseudo feature SNP inside its gene body at which every
 donor-gene pair the allelic channel admits (common.allelic_kept on the thinned point estimates)

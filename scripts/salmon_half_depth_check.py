@@ -1,6 +1,6 @@
-"""Known-answer test of the plasmode benchmark's thinning rule against Salmon at half depth.
+"""Known-answer test of the simulated-effects benchmark's thinning rule against Salmon at half depth.
 
-The benchmark (benchmark/plasmode/make_datasets.py) thins real Salmon output and
+The benchmark (scripts/plasmode/make_datasets.py) thins real Salmon output and
 scales each thinned record's allelic Gibbs variance by the counting-term ratio
     Va' = dv x q(pL', pR') / q(pL, pR) + q_a(pL', pR'),
     q(x, y) = 1/(x + 0.5) + 1/(y + 0.5),  q_a = q / ln(2)^2,
@@ -55,7 +55,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parent / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(HERE.parent / 'benchmark' / 'simulated_effects'))
 sys.path.insert(0, str(HERE.parent))
 
 import check_salmon_premise as CP                  # noqa: E402  equivalence-class reader

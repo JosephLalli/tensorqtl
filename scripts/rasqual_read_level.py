@@ -1,6 +1,6 @@
 """Does the benchmark's pseudo-feature-SNP construction handicap RASQUAL? Observed data, 30 genes.
 
-In the plasmode benchmark (benchmark/plasmode/run_rasqual.py) RASQUAL received Salmon
+In the simulated-effects benchmark (scripts/plasmode/run_rasqual.py at the time) RASQUAL received Salmon
 haplotype counts at ONE pseudo feature SNP per gene, so its read-level features -- per-SNP
 allelic counts at real exonic heterozygous sites, the reference-mapping bias phi, the
 sequencing/mapping (read allele) error rate delta and posterior genotype updating -- were bypassed. This script
@@ -183,7 +183,7 @@ STAGES
 MODULES. run_rasqual, run_arms and make_datasets were removed from scripts/plasmode by commit fc238df
 (2026-09-27 20:59), after every stage here had run on their fc238df^ versions (git blobs 97d880a, 41db9e4,
 76ba855); copies of those are kept in OUT/control/legacy_plasmode as the record. The script now imports
-benchmark/plasmode/common.py and 04_run_rasqual.py, whose functions used here compute what the old ones did;
+benchmark/simulated_effects/common.py and 04_run_rasqual.py, whose functions used here compute what the old ones did;
 the old run_gene (no checkpoint file), admission and TIE, which have no equivalent there, are defined below.
 
 SAMPLE KEY. Every table is keyed on the DNA library id (100_D1, ...): the phASER manifest,
@@ -216,7 +216,7 @@ import pandas as pd
 from scipy.stats import binomtest, chi2, wilcoxon
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import build_targeted_gene_sets as BT                        # noqa: E402
 import compare_mixqtl_replication as CM                      # noqa: E402
 import corrected_null_store as CNS                           # noqa: E402
@@ -251,7 +251,7 @@ ITER_FIELD = 'n_iter_null'    # README field 19 is pitr[l], THIS rSNP's fit iter
 RASQUAL_MAXITR = 231          # nbem.c:513, itr < MAXITR3 + PRESTEPS + 200 (nbem.h:8-9), the per-fit EM cap field 19 reads at non-convergence
 TIE = 1e5                     # RASQUAL ties chisq values equal after round(x * 1e5) (main.c:722, 728)
 SUBSET = OUT / 'native_subset.tsv'
-SEED, SUBSET_KEY = 42, 6      # random tested variants per gene: SeedSequence(SEED, spawn_key=(SUBSET_KEY, gene index)); keys 1-5 are the plasmode scripts'
+SEED, SUBSET_KEY = 42, 6      # random tested variants per gene: SeedSequence(SEED, spawn_key=(SUBSET_KEY, gene index)); keys 1-5 are the benchmark scripts'
 TOP_K, N_RANDOM = 20, 80      # native subset per gene: top TOP_K variants of each other arm, N_RANDOM random tested variants, the leads
 MODEL_FIELDS = ['chisq', 'effect_size_pi', 'error_rate_delta', 'ref_mapping_bias_phi', 'overdispersion_theta',
                 'n_feature_snps', ITER_FIELD, 'convergence', 'r2_prior_posterior_fsnps', 'r2_prior_posterior_rsnp']

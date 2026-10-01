@@ -1,4 +1,4 @@
-"""Counterfactual refits behind the plasmode slope's shortfall from the simulated effect (the budget of
+"""Counterfactual refits behind the simulated-effects slope's shortfall from the simulated effect (the budget of
 beta_shortfall_budget.py says where it sits; these say why). Every fit is common.run_nominal, the shipped map_nominal in
 default mode, on a dataset's arrays with one ingredient changed:
 
@@ -23,7 +23,7 @@ count-scale truth (beta allelic, the per-gene total truth total, beta combined);
 of the combined and total tests, observed and voom. The combined target is the inverse-variance combination of the
 channel targets at the observed run's channel se.
 
-  PLASMODE_GENE_SET=<set> CUDA_VISIBLE_DEVICES=1 python3 scripts/beta_shortfall_refits.py
+  SIMULATED_EFFECTS_GENE_SET=<set> CUDA_VISIBLE_DEVICES=1 python3 scripts/beta_shortfall_refits.py
   # writes OUT/refits_<set>.parquet (skipped, with a printed line, when present), OUT/refits_<set>.json
 """
 import json
@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C          # noqa: E402
 
 G2, S6 = C.module('02_make_datasets'), C.module('06_score')

@@ -52,7 +52,7 @@ R_SCRIPT = Path(__file__).resolve().with_name('external_benchmark_mirror_trecase
 HAPMIX = {'hapmixQTL gibbs': 'gibbs', 'hapmixQTL split': 'split', 'hapmixQTL plus_one': 'plus_one'}
 COMPARATORS = ('TReC-only', 'ASE-only', 'TReCASE (joint)')
 # asSeq's two p-values: final_Pvalue is what asSeq reports (trecase.c:1311-1323: the joint p unless the
-# cis-trans test rejects or is NA, then the TReC p; the plasmode TReCASE arm's pval_nominal); Joint_Pvalue
+# cis-trans test rejects or is NA, then the TReC p; the simulated-effects benchmark's TReCASE arm's pval_nominal); Joint_Pvalue
 # is the joint LRT alone, the harness TReCASE's hypothesis, with a failed joint fit counted as a
 # non-rejection, as the harness counts its own failed fits.
 ASSEQ = {'TReCASE (asSeq final p)': 'final_Pvalue', 'TReCASE (asSeq joint p)': 'Joint_Pvalue'}

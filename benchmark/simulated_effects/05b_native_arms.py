@@ -26,7 +26,7 @@ Steps, every output recomputed except TReCASE's finished genes:
 (3) split_native: map_nominal and map_cis as 03 runs the split arm (1/Va allelic, unit total, same covariates, seed
     03.cis_seed(r)), every pair with a + b > 0 admitted (common.arm_variances: no zero-haplotype rule on counts).
 (4) trecase_native: 05's runner on Y = the thinned native total, Y1 = a, Y2 = b as they are (asSeq's min.AS.reads applies),
-    offset log(native effective library size), the same 17 covariates; JOBS Rscript processes (PLASMODE_NATIVE_JOBS in
+    offset log(native effective library size), the same 17 covariates; JOBS Rscript processes (SIMULATED_EFFECTS_NATIVE_JOBS in
     the environment, default 15), per-gene checkpoints in
     NATIVE/trecase_work (a gene whose status file exists is not rerun).
 
@@ -49,7 +49,7 @@ PE = C.D / 'cache' / 'gibbs_56b63c3b37ed5df8' / 'point_estimates'   # compare_mi
 RESTRICT = PE / 'restrict_calibration.txt'   # protein-coding autosomal genes: the Salmon edgeR run's restriction (build_point_estimate_cache.py)
 EDGER_R = C.HERE / 'edger_library_normalization.R'   # byte-identical copy of scripts/edger_library_normalization.R (2026-10-01), the pipeline's own normalization
 NATIVE_THIN_KEY = 7            # spawn key used by no other script here (02: 1-3; 03: 4, 5; select: 6; 01: 10-13; 06: 30, 33)
-JOBS = int(os.environ.get('PLASMODE_NATIVE_JOBS', 15))   # asSeq genes at once: Rscript execs into R, one process per job (README), so 15 plus this driver is run_all.sh's cap of 16; the 2026-09-28 runs set 44 under a one-off allowance of 48
+JOBS = int(os.environ.get('SIMULATED_EFFECTS_NATIVE_JOBS', 15))   # asSeq genes at once: Rscript execs into R, one process per job (README), so 15 plus this driver is run_all.sh's cap of 16; the 2026-09-28 runs set 44 under a one-off allowance of 48
 THREADS = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}   # one BLAS thread per R process on the shared host
 
 

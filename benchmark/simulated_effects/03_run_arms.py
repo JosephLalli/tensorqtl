@@ -1,4 +1,4 @@
-"""Map every plasmode dataset under seven arms (README: Arms): four hapmixQTL weightings through
+"""Map every simulated-effects dataset under seven arms (README: Arms): four hapmixQTL weightings through
 map_nominal (nominal p per tested variant) and map_cis (gene-level pval_perm and pval_beta from
 NPERM records_signflip permutations, GPU), mixQTL mode at two cutoff settings through mixqtl_scan
 on the thinned point estimates (never the draws) and its own permutation scan, and the total-only

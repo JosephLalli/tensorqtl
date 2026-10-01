@@ -1,4 +1,4 @@
-"""TReCASE (asSeq 0.99.501, trecase) on every plasmode dataset, nominal only (README: Joint models).
+"""TReCASE (asSeq 0.99.501, trecase) on every simulated-effects dataset, nominal only (README: Joint models).
 
 Inputs per dataset (column i is real record perm[i], as in every other arm): Y = thinned totals
 pT as they are (the TReC negative binomial goes through lgammafn on doubles); Y1, Y2 = rint(pL),

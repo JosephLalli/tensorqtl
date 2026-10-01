@@ -1,4 +1,4 @@
-# TReCASE (asSeq::trecase) on one gene of one plasmode dataset; called by 05_run_trecase.py,
+# TReCASE (asSeq::trecase) on one gene of one simulated-effects dataset; called by 05_run_trecase.py,
 # which writes the inputs and converts the output.
 # Usage: Rscript run_trecase.R <dataset_dir> <genotype_dir> <gene> <out_tag>
 # Environment: R_LD_LIBRARY_PATH=/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu LD_LIBRARY_PATH=/usr/local/cuda/lib64

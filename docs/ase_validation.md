@@ -21,7 +21,7 @@
 > `docs/CURRENT_SCIENTIFIC_STATE.md`; §7k's external benchmark was superseded
 > on 2026-09-28 by the fixed harness
 > (`brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html`),
-> and the known-effect benchmark is `benchmark/plasmode/README.md`. Do not act
+> and the known-effect benchmark is `benchmark/simulated_effects/README.md`. Do not act
 > on the statements that `tau_mode='estimate'` is the default (Historical
 > headline, §8), on the advice to re-run fine-mapping (§8), or on §7j's
 > second-pass route: fine-mapping (`map_susie`) and the STR/multi-allelic

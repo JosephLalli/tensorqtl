@@ -1,4 +1,4 @@
-"""Select the plasmode benchmark's 30-100-read gene set (common.GENE_SETS['stratum30_100']). Run once for that
+"""Select the simulated-effects benchmark's 30-100-read gene set (common.GENE_SETS['stratum30_100']). Run once for that
 set, before 01 (2026-09-27; its log is select_stratum_genes.log in the gene directory).
 
 WHY. Transcriptome-wide the 30-100-read stratum was the worst for nominal-p calibration
@@ -25,7 +25,7 @@ checks it: after loading through load_point_estimate_inputs, every gene must hav
 least one tested variant (cis window, outside every selected gene's body, MAF >= 0.05),
 else this script stops naming the gene; nothing is replaced silently.
 
-OUTPUT, in the gene set's directory (corrected_null_store's files, so every plasmode
+OUTPUT, in the gene set's directory (corrected_null_store's files, so every benchmark
 script reads them unchanged): genes.txt; regions.bed (chr, window start, window end,
 gene; the window is min(start, pos) - WIN - 1000 to max(end, pos) + WIN + 1000);
 gene_selection.tsv (gene, chr, start, end, pos, source); gene_design.tsv (gene,

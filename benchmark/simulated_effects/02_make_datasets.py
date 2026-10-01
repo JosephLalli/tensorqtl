@@ -1,4 +1,4 @@
-"""Plasmode cis-eQTL datasets from the real cohort's Salmon output (README: Generator).
+"""Simulated-effects cis-eQTL datasets from the real cohort's Salmon output (README: Generator).
 
 A dataset is the cohort's Salmon point estimates and Gibbs draws for the GENE_SET genes with the
 genotype association broken (donor records permuted against fixed genotypes, each moved record's

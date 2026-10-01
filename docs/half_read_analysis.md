@@ -3,12 +3,12 @@
 The half-read analysis is the evidence on which the half-read split default was
 adopted: the beta, reported-SE, nominal p-value, power, and precision–recall
 comparisons of the half-read arm against the split-weighting predecessor, unit
-weights, mixQTL mode, and total-only tensorQTL on the plasmode benchmark
+weights, mixQTL mode, and total-only tensorQTL on the simulated-effects benchmark
 datasets. The decision it supports was an accuracy/precision tradeoff on these
 benchmarks; it was not a claim that precision improves uniformly. The current
 input and estimator contract is [pipeline rules](pipeline_rules.md).
 
-The recorded results were made on the plasmode datasets and arm results of
+The recorded results were made on the simulated-effects datasets and arm results of
 2026-09-27, with the expression PCs of the time, on `log2(CPM + 1)`; the
 shipped default has since moved its expression PCs to the half-read unit. The
 driver below regenerates that adoption record exactly; it is not a run of the
@@ -57,7 +57,7 @@ to pretend that a historical run used a different environment or method.
 ## Environment and run order
 
 The driver checks Python **3.11.14** and the exact pins in
-[`benchmark/plasmode/requirements.txt`](../benchmark/plasmode/requirements.txt),
+[`benchmark/simulated_effects/requirements.txt`](../benchmark/simulated_effects/requirements.txt),
 and stops before writing anything if either differs. Its analysis stages use
 the local source scripts and do not require R or a GPU. The pinned Torch
 package is retained for consistency with the benchmark environment; none of
@@ -94,7 +94,7 @@ Each stage's existing `--output`/`--root` still selects its own destination.
 The optional scan-producing commands (`half_read_trial.py`,
 `half_read_pvalue_cache.py`, `half_read_gene_cache.py`, and SE `--fill-missing`)
 remain separate from this saved-input driver. They load inputs through the
-plasmode benchmark's loader (`benchmark/plasmode/common.py`), which also
+simulated-effects benchmark's loader (`benchmark/simulated_effects/common.py`), which also
 requires the original genotype, covariate, and Salmon-cache paths; setting the
 analysis root alone does not relocate those dependencies. That loader now reads
 the current covariate build, whose expression PCs are in the half-read unit,

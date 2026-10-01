@@ -1,4 +1,4 @@
-"""Paths, parameters and helpers shared by the plasmode benchmark scripts (run order: run_all.sh).
+"""Paths, parameters and helpers shared by the simulated-effects benchmark scripts (run order: run_all.sh).
 
 Design: docs/simulation_benchmark_spec.md (superseded header) and README.md here. Every
 parameter is written once, in this file or at the top of the script that owns it.
@@ -29,10 +29,13 @@ from tensorqtl import mixqtl_replication as MX               # noqa: E402
 from tensorqtl.hapmixqtl import map_nominal                  # noqa: E402
 
 D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
-GENE_SET = os.environ.get('PLASMODE_GENE_SET', 'corrected_null_store_20260925')   # the gene set this run uses: a key of GENE_SETS
-ACCEPTANCE = os.environ.get('PLASMODE_ACCEPTANCE') == '1'   # set by 99_acceptance.py for itself and the steps it runs: ROOT is then the set's acceptance_root
+if any(k.startswith('PLASMODE_') for k in os.environ):   # renamed 2026-10-01; an ignored PLASMODE_ROOT would send outputs into the delivered root
+    raise SystemExit('PLASMODE_* variables are set; they are now SIMULATED_EFFECTS_* (renamed 2026-10-01): '
+                     + ', '.join(sorted(k for k in os.environ if k.startswith('PLASMODE_'))))
+GENE_SET = os.environ.get('SIMULATED_EFFECTS_GENE_SET', 'corrected_null_store_20260925')   # the gene set this run uses: a key of GENE_SETS
+ACCEPTANCE = os.environ.get('SIMULATED_EFFECTS_ACCEPTANCE') == '1'   # set by 99_acceptance.py for itself and the steps it runs: ROOT is then the set's acceptance_root
 GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, gene_design.tsv; for the default set also its stored
-                # 200-permutation gibbs null run), this pipeline's output directory, 99_acceptance.py's output directory, the committed run of the previous code (benchmark/plasmode/ before f0c0b07) that
+                # 200-permutation gibbs null run), this pipeline's output directory, 99_acceptance.py's output directory, the committed run of the previous code (scripts/plasmode/ before f0c0b07) that
                 # 99_acceptance.py compares with and whose RASQUAL and TReCASE results stage_joint_results copies, and the stored runs of that
                 # gene set the scripts read (None: the set has none, and each reader prints a skip); a new gene set adds an entry
     'corrected_null_store_20260925': dict(
@@ -57,8 +60,8 @@ GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', 
 ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
     D / GS[k] if GS[k] else None for k in ('acceptance_root' if ACCEPTANCE else 'root', 'hybrid_null', 'before_df_fix', 'df_fix',
                                            'trecase_smoke', 'committed'))
-if os.environ.get('PLASMODE_ROOT') and not ACCEPTANCE:   # a fresh output root instead of the gene set's delivered one
-    ROOT = Path(os.environ['PLASMODE_ROOT'])
+if os.environ.get('SIMULATED_EFFECTS_ROOT') and not ACCEPTANCE:   # a fresh output root instead of the gene set's delivered one
+    ROOT = Path(os.environ['SIMULATED_EFFECTS_ROOT'])
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
 NATIVE_COUNTS = D / 'native_counts_wasp_20260928'   # featureCounts totals and WASP-filtered strand-split exonic phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)

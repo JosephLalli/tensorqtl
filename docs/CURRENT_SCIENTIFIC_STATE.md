@@ -25,9 +25,9 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   same unit on 2026-09-30 (`a2f4314`), and the default path was closed on
   2026-10-01 (`8e347fd`: input contract, rank checks, refusal of the
   known-variance paths, leave-one-donor-out influence at each lead).
-- **Validated on exactly the shipped default** (the plasmode benchmark with
+- **Validated on exactly the shipped default** (the simulated-effects benchmark with
   half-read PCs, plus an exact-model check of the combined reference): on the
-  plasmode no-effect dataset the combined nominal rejection rate
+  benchmark's no-effect dataset the combined nominal rejection rate
   at 0.05 / 0.01 / 0.001 is 0.0444 / 0.0078 / 0.0008 on the deep gene set and
   0.0486 / 0.0095 / 0.0015 on the low-coverage set; the combined slope recovers
   0.983 [0.937, 1.033] and 0.986 [0.960, 1.013] of the simulated effect at
@@ -170,7 +170,7 @@ Commit `8e347fd`.
   pipeline (natural-log Gibbs-mean phenotype, known-variance second pass). It
   is archived with its SHA256 in `retired_scripts_20261001/` (README there),
   whose README states that its RASQUAL output field list now lives in the
-  plasmode benchmark's `common.py` and in `scripts/rasqual_read_level.py`;
+  simulated-effects benchmark's `common.py` and in `scripts/rasqual_read_level.py`;
   `scripts/realized_variance.py`, which called it, stops with that reason.
 
 ### Engineering cleanup of 2026-09-30
@@ -206,19 +206,19 @@ Each entry states the configuration it was measured on. Three configurations
 carry evidence: the shipped default exactly; the shipped half-read total with
 the earlier `log2(CPM + 1)` expression PCs (the evidence the 2026-09-29
 adoption rested on); and the predecessor, split weighting on a
-`log2(CPM + 1)` total. The plasmode benchmark builds datasets with simulated
+`log2(CPM + 1)` total. The simulated-effects benchmark builds datasets with simulated
 effects (beta = 0.2 / 0.4 / 0.8, log2 allelic fold change) from the cohort's
 own Salmon records; its deep gene set is the 100 genes of
 `corrected_null_store_20260925` and its low-coverage set 100 genes whose median
 haplotype-informative reads over admitted allelic donors lie in [30, 100)
-(`benchmark/plasmode/README.md`).
+(`benchmark/simulated_effects/README.md`).
 
 ### On the shipped default
 
 - **Null rates and sensitivity to the PC unit**
   (`scripts/expression_pc_unit_impact.py`; log
   `cov/half_read_point_calibration_20260930/expression_pc_unit_impact.log`).
-  Refitting the default on the plasmode no-effect dataset (487,454 tested
+  Refitting the default on the benchmark's no-effect dataset (487,454 tested
   gene-variant pairs deep, 517,376 low coverage) with the earlier and the
   half-read PCs, the combined `pval_nominal` rejection rate at 0.05 / 0.01 /
   0.001 moved from 0.0443 / 0.0079 / 0.0009 to 0.0444 / 0.0078 / 0.0008 (deep)
@@ -327,7 +327,7 @@ power and mean squared error were not re-measured with the half-read PCs.
   differences -0.010 / -0.044 / -0.018, paired se 0.010 / 0.015 / 0.009).
   TReCASE is the likelihood of the generating model, so parity here is parity
   with a ceiling.
-- **Why the predecessor's plasmode slopes fell short of the simulated effect**
+- **Why the predecessor's slopes in the simulated-effects benchmark fell short of the simulated effect**
   (`beta_shortfall_20260929/beta_shortfall.html`): mostly the total channel's
   `log2(CPM + 1)` pseudocount, the rest the allelic channel's Gibbs-variance
   weights, which are computed from the same counts as the allelic ratio. Split
@@ -496,7 +496,7 @@ set; at an even split its median, scaled by (n + 1) ln(2)^2, exceeds the law's
 4.0 by more as read count rises (deep: 7.5 at 1-30 reads to 31.9 at 300 or
 more).
 
-On the plasmode datasets, where each thinned record's variance is set by the
+On the simulated-effects datasets, where each thinned record's variance is set by the
 benchmark's formula, the mean within-gene Spearman rank correlation between the
 weight `1/Va` and the allelic ratio in the direction of a simulated beta = 0.8
 effect is -0.052 [-0.106, +0.002] deep (125 gene units) and -0.171 [-0.220,
@@ -658,8 +658,8 @@ benchmark `external_benchmark_current_20260928/`. Earlier benchmark runs kept as
 records: `plasmode_20260926/` and `plasmode_stratum30_100_20260927/` (before
 Meier's correction); `plasmode2_acceptance_20260927/` and
 `plasmode2_stratum_acceptance_20260927/` are acceptance roots, not results.
-The benchmark code is `benchmark/plasmode/` (run order `run_all.sh`,
-acceptance `99_acceptance.py`; `PLASMODE_ROOT` sends a run's outputs to a
+The benchmark code is `benchmark/simulated_effects/` (run order `run_all.sh`,
+acceptance `99_acceptance.py`; `SIMULATED_EFFECTS_ROOT` sends a run's outputs to a
 fresh directory).
 
 ## Superseded: pointers only
@@ -706,7 +706,7 @@ carried before the release pass is `git show 8e347fd:docs/CURRENT_SCIENTIFIC_STA
   summary page `calibration_summary_20260924/calibration_summary.html`):
   pre-correction records; to rerun them, check out commit `8e347fd~1`.
 - **The Salmon-emulator benchmark design**: [simulation_benchmark_spec.md](simulation_benchmark_spec.md),
-  superseded by the plasmode benchmark (its real-data calibration appendices
+  superseded by the simulated-effects benchmark (its real-data calibration appendices
   still hold).
 - **Dated handoffs and proposals**: [LOCAL_HANDOFF.md](LOCAL_HANDOFF.md) and
   [OPEN_INVESTIGATIONS_20260920.md](OPEN_INVESTIGATIONS_20260920.md) are

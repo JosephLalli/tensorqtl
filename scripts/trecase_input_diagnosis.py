@@ -1,9 +1,9 @@
 """TReCASE on integer total counts: 05_run_trecase.py with ONE change, Y = rint(pT) (task of 2026-09-28).
 
-Why: on the plasmode deep set TReCASE ranks non-null genes below total-only tensorQTL at a matched 5% false-discovery
+Why: on the simulated-effects benchmark's deep set TReCASE ranks non-null genes below total-only tensorQTL at a matched 5% false-discovery
 proportion, and its total-count test alone ranks lowest; 05 hands asSeq's negative-binomial total-count (TReC) model the
 thinned Salmon totals pT as fractional numbers. This reruns asSeq on beta0.0 rep 0 and reps 0-2 of beta0.4 and beta0.8
-of the deep set (plasmode_meier_20260927, the default PLASMODE_GENE_SET) with Y = rint(pT). Everything else is 05's:
+of the deep set (plasmode_meier_20260927, the default SIMULATED_EFFECTS_GENE_SET) with Y = rint(pT). Everything else is 05's:
 Y1, Y2, X, offset and Z are built by 05's functions and the R call is run_trecase.R. Checked before any run: 05's
 inputs rebuilt from the unchanged dataset are byte-identical to the committed run's (COMMITTED_WORK), the integer run's
 inputs other than Y.bin are too, and its Y.bin is rint of the committed one; and one gene rerun on the unchanged inputs
@@ -44,7 +44,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'simulated_effects'))
 import common as C  # noqa: E402
 
 T, SC = C.module('05_run_trecase'), C.module('06_score')

@@ -762,8 +762,8 @@ distributions and the rank correlation of the two methods' statistics to the
 bundle. RASQUAL's phi is an independent estimate of reference mapping bias,
 so it cross-checks the gate.
 
-The comparisons the project relies on are made elsewhere: the plasmode
-benchmark, with simulated effects of known size (`benchmark/plasmode/`, run
+The comparisons the project relies on are made elsewhere: the simulated-effects
+benchmark, with simulated effects of known size (`benchmark/simulated_effects/`, run
 order `run_all.sh`, described in its `README.md`; pages under
 `$DEPLOY/plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/`,
 which are records of the 2026-09-27 configuration rather than runs of the
