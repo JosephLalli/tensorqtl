@@ -44,7 +44,7 @@ OUT, WORK = C.JOINT['trecase'], C.ROOT / 'trecase_work'
 R_RUNNER = Path(__file__).resolve().with_name('run_trecase.R')
 R_ENV = {'R_LD_LIBRARY_PATH': '/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu',
          'LD_LIBRARY_PATH': '/usr/local/cuda/lib64'}   # CLAUDE.md, "R's BLAS crash is an environment clash"
-JOBS = 7                       # genes at once; each is an Rscript wrapper plus its R process, so 7 x 2 plus this driver stays under the shared host's cap of 16 live processes (2026-09-27)
+JOBS = 64                      # genes at once; each R process is one thread and about 700 MB (user, 2026-10-01: 64 at a time; the cap of 16 live processes of 2026-09-27 no longer applies)
 TRANS_TEST_P = 0.05            # asSeq transTestP default (R/trecase.R), the rule at trecase.c:1311
 TRANS_BORDER = '5.00e-02'      # %.2e of a trans p in [0.04995, 0.05005): either side of TRANS_TEST_P
 MIN_AS_READS = 5               # asSeq min.AS.reads default (Y1 + Y2, trecase.c:615-617); counts only
