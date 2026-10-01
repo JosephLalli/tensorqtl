@@ -1,32 +1,42 @@
 # Simulation benchmark for hapmixQTL: implementation specification
 
-> **SUPERSEDED 2026-09-26 (user decision): the Salmon emulator described
-> below will not be built.** Rerunning or emulating Salmon per dataset was
-> judged too slow. The benchmark that exists instead builds datasets from the
-> cohort's own Salmon point estimates and Gibbs draws: donor records are
-> permuted against fixed genotypes with a random L/R swap, and known cis
-> effects are injected by binomial thinning of the haplotype carrying the
-> lower-expressed allele. Code, design and checks: `scripts/plasmode/README.md`
-> and the numbered scripts it describes (run order in `run_all.sh`); the
-> scripts this box first named were replaced by that numbered pipeline on
-> 2026-09-27 (commit fc238df). Results, `<root>/report/plasmode_report.html` under
-> `/mnt/ssd/lalli/brainvar_hapmix_deploy/`: `plasmode_meier_20260927` (deep
-> set) and `plasmode_lowcov_meier_20260927` (low-coverage set) on the current
-> library; `plasmode_20260926` and `plasmode_stratum30_100_20260927` are the
-> earlier runs, made before Meier's correction of the combined standard error
-> (its first-order inflation for channel weights estimated from the same
-> residuals they combine; commit a1b2ef4).
-> The calibration measurements of the real data in the appendices below remain
-> valid as measurements; the emulator layers and the build plan do not apply.
-> In particular the external-benchmark tier's plan to freeze `hapmix_pval` was
-> not followed: on 2026-09-28 (commit 9369bb1) `hapmix_pval` itself was fixed
-> and now runs default mode, and the three harnesses that used its removed
-> arm stop (record `external_benchmark_current_20260928/`).
->
-> **2026-09-29 historical-label boundary.** `split` remains the recorded
-> `log2(CPM+1)` arm and `gibbs (shipped)` means the implementation shipped at
-> that run's date. Neither is the current half-read association default; this
-> benchmark does not establish uniform superiority or SuSiE calibration.
+> **Status, 2026-10-01: superseded design specification; nothing in it was
+> built.** This document, dated 2026-09-26, specified a Salmon-emulating
+> simulator and benchmark driver pinned to commit `ac11b79`, and the user
+> decided the same day not to build it (rerunning or emulating Salmon per
+> dataset was judged too slow); the known-effect benchmark that exists instead
+> is the plasmode benchmark, `benchmark/plasmode/README.md` (donor records
+> permuted against fixed genotypes with a random L/R swap, simulated cis
+> effects injected by binomial thinning of the haplotype carrying the
+> lower-expressed allele), whose delivered pages under
+> `/mnt/ssd/lalli/brainvar_hapmix_deploy/` (`plasmode_meier_20260927`, deep
+> set; `plasmode_lowcov_meier_20260927`, low-coverage set) were made with
+> log2(CPM+1) expression PCs and the four-arm configuration of 2026-09-27 and
+> are records, not a run of the shipped half-read default. The real-data
+> calibration measurements of the cohort's Salmon cache and Gibbs draws
+> (chiefly sections 1.2, 3.2-3.6 and 4 and Appendices A and B) remain valid as
+> measurements, with one correction already recorded in Appendix B, item 6a:
+> Salmon's Gibbs prior is 1 per active transcript, so section 3.6's inference
+> against a prior of 1 was wrong. Every interface, arm, grid, acceptance test,
+> file and build step in sections 2-9 is superseded and should not be
+> implemented, and its labels are as of 2026-09-26: `gibbs_both` (`ship`) was
+> the shipped weighting then, whereas the shipped default is now the half-read
+> split (allelic Gibbs variance as a shape with one-sided zero-haplotype pairs
+> excluded, half-read total with unit working variance), described in
+> `docs/hapmixqtl_methods.md`, `docs/pipeline_rules.md`, `docs/outputs.md` and
+> `docs/CURRENT_SCIENTIFIC_STATE.md`. Wrong to act on today: the function names
+> and file:line references, which are at the pin (`expression_pcs_log2cpm` no
+> longer exists, and the runner no longer passes `tau_refit=True`); the
+> total-channel zero-guard and total counting-term questions (sections 2.4
+> item 4, 5.2 `readless_floor_t`, 9.5), which do not arise when the total
+> channel has unit working variance (the allelic counting term is still added
+> to `Va` by default); and section 9.7, which is decided: fine-mapping is not supported in
+> default mode (`map_susie` refuses it, and `--mode hapmixqtl_susie` was
+> removed from the CLI). The external-benchmark tier's plan to freeze
+> `hapmix_pval` (section 6.2) was not followed: on 2026-09-28 (commit 9369bb1)
+> `hapmix_pval` was fixed to run default mode, and the three harnesses that
+> called its removed arm are marked not runnable (record
+> `brainvar_hapmix_deploy/external_benchmark_current_20260928/`).
 
 Date: 2026-09-26, revised the same day after two review passes. Status:
 specification only; nothing in it is implemented.
@@ -801,6 +811,8 @@ diagnostic counts `d_L`, `d_R` (strictly distinguishable), `n_amb` and `n_U`.
   (a prior of 1 would let a zeroed copy escape within a few rounds, while the
   zeroed side's draw mean in fact keeps rising across each 25-draw chain, by
   a last-over-first-block ratio of 1.46 at 100-999 reads and 3.0 at 1,000+).
+  [2026-10-01: settled the other way: the Gibbs prior is 1 per active
+  transcript (Appendix B, item 6a); the block-ratio measurement stands.]
   All three are Appendix B, item 6a, settled from Salmon v1.10.3 source and
   pinned by a unit test before the acceptance test *Emulator on real
   equivalence classes*, which carries the block-ratio target that
@@ -1178,6 +1190,10 @@ of the pinned code; and `candidate` = `split`, `zeros_drop`,
 calibrated. Naming it does not choose it: which configuration ships is the
 user's (section 9.4), and so is the setting at which the auxiliary arms are
 held (section 9.14).
+
+[2026-10-01: `ship` and `candidate` are as of 2026-09-26. The shipped default
+since 2026-09-29 is the half-read split (`docs/pipeline_rules.md`), whose total
+channel is not the `split` arm's log2(CPM + 1) total.]
 
 ### 5.3 Scenarios
 
@@ -1684,7 +1700,9 @@ null only when an ancestry term is present.
 `tau_mode='zero'` is the shipped mode; the change flips
 `TestMapSusie::test_map_susie_records_tau_mode_provenance`. Until this is
 decided, fine-mapping, held-out prediction and knockoff eGene FDR are out of
-the benchmark.
+the benchmark. [2026-10-01: decided: fine-mapping is not supported in default
+mode; `map_susie` refuses `tau_mode='zero'`, and `--mode hapmixqtl_susie` was
+removed from the CLI.]
 
 **9.8 The 1,208 calibration genes without Gibbs draws.** Extend `load_counts`
 to collect total-channel draws for pair-less genes (a cache rebuild of about

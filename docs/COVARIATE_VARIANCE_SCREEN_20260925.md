@@ -1,10 +1,20 @@
 # Covariate variance screen: completed bounded result (2026-09-25)
 
-## Scope and status
-
-The authorized exploratory screen was completed. It did not change weights,
-the default mode, or shipped behavior. Outputs are
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/covariate_variance_screen_20260925/`.
+> **Status, 2026-10-01: completed, bounded exploratory screen; a dated
+> record.** On 2026-09-25 this screen tested whether RIN or another available
+> covariate is associated with residual variability after accounting for gene
+> scale, separately in the allelic and total channels, and found no compelling
+> association (numbers below); it changed no weights, no default and no shipped
+> behavior, and authorizes none. It ran on the inputs of that date, before the
+> half-read default (2026-09-29) and the half-read expression PCs (2026-09-30):
+> the 17-column covariate matrix `brainvar_hapmix_deploy/cov/covariates.tsv`,
+> the 2026-09-25 nominal-p instrument and the Gibbs cache listed below, so its
+> numbers describe that pipeline and are not re-measured on the shipped one.
+> Outputs, with the report `report.html` and `RESULTS.md`, are in
+> `/mnt/ssd/lalli/brainvar_hapmix_deploy/covariate_variance_screen_20260925/`.
+> The current method, and where the nominal-p mechanism and the per-donor
+> variance component (donor `221_D1`) now stand, are in
+> `docs/CURRENT_SCIENTIFIC_STATE.md` and `docs/pipeline_rules.md`.
 
 ## Observations already established
 

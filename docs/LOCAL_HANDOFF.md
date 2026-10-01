@@ -1,15 +1,28 @@
-# Historical handoff: pre-2026-09-29 default adoption
+# Historical handoff record, 2026-09-08
 
-This file records an older transfer state. It does not describe the live
-worktree, which was `simulation-benchmark` at merge `86b947f` when reconciled
-on 2026-09-29. The branch was ahead of origin by three commits, was not
-pushed, and contained untracked `scripts/beta_postfit_adjustment.py`; verify
-live Git state before acting. For current behavior read `CLAUDE.md`, then
-`docs/CURRENT_SCIENTIFIC_STATE.md` and `docs/hapmixqtl_methods.md`.
+> **Status, 2026-10-01: historical record, not current state.** This file was
+> written on 2026-09-08 to move the work to a local server and was annotated
+> through 2026-09-29; its inventory, install notes and steps (sections 1-3)
+> describe the earlier `tau_mode='estimate'` default on branch
+> `claude/hapmixqtl-gibbs-uncertainty-IQ6Za`, so verify live Git state rather
+> than following them. Still valid: the data-governance check (section 4), the
+> reference-bias precondition (section 3), and the explanation of why
+> 57.8% of donor-gene pairs carry no allelic information (section 3). For the
+> current method and state read CLAUDE.md, then
+> `docs/CURRENT_SCIENTIFIC_STATE.md`, `docs/hapmixqtl_methods.md`,
+> `docs/pipeline_rules.md` and `docs/outputs.md`; the known-effect benchmark
+> is `benchmark/plasmode/README.md`. Wrong to act on today: checking out that
+> branch; `tau_mode='estimate'` and every configuration deprecated on
+> 2026-09-23; `compare_pipelines.py`, removed on 2026-10-01 (archive
+> `brainvar_hapmix_deploy/retired_scripts_20261001/`); the fine-mapping
+> calibration listed as done in section 5, which was of a deprecated
+> configuration (fine-mapping is not supported in default mode); and section
+> 6's statement that expression PCs remain log2(CPM+1) covariates, which has
+> been false since 2026-09-30.
 
 # Moving this work to a local server
 
-A Claude Code cloud session cannot be relocated — it is server-side state. What
+A cloud development session cannot be relocated — it is server-side state. What
 transfers is the **repository**, which is where all of the work lives. Nothing in
 the cloud container is load-bearing except the git history, and that is pushed.
 
@@ -48,6 +61,8 @@ Historical claim only: the referenced working tree was clean and pushed to
   expression and bounded by RASQUAL's cost), `build_asvcf.py` (the
   AS-annotated VCF RASQUAL reads), `make_rasqual_inputs.py` (RASQUAL's native
   inputs), and `compare_pipelines.py` (the comparison itself)
+  [2026-10-01: `compare_pipelines.py` was removed; archive
+  `brainvar_hapmix_deploy/retired_scripts_20261001/`]
 - `docs/brainvar_deploy_runbook.md` — the operating procedure for running that
   chain on BrainVar, end to end
 
@@ -57,6 +72,9 @@ Historical claim only: the referenced working tree was clean and pushed to
 one. `docs/ase_validation.md` is deliberately written to be the handoff: it
 states not just the results but why each experiment was designed the way it was,
 and records the bugs found along the way. Point a new session at it first.
+[2026-10-01: no longer; a new session starts from CLAUDE.md and
+`docs/CURRENT_SCIENTIFIC_STATE.md`, and `docs/ase_validation.md` is the historical
+validation record.]
 
 **Installed packages.** Recreate with:
 
@@ -68,6 +86,10 @@ sudo apt-get install -y libgsl-dev liblapack-dev libblas-dev zlib1g-dev
 pip install numpy scipy pandas torch pandas_plink h5py qtl pysam pytest
 pip install -e . --no-deps        # tensorqtl itself, for the test suite
 ```
+
+[2026-10-01: historical recipe. On the current server, software built from source is
+installed under `~/usr/local`, and RASQUAL is already built at
+`/mnt/ssd/lalli/usr/local/rasqual/bin/rasqual`.]
 
 Versions this work was validated against: numpy 2.4.6, scipy 1.17.1,
 pandas 3.0.5, torch 2.14.0, pandas-plink 2.3.2, h5py 3.16.0, qtl 0.1.10.
@@ -123,8 +145,11 @@ git checkout claude/hapmixqtl-gibbs-uncertainty-IQ6Za
 # the hapmixQTL surface: the pytest command in CLAUDE.md, "Self-tests"
 # (215 tests as of 2026-09-27; the old "54 passed" for test_hapmixqtl.py alone is stale)
 ./scripts/build_rasqual.sh                 # optional; real RASQUAL
-claude                                     # start a session in the repo
 ```
+
+[2026-10-01: that branch holds the deprecated-default state of September 2026. Take the
+branch from live Git state, and the current self-test command from `tests/README.md` and
+CLAUDE.md, "Self-tests".]
 
 Then, for BrainVar:
 
@@ -152,9 +177,9 @@ handles, not a data-quality defect to chase.
 
 ## 4. Before you do this: a data-governance check
 
-BrainVar is dbGaP controlled-access (phs001900). Running an AI coding assistant
-on a machine holding controlled-access genomic data means file contents can be
-transmitted to a third-party API. **Check your Data Use Agreement and your
+BrainVar is dbGaP controlled-access (phs001900). Running any tool that sends
+file contents to a hosted service, on a machine holding controlled-access genomic
+data, means those contents can be transmitted to a third-party API. **Check your Data Use Agreement and your
 institution's policy before doing that** — many DUAs restrict transmission of
 individual-level data to external services, and this is a decision for the data
 custodian, not a technical detail.
@@ -176,6 +201,10 @@ Done and validated: the τ defect (found, fixed, confirmed on real GTEx data),
 the zero-information weight bug (found, fixed), `Cat` retired with a mechanism,
 phasing error / covariates / robust SEs resolved, fine-mapping calibration,
 compute cost, and the reference-bias diagnostic.
+[2026-10-01: "confirmed on real GTEx data" was WITHDRAWN on 2026-09-23 as independent
+corroboration (`docs/ase_validation.md` §7d, finding 1). The τ fix and the fine-mapping
+calibration were of `tau_mode='estimate'`, deprecated on 2026-09-23; fine-mapping is not
+supported in default mode.]
 
 Open:
 
@@ -186,6 +215,8 @@ Open:
   realistic NB dispersion the simulated allelic ratios are far noisier than real
   ASE, penalising every ASE method. Settle this before quoting numbers.
 
+  [2026-10-01: `compare_pipelines.py`, named next, was removed; archive
+  `brainvar_hapmix_deploy/retired_scripts_20261001/`.]
   On real data this is no longer blocked on tooling: `compare_pipelines.py`
   gives each method its native input on the same genes and the same phase, and
   `docs/brainvar_deploy_runbook.md` is the procedure **and the record of how
@@ -218,6 +249,10 @@ Read `CLAUDE.md` for the accepted 2026-09-29 default: point-estimate values,
 half-read total `log2((pT+.5)/(Leff+1)*1e6)`, legacy ASE variance/admission,
 and unit `Vt`. Existing expression PCs remain fixed log2(CPM+1) covariates.
 The 2026-09-25 pipeline rules below are historical context.
+[2026-10-01: the expression-PC sentence is false since 2026-09-30: expression PCs are
+built on the same half-read unit (`scripts/build_covariates.py`), and the Salmon runner
+refuses PCs built in log2(CPM+1) (`docs/CURRENT_SCIENTIFIC_STATE.md`, "Expression-PC unit,
+2026-09-30").]
 
 ## 7. State as of 2026-09-27
 
@@ -230,7 +265,7 @@ variance estimate) with Meier's first-order correction of the combined
 standard error for weights estimated from the same residuals, and a
 15-donor allelic floor; rule in
 `docs/hapmixqtl_methods.md` Section 4.5), the benchmark code
-(`scripts/plasmode/README.md`) and the result pages. The weighting decision
+(`scripts/plasmode/README.md`, now `benchmark/plasmode/README.md`) and the result pages. The weighting decision
 was open at that date and is superseded by the accepted 2026-09-29 default.
 
 ## 8. State as of 2026-09-29

@@ -1,54 +1,49 @@
 # Pipeline rules: values, units, gene filter, permutation
 
-User decisions of 2026-09-25, amended by the half-read split adoption on
-2026-09-29. They apply to the hapmixQTL association default; published mixQTL
-is an unchanged comparator. This page states each
-rule, where it is implemented, what was built to satisfy it, what is not yet
-switched over, and which recorded results predate it.
+The standing input and estimator contract of hapmixQTL's default mode (half-read
+split) and of the mixQTL comparator: user decisions of 2026-09-25, amended by
+the half-read split adoption on 2026-09-29 and the expression-PC unit decision
+of 2026-09-30. The rules are stated first, as they hold now, with where each is
+implemented and what was built to satisfy it. The dated decision records follow;
+each keeps its date and its numbers, and a record whose conclusion no longer
+describes the shipped default says so in its heading. The current state of the
+science as a whole is in [CURRENT_SCIENTIFIC_STATE.md](CURRENT_SCIENTIFIC_STATE.md);
+report reproduction and its checks are in the
+[half-read analysis guide](half_read_analysis.md). Result folders are under
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
 
 ## The rules
 
-This is the authoritative input and estimator contract. The
-[half-read analysis guide](half_read_analysis.md) describes report reproduction
-and its checks; dated reports retain their original method settings.
-
-1. **Every value comes from Salmon point estimates** (`quant.sf` NumReads):
-   the allelic ratio, total expression, CPM, count cutoffs, expression PCs
-   and the default's inputs. The 200 Gibbs draws are used only for ASE measurement
-   variance; the default total working variance is one. Before this, the phenotype was the mean over Gibbs
-   draws of the log (`compute_summaries_from_gibbs`, kept so dated scripts
-   reproduce).
-   The default Salmon runner aggregates only allelic Gibbs arrays. Historical
-   callers of `load_counts` can still request total Gibbs aggregation; the
-   half-read route reads totals from point estimates. Fractional Salmon expected
-   counts are valid and are not rounded to integers.
+1. **Every value comes from Salmon point estimates** (`quant.sf` NumReads): the
+   allelic ratio, total expression, CPM, count cutoffs, expression PCs and the
+   default's inputs. The 200 Gibbs draws are used only for the allelic
+   channel's measurement variance; the default total working variance is one.
+   The default Salmon runner aggregates only allelic Gibbs arrays and reads
+   totals from point estimates. Fractional Salmon expected counts are valid and
+   are not rounded to integers. (Before 2026-09-25 the phenotype was the mean
+   over Gibbs draws of the log, `compute_summaries_from_gibbs`, kept so dated
+   scripts reproduce; historical callers of `load_counts` can still request
+   total Gibbs aggregation.)
 
 2. **The default total phenotype and the expression PCs share one unit, the
-   half-read log-CPM.** CPM is count divided by the
-   effective library size, times 1e6. The effective library size is computed
-   by edgeR itself: `lib.size` times the TMM factor. TMM (trimmed mean of
-   M-values) is edgeR's normalization factor; it scales each library so that
-   most genes' log ratios to a reference library centre on zero. The edgeR
-   sequence, in `scripts/edger_library_normalization.R`, is: a `DGEList` of
-   every gene's point-estimate total; `filterByExpr` with no design (CPM at
-   least 10 / median library size in millions in at least 10 + 0.7 (n - 10)
-   samples, and a total count of at least 15); intersection with the gene
-   restriction; subsetting with `keep.lib.sizes=FALSE`, so `lib.size` is
-   recomputed from the kept genes; `calcNormFactors(method='TMM')`.
-   The default total phenotype is
+   half-read log-CPM.** CPM is count divided by the effective library size,
+   times 1e6. The effective library size is computed by edgeR itself:
+   `lib.size` times the TMM factor. TMM (trimmed mean of M-values) is edgeR's
+   normalization factor; it scales each library so that most genes' log ratios
+   to a reference library centre on zero. The edgeR sequence, in
+   `scripts/edger_library_normalization.R`, is: a `DGEList` of every gene's
+   point-estimate total; `filterByExpr` with no design (CPM at least 10 /
+   median library size in millions in at least 10 + 0.7 (n - 10) samples, and
+   a total count of at least 15); intersection with the gene restriction;
+   subsetting with `keep.lib.sizes=FALSE`, so `lib.size` is recomputed from the
+   kept genes; `calcNormFactors(method='TMM')`. The default total phenotype is
    `log2((point_count + 0.5)/(effective_library_size + 1)*1e6)`, and the
-   expression PCs are built on the same transform (user decision 2026-09-30:
-   the 2026-09-29 adoption left them on `log2(CPM + 1)`, which was not
-   intended). `build_covariates.py` records the unit as `expression_pc_unit`
-   in `covariate_build.json` and the Salmon runner refuses covariates whose
-   PCs are in another unit. The allelic ratio is
-   log2((L + 0.5) / (R + 0.5)) of point-estimate haplotype counts, because
-   library size cancels within a sample. Published mixQTL input construction
-   and interpretation are unchanged by this default adoption.
-   What the "+ 1" costs effect sizes (a 1-CPM pseudocount is effective
-   library / 1e6 reads) is measured in
-   `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
-   (2026-09-29); the half-read default adoption follows that evaluation.
+   expression PCs are built on the same transform (since 2026-09-30).
+   `build_covariates.py` records the unit as `expression_pc_unit` in
+   `covariate_build.json` and the Salmon runner refuses covariates whose PCs
+   are in another unit. The allelic ratio is log2((L + 0.5) / (R + 0.5)) of
+   point-estimate haplotype counts, because library size cancels within a
+   sample.
 
 3. **The expression-PC gene filter equals the eQTL gene filter actually
    used.** Calibration phase (user decision, explicitly temporary while the
@@ -58,26 +53,35 @@ and its checks; dated reports retain their original method settings.
 
 4. **Under permutation, covariates move with the RNA record, except the
    genotype PCs, which move only with the genotypes.** Age, age squared, sex,
-   RIN and the expression PCs travel with the donor's RNA record; the
-   genotype PCs stay in genotype order.
+   RIN and the expression PCs travel with the donor's RNA record; the genotype
+   PCs stay in genotype order. In the default through-origin allelic design
+   (`ase_covariates_df=None`) the allelic channel has no covariates, so this
+   rule acts on the total channel only; it reaches the allelic channel only
+   under `ase_covariates_df=SAME_COVARIATES`.
 
-5. **The published mixQTL comparator is unchanged.** This adoption does not
-   relabel its dated inputs or results.
+5. **mixQTL mode is the unchanged published comparator.** It reads the same
+   point estimates, never the Gibbs draws, and keeps its published
+   natural-log response and cutoffs; rules 2 and 6 do not apply to it, and the
+   2026-09-29 adoption does not relabel its dated inputs or results.
 
-6. **ASE keeps its original Gibbs variance and counting-noise rule.** Under
-   `count_noise=True`, the allelic delta-method term is added at the point
-   estimate. No-coverage ASE rows remain excluded (`Va = 0`), and the default
-   admission also excludes an exclusive one-sided point estimate (`pL < .5`
-   XOR `pR < .5`). The total channel has unit working variance, so it has no
-   total draw variance, total counting floor, or `Cat` contribution.
-   The Gibbs variance is that of stock Salmon 1.10.3's draws, sampled under a
-   prior of 1 per active transcript while the point estimate uses 0.01; its
-   split-half calibration and the `--gibbsPriorGroups` fork are recorded in
-   `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md`
-   (2026-10-01; this rule is unchanged). Caveat kept by user decision instead
-   of re-quantifying: for donor-gene pairs with few haplotype-informative reads
-   (low expression or few heterozygous sites) this `Va` is shaped by the prior
-   and runs too small, most at 3-30 informative reads on donor 100.
+6. **The allelic channel keeps its Gibbs variance, counting term and admission
+   rule; the total channel has unit working variance.** `Va` is the
+   across-draw variance of the allelic log2 ratio plus, under
+   `count_noise=True`, the delta-method counting term at the point estimate,
+   `(1/(pL + 0.5) + 1/(pR + 0.5)) / ln(2)^2`. A donor-gene pair is admitted to
+   the allelic channel only if `Va > 1e-12`, it has haplotype-informative reads
+   (`pL + pR > 0`), and not exactly one point-estimate haplotype is below 0.5
+   reads (`pL < .5` XOR `pR < .5`); an excluded pair carries `Va = 0`. The
+   total channel has no total draw variance, total counting floor or `Cat`
+   contribution, and keeps every donor. The Gibbs variance is that of stock
+   Salmon 1.10.3's draws, sampled under a prior of 1 per active transcript
+   while the point estimate uses 0.01; its split-half calibration and the
+   `--gibbsPriorGroups` fork are recorded in
+   `salmon_informative_reads_20260930/README.md` (2026-10-01; this rule is
+   unchanged). Caveat kept by user decision instead of re-quantifying: for
+   donor-gene pairs with few haplotype-informative reads (low expression or few
+   heterozygous sites) this `Va` is shaped by the prior and runs too small,
+   most at 3-30 informative reads on donor 100.
 
 ## Where each rule is implemented
 
@@ -85,61 +89,129 @@ and its checks; dated reports retain their original method settings.
 |---|---|---|
 | 1, 2, 6 | `tensorqtl/hapmixqtl.py` `prepare_default_inputs` | `tests/test_half_read_default.py`, `tests/test_half_read_runner.py` |
 | 2, 3 | `scripts/edger_library_normalization.R`; `run_hapmixqtl_from_salmon.py` `edger_normalize`, `read_edger_dir` | runner `--selftest` |
-| 3 | runner `check_covariate_provenance`: refuses covariates whose `covariate_build.json` names another gene set or other library sizes; `--covariates-unverified` overrides | runner `--selftest` |
+| 2, 3 | runner `check_covariate_provenance`: refuses covariates whose `covariate_build.json` names another gene set, other library sizes or another expression-PC unit; `--covariates-unverified` overrides | runner `--selftest` |
 | 4, default mode | `map_cis`/`map_nominal` `genotype_covariates_df`; `_combine_covariates` puts those columns last; `WeightedResidualizer.n_fixed_cov` tells `_record_permutation_channel` how many trailing columns stay fixed | `test_genotype_tied_covariates_permute_with_the_genotypes` (relabeling identity: equals permuting genotype columns and genotype-PC rows together by the inverse permutation) |
 | 4, mixQTL mode | `mixqtl_scan`/`mixqtl_permutation_scan` `genotype_covariates`: the two-step offset is refitted on each permuted dataset (divergence 12 in the module docstring) | `test_genotype_covariates_stay_with_the_genotypes_under_permutation` |
-| 5 | published mixQTL comparator | its recorded input provenance |
+| 5 | `tensorqtl/mixqtl_replication.py`; `compare_mixqtl_replication.py` `load_point_estimate_inputs` | `tests/test_mixqtl_replication.py` |
 
-In the default through-origin allelic design (`ase_covariates_df=None`) the
-allelic channel has no covariates, so rule 4 acts on the total channel only.
-It reaches the allelic channel only under `ase_covariates_df=SAME_COVARIATES`.
+Since 2026-10-01 `map_nominal` and `map_cis` also check the contract these rules
+produce (`_validate_inputs`: `A`, `T`, `Va`, `Vt` aligned by row and column,
+finite, `Va` and `Vt` nonnegative, unique ids, phase as both frames or neither)
+and refuse a covariate design that is not of full column rank with the
+intercept (`_combine_covariates`).
 
 Drivers on the rules: `scripts/run_hapmixqtl_from_salmon.py` (default mode;
 `--covariates` required, genotype-tied columns from `genotype_covariates.txt`
 beside it) and `scripts/compare_mixqtl_replication.py`
 (`load_point_estimate_inputs`; output `$MIXQTL_OUT`, default
-`brainvar_hapmix_deploy/mixqtl_replication_point_estimates_20260925/`).
+`mixqtl_replication_point_estimates_20260925/`).
 
 **Raw BED CLI contract (2026-09-29).** `hapmixqtl` CLI modes require
 `--hap_A`, `--hap_T`, and `--hap_Va`. `--hap_Vt` is optional: omission creates
 unit total working variance, while a supplied BED is an exact custom override.
 Raw BED input cannot establish that `T` used the half-read transform or that
-the ASE mask was applied; callers must provide those semantics themselves.
+the allelic admission rule was applied; callers must provide those semantics
+themselves.
 
-## Not yet switched over
+## Historical code paths kept for reproduction
 
-- `scripts/compare_pipelines.py`, the RASQUAL comparison, still uses the
-  Gibbs-mean natural-log phenotype and moves the whole covariate row with the
-  RNA record in its null rounds.
+- `scripts/compare_pipelines.py`, the RASQUAL comparison on the pre-correction
+  pipeline, was removed on 2026-10-01 and archived with its SHA256 in
+  `retired_scripts_20261001/` (README there). Its comparison is now made by
+  the plasmode benchmark and the held-out referee.
 - The dated analysis scripts keep the pre-correction path on purpose. The
-  driver's `load_inputs` is the pre-correction loader and stays unchanged
-  because 46 of them import it.
+  mixQTL driver's `load_inputs` is the pre-correction loader and stays
+  unchanged because dated scripts import it (46 when counted on 2026-09-25).
 - `scripts/analyze_mixqtl_comparison.py` reads the 2026-09-19 folder, whose
   hapmixQTL arm is a deprecated-model ablation record. Do not point it at the
   corrected folder.
-- A corrected stored null and a before/after calibration comparison, which
-  this bullet used to say were missing, have both been run since — see
-  "Nominal-p calibration on the corrected pipeline" and "What made the total
-  channel worse" below.
+- `summaries_from_point_estimates` (the 2026-09-25 `log2(CPM + 1)` summaries
+  with Gibbs variance in both channels) and `compute_summaries_from_gibbs`
+  (natural log, Gibbs means) remain in `tensorqtl/hapmixqtl.py` for those
+  scripts; neither is the default-input route.
 
-## Open decision: 1,208 filtered genes have no Gibbs draws
+## Built inputs
+
+All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
+
+- `cache/gibbs_56b63c3b37ed5df8/point_estimates/` from
+  `scripts/build_point_estimate_cache.py`: `pL.npy`, `pR.npy`, `pT.npy` for
+  the 34,457 cache genes; `totals_all.tsv.gz` for 41,552 genes;
+  `edger/edger_samples.tsv`, `edger/calibration_genes.txt` (12,955 genes);
+  `summary.json` with the reader gates.
+- `cov/half_read_point_calibration_20260930/` (current, 2026-09-30): the same
+  build command and inputs as the entry below, with the expression PCs on the
+  half-read log-CPM (`expression_pc_unit: half_read_log_cpm`); the 7 metadata
+  and genotype-PC columns are identical to the entry below, and the two
+  10-PC spaces have canonical correlations 0.974 to 0.9999 (each new PC
+  predicted by the old ten with R^2 0.955 to 0.9996). Every result stored
+  before 2026-09-30 used the entry below.
+- `cov/log2cpm1_point_calibration_20260925/` (historical) from
+  `scripts/build_covariates.py --point-estimates`: `covariates.tsv` (14
+  RNA-tied columns: age_days, age_days_sq, rin, sex, expr_pc1-10; 3
+  genotype-tied: geno_pc1-3), `genotype_covariates.txt`,
+  `covariate_build.json`. Metadata
+  `/mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv`
+  (sha256 prefix `c70e3599`); VCF `prepped/rephased.vcf.gz`. Expression PCs
+  are log2(CPM + 1) of point estimates on the calibration genes, each gene
+  centred but not scaled, residualized on the metadata and genotype PCs, top
+  10.
+- The old `cov/covariates.tsv` is kept unchanged and is pre-correction. Its
+  genotype PCs came from a different VCF: old PC1 correlates with new PC1 at
+  r = 0.985, old PC3 with new PC2 at r = -0.973, and old PC2 has no
+  counterpart.
+
+| Measurement | Value |
+|---|---|
+| TMM factors | 0.915 to 1.124 |
+| Median effective library size | 17,172,092 (raw median 22,480,610) |
+| Point-estimate vs Gibbs posterior-mean totals, Pearson of log1p | 0.993 all cache genes; 0.99999 on the 29 calibration genes |
+| Donor-gene pairs with haplotype reads in some Gibbs draw but none in the point estimate | 44,228 (none the other way) |
+| Donor-gene pairs with no allelic information | 1,875,946 of 3,170,044 (59.2%) under point estimates, against 57.8% under Gibbs posterior means |
+
+## Dated decision records
+
+### Decision, 2026-09-29: half-read split is the default weighting configuration
+
+The user adopted half-read split: original admitted Gibbs allelic weighting
+(rule 6, including the zero-haplotype exclusion), half-read total expression,
+unit total weights, and fitted residual scales, with Meier's correction of the
+combined standard error (a first-order inflation that accounts for channel
+weights estimated from the same residuals they combine; shipped 2026-09-27).
+Expression PCs were left on `log2(CPM + 1)` by that
+adoption, which was not intended; since 2026-09-30 they are in the same
+half-read unit (rule 2). The decision accepts the measured beta/precision
+tradeoff without claiming uniform precision improvement. Implementation merged
+as `86b947f`; validation in
+`half_read_default_adoption_20260929/verification.json` and `integration.json`;
+the evidence weighed is summarized in
+[CURRENT_SCIENTIFIC_STATE.md](CURRENT_SCIENTIFIC_STATE.md), "On the shipped
+half-read total with the earlier expression PCs". The records from 2026-09-25
+to 2026-09-29 below are the evidence available before the adoption.
+
+### Open, 2026-09-25: 1,208 filtered genes have no Gibbs draws
 
 1,208 of the 12,955 calibration genes are absent from the Gibbs cache, so the
 runner reports and skips them. The tested set is 11,747 while the expression
 PCs use all 12,955. These genes are expressed (median 401 total reads in 8
 donors checked) but have no haplotype-paired transcript in any donor; in
-donor 100_R1, ACO2 has only `_L` rows. `load_counts` collects total-channel
-draws only for genes with a pair in some donor. The options are to extend
-`load_counts` to collect `YT` draws for pair-less genes, which needs a new
-cache build of about 45 minutes and makes them testable in the total channel,
-or to accept 11,747 genes and record why.
+donor 100_R1, ACO2 has only `_L` rows. `load_counts` collects draws only for
+genes with a pair in some donor. The options recorded on 2026-09-25 were to
+extend `load_counts` to collect `YT` draws for pair-less genes (a new cache
+build of about 45 minutes, making them testable in the total channel), or to
+accept 11,747 genes and record why. Since 2026-09-29 the default's total
+channel uses point-estimate totals (`totals_all.tsv.gz` covers them) and unit
+working variance, so testing these genes total-only needs no draws; the runner
+nevertheless still restricts testing to cache genes. No decision has been
+taken.
 
-## Open decision: Salmon point estimates put one haplotype at exactly zero
+### Decided, 2026-09-29: Salmon point estimates that put one haplotype at exactly zero are excluded from the allelic channel (finding of 2026-09-25)
 
-**Current default admission (2026-09-29):** half-read split excludes an ASE
-donor-gene pair when exactly one point-estimate haplotype is below 0.5 reads.
-The older observations and options below are retained as evidence; the choice
-of a different allelic estimator remains separate from this admission rule.
+**Current rule:** the default excludes an allelic donor-gene pair when exactly
+one point-estimate haplotype is below 0.5 reads (rule 6); the total channel
+keeps it. This is the "zeros dropped" arm evaluated below
+(`prepare_default_inputs`: admission matches the evaluated split arm). The
+evidence follows as recorded.
 
 Found 2026-09-25 by the first corrected run of the mixQTL driver. Salmon
 1.10.3 ran with default options (`cmd_info.json`: no `--useEM`), so its point
@@ -164,7 +236,7 @@ On the 29 calibration genes:
 | abs(allelic ratio), point estimate | median 0.23, 99th percentile 10.98, max 14.27 log2 units |
 | abs(allelic ratio), mean over draws of the log | median 0.21, 99th percentile 3.36, max 5.26 log2 units |
 | Pearson r, point-estimate vs draw-mean ratio | 0.82 |
-| Within-gene weight percentile of the zero-haplotype pairs in default mode | median 0.02 |
+| Within-gene weight percentile of the zero-haplotype pairs in the then default mode (Gibbs weights, zeros kept) | median 0.02 |
 | Their share of the gene's sum of weight x ratio^2 | median 0.118, max 0.591 |
 
 Transcriptome-wide it is much larger. Over all 34,457 cache genes, among the
@@ -189,9 +261,9 @@ ratio exceeds about 7 log2 units; 27,016 of 34,457 genes have at least one.
 **Imprinting or estimator?** Tested against phASER's alignment-based counts
 at heterozygous SNPs, which cannot be spread between copies
 (`scripts/zero_haplotype_phaser_check.py`,
-`brainvar_hapmix_deploy/zero_haplotype_phaser_check_20260925/`; pairs with at
-least 20 gw-phased phASER reads). The statistic is the phASER minor-allele
-fraction, near 0 for monoallelic expression and near 0.5 for balanced.
+`zero_haplotype_phaser_check_20260925/`; pairs with at least 20 gw-phased
+phASER reads). The statistic is the phASER minor-allele fraction, near 0 for
+monoallelic expression and near 0.5 for balanced.
 
 | Haplotype-informative reads | Zero-haplotype pairs outside the 35 genes below: median minor fraction, share below 0.05 | Control, reads on both copies |
 |---|---|---|
@@ -211,27 +283,26 @@ families (COMMD3-BMI1, INO80B-WBP1, TBC1D3D, NPIPB12, PKD1P1), and below
 1,000 reads phASER shows their zero pairs biallelic too. Only 13,768 of the
 41,579 zero pairs at 100 or more reads have enough phASER coverage to test.
 
-So on the 29 calibration genes the Gibbs weights mostly protect the default-mode slope, because these
-pairs get the lowest weights, but their extreme values still inflate the
-fitted residual scale. mixQTL mode's published allelic cutoff (at least 50
-reads on each haplotype) excludes them. The unweighted and capped arms of the
-weighting ablation are dominated by them: in
-`mixqtl_replication_point_estimates_20260925/summary.json` the Gibbs-weighted
-slope variance is 0.066 of unweighted, against 0.340 in the 2026-09-19 run on
-draw means, and the capped harmonic arm's known-variance calibration reads
-0.000: a zero haplotype gives a harmonic weight of about 1e-12, and the cap
-limits every weight to a multiple of the smallest.
-Those numbers describe the boundary zeros, not the weightings, and should
-not be cited as a before/after of the weighting result.
+So on the 29 calibration genes the Gibbs weights mostly protected the
+then-default slope, because these pairs get the lowest weights, but their
+extreme values still inflated the fitted residual scale. mixQTL mode's
+published allelic cutoff (at least 50 reads on each haplotype) excludes them.
+The unweighted and capped arms of the weighting ablation are dominated by them:
+in `mixqtl_replication_point_estimates_20260925/summary.json` the
+Gibbs-weighted slope variance is 0.066 of unweighted, against 0.340 in the
+2026-09-19 run on draw means, and the capped harmonic arm's known-variance
+calibration reads 0.000: a zero haplotype gives a harmonic weight of about
+1e-12, and the cap limits every weight to a multiple of the smallest. Those
+numbers describe the boundary zeros, not the weightings, and should not be
+cited as a before/after of the weighting result.
 
 **Which allelic value agrees with phASER** (`scripts/allelic_value_vs_phaser.py`,
-`brainvar_hapmix_deploy/allelic_value_vs_phaser_20260925/summary.json`).
-Pairs with at least 10 Salmon haplotype-informative reads and at least 20
-gw-phased phASER reads. "Inconsistent" means the value differs from phASER's
-log2 ratio by more than 3 of phASER's own counting sd. Candidates: the point
-estimate; the draw mean of log2((yL+1/2)/(yR+1/2)), the pre-2026-09-25 value;
-and log2 of the draw-mean counts. Intervals resample genes (SEED 42, 2,000
-draws).
+`allelic_value_vs_phaser_20260925/summary.json`). Pairs with at least 10
+Salmon haplotype-informative reads and at least 20 gw-phased phASER reads.
+"Inconsistent" means the value differs from phASER's log2 ratio by more than 3
+of phASER's own counting sd. Candidates: the point estimate; the draw mean of
+log2((yL+1/2)/(yR+1/2)), the pre-2026-09-25 value; and log2 of the draw-mean
+counts. Intervals resample genes (SEED 42, 2,000 draws).
 
 | Candidate | Zero-haplotype pairs (37,546): median abs difference, share inconsistent | Pairs with reads on both copies (595,009) |
 |---|---|---|
@@ -262,29 +333,33 @@ measured.
 
 **Cost of dropping them from the allelic channel** (the total channel keeps
 them; `scripts/drop_zero_haplotype_cost.py`,
-`brainvar_hapmix_deploy/drop_zero_haplotype_cost_20260925/`), on the 11,747
-calibration genes with draws: 114,999 of 786,919 informative pairs, 14.6%,
-all of them exact zeros; 89.5% of pairs at 1 to 9 haplotype reads, 42.4% at 10
-to 99, 7.8% at 100 to 999, 2.2% at 1,000 or more. They carry 0.19% of the
-allelic channel's total weight (median per gene 0.18%) under the shipped
-weight 1 / (Gibbs variance + counting term at the point estimate). Genes
-with at least 20 informative donors fall from 11,237 to 10,738.
+`drop_zero_haplotype_cost_20260925/`), on the 11,747 calibration genes with
+draws: 114,999 of 786,919 informative pairs, 14.6%, all of them exact zeros;
+89.5% of pairs at 1 to 9 haplotype reads, 42.4% at 10 to 99, 7.8% at 100 to
+999, 2.2% at 1,000 or more. They carry 0.19% of the allelic channel's total
+weight (median per gene 0.18%) under the weight then shipped, 1 / (Gibbs
+variance + counting term at the point estimate). Genes with at least 20
+informative donors fall from 11,237 to 10,738.
 
-Options for the user: keep point estimates and let the weights handle it;
-treat a haplotype at zero in the point estimate while the draws disagree as
+Options as posed to the user on 2026-09-25 (superseded by the 2026-09-29
+exclusion rule): keep point estimates and let the weights handle it; treat a
+haplotype at zero in the point estimate while the draws disagree as
 uninformative for the allelic channel; re-quantify with Salmon's `--useEM`
 (plain EM instead of variational EM), which can also reach zero, so whether
 it helps would have to be measured; or use a different point summary for
 the allelic split only.
 
-## Nominal-p calibration on the corrected pipeline (2026-09-25)
+### Nominal-p calibration on the corrected pipeline, Gibbs weights in both channels (2026-09-25; that configuration superseded on 2026-09-29)
 
-`scripts/corrected_null_store.py`, `brainvar_hapmix_deploy/corrected_null_store_20260925/`:
-200 records_signflip permutations, the stream of the pre-correction store, on
-its 90 genes that pass the calibration filter plus 10 replacements (487,454
-tested gene-variant pairs). Two arms on identical draws: zero-haplotype pairs
-kept, or dropped from the allelic channel (953 pairs; allelic pairs 6,982 ->
-6,029). Rejection rates at 0.05 / 0.01 / 0.001, 95% gene-clustered intervals.
+`scripts/corrected_null_store.py`, `corrected_null_store_20260925/`: 200
+records_signflip permutations (donor records permuted against fixed genotypes,
+each permuted record's haplotype labels swapped with probability one half), the
+stream of the pre-correction store, on its
+90 genes that pass the calibration filter plus 10 replacements (487,454 tested
+gene-variant pairs). Two arms on identical draws: zero-haplotype pairs kept, or
+dropped from the allelic channel (953 pairs; allelic pairs 6,982 -> 6,029).
+Total phenotype `log2(CPM + 1)` with its Gibbs variance. Rejection rates at
+0.05 / 0.01 / 0.001, 95% gene-clustered intervals.
 
 | Channel | Zeros kept | Zeros dropped |
 |---|---|---|
@@ -309,13 +384,13 @@ Gibbs variance, the new covariates, and holding genotype PCs with the
 genotypes. Limits: 100 genes, nothing below 0.001, and the allelic channel in
 the 21 genes below 30 reads reads 0.061 / 0.019 / 0.009 on few donors.
 
-## What made the total channel worse (2026-09-26)
+### What made the total channel worse (2026-09-26; the evidence for unit total weights)
 
 `scripts/total_channel_decomposition.py`,
-`brainvar_hapmix_deploy/total_channel_decomposition_20260926/`: the corrected
-store's 100 genes and 200 permutations, total channel only, undoing one change
-at a time. Rates at 0.05 / 0.01 / 0.001; the difference from `corrected` is
-paired on the same resampled genes.
+`total_channel_decomposition_20260926/`: the corrected store's 100 genes and
+200 permutations, total channel only, undoing one change at a time. Rates at
+0.05 / 0.01 / 0.001; the difference from `corrected` is paired on the same
+resampled genes.
 
 | Arm | Rates | Minus corrected at 0.05 |
 |---|---|---|
@@ -338,7 +413,8 @@ at every level and at every expression tercile, so every part of the excess
 acts through the Gibbs weights. By median total CPM tercile (below 18, 18 to
 64, above 64) the corrected arm reads 0.094 / 0.079 / 0.075 at 0.05 on the
 first 140 draws, so the weights fail most at low expression but not only
-there.
+there. (The half-read pseudocount arms here keep Gibbs weights; the shipped
+default pairs the half-read total with unit weights.)
 
 **Standard errors under unit weights** (`scripts/total_channel_se_accuracy.py`,
 `total_channel_decomposition_20260926/se_accuracy.json`; 486,947 variants,
@@ -364,10 +440,10 @@ the slope's variance to 0.340 of unweighted on the 29 calibration genes
 
 **Where the Gibbs weights buy precision, per gene**
 (`scripts/gibbs_weight_benefit_by_gene.py`,
-`brainvar_hapmix_deploy/gibbs_weight_benefit_by_gene_20260926/per_gene.tsv`):
-realized null-slope sd under unit weights over that under Gibbs weights,
-median over a gene's tested variants, 100 genes, 200 permutations; allelic
-channel with zero-haplotype pairs dropped. Above 1 the weights help.
+`gibbs_weight_benefit_by_gene_20260926/per_gene.tsv`): realized null-slope sd
+under unit weights over that under Gibbs weights, median over a gene's tested
+variants, 100 genes, 200 permutations; allelic channel with zero-haplotype
+pairs dropped. Above 1 the weights help.
 
 | Channel | 10th / 25th / 50th / 75th / 90th percentile | Max | Genes at 1.2 or more |
 |---|---|---|---|
@@ -375,16 +451,17 @@ channel with zero-haplotype pairs dropped. Above 1 the weights help.
 | Total | 0.70 / 0.84 / 0.93 / 1.00 / 1.08 | 1.21 (ZZZ3) | 1 |
 
 In the allelic channel the gain is broad and largest in genes with several
-donors whose Gibbs variance exceeds 10x the gene's median (Spearman 0.41 with
-their count). In the total channel no donor in any of the 100 genes reaches
+donors whose Gibbs variance exceeds 10x the gene's median (Spearman rank
+correlation 0.41 with their count). In the total channel no donor in any of the 100 genes reaches
 10x its gene's median Gibbs variance, so there is nothing of that kind for
 the weights to downweight.
 
 **Split weighting is calibrated** (`scripts/hybrid_weights_null.py`,
-`brainvar_hapmix_deploy/hybrid_weights_null_20260926/`): Gibbs weights with
-zero-haplotype pairs dropped in the allelic channel, unit weights in the
-total channel, everything else as the corrected store, same 100 genes and
-200 permutations, compared paired with the `drop` arm (Gibbs weights in both).
+`hybrid_weights_null_20260926/`): Gibbs weights with zero-haplotype pairs
+dropped in the allelic channel, unit weights in the total channel, everything
+else as the corrected store (including its `log2(CPM + 1)` total), same 100
+genes and 200 permutations, compared paired with the `drop` arm (Gibbs weights
+in both).
 
 | Combined statistic | 0.05 | 0.01 | 0.001 |
 |---|---|---|---|
@@ -397,8 +474,10 @@ split weighting against 0.944 with Gibbs weights in both, and its realized
 spread is 0.956 of the Gibbs-in-both one (per gene 10th / 50th / 90th
 percentile 0.756 / 0.955 / 1.025), so it is honest and slightly more precise.
 NOT tested: the gene-level `pval_perm`, observed data, anything below 0.001,
-genes outside the calibration filter. Not in the shipped code: both the drop
-and the total-channel unit weights exist only in these experiment scripts.
+genes outside the calibration filter. When this was measured both the
+zero-haplotype drop and the total-channel unit weights existed only in these
+experiment scripts; both ship in the default since 2026-09-29
+(`prepare_default_inputs`, rule 6).
 
 **After the per-channel t references (2026-09-27, commit 8a06803).** Every
 nominal rate above and below in this section was measured with all three p
@@ -407,14 +486,14 @@ paragraph's included, without Meier's correction of the combined standard
 error (the standard error multiplied by the first-order factor
 `sqrt(1 + 4 f_a f_t (1/dof_a + 1/dof_t))`, `f` the channels' weight shares,
 because the weights are estimated from the same residuals they combine),
-shipped later the same day (`docs/hapmixqtl_methods.md` Section 4.5). `scripts/allelic_df_null_check.py`
-re-ran the four configurations (split, unit, 1/(v+1), Gibbs in both) on the
-same 100 genes and 200 permutations under the fixed code
-(`brainvar_hapmix_deploy/allelic_df_fix_20260927/`, `summary.json` and
-`run.log`); slopes and standard errors are identical, only the references
-changed. Combined rate at 0.001, gene-clustered 95% intervals (the
-"before" intervals are recomputed on the same resampled genes as "after",
-so their last digit can differ from the stored summaries quoted above):
+shipped later the same day (`docs/hapmixqtl_methods.md` Section 4.5).
+`scripts/allelic_df_null_check.py` re-ran the four configurations (split,
+unit, 1/(v+1), Gibbs in both) on the same 100 genes and 200 permutations under
+the fixed code (`allelic_df_fix_20260927/`, `summary.json` and `run.log`);
+slopes and standard errors are identical, only the references changed.
+Combined rate at 0.001, gene-clustered 95% intervals (the "before" intervals
+are recomputed on the same resampled genes as "after", so their last digit can
+differ from the stored summaries quoted above):
 
 | Combined at 0.001 | Before (73 df) | After | Before, without RPL41 | After, without RPL41 |
 |---|---|---|---|---|
@@ -449,7 +528,9 @@ its last edit, and kept by its skip-existing resume. They were checked
 afterwards against the stored runs (channel slopes, standard errors and
 `pval_t` identical; `pval_a` and `pval_nominal` equal to
 `2 t.sf(|t|, dof)` within 6e-8; the dof, admission and
-Welch-Satterthwaite rules hold), so no result is affected.
+Welch-Satterthwaite rules hold), so no result is affected. Meier's
+correction acts on the first of the two reasons and not the second; the
+stored nulls have not been re-run under it (deferred).
 
 **1/(v+1) in both channels** (`hybrid_weights_null.py --config=plus_one`,
 `summary_plus_one.json`), same genes and permutations. The combined statistic
@@ -501,9 +582,8 @@ allelic mean se from 0.430 (unit) to 0.334 and stays honest (stated / true
 (0.93) at every MAF band.
 
 **Targeted gene sets** (`scripts/build_targeted_gene_sets.py`,
-`scripts/gene_set_weighting_null.py`,
-`brainvar_hapmix_deploy/targeted_gene_sets_20260926/`): the 100 most
-reference-dependent runnable genes (T2T vs GRCh38 CPM Spearman below 0.95,
+`scripts/gene_set_weighting_null.py`, `targeted_gene_sets_20260926/`): the 100
+most reference-dependent runnable genes (T2T vs GRCh38 CPM Spearman below 0.95,
 the earlier analysis's metric) and the 24 runnable genes whose significant T2T
 lead had |slope| and slope_se both in the top 10%. Same pipeline and 200
 permutations. Unit / 1/v / 1/(v+1):
@@ -522,76 +602,52 @@ high-effect high-se 0.051 / 0.063 / 0.050. The pattern of the random 100
 genes holds in both sets. This is a permutation null: it does not test
 whether a weighting removes the observed spurious hits these genes carry.
 
-## Decision: which weighting configuration ships
+### Weighting configuration before the adoption (2026-09-26 to 2026-09-29; superseded by the 2026-09-29 decision)
 
-**Settled for the default on 2026-09-29:** the user adopted half-read split:
-original admitted Gibbs ASE weighting, half-read total expression, unit total
-weights, and fitted residual scales. Expression PCs were left on log2(CPM + 1)
-by that adoption, which was not intended; since 2026-09-30 they are in the
-same half-read unit (rule 2). This
-accepts the measured beta/precision tradeoff without claiming uniform precision
-improvement. The dated comparisons below describe the evidence available before
-adoption. See `docs/CURRENT_SCIENTIFIC_STATE.md` and
-`brainvar_hapmix_deploy/half_read_default_adoption_20260929/verification.json`.
-
-Not decided; the results directly above are measurement only. On the
-corrected pipeline's 100-gene, 200-permutation null
+As recorded on the corrected pipeline's 100-gene, 200-permutation null
 (`total_channel_decomposition_20260926/`, `hybrid_weights_null_20260926/`,
-`gibbs_weight_benefit_by_gene_20260926/`): the historical default, Gibbs `1/v`
-weights in both channels, is anticonservative in the total channel and in the
-combined statistic; unit weights in the total channel with Gibbs weights kept
-in the allelic channel ("split weighting") calibrates both channels and the
-combined statistic while keeping most of the allelic channel's precision
-gain; unit weights in both channels also calibrates but gives up that gain
-entirely; `1/(v+1)` in both channels calibrates the total channel (it acts as
-unit weighting there in practice) but widens the allelic channel's true
+`gibbs_weight_benefit_by_gene_20260926/`), before the decision: the then
+default, Gibbs `1/v` weights in both channels, is anticonservative in the total
+channel and in the combined statistic; unit weights in the total channel with
+Gibbs weights kept in the allelic channel ("split weighting") calibrate both
+channels and the combined statistic while keeping most of the allelic channel's
+precision gain; unit weights in both channels also calibrate but give up that
+gain entirely; `1/(v+1)` in both channels calibrates the total channel (it acts
+as unit weighting there in practice) but widens the allelic channel's true
 spread by 22%, which cancels the total channel's gain in the combined slope.
-Neither the zero-haplotype drop nor a total-channel weight override is wired
-into `tensorqtl/hapmixqtl.py` or the `scripts/run_hapmixqtl_from_salmon.py`
-CLI; both exist only in `scripts/hybrid_weights_null.py` and
-`scripts/drop_zero_haplotype_cost.py`. Choosing among these configurations —
-or leaving the historical default as is — is a user decision. Since the
-per-channel t references of 2026-09-27 the three alternatives' combined
-rates at 0.001 are 0.0012 / 0.0012 / 0.0011 (split / unit / 1/(v+1)),
-above 0.001 for reasons shared by all three (the Welch-Satterthwaite
-reference and the total channel's own 1.15x); the historical default's is
-0.0041 (see "After the per-channel t references" above,
-`brainvar_hapmix_deploy/allelic_df_fix_20260927/`). Those rates were
-measured before Meier's correction, which acts on the first of the two
-reasons and not the second; the stored nulls have not been re-run under it
-(deferred).
+Since the per-channel t references of 2026-09-27 the three alternatives'
+combined rates at 0.001 are 0.0012 / 0.0012 / 0.0011 (split / unit /
+1/(v+1)), above 0.001 for reasons shared by all three (the Welch-Satterthwaite
+reference and the total channel's own 1.15x); the then default's is 0.0041
+(`allelic_df_fix_20260927/`). Those rates were measured before Meier's
+correction. User decision 2026-09-27: the candidates were Gibbs variance in
+both channels, split and 1/(v+1); unit weights stayed as the reference of the
+efficiency ratios only.
 
-**Known-effect evidence, 2026-09-27.** The null runs above are no longer the
-only evidence. The benchmark in `scripts/plasmode/` (its `README.md`) builds
-datasets with injected cis effects from the cohort's own Salmon output and
-scores the four weightings (Gibbs in both channels, the historical default;
+**Known-effect evidence, 2026-09-27.** The benchmark now in `benchmark/plasmode/`
+(its `README.md`) builds datasets with simulated cis effects from the cohort's
+own Salmon output and scores the four weightings (Gibbs in both channels;
 split; unit; 1/(v+1)) beside mixQTL mode, total-only tensorQTL, RASQUAL and
-TReCASE; its precision ratios are taken against unit weights. Two pages,
-both on the current library (per-channel t references, the 15-donor allelic
-floor and Meier's correction, commit a1b2ef4), under
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/`:
+TReCASE; its precision ratios are taken against unit weights. Two pages, both
+on the library of commit a1b2ef4 (per-channel t references, the 15-donor
+allelic floor and Meier's correction) with the `log2(CPM + 1)` total and PCs:
 
 - `plasmode_meier_20260927/report/plasmode_report.html`, the deep set (the
   100 genes of `corrected_null_store_20260925`). Its section 5, "What it means
-  for the open decisions", states what the benchmark adds to this decision;
+  for the open decisions", states what the benchmark added to this decision;
   its section 3.7 says the stored-null bands it compares against predate
   Meier's correction.
 - `plasmode_lowcov_meier_20260927/report/plasmode_report.html`, the
   low-coverage set (100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100), each with at least 15 admitted
-  allelic donors; `scripts/plasmode/select_stratum_genes.py`), set
-  against the deep set in its section "The low-coverage set against the deep
-  set". That section states the benchmark's limit at this depth, from the
-  test of the thinning rule against Salmon itself
+  allelic donors; `benchmark/plasmode/select_stratum_genes.py`), set against
+  the deep set in its section "The low-coverage set against the deep set".
+  That section states the benchmark's limit at this depth, from the test of
+  the thinning rule against Salmon itself
   (`salmon_half_depth_20260927/salmon_half_depth.html`).
 
-These pages are evidence for the decision, not the decision; the choice
-remains the user's. User decision 2026-09-27: the candidates are Gibbs
-variance in both channels (the historical default), split and 1/(v+1); unit
-weights stay as the reference of the efficiency ratios only.
-
 Since 2026-09-28 both pages also carry TReCASE and split weighting on
-alignment-based counts from the same BAMs (`scripts/plasmode/README.md`,
+alignment-based counts from the same BAMs (`benchmark/plasmode/README.md`,
 "Native-input arms"); they were rescored on 2026-09-29 on the WASP-filtered
 counts, at the same paths.
 
@@ -599,70 +655,38 @@ counts, at the same paths.
 weightings, total-only tensorQTL, mixQTL mode at both cutoff settings and
 (on a 1,500-gene subset) TReCASE map the 92 donors, and each arm's top genes
 at matched list depth are checked in 135 BrainVar donors that no arm saw:
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/referee_replication_20260928/report.html`.
-The referee measures total expression only; the page's section "Leads driven
-by the allelic channel" scores allelic-led and total-led leads separately.
-The one-page summary of both kinds of evidence is
-`benchmark_summary_20260929/summary.html` in the same directory.
+`referee_replication_20260928/report.html`. The referee measures total
+expression only; the page's section "Leads driven by the allelic channel"
+scores allelic-led and total-led leads separately. The one-page summary of
+both kinds of evidence is `benchmark_summary_20260929/summary.html`.
 
-**Effect-size evidence, 2026-09-29.**
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html`
-explains why every weighting's plasmode slope falls short of the planted
+**Effect-size evidence, 2026-09-29.** `beta_shortfall_20260929/beta_shortfall.html`
+explains why every weighting's plasmode slope falls short of the simulated
 effect. For this decision it adds that Gibbs `1/v` weights in the allelic
-channel (the historical default and split) pull the allelic slope toward zero
+channel (Gibbs in both channels and split) pull the allelic slope toward zero
 under a true effect, while unit weights do not; its section "What it means for
-the wider claims" sets that against the allelic null calibration. Evidence, not
-the decision.
+the wider claims" sets that against the allelic null calibration. The
+half-read total that the 2026-09-29 decision adopted follows from this
+record's budget, in which the `log2(CPM + 1)` pseudocount carries most of the
+shortfall.
 
-## Open decision: the genotype-PC permutation rule interacts with the weights
+### Genotype-PC permutation rule and the weights (2026-09-26; the interaction does not arise under the default's unit total weights since 2026-09-29; one question open)
 
-Not established: why the genotype-PC tie hurts only through the weights. A
-candidate is that the permuted record keeps its own ancestry-related
-expression, which the genotype PCs in the design no longer absorb, so the
-permuted residual carries variance that does not scale with depth; that is
-the kind the 1/v weighting with a fitted scale mishandles. If so, the tied
-null carries residual variance the observed data do not, which matters for
-`pval_perm` as well as for this nominal-p check. Not measured on observed
-data.
+The 2026-09-26 decomposition above found that holding the genotype PCs with the
+genotypes raised the total channel's nominal rejection rate only through the
+Gibbs weights: under unit weights the tied null is nominal (0.0503 / 0.0104 /
+0.0011, on the `log2(CPM + 1)` total). The default's total channel has unit weights, and its allelic channel
+has no covariates (rule 4), so the interaction recorded then does not arise
+in the shipped configuration.
 
-## Built inputs
-
-All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
-
-- `cache/gibbs_56b63c3b37ed5df8/point_estimates/` from
-  `scripts/build_point_estimate_cache.py`: `pL.npy`, `pR.npy`, `pT.npy` for
-  the 34,457 cache genes; `totals_all.tsv.gz` for 41,552 genes;
-  `edger/edger_samples.tsv`, `edger/calibration_genes.txt` (12,955 genes);
-  `summary.json` with the reader gates.
-- `cov/half_read_point_calibration_20260930/` (current, 2026-09-30): the same
-  build command and inputs as the entry below, with the expression PCs on the
-  half-read log-CPM (`expression_pc_unit: half_read_log_cpm`); the 7 metadata
-  and genotype-PC columns are identical to the entry below, and the two
-  10-PC spaces have canonical correlations 0.974 to 0.9999 (each new PC
-  predicted by the old ten with R^2 0.955 to 0.9996). Every result stored
-  before 2026-09-30 used the entry below.
-- `cov/log2cpm1_point_calibration_20260925/` (historical) from
-  `scripts/build_covariates.py --point-estimates`: `covariates.tsv` (14
-  RNA-tied columns: age_days, age_days_sq, rin, sex, expr_pc1-10; 3
-  genotype-tied: geno_pc1-3), `genotype_covariates.txt`,
-  `covariate_build.json`. Metadata
-  `/mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv`
-  (sha256 prefix `c70e3599`); VCF `prepped/rephased.vcf.gz`. Expression PCs
-  are log2(CPM + 1) of point estimates on the calibration genes, each gene
-  centred but not scaled, residualized on the metadata and genotype PCs, top
-  10.
-- The old `cov/covariates.tsv` is kept unchanged and is pre-correction. Its
-  genotype PCs came from a different VCF: old PC1 correlates with new PC1 at
-  r = 0.985, old PC3 with new PC2 at r = -0.973, and old PC2 has no
-  counterpart.
-
-| Measurement | Value |
-|---|---|
-| TMM factors | 0.915 to 1.124 |
-| Median effective library size | 17,172,092 (raw median 22,480,610) |
-| Point-estimate vs Gibbs posterior-mean totals, Pearson of log1p | 0.993 all cache genes; 0.99999 on the 29 calibration genes |
-| Donor-gene pairs with haplotype reads in some Gibbs draw but none in the point estimate | 44,228 (none the other way) |
-| Donor-gene pairs with no allelic information | 1,875,946 of 3,170,044 (59.2%) under point estimates, against 57.8% under Gibbs posterior means |
+Still not established: why the genotype-PC tie hurt only through the weights.
+The candidate recorded then is that the permuted record keeps its own
+ancestry-related expression, which the genotype PCs in the design no longer
+absorb, so the permuted residual carries variance that does not scale with
+depth; that is the kind the 1/v weighting with a fitted scale mishandles. If
+so, the tied null carries residual variance the observed data do not, which
+matters for `pval_perm` as well as for the nominal-p check, whatever the
+weights. Not measured on observed data.
 
 ## Results that predate the rules
 
@@ -682,3 +706,10 @@ The stored 200-draw null on 100 protein-coding genes
 (`protein_coding_null_store_20260925/`, commit d3248f0) is pre-correction. 90
 of its 100 genes pass the corrected calibration filter. It is the
 before-baseline for a before/after comparison.
+
+From the 2026-09-25 correction until the 2026-09-29 adoption, stored
+corrected-pipeline results used the `log2(CPM + 1)` total (the half-read
+trial's own arms excepted), and until 2026-09-30 they used the
+`log2(CPM + 1)` expression PCs of `cov/log2cpm1_point_calibration_20260925/`.
+The effect of the PC change on the shipped default is measured in
+`cov/half_read_point_calibration_20260930/expression_pc_unit_impact.log`.

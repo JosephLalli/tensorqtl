@@ -1,11 +1,28 @@
 # Historical implementation status — 2026-09-16
 
-This dated inventory predates the accepted half-read default. It is retained
-as proposal and prototype evidence; it is not current implementation status.
-For the live contract, use `CLAUDE.md` and
-`docs/CURRENT_SCIENTIFIC_STATE.md` (2026-09-29): point-estimate values,
-half-read total, legacy ASE variance/admission, unit `Vt`, fitted residual
-scales, Meier combination, and unchanged GPU kernels.
+> **Status, 2026-10-01: dated design inventory, not current implementation
+> status.** This file recorded, on 2026-09-16, the directions, source state and
+> prototype evidence for hapmixQTL's weighting and covariance while the additive
+> `tau_mode='estimate'` estimator (`_estimate_tau`) was the default; that
+> estimator and the `variance_model` family were deprecated and quarantined on
+> 2026-09-23 (`tensorqtl/fitted_variance.py`,
+> `brainvar_hapmix_deploy/deprecated_models/`). Its recommended weighted
+> architecture, a fixed gene-level weight with an empirical per-variant residual
+> scale per channel, is close to what default mode now implements
+> (`tau_mode='zero'` with `se_mode='fitted'`: allelic weights `1/Va` as a shape,
+> unit total weights on the half-read total, a fitted residual scale per
+> channel, the channels combined without a covariance term and with Meier's
+> correction of the combined standard error), described in
+> `docs/hapmixqtl_methods.md`, `docs/pipeline_rules.md` and
+> `docs/CURRENT_SCIENTIFIC_STATE.md`. The prototype receipts it cites (the Gibbs
+> influence audit, the counting fixture, the estimator ablation) stand as dated
+> measurements. Wrong to act on today: the table's rows about source state and
+> their links, which point into the sibling worktree `hapmix-runbook`
+> rather than this checkout's `tensorqtl/hapmixqtl.py`; the full-M, `Cat` and
+> M+tau integration map, which was not adopted (default mode computes no
+> `Cat`); and the note that production `count_noise=True` adds q, which under
+> the default applies to the allelic `Va` only, the total channel having unit
+> working variance.
 
 This inventory distinguishes settled directions, current source, bounded
 prototype evidence, and deferred extension work. The current gate is a
@@ -106,6 +123,11 @@ The motivating precedent is [sleuth Supplementary Note 2, sections 5–6,
 PDF pages 42–43](https://media.springernature.com/original/springer-static/esm/art:10.1038%2Fnmeth.4324/MediaObjects/41592_2017_BFnmeth4324_MOESM1_ESM.pdf), with [operational code](https://github.com/pachterlab/sleuth/blob/master/R/measurement_error.R#L608-L626): OLS coefficients with raw residual variance less mean bootstrap variance,
 then shrinkage. The donor heterogeneity/leverage extension here is neither a
 sleuth implementation nor a validated method.
+
+[2026-10-01: the "hapmixQTL source" links below open `tensorqtl/hapmixqtl.py` in the
+sibling worktree `hapmix-runbook`, another branch's copy; this checkout's file is
+`tensorqtl/hapmixqtl.py`, and `_estimate_tau` now lives in the quarantined
+`tensorqtl/fitted_variance.py`.]
 
 | Area | Status | Authority / boundary |
 |---|---|---|

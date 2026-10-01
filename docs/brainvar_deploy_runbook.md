@@ -1,197 +1,258 @@
-# Running the hapmixQTL / RASQUAL comparison on BrainVar
+# Running hapmixQTL on BrainVar
 
-The end product is `deploy/deploy_comparison.json` (and its `.md` rendering):
-the two methods run head-to-head on the same BrainVar genes, each given the
-input it was designed for. This document is the operating procedure. The
-method rationale is in `docs/ase_validation.md`; the port of the work onto a
-local server is in `docs/LOCAL_HANDOFF.md`.
+This is the operating procedure for mapping cis-eQTLs in the BrainVar cohort
+with hapmixQTL, from Salmon quantifications to a per-gene results table, in
+the shipped default mode. It also covers mixQTL mode, the published estimator
+that serves as the comparator without Gibbs draws, and the optional
+comparison with RASQUAL (a joint likelihood model of total and
+allele-specific read counts, Kumasaka et al. 2016) that the Salmon runner can
+add.
 
-> **Operating boundary (2026-09-29).** The production association command in
-> this runbook uses the half-read default described below. The older
-> `compare_pipelines.py` comparison, its tau/refit discussion, and its quoted
-> pilots are retained as dated records and still use their recorded
-> Gibbs-mean path. They must not be relabeled as half-read results. The
-> association check supports a beta/precision tradeoff; it does not establish
-> uniform superiority or calibrate the separate stacked SuSiE path.
+Every path below is on the server that holds BrainVar. `$DEPLOY` is the
+deploy root, `/mnt/ssd/lalli/brainvar_hapmix_deploy`, and `$REPO` is the
+repository checkout. Commands run from `$DEPLOY` unless they say otherwise,
+and relative paths in them resolve there. Other questions have their own
+documents: the statistic and its derivation are in
+`docs/hapmixqtl_methods.md`; the input contract (values, units, gene filter,
+permutation rule) is in `docs/pipeline_rules.md`; output columns are in
+`docs/outputs.md`; what is validated, open or running is in
+`docs/CURRENT_SCIENTIFIC_STATE.md`.
 
-## Where this runs, and why that is a governance question, not a preference
+## The two modes this runbook runs
 
-On the machine that holds BrainVar. The data does not move.
+**Default mode** is the shipped hapmixQTL configuration and the only one the
+Salmon runner, `scripts/run_hapmixqtl_from_salmon.py`, offers; it has no
+switch for another. For each donor-gene pair it takes two measurements of one
+cis effect, both computed from Salmon point estimates (`quant.sf` NumReads):
 
-BrainVar is dbGaP controlled-access (phs001900), so the relevant question is
-what leaves the machine. The four scripts in the comparison chain --
-`gtf_to_tables.py`, `phaser_to_matrix.py`, `make_rasqual_inputs.py`,
-`compare_pipelines.py` -- contain no network access at all. Checked by grep
-over the whole `scripts/` tree for `urllib`, `requests`, `http://`, `https://`,
-`socket`, `curl`, `wget` and `git clone`: the only two hits in the tree are in
-scripts that are not part of this chain, and neither transmits data outward.
+- The allelic channel is `A = log2((pL + 0.5)/(pR + 0.5))`, the log ratio of
+  the two haplotypes' paired-transcript counts. Its weight is `1/Va`, where
+  `Va` is the Gibbs variance of the same ratio across Salmon's 200 draws plus
+  a counting term; `Va` sets only the shape of the weights, and the residual
+  scale is fitted. A donor-gene pair enters this channel only if `Va > 1e-12`,
+  it has haplotype reads, and not exactly one haplotype is below 0.5 reads.
+  The channel is fitted through the origin.
+- The total channel is `T = log2((pT + 0.5)/(effective_library_size + 1) x
+  1e6)`, the half-read log-CPM of the count over all of the gene's
+  transcripts. It has unit working variance, so every donor is kept at equal
+  weight, and it is fitted with an intercept and the covariates.
 
-- `build_rasqual.sh` clones `https://github.com/natsuhiko/rasqual.git`. That
-  is a one-time fetch of public source code; nothing is uploaded.
-- `extract_gtex_phaser.py` downloads public GTEx v8 haplotype-expression
-  matrices. It is the §7d public-data path and is not used here.
+Each channel's residual scale is fitted per variant (`Var(eps_i) = sigma^2
+v_i`), and the two slopes are combined by inverse-variance weighting. The
+combined nominal p is referred to a t distribution with Welch-Satterthwaite
+degrees of freedom (chosen to match the first two moments of the combined
+variance estimate), and the combined standard error carries Meier's
+correction (a first-order inflation that accounts for the channel weights
+being estimated rather than known). The allelic channel enters a gene's
+statistic only if the gene has at least 15 informative allelic donors.
 
-So the comparison itself is inert local Python plus the RASQUAL binary.
+The gene-level detection call is the empirical permutation p, `pval_perm`,
+and `pval_beta`, the same p computed from a Beta distribution fitted to the
+permutation minima as in FastQTL. The permutation null is `records_signflip`:
+each donor's record (phenotype value, weight and RNA-tied covariates) is
+permuted against fixed genotypes, the genotype principal components stay with
+the genotypes, and each permuted record's haplotype labels are swapped with
+probability one half, which negates its allelic log ratio. A lead variant's
+`pval_nominal` is never a gene-level p. The exact rules are in
+`docs/hapmixqtl_methods.md` (its "Nominal p-values" section covers the t
+references, Meier's correction and the admission floor) and
+`docs/pipeline_rules.md`.
 
-The artifact intended to leave is `deploy_comparison.json`. Read against the
-dict it is built from, it holds only scalars and counts: the design
-(`n_genes`, `n_samples`, `n_tested_variants`, `n_perm`, `window`, `seed`),
-wall-clock seconds per method, and per method a calibration block
-(`lambda_gc_null`, nominal type-I on the null), power at matched empirical
-FPR (threshold, discovered fraction and count), a replication block
-(`n_discovered` and the fraction of discoveries in the known-eGene list), and
-RASQUAL's `phi_hat` median and quantiles. The head-to-head block is a Spearman
-correlation, a top-k overlap fraction, and the regression of one method's
-log-aFC on the other's. Gene identities are used only inside those
-computations -- to take a set length or a mean of membership tests -- and no
-gene list, per-gene value or per-sample value is written into the JSON.
+**mixQTL mode** is a NumPy port of the published mixQTL (`hakyimlab/mixqtl`
+at `624ae44`), `tensorqtl/mixqtl_replication.py`, with the eleven divergences
+found in the 2026-09-14 review removed. It reads Salmon point estimates and
+never the Gibbs draws, so it is the comparator that measures what the draws
+buy. It keeps the published natural-log response and the published GTEx v8
+settings (total-count floor 100, allele-specific count floor 50 and ceiling
+1,000 per haplotype, weight cap 10). Its driver is described in "Running
+mixQTL mode" below.
 
-**The output directory holds more than that.** `compare_pipelines.py` also
-writes `observed_hapmixqtl.tsv` and `observed_rasqual.tsv` into `--out`: full
-per-gene tables with lead variants and effect sizes. Those are gene-level
-summary statistics rather than individual-level data, but they are not covered
-by the aggregate description above, so copy the two named files rather than
-archiving the directory.
+No other configuration is current. The fitted variance models
+(`variance_model`, `variance_prior`), `tau_mode='estimate'` and the
+known-variance standard error were deprecated on 2026-09-23
+(`$DEPLOY/deprecated_models/README.md`). Fine-mapping (`map_susie`) and the
+STR and multi-allelic second pass are not supported in default mode. Where
+the older procedures and their results are recorded is listed in "Historical
+procedures" at the end.
 
-Confirm all of this against your own DUA before carrying anything off the
-machine; `LOCAL_HANDOFF.md` §4 has the fuller discussion, including the
-separate question of whether an AI coding assistant may run in a directory
-holding individual-level data.
+## Data governance: where this runs and what may leave the machine
 
-## Setup, once
+BrainVar is dbGaP controlled access (phs001900). Everything here runs on the
+machine that holds the data; the question is what leaves it.
+
+None of the scripts in this procedure opens a network connection. That was
+checked on 2026-10-01 by searching `run_hapmixqtl_from_salmon.py`,
+`build_point_estimate_cache.py`, `edger_library_normalization.R`,
+`build_covariates.py`, `gtf_to_tables.py`, `brainvar_pairing.py`,
+`verify_pairing.py`, `run_phaser_cohort.py`, `phaser_to_matrix.py`,
+`str_integrate.py`, `compare_mixqtl_replication.py`, `tensorqtl/hapmixqtl.py`
+and `tensorqtl/mixqtl_replication.py` for `urllib`, `requests`, `http://`,
+`https://`, `socket`, `curl`, `wget` and `git clone`, with no hits. Two
+scripts elsewhere in `scripts/` do reach the network, and neither sends data
+out: `build_rasqual.sh` clones RASQUAL's public source, and
+`extract_gtex_phaser.py` downloads public GTEx matrices and is not used here.
+
+The runner writes these files into its `--out` directory:
+
+| file | contents | handling |
+| --- | --- | --- |
+| `eval_bundle.json` | aggregate statistics only: run metadata, the reference-bias gate's pooled result, a QQ summary of the leads' nominal p, quantiles of slopes and standard errors, the channel-concordance regression, the share of leads failing the cis/trans test, and RASQUAL summaries when RASQUAL was run. No per-donor or per-gene value. | designed to be shared |
+| `hapmixqtl_cis.tsv.gz` | one row per gene: lead variant, effects, p-values and diagnostics, including `loo_donor`, which names a donor | keep on the machine |
+| `edger/` (written only without `--edger-dir`) | `totals_all.tsv.gz`, the gene-by-donor count matrix, and per-donor library sizes | keep on the machine |
+| `rasqual_cis.tsv.gz` (only with `--rasqual`) | RASQUAL's per-gene rows | keep on the machine |
+| the runner's console output (`<run_dir>.log` in the command below) | progress lines naming each donor, gene counts and the gate message | keep on the machine |
+
+Every file and key is described in `docs/outputs.md`, section "Salmon
+runner". Confirm all of this against the data use agreement before carrying
+anything off the machine.
+
+## Environment and self-tests
 
 ```bash
-git clone <repo> && cd tensorqtl
-git checkout claude/hapmixqtl-gibbs-uncertainty-IQ6Za
-# dependency list and the pinned versions are in docs/LOCAL_HANDOFF.md
+git clone https://github.com/JosephLalli/tensorqtl.git && cd tensorqtl
+git checkout <hapmixQTL release branch>
 pip install numpy scipy pandas torch pandas_plink h5py qtl pysam pytest
 pip install -e . --no-deps
-./scripts/build_rasqual.sh              # needs libgsl-dev liblapack-dev
 ```
 
-`build_rasqual.sh` leaves the binary at **`rasqual_src/src/rasqual`** (it
-builds in `$DEST/src`, where `$DEST` defaults to `rasqual_src`). Pass a
-different `$DEST` as its first argument if you want it elsewhere.
+The procedure also needs `bcftools` and `tabix`, R with the edgeR package
+(the runner and `build_point_estimate_cache.py` call
+`scripts/edger_library_normalization.R` through `Rscript`), and phASER for
+the genotype preparation (a tool that phases heterozygous sites from the
+reads spanning them and counts reads per allele; installed here at
+`$DEPLOY/tools/phaser`, version 1.2.0). On this server R can crash inside a
+BLAS routine because the shell environment loads two OpenBLAS builds; the
+per-command fix is recorded in `CLAUDE.md` under "R's BLAS crash". Mapping
+runs on a GPU when one is visible to torch and on the CPU otherwise.
 
-Run the self-tests before touching real data. They exercise the parsing and
-the joins on fabricated inputs, so they catch an environment problem in
-seconds rather than after hours of quantification:
+Run the self-tests before touching real data. They exercise the code on
+fabricated inputs, so they catch an environment problem in minutes rather than
+after hours of computation.
 
 ```bash
-python3 scripts/gtf_to_tables.py --selftest
-python3 scripts/diploid_tx2gene.py --selftest
-python3 scripts/brainvar_pairing.py --selftest
-python3 scripts/verify_pairing.py --selftest
-python3 scripts/phaser_to_matrix.py --selftest
-python3 scripts/build_covariates.py --selftest
-python3 scripts/build_asvcf.py --selftest
-python3 scripts/select_pilot_genes.py --selftest
-python3 scripts/make_rasqual_inputs.py --selftest
-RASQUAL_BIN=rasqual_src/src/rasqual python3 scripts/compare_pipelines.py --selftest
+cd $REPO
+pytest tests/test_hapmixqtl.py tests/test_hapmixqtl_calibration.py \
+       tests/test_hapmixqtl_perm_scheme.py tests/test_hapmixqtl_point_estimates.py \
+       tests/test_hapmixqtl_allelic_df.py tests/test_hapmixqtl_meier.py \
+       tests/test_half_read_default.py tests/test_half_read_runner.py \
+       tests/test_fitted_variance_quarantine.py tests/fitted_variance/ \
+       tests/test_cli.py tests/test_mixqtl_replication.py -q
+python3 scripts/run_hapmixqtl_from_salmon.py --selftest
 ```
 
-`compare_pipelines.py --selftest` **exits 1 with `set RASQUAL_BIN to the built
-rasqual binary`** if that variable is unset or points at a missing file. That
-is the expected message before RASQUAL is built, not a failure of the script.
+The expected test count is recorded in `tests/README.md`. The known answer in
+`tests/test_hapmixqtl_meier.py` needs a GPU and `$DEPLOY`; without them that
+test skips. A bare `pytest tests/` also runs four upstream test files that
+carry pre-existing failures unrelated to hapmixQTL (`CLAUDE.md`,
+"Self-tests"). With `RASQUAL_BIN` pointing at a RASQUAL binary, the runner's
+self-test also exercises the RASQUAL comparison.
 
-## The diploid-quantification prerequisite
+The input-building scripts have their own self-tests:
 
-hapmixQTL's arm needs Salmon run against a **personalized diploid
-transcriptome** with `--numGibbsSamples 200`. Each transcript must appear
-twice, once per haplotype, distinguished by a suffix pair (`--hap-suffix`,
-default `_hapA,_hapB`). A standard reference transcriptome carries no allelic
-information, so there is nothing for hapmixQTL to read and the comparison
-degenerates to RASQUAL against nothing.
+```bash
+for s in gtf_to_tables brainvar_pairing verify_pairing run_phaser_cohort \
+         phaser_to_matrix build_covariates; do
+    python3 scripts/$s.py --selftest
+done
+```
 
-`compare_pipelines.py` refuses rather than producing a meaningless number.
-`load_counts` raises `no haplotype-paired transcripts in <dir> using suffixes
-(...)` and says the reference was probably not diploid. Treat that message as
-this step failing, not as a bug.
+## Inputs on this server
 
-Check this before anything else: building the diploid index (g2gtools or
-vcf2diploid) and re-quantifying is a separate job on the scale of the analysis
-itself.
-
-### State of this prerequisite on the current machine
-
-Surveyed 2026-09-10. Every Salmon run on both mounts was enumerated -- 1,158
-`meta_info.json` files -- and tabulated by sampling type:
-
-| sampling | draws | runs |
+| input | path | built by |
 | --- | --- | --- |
-| gibbs | 200 | 359 |
-| bootstrap | 30 | 371 |
-| bootstrap | 100 | 12 |
-| none | 0 | 416 |
+| Salmon quantifications, one directory per RNA library | `/mnt/ssd/lalli/nf_stage/RNA_reference_comparison_results/reference_comparison_results/bv2/personalized_T2T_NCBI110_pseudoalignment/expression_results/salmon_pseudocounts/<rna_library>/` | the `rnaseq_JLL` Nextflow pipeline |
+| Salmon manifest, `dna_library <TAB> Salmon directory` (the directory holding `quant.sf` and `aux_info/`), 92 donors | `$DEPLOY/cohort/salmon.tsv` | `brainvar_pairing.py` |
+| Donor pairing (DNA library, RNA library, BAM) | `$DEPLOY/cohort/pairing.tsv` | `brainvar_pairing.py` |
+| Library metadata v1.4 | `/mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv` | frozen upstream |
+| Reference-aligned RNA BAMs (for phASER) | `/mnt/data/lalli/nf_stage/reference_comparison_results_RNA/T2T_NCBI110/star_salmon/HSB<n>.markdup.sorted.bam` | STAR, T2T-CHM13 reference |
+| Population-phased genotypes | `/mnt/ssd/lalli/nf_stage/brainvar2/gatk_t2t_haplotypecaller.joint_called.phased.all_variants.multiallelic.all.nostar.bcf` | GATK HaplotypeCaller joint calls, phased |
+| Annotation tables | `$DEPLOY/annot/genes.tsv`, `tx2gene.tsv`, `genes.bed`, `exons.tsv` | `gtf_to_tables.py` |
+| Analysis VCF | `$DEPLOY/prepped/analysis.snps.maf01.vcf.gz` | the phased BCF passed through phASER's output VCFs, then `bcftools` (see the genotype section) |
+| phASER allelic counts, `chr`-named | `$DEPLOY/prepped/allelic_counts_manifest.chr.tsv` | phASER, contigs renamed |
+| Point estimates and edgeR library sizes | `$DEPLOY/cache/gibbs_56b63c3b37ed5df8/point_estimates/` | `build_point_estimate_cache.py` |
+| Covariates (current) | `$DEPLOY/cov/half_read_point_calibration_20260930/` | `build_covariates.py --point-estimates` |
 
-**Personalized diploid quantifications with 200 Gibbs samples exist.** 229 of
-the 359 are one coherent published set; the remainder are unpublished `work/`
-copies of the same run.
+## Salmon quantification: what the draws are and their known limit
 
-```
-/mnt/ssd/lalli/nf_stage/RNA_reference_comparison_results/reference_comparison_results/
-    bv2/personalized_T2T_NCBI110_pseudoalignment/expression_results/salmon_pseudocounts/<sample>/
-```
+hapmixQTL needs haplotype-resolved expression. Salmon must have been run
+against a personalized diploid transcriptome, with two copies of every
+transcript, one per haplotype, distinguished by a suffix pair. A quantification
+against a standard reference transcriptome carries no allelic information, and
+the runner refuses it with `no haplotype-paired transcripts in <dir> using
+suffixes (...)`.
 
-229 samples (228 distinct subjects), `samp_type = gibbs`, `num_bootstraps =
-200`, ~272k-292k transcripts each, haplotype-paired `_L`/`_R` at 92k-115k pairs
-per sample. Read back through `read_salmon_bootstraps` without complaint.
+The BrainVar quantifications were made with stock Salmon 1.10.3 in mapping
+mode with `--numGibbsSamples 200` against per-donor diploid transcriptomes
+built by g2gtools, whose haplotype copies carry the suffixes `_L` and `_R`
+(`aux_info/meta_info.json` records `salmon_version` 1.10.3, `samp_type`
+`gibbs` and `num_bootstraps` 200; `cmd_info.json` records the command). The
+runner's default suffix pair is `_hapA,_hapB`, so every BrainVar run must pass
+`--hap-suffix _L,_R`. The index kept no duplicate sequences (`meta_info.json`
+records `keep_duplicates: false`), so where a donor is homozygous across a
+transcript its two copies are identical and Salmon keeps only one. The runner
+pairs a transcript only when both suffixed rows exist, so a donor-gene pair
+with no heterozygous transcript has no allelic information at all, however
+well expressed the gene is; its total expression still counts in the total
+channel. The consequences for the share of donor-gene pairs with allelic
+information are recorded in `CLAUDE.md` ("Why 57.8% of donor-gene pairs have
+no allele-specific information").
 
-**But that arm has no aligned reads.** It is the pseudoalignment path: zero
-BAM or CRAM files anywhere under it. phASER needs aligned reads, so on its own
-this arm supports hapmixQTL and nothing else -- `compare_pipelines.py` requires
-`--allelic-counts` and cannot run without RASQUAL's native input.
+**Known limit of the Gibbs variance (kept as a caveat by user decision,
+2026-10-01).** Salmon's Gibbs sampler uses a prior of 1 per active transcript,
+while its point estimate uses 0.01. For donor-gene pairs with few
+haplotype-informative reads, about 3 to 30, that prior shapes `Va` and makes
+it too small: on independent split halves of donor 100's reads, the stock
+draws understate the random error of the allelic ratio 1.5- to 3.2-fold in
+that range. A Salmon 1.10.3 fork with a `--gibbsPriorGroups` option, which
+divides the prior over gene-by-haplotype groups, was built and validated on
+that one donor. Re-quantifying the 92 donors with it is prepared and on hold
+(user decision, 2026-10-01); every current result uses the stock draws. The
+evidence is in `$DEPLOY/salmon_informative_reads_20260930/README.md` (and
+`split_half/split_half_calibration.html` beside it), and the prepared run,
+which has not been executed, is in `$DEPLOY/salmon_gibbspriorgroups_20261001/`.
 
-#### The combination that gives the full head-to-head
+These are the only Salmon runs this procedure uses. A survey of every Salmon
+run on both disks on 2026-09-10 found this to be the one coherent set of
+personalized quantifications with 200 Gibbs draws (229 RNA libraries); the
+other arms are standard-reference quantifications, runs with
+`--numBootstraps` resampling, or runs without draws.
 
-Take the allelic counts from a **reference-aligned** arm. That is what phASER
-wants anyway: reads aligned to the reference the VCF was called against, not to
-a personalized genome.
+## Pairing donors across RNA, DNA and alignments
 
-| role | source | n |
-| --- | --- | --- |
-| hapmixQTL input | `personalized_T2T_NCBI110_pseudoalignment/expression_results/salmon_pseudocounts` | 228 subjects, 200 Gibbs draws |
-| phASER / RASQUAL input | `reference_comparison_results_RNA/T2T_NCBI110/star_salmon/*.bam` | 93 subjects, reference T2T |
-| genotypes | `nf_stage/brainvar2/gatk_t2t_haplotypecaller.joint_called.phased...nostar.bcf` | 2.4G, phased, 25 contigs |
+### Never join by name
 
-The two sample-ID schemes differ but correspond: the BAMs are `HSB<n>` and the
-quantifications are `<n>_R1`. Normalising both to `<n>` gives **92 subjects in
-common** (93 BAM subjects, one without a quantification). That is the usable N
-for the comparison, at 200 Gibbs draws.
+Three identifier systems are in play, and they do not agree:
 
-#### Pairing the samples: do not join by name
-
-Three identifier systems are in play and they do not agree.
-
-| thing | id | example |
+| thing | identifier | example |
 | --- | --- | --- |
 | diploid quantification | bulk RNA library | `587_R1` |
 | genotypes (VCF sample) | WGS library | `589_D1` |
 | RNA alignment for phASER | subject | `HSB589` |
 
 BrainVar carries a known sample relabelling, and the two RNA runs resolved it
-differently. The alignment run applied it -- the BAM named `HSB587` was built
+differently. The alignment run applied it (the BAM named `HSB587` was built
 from `HSB583_1_val_1.fq.gz`, and the 2022 relabelling map says HSB583 is
-HSB587 -- while the quantification did not: `587_R1` was quantified from
-`HSB587.R1_val_1.fq.gz`. For five subjects this produces a shift chain, and
-**joining the quantification to the BAM by number pairs two different donors**,
-silently, because every identifier involved exists.
+HSB587), while the quantification did not (`587_R1` was quantified from
+`HSB587.R1_val_1.fq.gz`). For five subjects this produces a shift chain, and
+joining the quantification to the BAM by number silently pairs two different
+donors, because every identifier involved exists.
 
-The DNA library is the only common key, and it is what the VCF is keyed on, so
-it is what the manifests must use as `sample_id`. Build the pairing with:
+The DNA library is the only common key, and it is what the VCF is keyed on,
+so every manifest uses it as `sample_id`. Build the pairing with:
 
 ```bash
-python3 scripts/brainvar_pairing.py \
-    --metadata  <bv2>/draft_brainvar2_library_metadata_v1.4.tsv \
-    --vci-dir   <arm>/vcf2vci \
-    --salmon-dir <arm>/expression_results/salmon_pseudocounts \
-    --bam-dir   reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
+ARM=/mnt/ssd/lalli/nf_stage/RNA_reference_comparison_results/reference_comparison_results/bv2/personalized_T2T_NCBI110_pseudoalignment
+python3 $REPO/scripts/brainvar_pairing.py \
+    --metadata  /mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv \
+    --vci-dir   $ARM/vcf2vci \
+    --salmon-dir $ARM/expression_results/salmon_pseudocounts \
+    --bam-dir   /mnt/data/lalli/nf_stage/reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
     --vcf-samples <(bcftools query -l <phased.bcf>) --out cohort/
 ```
 
 It writes `salmon.tsv`, `bams.tsv`, `samples.txt` and `pairing.tsv`, all keyed
-on the DNA library. On the current data it pairs **92** subjects and reports
-the five rows a name-join would get wrong:
+on the DNA library. On this data it pairs 92 donors and reports the five rows
+a name join would get wrong:
 
 ```
 587_D1: rna=583_R2  bam=HSB587        589_D1: rna=587_R1  bam=HSB589
@@ -199,991 +260,610 @@ the five rows a name-join would get wrong:
 593_D1: rna=591_R1  bam=HSB593
 ```
 
-**Use metadata v1.4, not earlier.** The authoritative table is
-`draft_brainvar2_library_metadata_v1.4.tsv` (SHA-256
-`c70e3599...ec663ba6`, 841 rows by 29 columns), and
+Use metadata v1.4, not an earlier table. `draft_brainvar2_library_metadata_v1.4.tsv`
+(SHA-256 prefix `c70e3599`, 841 rows by 29 columns) is the frozen table;
 `METADATA_V1.4_FREEZE.md` in the brainvar2 repository records the freeze.
 Against v1.3.1 it changes `matchingDNALibrary` for two usable bulk-RNA
 records, `321_R2` (`321_D1` to `321_D2`) and `513_R2` (`175_D1` to `175_D2`).
 Both candidate DNA libraries exist in the VCF, so an older table attaches the
 wrong one with no error.
 
-Each edge of the join is evidenced rather than assumed.
+Each edge of the join rests on evidence rather than on a name. RNA library to
+DNA library comes from the run itself: each per-sample g2gtools VCI header
+carries `##STRAIN=<dna_library>`, which is the genotype the personalized
+transcriptome was built from. Across the 229 quantified libraries the VCI
+agrees with v1.4 for 227; the two exceptions are exactly the two records v1.4
+changed, whose diploid references were built from the superseded assignment.
+Neither is in the 92-donor cohort. BAM to DNA library is the numeric rule
+`HSB<n>` to `<n>_D1`, checked against the reads below.
 
-**RNA library to DNA library** comes from the run itself. Each per-sample
-g2gtools VCI header carries `##STRAIN=<dna_library>`, which IS the genotype the
-personalized transcriptome was built from. Across the 229 quantified libraries
-the VCI agrees with v1.4 for 227. The two exceptions are exactly the two
-records v1.4 changed: the quantification ran in April 2025 against the older
-assignment, so `321_R2` and `513_R2` have diploid references built from
-`321_D1` and `175_D1`. Their allelic quantifications encode a superseded
-pairing; drop them or re-quantify. Neither is in the 92-subject cohort.
+### Verifying the pairing against the reads
 
-**BAM to DNA library** is the numeric rule `HSB<n>` to `<n>_D1`, checked
-against the reads rather than trusted. Genotype concordance between an RNA BAM
-and each candidate DNA sample, over ~2,200-4,600 informative chr1 sites at
-depth 10 or more, is 0.99 for the numeric match and 0.42-0.60 for every other
-donor -- a separation wide enough that the assignment is not in doubt. Verified
-on the three shift-chain subjects, where the rule is likeliest to fail:
-`HSB587`/`587_D1` 0.991, `HSB589`/`589_D1` 0.991, `HSB593`/`593_D1` 0.989.
-Re-run it on the rest before publishing; it is the only check that does not
-depend on a filename.
-
-#### Verify the pairing against the reads before trusting a result
-
-Every identifier here is a claim someone wrote down; the reads are not. An RNA
-alignment carries its donor's genotypes at expressed sites, so the donor can be
-identified directly:
+Every identifier here is a claim someone wrote down; the reads are not. An
+RNA alignment carries its donor's genotypes at expressed sites, so the donor
+can be identified directly:
 
 ```bash
-python3 scripts/verify_pairing.py --pairing cohort/pairing.tsv \
-    --bam-dir reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
+python3 $REPO/scripts/verify_pairing.py --pairing cohort/pairing.tsv \
+    --bam-dir /mnt/data/lalli/nf_stage/reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
     --vcf <phased.bcf> --chrom chr1 --contig-map rename_chrs.tsv --out verify/
 ```
 
-It scores each BAM against **every** donor in the pairing, not just the claimed
+It scores each BAM against every donor in the pairing, not only the claimed
 one, and flags any sample whose best match is not the claimed donor or whose
-margin over the runner-up is thin. That is the only check here that does not
-depend on a filename, and a swap does not announce itself otherwise: mispaired
-allelic counts still run, still converge, and still produce QTLs.
+margin over the runner-up is below `--min-margin` (default 0.15). A swap does
+not announce itself otherwise: mispaired allelic data still run, still
+converge and still produce QTLs. Run it on the whole pairing, because the
+candidate pool is exactly the donors listed and a smaller pool inflates the
+margin (six donors gave margins of 0.38-0.50 against a subset, and 0.30-0.34
+when scored against all 92).
 
-Run it on the **whole** pairing, not a subset: the candidate pool is exactly
-the donors listed in `--pairing`, and a smaller pool inflates the margin because
-it is less likely to hold a close genotype match by chance. Six donors here gave
-margins of 0.38-0.50 where the same samples scored against all 92 gave
-0.30-0.34.
+When the pairing is right, the correct donor scores 0.986-0.994 on this data
+and the best competing donor 0.60-0.75, against a median across donors near
+0.64; two unrelated people agree at roughly 0.6 by chance given the
+allele-frequency spectrum, so a margin above about 0.2 is unambiguous. Eight
+samples were checked when this procedure was first written, with no
+discrepancies: the three shift-chain BAMs (`HSB587` 0.991, `HSB589` 0.991,
+`HSB593` 0.989), four ordinary ones, and `589_D1`, the one pairing that rests
+on the metadata rather than on shared input files (its quantification read
+FASTQ `HSB587`, which no alignment arm used, so that FASTQ was aligned and
+genotyped separately and matched `589_D1` at 0.990 against a runner-up of
+0.747). Run it on the rest before publishing.
 
-What it looks like when the pairing is right: on this data the correct donor
-scores **0.986-0.994** and the best competing donor **0.60-0.75**, against a
-median across donors near 0.64. The separation is the signal -- two unrelated
-people agree at roughly 0.6 by chance given the allele-frequency spectrum, so a
-margin above about 0.2 is unambiguous and a margin near zero means the sample
-is not identified.
+## Annotation tables
 
-Eight samples were checked while this runbook was written, with no
-discrepancies: the three shift-chain BAMs where the numeric rule is likeliest
-to fail (`HSB587`, `HSB589`, `HSB593`), four ordinary ones (`HSB629`,
-`HSB344`, `HSB429`, `HSB260`), and -- separately -- the one pairing that rests
-on the metadata rather than on shared provenance.
-
-That last one is worth understanding. For 90 of the 92 pairs the alignment and
-the quantification consumed the **same FASTQ**, which can be read off the BAM's
-`@PG readFilesIn` and Salmon's `cmd_info.json`; those pairs are the same donor
-by construction, whatever any table says. Two are not, and one of those is
-`589_D1`, where the quantification used FASTQ `HSB587` and the BAM used
-`HSB473`. No alignment arm ever used `HSB587` -- both dropped it as
-`duplicate_HSB589` -- so it was aligned from scratch with minimap2 against the
-chr-named T2T reference and genotyped: it matches `589_D1` at **0.990** against
-a runner-up of 0.747, confirming the metadata. The other, `587_D1`, is the same
-library under two filename conventions (`H583_RNA_020_173_S96_L004` and
-`HSB583`).
-
-The conclusion to carry forward is that the metadata is not wrong, it is
-counterintuitive: the numbers genuinely do not line up, because the
-relabelling is real and v1.4 encodes it correctly. The danger is ignoring it.
-
-#### Two things must be fixed before phASER will run
-
-**Contig names disagree between the BAM and the VCF.** The T2T BAMs are named
-by RefSeq accession (`NC_060925.1`); the phased BCF and the reference GTF use
-`chr1`. phASER requires them to match and will otherwise find nothing. Both
-have exactly 25 contigs and they correspond 1:1 -- matching the BAM header
-lengths against `chm13v2.0_maskedY_rCRS.fasta.fai` maps all 25 with none left
-over on either side, and the 25 targets are exactly the BCF's contig set.
-Derive the map and apply it to whichever file you would rather rewrite:
+The transcript names under the `_L`/`_R` suffixes are ordinary RefSeq
+accessions, so the reference annotation resolves them; the per-sample
+personalized GTFs in the quantification arm are dangling symlinks and are not
+needed. This deployment's tables were built from the T2T-CHM13 NCBI RefSeq
+annotation with UCSC-style `chr` names:
 
 ```bash
-samtools view -H <bam> | awk '/^@SQ/{for(i=1;i<=NF;i++){if($i~/^SN:/)n=substr($i,4);if($i~/^LN:/)l=substr($i,4)}print n"\t"l}' \
-  > bam_ctg.tsv
-# join on length against the chr-named reference index
-awk 'NR==FNR{a[$2]=$1;next} ($2 in a){print $1"\t"a[$2]}' \
-    chm13v2.0_maskedY_rCRS.fasta.fai bam_ctg.tsv > rename_chrs.tsv
+python3 $REPO/scripts/gtf_to_tables.py \
+    --gtf /mnt/ssd/lalli/nf_stage/genome_refs/T2T-CHM13_v2_ncbi110/GCF_009914755.1_RS_2024_08-T2T-CHM13v2.0_genomic.UCSC_chr.with_GRCh38_rCDS_chrM.exon_ids.gtf \
+    --out annot/
 ```
 
-Renaming the BAM header (`samtools reheader`) keeps the GTF and VCF, which
-already agree on `chr`, as the reference convention.
+That gives 58,516 genes and 183,140 transcripts and resolves every
+haplotype-paired transcript of a sample to a gene. The outputs:
 
-**`tx2gene` must come from the reference annotation, not the per-sample GTFs.**
-The arm's `personalized_references/*.gtf` are 229 **dangling symlinks** -- they
-list but do not open. This turns out not to matter: the transcript bases under
-the `_L`/`_R` suffixes are ordinary RefSeq accessions, so the reference
-annotation resolves them. Running `gtf_to_tables.py` on
+- `genes.tsv`: `gene_id chr start end tss`, 1-based inclusive, with a
+  strand-aware TSS (start on `+`, end on `-`).
+- `tx2gene.tsv`: `transcript_id gene_id`, for collapsing Salmon to genes
+  (`--tx2gene`).
+- `genes.bed`: `chr start stop gene_id`, 0-based half-open with no header,
+  for phASER's `--features`. It is not `genes.tsv` with the columns moved:
+  `phaser_gene_ae.py` parses from line 1 with no header handling and expects
+  0-based coordinates, and the name column must be the `gene_id` because
+  that is what the downstream joins use.
+- `exons.tsv`: merged exon starts and ends per gene, used by the RASQUAL
+  comparison.
 
-```
-genome_refs/T2T-CHM13_v2_ncbi110/GCF_009914755.1_RS_2024_08-T2T-CHM13v2.0_genomic.UCSC_chr.with_GRCh38_rCDS_chrM.exon_ids.gtf
-```
+The command prints the chromosome names it saw. They must match the VCF's
+(see "Naming traps" below). `annot/genes.NC.tsv` and `annot/genes.NC.bed`
+hold the same rows with contigs renamed to RefSeq accessions, for running
+phASER against the accession-named BAMs.
 
-gives 58,516 genes and 183,140 transcripts on `chr`-style names, and resolves
-**100%** of a sample's 115,297 haplotype-paired transcripts into 24,437 genes.
-`diploid_tx2gene.py` is not needed for this arm -- it is for the case below,
-where the per-sample diploid GTFs are present and the bases are not reference
-accessions.
+## Phased genotypes and the analysis VCF
 
-#### The fallback, if you would rather not renumber contigs
+The runner reads phased genotypes from `$DEPLOY/prepped/analysis.snps.maf01.vcf.gz`:
+biallelic SNPs with cohort minor allele frequency at least 0.01 from the
+population-phased joint call set. Its GT field carries that population phase
+unchanged; phASER's read-backed phase is present only in extra FORMAT fields,
+which the runner does not read (see "Assembling the phASER outputs" below). It
+was built as follows; each step's exact command is recorded in the VCF
+header's `##bcftools_*Command` lines (`bcftools view -h`), which is how to
+check the provenance of any copy.
 
-`reference_comparison_results_RNA/Personalized_T2T_calls_NCBI110/star_salmon`
-has personalized quantifications **and** 34 readable BAMs in the same arm, with
-per-sample diploid GTFs present in `convert/` rather than dangling. Everything
-is self-consistent there, so no contig rename is needed and
-`diploid_tx2gene.py` applies directly. The costs are that it is 34 samples
-rather than 92, its draws are 30 bootstrap samples rather than 200 Gibbs, and
-its BAMs are aligned to each sample's personalized genome rather than to the
-reference -- which is the wrong input for phASER in principle, since the
-coordinates are not the VCF's.
-
-Prefer the 92-subject, 200-Gibbs combination. It is better on both axes that
-matter, and the contig rename is a header rewrite, not a re-run.
-
-Two non-personalized arms make natural baselines and are quantified the same
-way: `T2T_NCBI110/star_salmon` (94 payloads) and `GRCh38_p14_NCBI110/star_salmon`
-(103). Neither carries allelic information, so neither can feed hapmixQTL --
-they are the standard-reference comparison, not an input.
-
-## Building the annotation tables
+**Contig names.** The T2T BAMs name contigs by RefSeq accession
+(`NC_060925.1`) while the phased BCF and the annotation use `chr1`, and phASER
+finds nothing when the BAM and the VCF disagree. This deployment renamed the
+VCF to the BAMs' accessions with `vcf/chr2nc.tsv` (restricting it to the 92
+donors with `-S vcf/cohort92.txt`, giving `vcf/cohort92.NC.vcf.gz`), ran
+phASER, and renamed back to `chr` names afterwards with `rename_chrs.tsv`.
+Both maps correspond 1:1 over 25 contigs. For a different reference, derive
+the map by matching the BAM header's contig lengths against the `chr`-named
+FASTA index:
 
 ```bash
-python3 scripts/gtf_to_tables.py --gtf gencode.vXX.annotation.gtf.gz \
-    --gene-type protein_coding --out annot/
+samtools view -H <bam> | awk '/^@SQ/{for(i=1;i<=NF;i++){if($i~/^SN:/)n=substr($i,4);if($i~/^LN:/)l=substr($i,4)}print n"\t"l}' > bam_ctg.tsv
+awk 'NR==FNR{a[$2]=$1;next} ($2 in a){print $1"\t"a[$2]}' chm13v2.0_maskedY_rCRS.fasta.fai bam_ctg.tsv > rename_chrs.tsv
 ```
 
-Produces three files from one GTF:
-
-- `genes.tsv` -- `gene_id chr start end tss`, 1-based inclusive, strand-aware
-  TSS (start on `+`, end on `-`). This is `--genes`.
-- `tx2gene.tsv` -- `transcript_id gene_id`, for collapsing Salmon to genes.
-- `genes.bed` -- `chr start stop gene_id`, 0-based half-open and header-free,
-  for phASER's `--features` when running phASER per sample.
-
-`genes.bed` is not `genes.tsv` with the columns moved. `phaser_gene_ae.py`
-parses positionally from line 1 with `int(columns[1])` and has no header
-handling, so a header line is a crash; and it wants 0-based coordinates where
-the GTF is 1-based, so the start is shifted by one and the span length is
-preserved. The name column is the `gene_id`, because that is what
-`phaser_to_matrix.py` indexes genes by and what `genes.tsv` is keyed on -- a
-gene symbol there would join to nothing without erroring.
-
-The command prints the chromosome names it saw. Check them against your VCF
-now; see the naming section below.
-
-## Running phASER per sample, keeping the VCF
-
-Every argument below except `--write_vcf` is required by phaser.py; the flags
-and their meanings are as documented for it.
+**phASER per donor.** `run_phaser_cohort.py` runs `phaser.py` and
+`phaser_gene_ae.py` over the pairing, resumably:
 
 ```bash
-phaser.py --vcf pop.vcf.gz --bam S.bam --sample S --paired_end 1 \
-    --mapq 255 --baseq 10 --write_vcf 1 --o out/S
-phaser_gene_ae.py --haplotypic_counts out/S.haplotypic_counts.txt \
-    --features annot/genes.bed --o out/S.gene_ae.txt
+python3 $REPO/scripts/run_phaser_cohort.py --pairing cohort/pairing.tsv \
+    --bam-dir /mnt/data/lalli/nf_stage/reference_comparison_results_RNA/T2T_NCBI110/star_salmon \
+    --vcf vcf/cohort92.NC.vcf.gz --features annot/genes.NC.bed \
+    --phaser-dir tools/phaser --out phaser_out/ --jobs 12 --threads 5
 ```
 
-Three things to get right.
+Its defaults are the values this data needs: `--mapq 255` (STAR's encoding of
+a uniquely mapped read; another aligner needs its own value), `--pass-only 0`
+(the call set's FILTER column is `.`, for example at all 110,057 records in
+the first 5 Mb of chr1, and phASER's default keeps only `PASS`),
+`--id-separator -` (phASER's default `_` is rejected for contig names that
+contain it, as RefSeq accessions do) and `--write_vcf 1`. It
+always passes `--python_string`, since phASER otherwise re-invokes a Python 2
+path partway through each sample. Each donor took about 13 minutes at five
+threads (`$DEPLOY/logs/cohort.log`).
 
-`--mapq 255` is **STAR's** encoding for a uniquely-mapped read. phASER
-documents the flag only as a minimum mapping quality, so the value is yours to
-choose: under BWA or HISAT2, 255 means something else or never occurs, and a
-255 filter discards nearly everything. Set it to whatever your aligner emits
-for a unique alignment.
+**Assembling the phASER outputs.**
 
-`--write_vcf` defaults to **1**, so the phased VCF is produced by a default
-run and the risk is switching it off, not forgetting to switch it on. It is
-not optional here: assembling the matrices reads `<prefix>.vcf[.gz]` to
-overlay the read-backed phase and fails with `no phASER VCF for <sample>`
-without it. Keep the file; do not clean it up between the two commands.
+```bash
+python3 $REPO/scripts/phaser_to_matrix.py --manifest phaser_manifest.tsv --out prepped/
+```
 
-phASER requires the input VCF **gzipped and indexed**, and requires
-chromosome names to match between the BAM and the VCF. That is the same
-naming constraint the annotation tables are subject to, arriving one step
-earlier -- see the naming section below.
+`phaser_manifest.tsv` is `sample_id <TAB> phASER output prefix`. This writes
+`prepped/phaser_matrix.gw_phased.txt.gz`, `prepped/allelic_counts_manifest.tsv`
+and `prepped/samples.txt`; it keeps only gene-donor pairs whose haplotype
+labels phASER anchored to the genome-wide phase (`gw_phased = 1`). The
+script can also write a VCF whose GT carries phASER's read-backed phase
+(`--vcf`), but the analysis VCF was not built that way. Instead
+`merge_shards.sh` in the deploy root runs one `bcftools merge` per contig over
+phASER's per-donor output VCFs (`phaser_out/*.vcf.gz`) and concatenates them
+into `prepped/rephased.vcf.gz`, still accession-named. phASER ran without
+`--gw_phase_vcf` (default 0, "do not replace GT"; each donor's log says "GT
+field is not being updated"), so its output VCFs keep the input GT and record
+phASER's own phase only in the FORMAT fields it adds (`PG`, `PB`, `PI`, `PM`,
+`PW`, `PC`). Despite its name, `rephased.vcf.gz` carries the population phase
+in GT. Checked on 2026-10-01 for donor `100_D1` over chr1:1-6 Mb: the analysis
+VCF's GT equals the original phased BCF's at all 41,474 shared biallelic SNPs,
+7,465 of them heterozygous, with 0 phase flips (`brainvar_hapmix_deploy/release_closure_20261001/phase_check.log`).
 
-DATED NOTE 2026-09-28: this recipe, run by `scripts/run_phaser_cohort.py`
-with `--pass_only 0 --id_separator -`, made the `phaser_out/`
-counts the comparison below reads: one unstranded run per donor, genes
-counted over their whole spans, no blacklists, no WASP. A second run brought phASER's
-inputs in line with its own assumptions (an SNV-only VCF with multi-ALT
+**Normalizing and filtering.** `normalize.sh` in the deploy root renames the
+contigs back with `rename_chrs.tsv`, left-aligns against
+`chm13v2.0_maskedY_rCRS.fasta` and splits multi-allelic sites
+(`bcftools norm -m -any`), giving `prepped/rephased.norm.vcf.gz`. The analysis
+VCF is then
+
+```bash
+bcftools view -m2 -M2 -v snps -c 1:minor -q 0.01:minor -Oz \
+    -o prepped/analysis.snps.maf01.vcf.gz prepped/rephased.norm.vcf.gz
+tabix -p vcf prepped/analysis.snps.maf01.vcf.gz
+```
+
+which holds 15,340,329 records. The runner applies no further allele-frequency
+filter.
+
+**phASER allelic counts.** `allelic_counts_chr/` holds each donor's phASER
+`allelic_counts.txt` with contigs renamed to `chr` names, listed by
+`prepped/allelic_counts_manifest.chr.tsv`. Use that manifest wherever the
+runner takes `--allelic-counts`. `prepped/allelic_counts_manifest.tsv` points
+at the accession-named originals in `phaser_out/`, so none of its counts
+falls in a `chr`-named gene window.
+
+**chr14, chr15 and chr22 are excluded (user decision, 2026-09-28).** Every
+copy of the phased genotypes, including the personalized references Salmon
+quantified against, stops within the first 1.5-3.1 Mb of these three contigs,
+so no gene there has haplotype-paired transcripts and none can be tested
+(the analysis VCF holds 30,177, 29,951 and 38,724 records on them, against
+632,589 on chr13). Nothing has to be passed to exclude them; the runner
+reports and skips their genes (see "Genes the run reports but does not
+test"). Analyses cover the other 19 autosomes. The unphased joint calls are
+complete, so re-phasing is possible later; the record is
+`$DEPLOY/phased_vcf_inventory_20260928/README.md`.
+
+**A separate phASER build feeds only the alignment-based counts.** A second
+phASER run on 2026-09-28 used an SNV-only VCF with multi-allelic
 heterozygotes masked, per-strand runs over gene-unique exonic segments, the
-HLA and CHM13-accessibility blacklists, then WASP filtering with
-`--as_q_cutoff 0`). It feeds only the alignment-based (native) counts that
-the benchmark's native arms and the held-out referee's TReCASE read
-(`scripts/native_counts.py`): `brainvar_hapmix_deploy/phaser_stranded_20260928/README.md` and
-`brainvar_hapmix_deploy/wasp_20260928/README.md`, which also give the
-per-donor reference-allele share of each build.
+HLA and CHM13-accessibility blacklists, and then WASP filtering (which
+re-maps each read with its alleles swapped and discards reads whose mapping
+changes). It feeds the alignment-based (native) counts that the benchmark's
+native arms and the held-out referee's TReCASE arm read (TReCASE is a joint
+likelihood of total read counts and allele-specific expression;
+`scripts/native_counts.py` builds the counts), not the analysis VCF above.
+Records: `$DEPLOY/phaser_stranded_20260928/README.md` and
+`$DEPLOY/wasp_20260928/README.md`.
 
-## Assembling the matrices and overlaying read-backed phase
+## Point estimates, the eQTL gene filter and covariates
 
-```bash
-python3 scripts/phaser_to_matrix.py --manifest phaser.tsv \
-    --vcf pop.vcf.gz --out prepped/
-```
-
-`phaser.tsv` is two columns, `sample_id <TAB> phASER output prefix`. The
-prefix must resolve to `<prefix>.gene_ae.txt`, `<prefix>.allelic_counts.txt`
-and `<prefix>.vcf[.gz]`.
-
-Outputs `rephased.vcf.gz`, `allelic_counts_manifest.tsv` and `samples.txt`.
-Both methods must read the same `rephased.vcf.gz`, or the comparison is
-confounded by phase rather than by method.
-
-Read `summary.json` before continuing. Its `rephase` block records
-`gt_rephased` (genotypes overlaid with read evidence), `gt_flipped` (those
-where phASER's read-backed phase disagreed with the population phase) and
-`flip_rate`, their ratio. That rate is the switch-error rate measured in your
-own data, not a literature value.
-
-## Running the comparison
-
-Hours of work; run it detached.
-
-CORRECTED 2026-09-23, SECOND DEFECT, same cause: `--allelic-counts` must be
-`prepped/allelic_counts_manifest.chr.tsv`, not
-`prepped/allelic_counts_manifest.tsv`, which this block named until now. The
-phASER counts under `phaser_out/` still carry RefSeq accessions
-(`NC_060925.1`), while the regions are built from `annot/genes.tsv`, which uses
-`chr1`, so not one count falls inside any window and the driver exits with "no
-allelic counts parsed from ..." after all the other setup has succeeded. The
-renamed copies are in `allelic_counts_chr/` and the `.chr` manifest points at
-them. The stale manifest also lists 91 donors against the renamed one's 92.
-Found by running it, 2026-09-23.
-
-CORRECTED 2026-09-23: `--vcf` must be `prepped/rephased.snps.maf05.vcf.gz`,
-not `prepped/rephased.vcf.gz`, which this block named until now. The latter
-still carries RefSeq accessions (`NC_060925.1`) while `annot/genes.tsv` uses
-`chr1`, so the driver reads no variants in any window and exits with "no
-phased biallelic SNPs read from the VCF" -- a clean-looking exit that
-produces nothing. `rename_chrs.tsv` in the deploy root is the mapping; the
-`snps.maf05` file is the renamed, SNP-only, MAF>=0.05 product and is what the
-comparison was actually run on. The driver has no `--rename-chrs` option, so
-this has to be right in the invocation.
+### Point estimates and edgeR library sizes
 
 ```bash
-nohup python3 scripts/compare_pipelines.py \
-    --vcf prepped/rephased.snps.maf05.vcf.gz --genes annot/genes.tsv --exons annot/exons.tsv \
-    --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
-    --allelic-counts prepped/allelic_counts_manifest.chr.tsv \
-    --rasqual rasqual_src/src/rasqual --rasqual-jobs 8 --rasqual-threads 8 \
-    --covariates cov/covariates.tsv --cache-dir cache/ \
-    --known-egenes brain_egenes.txt \
-    --hap-suffix _L,_R \
-    --n-genes 300 --n-perm 10 --out deploy/ > deploy.log 2>&1 &
+python3 $REPO/scripts/build_point_estimate_cache.py
 ```
 
-`--hap-suffix _L,_R` is required for the quantifications described above; the
-default is `_hapA,_hapB` and would pair nothing.
-
-`cov/covariates.tsv` is written by `scripts/build_covariates.py` (metadata
-covariates and genotype PCs, then expression PCs computed on expression already
-residualized against those, so the columns are orthogonal by construction and
-the PCs do not re-encode age, batch and ancestry):
-
-```bash
-python3 scripts/build_covariates.py --metadata <metadata_v1.4.tsv> \
-    --pairing <pairing.tsv> --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
-    --vcf prepped/rephased.vcf.gz --hap-suffix _L,_R --out cov/
-```
-
-`<metadata_v1.4.tsv>` is
-`/mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv` (SHA-256
-prefix `c70e3599`, matching the pairing section above).
-
-**2026-09-25 correction, user decision: run `build_point_estimate_cache.py`
-first and pass its output to `build_covariates.py --point-estimates`.**
-Without `--point-estimates`, `build_covariates.py` builds the pre-2026-09-25
-expression PCs: `log1p` of raw `quant.sf` NumReads, not library-normalized,
-on genes nonzero in half the samples, standardized. That breaks the
-2026-09-25 rules (`docs/pipeline_rules.md`) on unit and gene filter. Build the
-point-estimate cache once, beside the Gibbs cache it is keyed to:
-
-```bash
-python3 scripts/build_point_estimate_cache.py
-```
-
-`build_point_estimate_cache.py` takes no flags: its paths (the deploy root
-`/mnt/ssd/lalli/brainvar_hapmix_deploy`, the Gibbs cache
+This takes no flags; its paths (`$DEPLOY`, the Gibbs cache
 `cache/gibbs_56b63c3b37ed5df8`, `cohort/salmon.tsv`, `annot/tx2gene.tsv`,
-`annot/genes.tsv`) are hardcoded to this deployment and must be edited in the
-script for a different cache directory or manifest. It reads the Salmon
-manifest and the existing Gibbs cache and writes `point_estimates/` beside
-the cache (`pL.npy`/`pR.npy`/`pT.npy`, `totals_all.tsv.gz`,
-`restrict_calibration.txt`, `edger/edger_samples.tsv`,
-`edger/calibration_genes.txt`, `summary.json`); it shells out to
-`edger_library_normalization.R` and requires R with edgeR installed. Read
-`summary.json` before continuing: the script aborts unless `pT` equals the
-all-gene totals, `pL + pR <= pT`, point-estimate totals track the Gibbs
-posterior means (Pearson of log1p above 0.99), and edgeR's sample order
+`annot/genes.tsv`) are written into the script. It reads every donor's
+`quant.sf`, sums the point estimates to genes exactly as the runner does
+(`pL`/`pR` over haplotype-paired transcripts, `pT` over all transcripts), and
+runs edgeR through `edger_library_normalization.R`: `filterByExpr` with no
+design (a gene is kept when it reaches a minimum count-per-million in enough
+samples and a minimum total count), intersected with the calibration-phase
+restriction (protein-coding, meaning at least one curated RefSeq `NM_`
+transcript, and autosomal), then TMM normalization (trimmed mean of M-values,
+edgeR's per-library scaling factor that centres most genes' log ratios to a
+reference library on zero). The effective library size is `lib.size` times
+the TMM factor. It writes `point_estimates/` beside the cache: `pL.npy`,
+`pR.npy`, `pT.npy`, `totals_all.tsv.gz`, `restrict_calibration.txt`,
+`edger/edger_samples.tsv`, `edger/calibration_genes.txt` and `summary.json`,
+and aborts unless the point-estimate totals equal the all-gene totals,
+`pL + pR <= pT`, the point-estimate totals track the Gibbs posterior means
+(Pearson correlation of log(count + 1) above 0.99) and edgeR's sample order
 matches the cache's.
 
+**The Gibbs cache it reads has no live builder.** `build_point_estimate_cache.py`
+takes its gene and donor order from `cache/gibbs_56b63c3b37ed5df8/genes.txt`
+and `samples.txt` and checks itself against the cached draws `YL.npy`,
+`YR.npy` and `YT.npy`. That cache was written by the retired
+`compare_pipelines.py --cache-dir` and is on disk for this cohort, so the
+step reruns here unchanged. A new cohort has no supported way to build it;
+the retired script is archived in `$DEPLOY/retired_scripts_20261001/` and can
+be run from a checkout of commit `8e347fd~1`.
+
+The eQTL gene filter is the 12,955 genes in `edger/calibration_genes.txt`.
+This is the calibration-phase filter, by user decision explicitly temporary;
+the deployment filter may differ. A different filter means changing the
+restriction in `build_point_estimate_cache.py`, rebuilding the covariates on
+the new `edger/` folder, and passing that folder to the runner, because the
+expression-PC gene filter must equal the eQTL gene filter.
+
+### Covariates
+
 ```bash
-python3 scripts/build_covariates.py --metadata <metadata_v1.4.tsv> \
-    --pairing <pairing.tsv> --salmon salmon.tsv --tx2gene annot/tx2gene.tsv \
+cd $DEPLOY
+python3 $REPO/scripts/build_covariates.py \
+    --metadata /mnt/ssd/lalli/nf_stage/draft_brainvar2_library_metadata_v1.4.tsv \
+    --pairing pairing.tsv --salmon cohort/salmon.tsv --tx2gene annot/tx2gene.tsv \
     --vcf prepped/rephased.vcf.gz --hap-suffix _L,_R \
-    --point-estimates <gibbs_cache>/point_estimates --out cov/
+    --point-estimates cache/gibbs_56b63c3b37ed5df8/point_estimates \
+    --out cov/half_read_point_calibration_20260930
 ```
 
-With `--point-estimates`, expression PCs are the half-read log-CPM
-`log2((count + 0.5)/(eff_lib + 1)*1e6)` of the point estimates (the default
-total phenotype's unit, since 2026-09-30; builds before that used
-`log2(CPM+1)`) on the edgeR-computed calibration gene set (12,955 genes in the
-2026-09-25 build: `filterByExpr` AND protein-coding AND autosomal — a
-calibration-phase filter only, per user decision; the deployment filter may
-differ), each gene centred (not scaled) and residualized on metadata plus
-genotype PCs before the top 10 are kept; without it, `build_covariates.py`
-falls back to the pre-2026-09-25 behavior above. The output additionally
-carries `genotype_covariates.txt` (the genotype-PC column names) and
-`covariate_build.json` (the exact columns, the genotype-tied/RNA-tied split,
-and every input path, and `expression_pc_unit`, which the runner checks), for
-the 2026-09-25 permutation rule in `CLAUDE.md`. The current build is at
-`/mnt/ssd/lalli/brainvar_hapmix_deploy/cov/half_read_point_calibration_20260930/`
-(run with `--out cov/half_read_point_calibration_20260930`); the 2026-09-25
-build in `log2(CPM+1)`, `cov/log2cpm1_point_calibration_20260925/`, is kept
-as the record of every result stored before 2026-09-30, and the runner now
-refuses it; the pre-correction `cov/covariates.tsv` is kept unchanged beside it as the
-before-baseline (its genotype PCs were built from a different VCF snapshot:
-old PC1 correlates with the corrected PC1 at r=0.985, old PC3 with
--(corrected PC2) at r=-0.973, old PC2 has no counterpart in the corrected
-build).
+This is the build in use (`$DEPLOY/cov/half_read_point_calibration_20260930/`;
+`covariate_build.json` there records its inputs). It writes 17 columns: age
+in days and its square, RIN, sex, three genotype principal components and ten
+expression principal components. The expression PCs are computed on the
+half-read log-CPM of the point estimates over the eQTL gene set, each gene
+centred (not scaled) and first residualized on the metadata and genotype PCs,
+so they are orthogonal to those columns and do not re-encode age, batch or
+ancestry. An indicator whose minority level has fewer than two donors is
+dropped (`--min-level-n`). Beside `covariates.tsv` it writes
+`genotype_covariates.txt` (the genotype-PC column names, which stay with the
+genotypes under permutation), `covariate_build.json` (columns, the
+genotype-tied and RNA-tied split, the input paths and `expression_pc_unit`),
+and `covariates.bin`/`covariates.n` for RASQUAL's `-x`.
 
-It is passed to both arms rather than regressed out first: hapmixQTL projects
-covariates out inside the weighted space and its two channels carry different
-weights, and RASQUAL fits a GLM on the count scale, so a pre-residualized
-phenotype is wrong for both. `--ase-covariates` defaults to `none`, leaving the
-allelic channel through the origin. Since 2026-09-15 neither its regression
-nor its tau estimator adds an intercept; the total channel keeps its intercept.
-Historical pilot/calibration results below predate this correction.
+Run it from `$DEPLOY`: `covariate_build.json` records the point-estimate
+folder as the relative path given here, and the runner resolves it from its
+working directory. Without `--point-estimates`, `build_covariates.py` builds
+the pre-2026-09-25 expression PCs (`log1p` of raw counts), which the runner
+refuses.
 
-Run default mode with those covariates. The runner runs edgeR itself on the
-point-estimate totals (or reuses a finished folder with `--edger-dir`),
-refuses covariates whose expression PCs used another gene set or other
-library sizes, and keeps the columns in `genotype_covariates.txt` with the
-genotypes under permutation:
+Covariates are passed to the mapper, not regressed out first. hapmixQTL
+projects them out inside each channel's weighted space, and the default
+allelic channel is fitted through the origin with no covariates (anything
+acting on both haplotypes alike cancels from the within-donor log ratio), so
+the covariates act on the total channel.
 
-**Default input contract (2026-09-29).** The runner constructs the total phenotype as
-`log2((point_count + .5)/(effective_library_size + 1)*1e6)` and gives that
-channel unit working variance. It retains point-estimate ASE, its original
-Gibbs variance and admission (`Va > 1e-12`, excluding `pL < .5` XOR `pR <
-.5`), fitted residual scales, Meier combination, and GPU matrix multiplication.
-It does not use total draw variance or `Cat`. Expression PCs intentionally stay
-`log2(CPM+1)`, and the same gene-set/effective-library-size provenance check
-therefore remains required. The published mixQTL comparator is unchanged. The
-accepted change is a beta/precision tradeoff, not uniform precision improvement.
+## Running default mode
 
-`--gene-pos` is read as gene, chromosome, TSS, start, end. `annot/genes.tsv`
-is gene, chromosome, start, end, TSS, so reorder it first; passed as it is,
-the runner would take each gene's start as its TSS without complaint.
+### The command
+
+`--gene-pos` is read as gene, chromosome, TSS, start, end, while
+`annot/genes.tsv` is gene, chromosome, start, end, TSS; passed as it is, the
+runner would take each gene's start as its TSS without complaint. Reorder it
+first. Run from `$DEPLOY` (see "Covariates"):
 
 ```bash
+cd $DEPLOY
+mkdir -p <run_dir>
 awk -v OFS='\t' '{print $1, $2, $5, $3, $4}' annot/genes.tsv > <run_dir>/gene_pos.tsv
-python3 scripts/run_hapmixqtl_from_salmon.py --vcf prepped/analysis.snps.maf01.vcf.gz \
+python3 $REPO/scripts/run_hapmixqtl_from_salmon.py \
+    --vcf prepped/analysis.snps.maf01.vcf.gz \
     --manifest cohort/salmon.tsv --tx2gene annot/tx2gene.tsv --hap-suffix _L,_R \
     --gene-pos <run_dir>/gene_pos.tsv \
     --covariates cov/half_read_point_calibration_20260930/covariates.tsv \
-    --edger-dir cache/gibbs_56b63c3b37ed5df8/point_estimates/edger --out <run_dir>
+    --edger-dir cache/gibbs_56b63c3b37ed5df8/point_estimates/edger \
+    --out <run_dir> > <run_dir>.log 2>&1
 ```
 
-`scripts/compare_pipelines.py` is not yet on these rules: it still reads the
-Gibbs-mean phenotype and moves the whole covariate row with the RNA record in
-its null rounds.
+`--vcf`, `--manifest`, `--tx2gene`, `--covariates` and `--gene-pos` are
+required. `--edger-dir` reuses the edgeR run the covariates were built on, so
+the eQTL gene set and effective library sizes are those of the expression
+PCs. Without it the runner runs edgeR itself on every gene with no
+restriction (or on `--gene-restrict <gene list>`), and the covariate check
+refuses unless the result reproduces the gene set and library sizes recorded
+for the covariates.
 
-### The scale both arms are reported on
+The two largest costs are the Gibbs draws and the VCF. The runner holds the
+allelic draws as two float64 arrays of genes x donors x draws, about 5 GB each
+for 34,457 genes, 92 donors and 200 draws, before transient copies; and it
+parses the whole analysis VCF, which takes roughly a quarter of an hour.
 
-RASQUAL's statistic is 2 x its log likelihood ratio against a chi2(1);
-hapmixQTL's is `T^2 = (slope/slope_se)^2`, with tau re-estimated at the lead.
-Until the correction of 2026-09-13 the driver obtained hapmixQTL's value by
-converting its *t* nominal p back through `chi2.isf`, which imported the t tail
-into the comparison and cost a median 1.87 and up to 22.5 chi2 points on these
-30 genes (`docs/hapmixqtl_methods.md` §7). **The hapmixQTL chi2 values quoted
-in the pilot sections below (`pilotI` through `pilotN`) were produced before
-that change and are understated by about that much**; the leads, effect sizes
-and empirical p-values are unaffected, and the statistics will not reproduce
-exactly on a rerun.
+### What the run does, in order
 
-### Resuming a killed run
+1. Reads each donor's Gibbs draws (`aux_info/bootstrap/`, the directory name
+   Salmon uses for either kind of draw) for haplotype-paired transcripts,
+   summed to genes per haplotype.
+2. Reads the point estimates the same way and takes the effective library
+   sizes from edgeR.
+3. Builds `A`, `T`, `Va` and `Vt` (`prepare_default_inputs` in
+   `tensorqtl/hapmixqtl.py`), restricts to the eQTL gene filter, and prints
+   how many filtered genes have no Gibbs draws (they are reported, not
+   tested) and how many donor-gene pairs the one-sided rule excluded from the
+   allelic channel.
+4. Reads the phased VCF and orders donors as the VCF does.
+5. Splits the covariates into RNA-tied and genotype-tied columns and checks
+   their provenance (`check_covariate_provenance`): the expression PCs must
+   be in the half-read unit, on the eQTL gene set, with the same effective
+   library sizes. It refuses otherwise.
+6. Runs the reference-bias gate (next section).
+7. Runs `map_cis` in default mode: a 1 Mb window around each TSS, 10,000
+   permutations under `records_signflip`, the allelic admission floor of 15
+   donors, and the leave-one-donor-out check at each lead.
+8. Writes `hapmixqtl_cis.tsv.gz` and `eval_bundle.json`.
 
-Each null draw is written to `<out>/null_rounds/{hapmixqtl,rasqual}.NNN.tsv` as
-it finishes, and a rerun into the same `--out` reuses every round already there.
-A RASQUAL null round costs over an hour per draw, so a killed calibration
-resumes instead of repaying them. The reuse is all-or-nothing per round: the
-check requires BOTH files and then reuses both, so pointing `--out` at a
-directory of rounds produced under a different hapmixQTL configuration silently
-adopts that configuration's hapmixQTL nulls along with the RASQUAL ones. Use a
-fresh `--out` whenever the hapmixQTL side has changed. Each draw's permutation is seeded from its own
-index rather than drawn in sequence, so a draw reproduces itself whatever order
-the draws run in and whatever subset a resumed run redoes. `--draw-jobs N` runs
-N draws concurrently, each getting `--rasqual-jobs / N` genes; it is only worth
-raising alongside a lower `--rasqual-threads`, since one draw of 29 genes at 8
-threads already asks for 232 cores.
+### The reference-bias gate
 
-The observed arm can be carried across runs the same way: `--reuse-rasqual DIR`
-takes an earlier `--out` directory's `observed_rasqual.tsv` as this run's
-observed RASQUAL arm, so a change confined to the hapmixQTL side does not have
-to pay for RASQUAL again. That is separate from `--rasqual-rows`, which keeps
-the per-variant rows the matched-effect lookups read.
+hapmixQTL does not model reference mapping bias, and its type-I error rises
+steeply rather than gradually when bias is present (`docs/hapmixqtl_methods.md`,
+"The reference-bias gate"). Before mapping, the runner pools each gene's
+reference-allele fraction over its heterozygous donors, orienting each donor
+by the sign of a sum over the heterozygous sites in the gene body (taken from
+`--gene-pos` start and end), and tests the mean of the per-gene fractions
+against 0.5 with genes as the unit. Real cis effects favour the
+reference or the alternate allele at random, so they cancel in that mean;
+mapping bias always favours the reference. At p < 1e-3 the runner refuses to
+map, still writes an `eval_bundle.json` carrying the diagnostic for triage,
+and asks for WASP-corrected or variant-aware quantification. `--force`
+proceeds anyway and is not recommended. Supplying `--allelic-counts
+prepped/allelic_counts_manifest.chr.tsv` weights each site by its phASER
+depth instead of counting sites alike; it changes nothing else in a default
+run.
 
-### How RASQUAL is actually run
+### Options
 
-RASQUAL is a C program that reads a phased VCF as text on stdin and decides
-which records are feature SNPs from their position alone. Every one of the
-following is a way the first attempts went wrong on real genes, and each is
-now what the driver does by default:
+| flag | default | effect |
+| --- | --- | --- |
+| `--hap-suffix` | `_hapA,_hapB` | haplotype suffix pair; BrainVar needs `_L,_R` |
+| `--window` | 1000000 | cis window around the TSS, in bases |
+| `--perm-scheme` | `records_signflip` | the permutation null; `records` omits the haplotype-label swap, and `residuals` is the earlier Freedman-Lane scheme (the null model's whitened, leverage-standardized residuals permuted at fixed weights), retained but conservative where weights vary |
+| `--count-noise` / `--no-count-noise` | on | adds the counting term to the allelic `Va` only; the total channel's unit variance is unaffected |
+| `--genotype-covariates` | `auto` | which covariate columns stay with the genotypes under permutation; `auto` reads `genotype_covariates.txt` beside `--covariates`, `none` ties every column to the RNA record |
+| `--edger-dir` | none | reuse a finished edgeR folder instead of running edgeR |
+| `--gene-restrict` | none | gene list intersected with `filterByExpr` when the runner runs edgeR itself |
+| `--covariates-unverified` | off | proceed when the covariate provenance check fails; not recommended |
+| `--force` | off | proceed despite a reference-bias flag; not recommended |
+| `--asc-cutoff`, `--asc-cap`, `--trc-cutoff`, `--mixqtl-cutoffs` | off | mixQTL's count cutoffs, applied to hapmixQTL's donor admission so the two estimators can be compared on a matched donor set; a comparison instrument, not a setting for results. mixQTL's weight cap is deliberately not applied |
 
-- **`-s/-e` are the union of exons, not the gene span.** The README says so;
-  `gtf_to_tables.py` writes `annot/exons.tsv` (merged exon starts and ends per
-  gene) and `--exons` passes it. On the pilot genes the gene span classified
-  421 records as feature SNPs where the exon union classified 17: introns
-  contribute no allele-specific reads, only budget.
-- **The cis region is the gene body plus/minus the window**, following
-  rasqualTools, and the records RASQUAL sees are a tabix slice of an
-  **AS-annotated VCF** piped straight in (`bcftools view -H -r REGION as.vcf.gz
-  | rasqual ...`). `scripts/build_asvcf.py` builds that VCF once (`AS` FORMAT
-  field, `ref,alt` per sample, `0,0` where phASER counted nothing; bgzip, not
-  gzip, or tabix refuses it) and `--asvcf` points at it. Without `--asvcf` the
-  driver builds one in `--out` over the regions it is about to test, so an
-  ad-hoc run needs nothing prebuilt.
-- **`--force`.** RASQUAL refuses any gene where `(fSNPs + 1) x tested SNPs`
-  exceeds 30,000 (`main.c:582`, "Estimated computational time is too long
-  ... aborted", one `SKIPPED` row) and the check is undocumented. Every pilot
-  gene with a 1 Mb window is over it (12-33 fSNPs x 4,700-6,900 tested SNPs).
-  rasqualTools batches genes by that product and excludes none, so the
-  production practice is to run heavy genes, isolated and threaded, not to
-  drop them. `--n-threads` parallelizes the tested-SNP loop within a gene;
-  `--rasqual-jobs` runs genes concurrently on top of that.
-- **Offsets come from the full expression matrix** (`colSums(counts)/mean`,
-  as rasqualTools computes them), not from the genes sampled for the run.
-- **Covariates are passed to RASQUAL** (`-x`, covariate-major binary written
-  by the driver from `--covariates`), not regressed out of the counts.
-- **The permutation null uses RASQUAL's own `-r`**, which permutes total and
-  allele-specific counts against genotype inside RASQUAL. It draws its own
-  permutation (seeded from time and pid), so the RASQUAL null is not paired
-  with the hapmixQTL permutation. What `-r` moves (`nbem.c`, `randomPerm`):
-  the total counts with their offsets and weights under one random order,
-  and each feature SNP's genotype, allele counts and offset as a block under
-  its own order; the tested-SNP genotypes and the `-x` covariates stay where
-  they are. Under `-r` the covariates therefore explain nothing about the
-  permuted totals, which is a difference from a null that permutes
-  genotype alone. **The knockoff null does not reach the
-  RASQUAL arm yet**: the pipe feeds RASQUAL the real genotypes, and the arm
-  reports `knockoff_null_not_implemented` per gene rather than passing an
-  observed run off as a null. Writing knockoff haplotypes into the VCF slice
-  is the remaining piece.
-- `--dump-rasqual DIR` keeps RASQUAL's raw stdout/stderr for every gene that
-  produced no converged row. Column 23 is its convergence flag; the stderr
-  says which gate fired. Read the dump before changing anything else.
+The runner passes no random seed, so `pval_perm` and `pval_beta` differ
+between reruns by Monte Carlo error at 10,000 permutations; leads, slopes and
+nominal p-values do not.
 
-### Low-count genes: counting noise and the expression floor
+### Opt-in variant classes: STRs and multi-allelic sites
 
-**Historical pilot mechanism.** The examples below used Gibbs total variances
-and estimated tau. In the current half-read default, every total donor has
-unit working variance, including zero-count donors; `count_noise` changes ASE
-variance only. The historical helper retains its original counting terms.
-
-The comparison found a hapmixQTL failure that the self-tests, built on
-Poisson(30) counts, could not: the Gibbs across-draw variance is
-read-assignment uncertainty only, so a sample whose count is identical in
-every draw -- zero reads, or reads compatible with nothing else -- has
-`v_inf = 0` and, under `w = 1/(v_inf + tau)`, the largest weight in the
-gene. On LOC124902138 (median 9 reads per sample) three zero-count samples
-had `Vt = 1e-32`, the tau moment estimator collapsed to 4e-6, and the three
-carried 99.8% of the total channel's weight: chi2 141 at a variant where an
-unweighted regression of the same `t` gives 31, a Poisson GLM on the raw
-totals 34, and RASQUAL 3.0. The seven pilot genes with no zero-count sample
-had their three heaviest samples at 3-4% of the weight, i.e. uniform. The
-allelic channel has had a guard for exactly this since the validation work
-(`_zero_degenerate_ase_weights`); the total channel had none.
-
-`compute_summaries_from_gibbs(..., count_noise=True)` adds the plug-in
-Poisson variance of a log count to both channels (`1/(tot + 2 kappa)` for
-`t`, `1/(yL + kappa) + 1/(yR + kappa)` for `a`), which is far below
-`v_inf + tau` for a well-covered gene and dominant for a zero. Both the
-driver and `run_hapmixqtl_from_salmon.py` default it on (`--no-count-noise`
-to reproduce earlier results; the library default stays off so the
-validation scripts under `tests/` are unchanged). With it LOC124902138 is
-6.8, VLDLR-AS1 (56 reads/sample) moves from 12.8 to 11.5, SRPK1 (2,300
-reads/sample) from 45.2 to 43.3 with the same lead.
-
-The 30 well-expressed genes (`pilot30_hc.txt`) then exposed the same
-estimator failing at the other end. Every mapping function clamped the
-inferential variances to 1e-8 before `_prepare_channels`, so a sample with no
-allele-specific reads (`Va = 0` exactly, `a = 0`) was never seen by the
-degenerate-ASE guard (threshold 1e-12) and entered the tau moment estimator
-at weight 1e8. A handful of them drove `tau_a` to ~1e-6 for the gene; the
-informative samples were then weighted by Gibbs variance alone, which
-understates the between-sample variance of `a` 2-25x on these genes, and the
-known-variance SE was too small by that factor. Measured with a permutation
-null (sample labels of genotype against expression): CRMP1 observed chi2
-106.7, null maximum mean 97.7; TCF4 94.1 / 61.0; MATR3 71.1 / 41.1 (max
-102.5); a calibrated maximum over ~4,600 tested variants is 12-16, which is
-where RASQUAL's numbers sat. `_prepare_channels` now takes the raw variances,
-estimates tau on the samples with `v_inf > 1e-12` and applies the floor
-inside the weight; the null maxima on the same 12 genes are 10.7-17.4 (mean),
-and the observed values follow them down (CRMP1 15.1, TCF4 11.5, FABP7 12.0,
-TTC3 13.8; ANKRD36B stays at 39.9, and it is the gene where the phASER counts
-independently show the same imbalance). `tests/test_hapmixqtl_calibration.py`
-carries the gate, and the validation harness now drives `_prepare_channels`
-rather than its own copy of the weight formula, which had the same clamp.
-
-One property of the corrected arm to keep in mind when reading its numbers
-against RASQUAL's: tau is estimated under the null model, so a gene's own cis
-signal inflates it and shrinks the nominal scale where the signal is strong
-(CCNI: the 22 heterozygotes at the lead show corr(a, s) = -0.90, a hets-only
-regression gives chi2 86, the arm 17). What that does and does not cost, and
-the lead refit that restores the scale, are in "What tau is" below. A second
-one, covariates projected out of both channels, is resolved in the next
-section.
-
-### Covariates per channel, the sparse-channel rule and the permutation null
-
-**Current settings:** the association APIs and CLI use `None`/`none` for a
-through-origin ASE fit, without an automatic intercept. The Salmon runner
-requires total covariates and preserves genotype-PC provenance. The `shared`
-CLI default, ASE intercept and absent runner covariates described in the
-pilot narrative below are superseded historical behavior.
-
-hapmixQTL used to project the same covariate set out of both channels,
-whereas RASQUAL applies covariates to its total-count model only. The
-allelic contrast `a = log((yL + k)/(yR + k))` is a within-sample difference
-in which anything that acts on both haplotypes alike -- library size, the
-expression PCs, sex, age, RIN -- cancels, so there is nothing for those
-columns to remove from it; each one projected out costs one of the
-informative samples (with 10 expression PCs against 46-62 informative
-samples the allelic statistic of CCNI and CYP51A1 halved). `map_cis`,
-`map_nominal`, `map_susie` and the second-pass functions now take
-`ase_covariates_df` for the allelic channel: `SAME_COVARIATES` (the library
-default, the previous behaviour), `None` for an intercept only, or the
-channel's own DataFrame. The driver's `--ase-covariates` defaults to `none`
-(`shared` reproduces the earlier runs); the CLI's `--ase_covariates` keeps
-`shared` as its default. `run_hapmixqtl_from_salmon.py` passes no
-covariates to either channel, so it is unaffected. At the time the nominal
-p-value used one t reference for both channels,
-`dof = N - 2 - max(n_cov, n_cov_a)`, and `map_cis` passes that dof to the
-permutation code, which used to take the allelic residualizer's (with an
-intercept-only allelic channel the two differ by the covariate count, and
-`map_cis` and `map_nominal` disagreed on the same pair by a factor of 3.5 in
-p). CORRECTED 2026-09-27 (commit 8a06803): in default mode that shared dof
-now only maps `map_cis`'s scanned statistic to the correlation scale and
-seeds the Beta fit. `pval_a` is referred to the allelic channel's own
-`n_a - 1 - n_cov_a` df, `pval_t` to the total channel's own residual df,
-and `pval_nominal` to the Welch-Satterthwaite df of the combination; the
-allelic channel enters the combination only with at least 15 informative
-allelic donors (waived for allelic-only runs). The shared dof remains the
-reference of the deprecated known-variance and HC1 standard errors only.
-Since the same day the combined standard error also carries Meier's
-first-order correction for its estimated channel weights, in the scan and
-every permutation alike. Specification and measured
-cost: `docs/hapmixqtl_methods.md` Section 4.5; columns `dof_nominal`,
-`dof_a`, `dof_t`, `allelic_admitted` in `docs/outputs.md`.
-
-Two rules travel with it. A channel with fewer informative samples
-(`v_inf > 1e-12`) than its design has columns plus two is switched off --
-every weight zero, nothing projected, infinite SE -- and the meta-analysis
-takes the other channel alone; the tau estimator raises rather than falling
-back to every sample, which an earlier version did and which re-admitted
-exactly the zero-variance rows for sparse genes. And the permutation null of
-`map_cis` is now Freedman-Lane in whitened space: the whitened null
-residuals of each channel are permuted among that channel's informative
-samples (the two channels share one draw), instead of the raw `a` and `t`
-being moved between samples at fixed weights. The old scheme handed a sample
-another sample's value at its own precision; with inferential variances
-spanning 0.01-2 and 10% samples without allele-specific coverage a null
-gene's `pval_perm` averaged 0.94 with no rejection at 0.05 in 100 genes.
-The permuted residuals are leverage-standardized (divided by `sqrt(1 - h)`,
-`h` the diagonal of the null design's projection): `(I - QQ')e` has
-variance `1 - h_ii`, and because the statistic is built from `xy` and `xx`
-rather than refitted per permutation that deficit would carry into the null
-(with 18 design columns on 92 samples the permuted null would be 20% short
-in chi2; the raw whitened residuals gave a mean empirical p of 0.44 on the
-calibration design). With the standardized permutation 400 null genes on
-that design give mean 0.503, 5.2% below 0.05 and 49.7% below 0.5
-(`test_pval_perm_is_calibrated_under_heteroskedasticity`;
-`test_permuted_null_matches_the_known_variance`). `map_cis` refuses
-`se_mode='robust'` (note `se_mode='fitted'` IS accepted by `map_cis` since
-2026-09-21, and is the default; only the sandwich is refused): the
-permutation statistic for `robust` would be the known-variance GLS
-statistic and a sandwich SE has no counterpart in it; `map_nominal` still
-offers it.
-
-On the 30 well-expressed genes (`pilotL`, RASQUAL rows reused from
-`pilotI`) the intercept-only allelic channel raises 19 of the 30 gene
-statistics and lowers 11 (median change +1.1), and the number of genes above
-15 goes from 6 to 13 against RASQUAL's 11 (17 once tau is refit at the
-lead, "What tau is" below); the Spearman correlation with
-RASQUAL's statistics is 0.38 (p = 0.037). A fixed 15 is not a null level: on
-the 12-gene external permutation null (genotype columns permuted against
-expression, 10 draws) the per-gene null-maximum means run 9.7-17.6 and the
-maxima 13.6-23.1 with the intercept-only channel (10.7-17.4 and 14.8-24.0
-with the shared set), so the covariate split leaves the null where it was
-while the observed values on the genes with signal rise (CYP51A1 14.7 ->
-21.8 against RASQUAL's 31.8, TTC3 13.8 -> 16.9, APC 17.0 -> 20.8, CCNI 13.9
--> 16.2; ANKRD36B 39.9 -> 37.5). APC at 20.8 exceeds its null-maximum mean
-of 17.6 but not the largest of its ten null maxima (23.1), and no fixed
-threshold resolves that, which is why the driver now carries each gene's
-own empirical p (`pval_perm`, 1000 whitened-residual
-permutations, `--hapmix-nperm`): in the final run (`pilotM`) 5 of 30 genes
-are below 0.05 against their own null (PDZD8 p = 0.001, ANKRD36B 0.001,
-CYP51A1 0.010, SLC6A15 0.011, CYCS 0.042; 1.5 expected under a global
-null). Before the permuted residuals were leverage-standardized the same run
-called 9 (MON2, AGPAT5, EXOC2 and TCF4 as well, at 0.011-0.034; they now sit
-at 0.058-0.211), and the median empirical p rose 1.8-fold: the under-dispersed
-null bit hardest in the tail of a maximum over ~4,600 variants, well beyond
-the 20% deficit in chi2 the leverage arithmetic suggests. RASQUAL's arm has
-no per-gene empirical p (its statistic is a likelihood ratio), so its 11
-genes above 15 are not the same kind of count. RASQUAL's and
-hapmixQTL's lead variants coincide on 1 of the 30 genes, which is why the
-effect comparison has to be made at matched variants (below) rather than
-gene-wise. The sparse-channel rule admits an allelic channel with as few as
-three informative samples under an intercept-only design; the calibration
-gates use about 70 and the 12 BrainVar genes had 46-85, so the floor is
-untested below that.
-
-### What tau is, what the Gibbs draws are not, and the lead refit
-
-**Historical estimated-tau path.** Current association mapping uses
-`tau_mode='zero'`, fitted residual scales and donor-record/sign-flip
-permutations. It does not estimate or refit tau, even if the compatibility
-flag is set. The observations below explain the former estimated-tau model.
-
-The weight of a sample is `1/(v_inf + tau)`. `v_inf` is the Gibbs
-inferential variance, the ambiguity of that sample's read assignment, plus
-the Poisson counting term; `tau` is the between-sample variance the model
-does not explain -- biological variation in expression or allelic ratio and
-unmodelled technical variation -- estimated once per gene and channel from
-the residuals after the channel's design (intercept and covariates) is
-projected out. It is the biological-variance term of sleuth's
-decomposition, the overdispersion of DESeq2 and edgeR, the residual
-heterogeneity of a random-effects meta-analysis, and no within-sample
-sampler can measure it. On the 30 well-expressed genes (medians of
-per-sample variances on the log scale):
-
-| | allelic channel (a) | total channel (t) |
-|---|---|---|
-| Gibbs variance | 0.013 | 0.0002 |
-| Poisson counting term | 0.001 | 0.0002 |
-| tau, intercept-only design | 0.029 | 0.151 |
-| tau, the design each channel is actually fitted under | 0.029 | 0.0066 |
-| tau / per-sample quantification variance, as deployed | 2.1 (IQR 1.1-6.8) | 22 |
-
-So the Gibbs draws carry about a third of the allelic channel's error and
-under 1% of the total channel's; the total channel is in effect ordinary least
-squares with a shared error variance. The allelic channel is deployed with an
-intercept alone, so its 0.029 is the figure the pipeline uses; the total
-channel's 0.151 is not, because its covariates remove 96% of it (below). Most
-of what they remove is sequencing depth: log library size alone, with a
-standard deviation of 0.305 across the cohort, accounts for 71% of the
-intercept-only tau_t and correlates at -0.93 with the first expression PC.
-`run_hapmixqtl_from_salmon.py` passes no covariates, so its total channel
-carries tau_t = 0.151 and a standard error about 4.8x the driver's; that is
-lost power, not miscalibration, and supplying covariates fixes it.
-
-Whether the covariates remove much of tau splits by channel, and that is
-the direct evidence for the intercept-only allelic design. With the 17
-covariates the total channel's tau falls from 0.151 to 0.007: they explain
-96% of the whitened residual variance, F-test p < 1e-3 on 30 of 30 genes.
-The allelic channel's tau goes from 0.0294 to 0.0292: 24% explained against
-22% expected by chance for 17 columns on ~77 informative samples, 3 of 30
-genes at p < 0.05 against 1.5 expected. Two of the three are real (ANKRD36B
-and CALM2, p < 1e-3, 45-47% of the allelic residual explained). ANKRD36B is
-the strongest hapmixQTL-only hit and survives either design (39.9 with the
-covariates in the allelic channel, 37.5 without), but an allelic ratio that
-tracks the expression PCs is a flag to check paralog mapping (the ANKRD36
-family) before the gene is reported.
-
-Because tau is estimated under the null model, a gene's own cis effect is
-in the residuals it is estimated from, so tau is inflated by about
-`beta^2 * f_het` and every statistic in the window is shrunk by the same
-factor `1/(1 + beta^2 f_het / sigma^2)`. Measured by re-estimating tau with
-the lead in the model on eight genes: CCNI's allelic statistic 19.7 -> 40.2,
-ANKRD36B's combined 49 -> 75, PDZD8 34 -> 44, CYP51A1 26 -> 35, while
-genes with little signal at the lead (FABP7, TTC3, APC) move by under 10%.
-What that costs is only the nominal scale. The same tau scales the observed
-statistic and every permuted one, so the empirical p is unchanged (CCNI,
-ANKRD36B and CYP51A1: identical at 20,000 draws under either tau), and in
-simulation (80 informative samples, 300 variants, 600 replicates) tau
-re-estimated per variant or refit at the lead raised the causal variant's
-statistic and the null maximum by the same proportion (12.9 -> 16.2), giving
-identical power at matched false-positive rate (0.49 vs 0.45, 0.92 vs 0.91,
-1.00 vs 1.00) and the same lead. The shrinkage bites in comparisons across
-genes or methods on the nominal scale: against RASQUAL's likelihood ratio,
-whose theta is fitted under the alternative for every SNP, and in any
-threshold pooled across genes.
-
-`map_cis(tau_refit=True)` therefore keeps the null-tau scan (shared weights,
-the fast whitened-residual permutation, `pval_perm` and `pval_beta` exactly
-as before) and, once the lead is found, re-estimates each channel's tau with
-the lead's predictor in the model, rebuilds the weights and reports the
-lead's `slope`, `slope_se`, `pval_nominal` and per-channel diagnostics on
-that scale, with `tau_a`/`tau_t` (refit) and `tau_a_null`/`tau_t_null`
-(scan) as columns. A channel whose informative samples cannot support the
-extra column keeps its null tau (`tau_refit` says whether any channel was
-refit). `map_nominal` stays on the null-model scale. The driver and the
-runner turn the refit on; the library and CLI default (`--tau_refit`) leave
-it off. A lead's `pval_nominal` is never a gene-level p, and the refit makes
-it more selective; `pval_beta` is the gene-level p and is unchanged.
-
-On the 30 genes (`pilotN` against `pilotM`) the refit leaves every lead and
-every `pval_perm` identical and raises the nominal statistic by a median
-14% (range 2-89%; CCNI 16.2 -> 30.7, ANKRD36B 37.5 -> 51.0, PDZD8 27.5 ->
-34.2, CYP51A1 21.8 -> 28.4), so 17 of 30 genes now sit above 15 against
-RASQUAL's 11, while the genes below 0.05 on their own null stay at 5. CCNI
-is the instructive case: a lead at chi2 30.7 whose gene-level empirical p is
-0.44, because the best of ~4,600 correlated variants under the null reaches
-about 16 on the scan scale in that window. The nominal statistic is the
-like-for-like with RASQUAL's likelihood ratio; the empirical p is the
-detection call.
-
-### The reference-bias gate's orientation, and what the runner feeds RASQUAL
-
-`reference_bias_diagnostic` needs, for every gene-sample, which haplotype
-carries the reference allele where that sample's reads land. A gene has
-many heterozygous sites, and the reference allele sits on L at some and on
-R at others, so no single site's phase describes the gene. What mapping
-bias adds to the haplotype totals is `sum_v reads_v * s_v` (bias favours REF
-at every site carrying reads; `s_v = xL - xR` says which haplotype is ALT
-there), so the orientation that exposes it is the sign of that
-depth-weighted sum: `orient_haplotypes` in the library, and
-`gene_orientation` in `run_hapmixqtl_from_salmon.py`, which assembles the
-sites from the exon union when `--exons` is given, else the gene body, else
-the het site nearest the TSS, with per-site depths from the phASER counts
-when they are available and uniform weights otherwise. The driver and the
-runner share it. Before this the runner oriented gene i by row i of the sign
-matrix (an unrelated variant for every gene past the first) and the driver
-used the single deepest feature SNP; a planted-bias test now shows the
-diagnostic flags bias through the depth-weighted orientation and not through
-a fixed unrelated site.
-
-The runner also fed RASQUAL `expm1` of hapmixQTL's log phenotype
-`log(tot/2 + kappa)`, i.e. half the count, with unit library sizes. It now
-passes the Gibbs-mean totals of the tested genes and the per-sample library
-size summed over every quantified gene, as the driver does (offset
-`K = gene mean x relative library size`). The runner passes no covariates to
-either hapmixQTL channel; the driver is the arm that carries the covariate
-set.
-
-### Effects at matched variants
-
-`--rasqual-rows DIR` keeps every per-variant row RASQUAL writes (one file
-per gene; `pilotK` re-ran the 30 genes with it, 98 min, and reproduces
-`pilotI` exactly: the same lead, chi2, effect and phi on all 30). With the
-rows, `matched_effects` reads RASQUAL at hapmixQTL's lead and re-runs
-hapmixQTL at RASQUAL's lead through the same `map_cis` path restricted to
-that variant (`hapmix_at`), and reports sign agreement, correlation and the
-slope of hapmixQTL's effect on RASQUAL's at hapmixQTL's leads, at RASQUAL's
-leads and at their union (a shared lead entering once). Both effects are
-log(ALT/REF): RASQUAL's pi is the ALT haplotype's share of expression
-(`nbem.c:1058`: expected expression 2(1 - pi) for hom-REF, 2 pi for hom-ALT)
-and hapmixQTL's slope is per ALT dosage on the same VCF record, so no allele
-flip is applied. Records are matched on (chrom, pos, ref, alt): a
-multi-allelic site split into biallelic records occupies one position twice
-(886 such positions in the 30 windows) and bcftools leaves the same joined
-ID on both records, so `read_phased_vcf` now replaces a joined or missing ID
-with `chrom_pos_ref_alt` and carries ref/alt columns.
-
-`pilotN` (hapmixQTL arm with the intercept-only allelic channel, the lead
-refit and `pval_perm`; RASQUAL rows from `pilotK`), 30 genes, per-gene table
-in `matched_effects.tsv`; `pilotM` is the same run before the refit and its
-effect sizes differ by at most 0.012:
-
-| read at | pairs | sign agreement | r | slope (hapmixQTL on RASQUAL) |
-|---|---|---|---|---|
-| gene-wise leads (the old comparison) | 30 | | 0.24 | 0.26 +/- 0.20 |
-| hapmixQTL's lead | 26 | 0.96 | 0.86 | 1.202 +/- 0.147 |
-| RASQUAL's lead | 30 | 0.93 | 0.80 | 0.539 +/- 0.077 |
-| union of leads | 55 | 0.95 | 0.78 | 0.757 +/- 0.082 |
-
-The gene-wise comparison was measuring different quantities: at the same
-variant the two arms agree in sign on 52 of 55 pairs. The slopes are
-asymmetric in the direction each arm's lead selection predicts: an arm's own
-lead is the maximum over about 4,600 tested variants, so its effect there is
-inflated (the winner's curse) and the other arm's estimate at that variant
-regresses toward zero, giving 1.19 at hapmixQTL's leads and 0.53 at
-RASQUAL's. The union slope, 0.75, blends the two and is not a scale
-calibration of either arm. Four of the 30 hapmixQTL leads have no RASQUAL
-value: RASQUAL's row at those variants did not converge (negative
-likelihood ratio, boundary flags in column 23: SLC6A15, AGPAT5, CAMSAP2,
-CRMP1), so the comparison at hapmixQTL's leads is conditioned on variants
-where RASQUAL's fit succeeded. Genes both arms put above their respective
-levels are PDZD8 (RASQUAL 47.8 at its lead, 42.1 at hapmixQTL's; hapmixQTL
-27.5, p = 0.001) and CYP51A1 (31.8 / 27.9; 21.8, p = 0.010); EXOC2 is
-RASQUAL's (24.6 at its lead, 4.7 at hapmixQTL's; hapmixQTL 14.5, p = 0.12)
-and ANKRD36B, SLC6A15 and CYCS are hapmixQTL's (RASQUAL 4.5, non-converged
-and 10.3 at those leads). Read at the other arm's lead, each arm keeps a
-similar fraction of its own lead signal: RASQUAL a median 0.38 of its chi2
-(n = 26) and hapmixQTL 0.42 (n = 30), and 0.57 and 0.58 of the effect
-magnitude, which is the symmetric loss the winner's-curse reading predicts.
-FABP7 is the clearest disagreement: RASQUAL 23.6 with
-log aFC -0.32 at its lead, where hapmixQTL re-run gives 0.004 with +0.002,
-while at hapmixQTL's lead 32 kb away both see the effect (RASQUAL 11.6 /
--0.31, hapmixQTL 15.2 / -0.25).
-
-Separately, a gene RASQUAL can use is not necessarily one Salmon quantifies:
-CYP3A7 had allele counts at its feature SNPs from the aligner and a median
-of 0 Salmon reads (73/92 zero samples), so hapmixQTL's statistic was exactly
-0 against RASQUAL's chi2 12. `--min-count 6 --min-count-frac 0.2` (GTEx's
-floor) now applies to the Salmon totals before the probe, and the design
-record reports how many candidates it dropped.
-
-### The null calibration, and why a fixed threshold was the wrong instrument
-
-Every comparison in the sections above thresholds both arms at a chi-squared of
-15, a guess at where a null maximum sits. `deprecated_models/null_calibration_29b` replaces that
-guess. The same 29 genes (AGPAT5 dropped, below), 92 samples and 126,326 tested
-variants, five permutation draws, 145 null gene-statistics per arm, each arm
-thresholded against its own pooled null:
-
-| | RASQUAL | hapmixQTL |
-|---|---|---|
-| null median | 11.00 | 13.75 |
-| threshold at empirical FPR 10% | 14.58 | 20.02 |
-| threshold at empirical FPR 5% | 15.49 | 21.49 |
-| genes discovered at FPR 10% | 11 / 29 | 9 / 29 |
-| genes discovered at FPR 5% | 11 / 29 | 8 / 29 |
-
-**The difference between the two counts does not clear the noise floor.** The
-comparison is paired, so the test is on the discordant genes: at FPR 5% eight
-genes are RASQUAL-only and five hapmixQTL-only, McNemar exact p = 0.58 (at 10%,
-seven and five, p = 0.77). On 29 genes, 11 against 8 is a coin flip. What the
-calibration establishes is not that RASQUAL wins but that **hapmixQTL's apparent
-advantage on raw statistics was an artefact**: its median of 17.3 against
-RASQUAL's 12.9 does not survive matching, because
-its statistics are larger under the null as well as observed, and thresholding
-each arm against its own null removes exactly that.
-
-**The two methods mostly do not find the same genes.** At FPR 5%, of 16 genes
-called by either, only 3 are called by both (CCNI, CYP51A1, PDZD8); 8 are
-RASQUAL-only (CEBPG, CNTN2, CRMP1, EXOC2, FABP7, LRP3, PIP4K2B, TTC3) and 5
-hapmixQTL-only (ANKRD36B, APC, CYCS, RPL15, SLC6A15). That disagreement, not the
-count, is the substantive result: the two are drawing on different evidence, and
-which of those 13 discordant calls are real cannot be settled from these data
-without a replication set. The fixed 15
-used elsewhere in this runbook sits almost exactly on RASQUAL's own 5% point and
-far below hapmixQTL's 21.5, so every "genes above 15" count in the earlier
-sections is generous to hapmixQTL and should be read against this table instead.
-
-Two figures in `deploy_comparison.md` must not be read at face value. The
-`λ_GC on permuted null` row is 24.2 and 30.2; that is
-`median(null) / 0.4549`, a per-gene MAXIMUM over ~4,400 correlated variants
-divided by a single-test reference. Values far above 1 are expected for both
-arms and the row is only meaningful between methods. And `power` is a discovery
-count, not power: no ground truth is supplied (`--known-egenes` was not used).
-
-**A pooled threshold is the wrong instrument for these genes.** Per-gene null
-means span 10.6 to 23.8, and that spread across genes exceeds the spread across
-draws; APC's null averages 23.8 over five draws against an observed 25.4. Judged
-against its own permutation null rather than the pooled one, hapmixQTL calls 5
-genes (ANKRD36B, CYCS, CYP51A1, PDZD8, SLC6A15), not 8: the three it drops (APC,
-CCNI, RPL15) are exactly the noisy-window genes. Those 5 are the calls that have
-been stable through every scale correction. RASQUAL reports no per-gene
-empirical p, so its 11 cannot be refined the same way.
-
-**The two arms do not share one null.** hapmixQTL sees relabelled samples, so the
-window's LD is preserved exactly; RASQUAL is given its own `-r`, which permutes
-the expression side and each feature SNP's allele-specific block by an
-independent order and leaves the tested genotypes untouched. Each is valid for
-its own arm and power is scored per arm, but a single shared null needs knockoff
-haplotypes written into the slice RASQUAL is fed, which is not implemented.
-
-**Resolution and cost.** 145 null values put the 5% threshold at roughly the
-eighth largest, so it is coarsely placed; RASQUAL's identical count at both
-thresholds is that resolution, not a plateau. Each draw took 39-48 min with all
-29 genes concurrent. AGPAT5 is excluded because its 22,821-variant window was
-the only gene to exceed a two-hour per-gene timeout under permutation, where the
-flat likelihood costs far more iterations than real data; it is not one of the
-genes either arm calls.
-
-**The chi-squared values quoted in the earlier sections predate the scale
-correction** of commit a368f97 and are understated by a median 1.87 points, up
-to 22.5. The corrected observed values are in `deprecated_models/final30_matched_scale/` and
-`deprecated_models/null_calibration_29b/`.
-
-### Choosing pilot genes
-
-`scripts/select_pilot_genes.py` draws a gene list both methods can use,
-stratified by expression, from three facts per gene: median Salmon reads per
-sample (from the cache, written once to `annot/gene_expression_summary.tsv`),
-exon sites with allele-specific reads in enough samples (phASER counts; the
-allelic channel needs them in both methods), and VCF records inside the exon
-union (each is a feature SNP to RASQUAL, whose cost is (fSNPs+1) x tested
-SNPs, so `--max-exon-records` bounds the run time). `pilot30_hc.txt` is 10
-genes from each of the 1k-3k, 3k-10k and >=10k reads/sample strata with
->= 3 informative exon sites and <= 40 exon records; its summary table sits
-beside it.
-
-Both observed tables carry a `lead` column (`chrom_pos_ref_alt`), so lead
-agreement between arms can be read off directly.
-
-For iteration, `--gene-list` restricts every input read (VCF, allelic counts,
-Gibbs draws) to the windows around those genes, and `--cache-dir` keeps the
-Gibbs load as memory-mapped arrays keyed by the input paths. An 8-gene rerun
-then costs minutes of setup rather than the hour a whole-cohort load takes.
-
-`salmon.tsv` is `sample_id <TAB> Salmon output directory` -- the directory
-holding `aux_info/bootstraps/`, not the `quant.sf` file.
-
-### Optional, non-standard: STRs and multiallelic sites
-
-Off by default. Standard cis-QTL mapping tests biallelic SNPs, and both
-`compare_pipelines.py` and `run_hapmixqtl_from_salmon.py` do exactly that
-unless you add these flags:
+Off by default; the standard analysis tests biallelic SNPs only. Two flags
+add rows to the `map_cis` scan and nothing else:
 
 ```bash
-    --str-vcf hipstr.vcf.gz    # STRs join the tested variants as per-haplotype repeat
-                               # length (log aFC per repeat unit) + a curvature second pass
-    --multiallelic             # multi-ALT rows of the VCF (normally skipped) join as one
-                               # split row per ALT + a categorical per-allele second pass
+    --str-vcf <str.vcf.gz>   # STRs as per-haplotype repeat length, in reference-relative repeat units
+    --multiallelic           # multi-ALT rows of --vcf (normally skipped), one split row per ALT
 ```
 
-In the comparison they add a third, separately reported arm
-(`hapmixQTL_nonstandard`); the RASQUAL and standard hapmixQTL arms are
-computed exactly as without the flags. RASQUAL cannot test these variants, so
-that arm is not a like-for-like comparison with RASQUAL. It answers "what do
-the extra variant classes add to hapmixQTL". The STR VCF can come from HipSTR
-(`GB`), GangSTR or ExpansionHunter (`REPCN`, symbolic `<STRn>` alleles) on the
-same samples; every source is normalized to reference-relative repeat units
-(reference = 0, never absolute copy numbers), and the reference copy number is
-kept per locus as `ref_units`. Phase the calls against the same scaffold if you
-want the ASE channel to see the STRs; unphased calls still feed the total
-channel. See `docs/ase_validation.md` §7j.
+Either can change which variant is a gene's lead, and the output gains a
+`variant_type` column (`snp`, `str`, `ma_allele`). The runner no longer runs
+the STR-curvature and multi-allelic categorical second pass, which supports
+only the deprecated known-variance standard error. The STR VCF can come from
+HipSTR, GangSTR or ExpansionHunter on the same samples; every source is
+normalized to repeat units relative to the reference allele
+(`scripts/str_integrate.py`). Unphased STR calls still feed the total channel.
 
-`compare_pipelines.py` stages RASQUAL's inputs through `tempfile`, so it
-inherits `TMPDIR`. On a host where `/tmp` is a spinning disk this becomes the
-bottleneck for a run that is otherwise compute-bound; point `TMPDIR` at fast
-local storage before launching.
+## Reading the results
 
-The script reports how many genes are usable by both methods. A gene qualifies
-only if it is present in both inputs and has at least one feature-SNP carrying
-allelic counts inside the gene body. Fewer than five and it stops with
-`too few genes usable by both methods`. That message means the inputs did not
-intersect -- most often a naming mismatch, not a shortage of data.
+### The per-gene table
 
-Bring back `deploy/deploy_comparison.json` and `deploy/deploy_comparison.md`.
+`hapmixqtl_cis.tsv.gz` has one row per tested gene (`phenotype_id`); every
+column is defined in `docs/outputs.md` under "Mode `hapmixqtl`". The essentials:
 
-## The naming trap that silently zeroes everything
+- **Detection** is `pval_perm` or `pval_beta`, the gene-level p-values
+  computed against the permutation null. Those are the calls.
+- **The lead** is the variant with the largest combined |t|. Its `slope`
+  (on the log2 allelic fold-change scale, per ALT allele), `slope_se` and
+  `pval_nominal` are on the scan's fitted scale with Meier's correction, and
+  `pval_nominal` is referred to `dof_nominal`. `pval_nominal` is the best
+  of a window, never a gene-level p, and it is anticonservative under a
+  donor-record permutation null; the mechanism and rates are in
+  `docs/pipeline_rules.md`.
+- **Per channel**, `slope_a`/`slope_a_se` and `slope_t`/`slope_t_se` are the
+  allelic and total estimates at the lead, and `allelic_admitted` says
+  whether the allelic channel entered the statistic (15 or more informative
+  allelic donors). `alpha_cis` and `pval_cis_trans` compare the two channels
+  at the lead; a small `pval_cis_trans` means they disagree (a trans
+  component, mapping bias or phase error), and it is a diagnostic, not a
+  filter.
+- `tau_a`, `tau_t`, `c_a` and their null-scan counterparts are empty in
+  default mode, and that is correct: under `Var(eps) = sigma^2 v` no such
+  parameter exists. `tau_refit` is false. These columns, and
+  `variance_model`, are carried for compatibility with the deprecated
+  configurations and describe nothing in a default run.
 
-Two conventions have to agree across files that are built separately, and
-disagreement produces empty joins rather than errors.
+### Leave-one-donor-out influence columns
 
-**Ensembl version suffixes.** IDs carry them (`ENSG00000123456.7`). Salmon
-transcript names usually keep them; published eGene lists usually drop them.
-A mismatch makes `tx2gene` pair zero transcripts and `--known-egenes`
-replicate zero genes, with no diagnostic. Pick one convention and apply it in
-all three places: either pass `--strip-version` when building the annotation
-tables *and* strip the
-Salmon names *and* strip the eGene list, or keep versions on all three.
-`--strip-version` affects only the tables `gtf_to_tables.py` writes; nothing
-downstream strips anything for you.
+A single donor record can carry a gene-level call: in CALM2, measured on the
+pre-correction pipeline on 2026-09-25, `pval_perm` was 0.028 with one donor's
+allelic record and 0.684 without it. Every default-mode lead therefore
+reports:
 
-**Chromosome names.** `chr1` and `1` are different strings.
-`gtf_to_tables.py` emits chromosome names exactly as they appear in the GTF
-and prints the first few, and `compare_pipelines.py` compares them against the
-VCF as strings. If they disagree, no variant falls in any gene window and the
-usable-gene count collapses to zero.
+- `loo_donor`: the donor whose exclusion from both channels moves the lead's
+  combined |t| furthest toward zero.
+- `loo_pval_nominal`: the lead's nominal p with that donor excluded.
 
-There is a third form, and the server has one on disk. An NCBI RefSeq
-annotation names chromosomes by accession -- running the builder over
-`genome_refs/GRCh38_p14_ncbi110/GCF_000001405.40_GRCh38.p14_genomic.gtf.gz`
-prints `NC_000001.11, NC_000002.12, NC_000003.12`. Those match no VCF written
-against `chr1` or `1`. That GTF also names genes by symbol (`OR4F5`) rather
-than by Ensembl ID, so eGene lists keyed on `ENSG...` will not join to it
-either. If you want GENCODE-style identifiers, use a GENCODE GTF; if you use
-this one, make the VCF and the eGene list agree with it.
+Each is an exact refit under the default model (checked against
+`map_nominal` with the donor masked and against a per-donor loop on 40 genes:
+the same donor in 40 of 40, |t| and degrees of freedom within 7.8e-5
+relative). Read them as a diagnostic, never a filter, within three limits:
+the lead is held fixed, although excluding the donor can move it (as in
+CALM2); `pval_perm` is not recomputed; and a donor that alone identifies a
+covariate level is not evaluated. A gene whose call rests on one donor shows
+a `loo_pval_nominal` far above its `pval_nominal`; whether that donor's record
+is an error is a separate question, answered against alignment-based allele
+counts.
 
-Both failures surface in the comparison as `too few genes usable by both
-methods`.
-When you see it, check naming before concluding the data are thin.
+### Genes the run reports but does not test
+
+The runner prints how many genes pass the eQTL gene filter but have no Gibbs
+draws, because no donor has a haplotype-paired transcript for them. On this
+deployment that is 1,208 of the 12,955 filtered genes, leaving 11,747
+testable (counted against the Gibbs cache, which was built with the runner's
+`load_counts`). 1,188 of the 1,208 are all of the filtered genes on chr14,
+chr15 and chr22, the three contigs whose phased genotypes are truncated (see
+the genotype section); the other 20 lie elsewhere and have no
+haplotype-paired transcript in any donor. Whether genes without Gibbs draws
+should be tested in the total channel alone is an open decision recorded in
+`docs/pipeline_rules.md`. The expression PCs use all 12,955 genes, as the
+gene-filter rule requires.
+
+### The evaluation bundle
+
+`eval_bundle.json` holds the run metadata (donor and gene counts, covariate
+split, input provenance including the number of donor-gene pairs the
+one-sided rule excluded, `mode: default_half_read_split`, `tau_mode`,
+`se_mode`, `tau_refit: false`), the reference-bias gate's pooled result, and
+summaries of the results. Its `lambda_gc` and QQ curve are computed on each
+gene's lead `pval_nominal`, the smallest of a window of correlated tests, so
+they are expected to sit far above 1 and are not a calibration measure. Its
+`channel_concordance` block regresses `slope_a` on `slope_t` across genes;
+both channels estimate the same quantity, so the slope should be near 1, and
+a departure localizes bias to one channel.
+
+## The RASQUAL comparison on real data (a comparator, not default mode)
+
+The runner can add RASQUAL, run on the same genes, as a real-data comparator.
+These flags do not change the default-mode results, and RASQUAL always sees
+the biallelic SNPs only:
+
+```bash
+python3 $REPO/scripts/run_hapmixqtl_from_salmon.py <the default-mode flags above> \
+    --rasqual /mnt/ssd/lalli/usr/local/rasqual/bin/rasqual \
+    --allelic-counts prepped/allelic_counts_manifest.chr.tsv \
+    --rasqual-input both --rasqual-genes 200
+```
+
+- `--rasqual` is a built RASQUAL binary. `scripts/build_rasqual.sh [DEST]`
+  builds one from source (default `rasqual_src/src/rasqual`; it needs GSL,
+  LAPACK, BLAS and zlib); the one installed here is the path above.
+- `--rasqual-input pseudo` (the default) gives RASQUAL each gene's
+  haplotype totals as one pseudo feature SNP, the same information hapmixQTL
+  sees; `native` gives it phASER's per-feature-SNP counts and requires
+  `--allelic-counts`; `both` runs each, which separates the effect of the
+  input from the effect of the method.
+- `--rasqual-genes` caps the comparison (default 200 genes), because RASQUAL
+  is about a thousand times slower than hapmixQTL.
+- RASQUAL's counts are the point-estimate totals, with offsets from the edgeR
+  effective library sizes. RASQUAL reports no standard error.
+
+It writes `rasqual_cis.tsv.gz` and adds RASQUAL's fitted phi, delta and theta
+distributions and the rank correlation of the two methods' statistics to the
+bundle. RASQUAL's phi is an independent estimate of reference mapping bias,
+so it cross-checks the gate.
+
+The comparisons the project relies on are made elsewhere: the plasmode
+benchmark, with simulated effects of known size (`benchmark/plasmode/`, run
+order `run_all.sh`, described in its `README.md`; pages under
+`$DEPLOY/plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/`,
+which are records of the 2026-09-27 configuration rather than runs of the
+current default), and the held-out replication referee
+(`scripts/referee_replication.py`, `referee_trecase.py`, `referee_score.py`;
+page `$DEPLOY/referee_replication_20260928/report.html`). The one-page
+summary is `$DEPLOY/benchmark_summary_20260929/summary.html`.
+
+## Running mixQTL mode, the no-draws comparator
+
+`scripts/compare_mixqtl_replication.py` has no command-line flags. Its paths
+are written into the script, and two environment variables control a run:
+
+```bash
+MIXQTL_OUT=$DEPLOY/<new output folder> NP=40 python3 $REPO/scripts/compare_mixqtl_replication.py
+```
+
+It runs on the 29 calibration genes (`$DEPLOY/pilot29_hc.txt`, variants from
+`deprecated_models/null_calibration_29b/regions.bed`, those genes' windows)
+with the point estimates and edgeR library sizes above, the current
+covariates (`cov/half_read_point_calibration_20260930/`, genotype PCs tied to
+the genotypes) and `NP` null permutations (default 40). It writes three
+analyses: `weighting_ablation.tsv` (hapmixQTL's response and donor set held
+fixed while only the weights vary, so the spread of slopes across null
+permutations is each weighting's estimation error), `residual_floor_profile.tsv`,
+and the end-to-end mixQTL scan `endtoend_mixqtl_observed.tsv` and
+`endtoend_mixqtl_nulls.tsv`, with `summary.json`.
+
+Set `MIXQTL_OUT` to a fresh folder. The default,
+`$DEPLOY/mixqtl_replication_point_estimates_20260925/`, holds the stored run,
+which used the 2026-09-25 covariate build in `log2(CPM + 1)`; a run into it
+would overwrite that record. There is no transcriptome-wide mixQTL driver; a
+wider run calls `mixqtl_scan` in `tensorqtl/mixqtl_replication.py` per gene
+the way this driver's `mixqtl_gene` does, permuting donor records for the
+null while the genotype PCs stay with the genotypes.
+
+## Naming traps that empty a join
+
+Conventions that must agree across separately built files fail as empty joins
+rather than errors.
+
+**Ensembl version suffixes.** Ensembl identifiers carry versions
+(`ENSG00000123456.7`). Salmon transcript names usually keep them and
+published eGene lists usually drop them; a mismatch makes `tx2gene` pair zero
+transcripts. Pick one convention and apply it everywhere: either pass
+`--strip-version` to `gtf_to_tables.py` and strip the Salmon names and any
+eGene list too, or keep versions on all of them. `--strip-version` affects only
+the tables `gtf_to_tables.py` writes. This deployment uses RefSeq accessions,
+whose version suffixes match between Salmon and the annotation.
+
+**Chromosome names.** `chr1`, `1` and `NC_060925.1` are different strings.
+`gtf_to_tables.py` emits names exactly as the GTF has them and prints the
+first few. The runner refuses when the VCF and `--gene-pos` share no
+chromosome name, but a partial mismatch only drops the unmatched genes, with
+a printed count (`dropping N phenotypes on chrs. without genotypes`).
+An NCBI RefSeq GTF without UCSC renaming (for example
+`genome_refs/GRCh38_p14_ncbi110/GCF_000001405.40_GRCh38.p14_genomic.gtf.gz`)
+names chromosomes by accession and genes by symbol, so it joins to neither a
+`chr`-named VCF nor an Ensembl-keyed gene list.
+
+**Salmon names against `tx2gene`.** The runner strips the haplotype suffix
+before looking a transcript up, so `tx2gene.tsv` must list base transcript
+identifiers without `_L`/`_R`. If no haplotype-paired transcript matches, the
+runner stops with `no haplotype-paired transcript matched --tx2gene`.
+
+## Historical procedures
+
+These are recorded so their results can be read; none of them is run as part
+of this procedure.
+
+- **The RASQUAL head-to-head driver, `compare_pipelines.py`**, removed
+  2026-10-01. Its hapmixQTL arm used the pre-correction pipeline (a
+  natural-log phenotype from Gibbs posterior means, the estimated-`tau`
+  model with a lead refit, and the known-variance second pass). The script is
+  archived with its SHA-256 in `$DEPLOY/retired_scripts_20261001/`, whose
+  README says how to rerun it. Its runs stay where they are: the pilot series
+  (`$DEPLOY/pilot*`), `deprecated_models/null_calibration_29b/`,
+  `deprecated_models/final30_matched_scale/`, and
+  `rasqual_default_mode_20260923/`. The design write-up is
+  `rasqual_comparison_design_20260923/rasqual_comparison.html`. The narratives
+  this runbook carried about those pilots until 2026-10-01 (counting noise on
+  low-count genes, per-channel covariates, the estimated-`tau` model and its
+  lead refit, effects at matched variants, the 29-gene null calibration) are
+  in this file's git history; their numbers describe that pipeline, not
+  default mode.
+- **Deprecated variance models** (`variance_model`, `variance_prior`,
+  `tau_mode='estimate'`, the known-variance `se_mode='model'`), quarantined
+  2026-09-23: code `tensorqtl/fitted_variance.py`, records
+  `$DEPLOY/deprecated_models/README.md`.
+- **Fine-mapping.** `map_susie` has no per-channel residual scale and refuses
+  `tau_mode='zero'`, and `--mode hapmixqtl_susie` was removed from the
+  package CLI. Its `tau_mode='estimate'` default remains only to reproduce
+  earlier results; credible sets and PIPs were never validated.
+- **The STR-curvature and multi-allelic categorical second pass** refuses
+  default mode and supports only the known-variance standard error.
+- **The lead refit (`tau_refit`)** has nothing to refit in default mode. The
+  runner no longer passes it, and the package CLI's `--tau_refit` is a
+  compatibility flag with no effect.
+- **Earlier covariate builds**, which the runner refuses:
+  `cov/covariates.tsv` (pre-2026-09-25; `log1p` of raw counts, genotype PCs
+  from another VCF snapshot) and `cov/log2cpm1_point_calibration_20260925/`
+  (expression PCs in `log2(CPM + 1)`, the build behind every result stored
+  before 2026-09-30).

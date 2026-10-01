@@ -1,43 +1,36 @@
 # hapmixQTL (ASE) pipeline validation
 
-> ## READ FIRST — this is the historical validation record
+> ## Status, 2026-10-01: historical validation record, including withdrawn claims
 >
-> **Current association default (2026-09-29).** `prepare_default_inputs`
-> supplies point-estimate `A`, half-read `T`, Gibbs-plus-optional-Poisson
-> `Va` with no-coverage and one-sided masking, and unit working `Vt`.
-> Fitted scales, GPU kernels and Meier combination are unchanged. These tests
-> do not establish uniform superiority or validate the separate stacked SuSiE
-> PIP/credible-set path.
->
-> **As of 2026-09-23 hapmixQTL ships exactly TWO MODES**, and most of what
-> follows compares configurations that are no longer among them.
->
-> - **mixQTL mode** — the published estimator on Salmon posterior-mean counts,
->   no draws (`tensorqtl/mixqtl_replication.py`).
-> - **default mode** — `Var(eps_i) = sigma^2 * v_i`: the **Gibbs** across-draw
->   variance as a *shape*, residual scale fitted per variant, **no additive
->   floor** (`tau_mode='zero'` + `se_mode='fitted'`).
->
-> **DEPRECATED, and quarantined:** `additive`, `two_component`,
-> `library_scaled`, the `variance_prior` shrinkage, the `tau_mode='estimate'`
-> they require, and the known-variance standard error `se_mode='model'`. Code in
-> `tensorqtl/fitted_variance.py`, tests in `tests/fitted_variance/`, reports in
-> `brainvar_hapmix_deploy/deprecated_models/`.
->
-> Sections below that choose among those, or that quote a known-variance
-> standard error, are **historical**. Their measurements were correctly made and
-> are NOT withdrawn as measurements; only their status as live options is. Do
-> not cite them as current practice, and do not use them as comparators in new
-> work. The deprecation is structural, not empirical: each fits a variance
-> function from a gene's own squared residuals and then weights those residuals
-> by the fit, which no comparator method does; and with `(c_g, tau_g)` both free
-> the weights are provably invariant to the absolute scale of the Gibbs draws,
-> so the quantifier's calibration never reaches the answer.
->
-> The current validation of default mode against a generative model hapmixQTL
-> does not assume is section **7k**, and its report is
-> `brainvar_hapmix_deploy/external_benchmark_fitted_defaults_20260923/`.
-> Claims withdrawn on 2026-09-23 are marked in place (see 7d).
+> This is the validation record of the hapmixQTL association statistic written
+> between 2026-09-07 and 2026-09-23, and nearly every arm in §2-§8 is a
+> configuration deprecated and quarantined on 2026-09-23: `tau_mode='estimate'`
+> with the `variance_model` family, and `tau_mode='zero'` paired with the
+> known-variance standard error (`se_mode='model'`), so "`tau_mode='zero'`" in
+> this record always means that known-variance pairing and never the shipped
+> default mode (`tau_mode='zero'` with `se_mode='fitted'`, first measured in
+> §7k). The measurements stand as measurements, and three results still
+> describe shipped components: the channel orthogonality that makes `Cat`
+> ignorable (§3), the cis/trans diagnostic (§7c), and the reference-bias gate
+> with its precondition of mapping-bias-filtered input (§7i); the sizes of the
+> phasing-error and reference-bias effects (§7f, §7h) were measured on
+> `tau_mode='estimate'` and are not measured under default mode. The two shipped modes (default mode,
+> and mixQTL mode on Salmon point estimates with no draws), their inputs,
+> outputs and current evidence are in `docs/hapmixqtl_methods.md`,
+> `docs/pipeline_rules.md`, `docs/outputs.md` and
+> `docs/CURRENT_SCIENTIFIC_STATE.md`; §7k's external benchmark was superseded
+> on 2026-09-28 by the fixed harness
+> (`brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html`),
+> and the known-effect benchmark is `benchmark/plasmode/README.md`. Do not act
+> on the statements that `tau_mode='estimate'` is the default (Historical
+> headline, §8), on the advice to re-run fine-mapping (§8), or on §7j's
+> second-pass route: fine-mapping (`map_susie`) and the STR/multi-allelic
+> second pass are not supported in default mode and refuse it, and
+> `scripts/compare_pipelines.py` was removed on 2026-10-01 (archive
+> `brainvar_hapmix_deploy/retired_scripts_20261001/`). Withdrawn claims are
+> kept where they were stated and marked there: the weight-cap and nested
+> conclusions of §7b (2026-09-13), the reading of Gibbs variance as assignment
+> uncertainty only in §6 (2026-09-16), and §7d's finding 1 (2026-09-23).
 
 
 **Date:** 2026-09-07, revised 2026-09-11 · **Harness:** `tests/ase_validation.py` · **Raw results:** `docs/ase_validation_results.json`
@@ -54,6 +47,10 @@
 > now the default in `map_nominal`, `map_cis` and `map_susie`; `'zero'` is kept only for
 > reproducing prior results and emits a warning. The sections below are the evidence
 > behind that change and what was found on the way.**
+
+[2026-10-01: superseded. `tau_mode='zero'` in this headline is the known-variance
+pairing and `tau_mode='estimate'` is deprecated and quarantined; neither is the shipped
+default, `tau_mode='zero'` with `se_mode='fitted'` (§7k).]
 
 Two secondary conclusions: the unused `Cat` covariance is **safely ignorable** (and we
 now know why), and the two-channel model **genuinely beats total-only** at matched
@@ -80,6 +77,9 @@ those 35 tests while producing p-values that are wrong by two orders of magnitud
 is exactly what was happening. This is the same failure mode the knockoff work hit
 (`docs/calibration_findings.md`): green formula tests plus green power tests, masking
 broken calibration.
+
+[2026-10-01: `docs/calibration_findings.md` is not on this branch; it is on the
+knockoff-work branches, for example `worktree-docs-new-tooling`.]
 
 ### Three structural facts that motivated the design
 
@@ -218,6 +218,12 @@ total**. It does not contain the counts' own sampling variance, and it certainly
 contain biological variance. So `v_inf` understates true error variance by a large factor,
 weights blow up, `xx` blows up, and `Var(β) = 1/xx` collapses toward zero.
 
+[WITHDRAWN 2026-09-16 as a statement about real Salmon output; marked here 2026-10-01.
+Salmon's default Gibbs draw carries counting noise (`CollapsedGibbsSampler.cpp:122`), so
+its Gibbs variance is not assignment uncertainty only. The sentence describes this tier's
+multinomial emulation, which conditions on the total (CLAUDE.md, "Claims withdrawn";
+record `brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`).]
+
 Because this is the regime real Salmon/mmseq input actually occupies, **`tau_mode='zero'`
 should be considered invalid for real data, not merely imprecise.**
 
@@ -315,6 +321,9 @@ baseline the ASE channel is supposed to beat. Once you account for its inflation
 broken weighting throws away all the information the allele-specific channel contributes.
 This is the sharpest available argument that `tau_mode='zero'` is not a conservative-ish
 default worth keeping for compatibility: it is strictly worse than not using ASE at all.
+[2026-10-01: "the default" here is `tau_mode='zero'` with the known-variance standard
+error; §7k shows that the fitted residual scale, which the shipped default uses, removes
+this failure.]
 
 It is also a clean demonstration of why the matched-α methodology in §5 matters. On nominal
 p-values the broken configuration is the best method in the table.
@@ -393,7 +402,8 @@ Nominal type-I error under the null (before matching) — `zero` and `+weight ca
 
 ### Four conclusions
 
-1. **mixQTL's weight cap does NOT fix it.** `+weight cap` is *identical* to `tau='zero'` at
+1. **[WITHDRAWN 2026-09-13; see the withdrawal note above: in this harness the cap arm
+   could not differ from `zero`.]** **mixQTL's weight cap does NOT fix it.** `+weight cap` is *identical* to `tau='zero'` at
    every N and every effect size — same 20× type-I, same power. The cap bounds the *ratio*
    between weights, but hapmixQTL's failure is that **all** weights are uniformly too large
    (`v_inf` uniformly understates the variance), so capping the ratio changes nothing. The
@@ -404,7 +414,8 @@ Nominal type-I error under the null (before matching) — `zero` and `+weight ca
 3. **`tau='zero'` tracks trcQTL almost exactly** at matched FPR (0.495 vs 0.535 at N = 100,
    aFC 1.25) — independent confirmation on the published design that the broken default
    discards the allele-specific channel entirely.
-4. **The nested `σ²·v_inf + τ` model buys nothing** over plain additive τ (0.575 vs 0.615 at
+4. **[WITHDRAWN 2026-09-13; see the withdrawal note above: the nested arm collapses onto
+   `estimate` by the moment estimator's algebra.]** **The nested `σ²·v_inf + τ` model buys nothing** over plain additive τ (0.575 vs 0.615 at
    N = 100), and is marginally worse at larger N. The simple additive offset is sufficient;
    the extra scale parameter is not worth the complexity.
 
@@ -646,6 +657,10 @@ variance model is suspect for reasons τ does not capture.
 
 **Harness:** `tests/ase_susie_pip_calibration.py` · **Raw:** `docs/ase_susie_pip_calibration.json`
 
+[2026-10-01: both arms here are deprecated configurations. Fine-mapping is not supported in
+default mode: `map_susie` refuses `tau_mode='zero'`, `--mode hapmixqtl_susie` was removed
+from the CLI, and credible sets and PIPs were never validated for the shipped statistic.]
+
 `map_susie` is a shipped feature that had never been validated. mixQTL validates fine-mapping
 by two criteria (Liang et al. 2021, Fig. 3): PIPs must be **calibrated** — the fraction of
 truly causal variants within a PIP bin should match the bin's mean PIP — and 95% credible
@@ -886,6 +901,11 @@ encoder) switch these in; without them the output is byte-identical to the stand
 analysis, which the self-tests assert. In the deploy comparison they add a third,
 separately reported arm; RASQUAL cannot test these variants, so that arm measures what
 the extra classes add to hapmixQTL rather than comparing methods like for like.
+[2026-10-01: `compare_pipelines.py` was removed (archive
+`brainvar_hapmix_deploy/retired_scripts_20261001/`). On `run_hapmixqtl_from_salmon.py` the two
+flags now only add STR and multi-ALT rows to the `map_cis` scan; the runner no longer runs the
+second pass, and `map_str_curvature` and `map_multiallelic` refuse `tau_mode='zero'` because
+they have known-variance standard errors only.]
 
 **Lead scan, no model change.** hapmixQTL's core is linear in `s = xL − xR` and `g/2`
 with no 0/1 assumption anywhere except `get_allele_stats` (reporting) and the MAF filter
@@ -954,6 +974,12 @@ unchanged (the r² mapping is monotone). This matters for the effect-size concor
 (§9), which compares slopes, not p-values.
 
 ## 7k. The shipped defaults re-measured, and what λ = 3020 actually was
+
+[2026-10-01: record of the 2026-09-23 harness. The harness was fixed and re-run on
+2026-09-28 (commit 9369bb1); the current record is
+`brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html`. The default
+measured here also predates the per-channel references and Meier's correction (2026-09-27)
+and the half-read total (2026-09-29).]
 
 *Added 2026-09-23.* Everything above tests `tau_mode='zero'` and `tau_mode='estimate'`
 against the **known-variance** standard error, because that was the only standard-error
@@ -1043,6 +1069,9 @@ Monte Carlo standard error on a proportion at 500 replicates is 0.0097 near 0.05
    mis-weighted relative to the rest, which is what the still-open "total channel has no
    zero-count guard" defect produces, and which no global σ² can repair. Do not read
    this as "the fitted standard error is robust to errors in `v`" in general.
+   [2026-10-01: under the half-read default the total channel has unit working variance,
+   so the zero-count guard defect applies only to the historical
+   `compute_summaries_from_gibbs` path.]
 
 **What this does not establish.** The harness's allelic residualizer keeps an intercept
 where production has been through-origin since 2026-09-15, so the allelic channel here is
@@ -1054,6 +1083,12 @@ transcriptome sits and the fitted weights are known to flatten toward equality.
 ## 8. What was done, and what is still recommended
 
 **Done in this branch.**
+
+[2026-10-01: this list is the state of 2026-09-13 to 2026-09-23. Item 1 is superseded:
+`tau_mode='estimate'` is deprecated and quarantined, and the default in `map_nominal` and
+`map_cis` is `tau_mode='zero'` with `se_mode='fitted'`. Item 5's second pass and item 8's
+`map_susie` are not supported in default mode, and the checks item 6 describes exercise the
+historical known-variance and `tau_mode='estimate'` arms.]
 
 1. `tau_mode='estimate'` is the default in `map_nominal`, `map_cis` and `map_susie`.
    `'zero'` is kept only for reproducing prior results and emits a warning stating why it
@@ -1093,6 +1128,9 @@ transcriptome sits and the fitted weights are known to flatten toward equality.
    95% credible sets covering the causal variant 36.8% of the time, and PIP-0.98 variants
    that were truly causal 34% of the time. Redo, do not re-threshold. Any summary without a
    `tau_mode` column predates the fix; `fine_mapping_provenance()` will say so.
+   [2026-10-01: do not act on this. Re-running `map_susie` now requires the deprecated
+   `tau_mode='estimate'`, fine-mapping is not supported in default mode, and no validated
+   fine-mapping route exists for the shipped statistic.]
 2. **Fit φ outright when filtered input cannot be guaranteed.** "Filtered" means allele
    counts from which reference mapping bias has already been removed upstream: WASP
    re-mapping, phASER's mapping-bias site blacklist (what GTEx ships), or quantification
@@ -1157,11 +1195,20 @@ pytest tests/test_hapmixqtl_calibration.py
 python3 scripts/str_integrate.py --selftest
 ```
 
+[2026-10-01: `tests/ase_validation.py` reproduces the historical comparisons, including the
+quarantined `tau_mode='estimate'` arm (`_estimate_tau` now resolves from
+`tensorqtl/fitted_variance.py` with a deprecation warning), and its `zero` arms use the
+known-variance standard error, not the shipped default. By reading the code (not run),
+`scripts/str_integrate.py --selftest` now stops with a `ValueError` at its second-pass step,
+because it calls `map_multiallelic` and `map_str_curvature` at their default
+`tau_mode='zero'`, which `_second_pass` refuses. The method's current self-test is listed in
+`tests/README.md` and CLAUDE.md, "Self-tests".]
+
 ## Hosting the annotatable report
 
 `docs/ase_validation_report.html` embeds [Hypothesis](https://web.hypothes.is/) for inline
 annotation. Hypothesis needs the page served over http(s) — it will not load from a
-`file://` path, and the Claude Artifact sandbox blocks the script at the CSP layer. To get
+`file://` path, and a sandboxed page host blocks the script at the CSP layer. To get
 working inline commenting, deploy to Cloudflare Pages:
 
 ```bash
@@ -1173,7 +1220,7 @@ npx wrangler pages deploy site --project-name=hapmixqtl-calibration-audit
 Lands at `https://hapmixqtl-calibration-audit.pages.dev`. Config in `wrangler.toml`;
 `site/` is generated and gitignored, so `docs/` stays the single source of truth.
 
-> Note: this deploy cannot be run from a Claude Code remote session — the egress policy
+> Note: this deploy cannot be run from a sandboxed remote session — the egress policy
 > blocks `api.cloudflare.com`, and no Cloudflare credentials are present. Run it locally.
 
 ### Making it private by default

@@ -1,15 +1,23 @@
 # Historical investigations: proposed work as of 2026-09-20
 
-2026-09-20. This file held work that was **proposed and not yet run**. It is
-deliberately separate from `CLAUDE.md`, which records observed facts, and from
-`docs/CURRENT_SCIENTIFIC_STATE.md`, which routes between things already
-established. When an item is run, its result
-belongs in a report and its conclusion in `CLAUDE.md`; this file then loses the
-item rather than accumulating it.
-
-No item here is current work. The first entry was closed on 2026-09-20; the
-second predates the accepted 2026-09-29 `prepare_default_inputs` route and is
-kept only for historical unit-conversion context.
+> **Status, 2026-10-01: dated list of proposals; no item here is current
+> work.** This file held, on 2026-09-20, work that was proposed and not yet run,
+> kept apart from the observed facts in CLAUDE.md and the routing in
+> `docs/CURRENT_SCIENTIFIC_STATE.md`. Its first entry, the per-channel residual
+> sigma (mechanism 4 of the six proposed for the disagreement between hapmixQTL
+> and mixQTL), was closed on 2026-09-20 and refuted as a cause of that
+> disagreement; the `se_mode='fitted'` standard error added to test it is now
+> part of the shipped default mode (`tau_mode='zero'` with `se_mode='fitted'`).
+> Its second entry, a log2 migration of `compute_summaries_from_gibbs`, was
+> never started and does not apply to the shipped default, which builds log2
+> inputs from Salmon point estimates through `prepare_default_inputs`
+> (`docs/hapmixqtl_methods.md`, `docs/pipeline_rules.md`);
+> `compute_summaries_from_gibbs` and the dated scripts that import it remain in
+> natural log as a historical path. Wrong to act on today: the sentence "the
+> runtime has never been converted", which holds only for that historical
+> helper, and the conversion list's `tau_A`, `tau_T`, `Cat`, `c_g` and
+> `two_component`/`library_scaled` quantities, which belong to configurations
+> deprecated on 2026-09-23 (`brainvar_hapmix_deploy/deprecated_models/README.md`).
 
 ---
 
