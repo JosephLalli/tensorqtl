@@ -177,7 +177,10 @@ experiment.
 - **No per-donor allelic read floor by default** (mixQTL's published driver
   required at least 50 reads on each haplotype; `--asc-cutoff` supplies one
   for a matched comparison).
-- **The stored nulls have not been rerun under Meier's correction.**
+- **The stored nulls have not been rerun under Meier's correction or on the half-read expression PCs**
+  (made with `cov/log2cpm1_point_calibration_20260925`), nor the benchmark's RASQUAL and TReCASE (reused
+  from the committed run), so the benchmark's comparisons with them are like for like in the allelic
+  channel at most; what would rerun each: `benchmark/simulated_effects/README.md`, the report's section 6.
 - **`tests/ase_gtex_real_data.py` fabricates the total channel's inferential
   variance** and keeps an allelic intercept (historical harness).
 - **Cross-donor correlation** (relatedness, structure, batch beyond the 17

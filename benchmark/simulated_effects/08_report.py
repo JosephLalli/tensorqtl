@@ -18,6 +18,7 @@ import html
 import json
 import os
 import re
+from pathlib import Path
 
 import matplotlib
 import numpy as np
@@ -47,8 +48,27 @@ ARMS = C.ARMS
 HAPMIX, JOINT, TQ = C.HAPMIX_ARMS, tuple(C.JOINT), C.TENSORQTL
 HM = HAPMIX + tuple(C.MIXQTL_ARMS)   # the hapmixQTL and mixQTL arms, the arms BEFORE scored
 ALL = ARMS + JOINT                   # the Salmon-input arms: the prose and check_claims are about these
-JOINT_COV = C.D / 'cov' / 'log2cpm1_point_calibration_20260925'   # the covariates of the committed runs whose RASQUAL and TReCASE results are reused (3aac315; both runs predate a2f4314)
-SAME_COV = C.COV == JOINT_COV        # whether the other arms' covariates are the joint models' (they are not since a2f4314)
+JOINT_COV = C.D / 'cov' / 'log2cpm1_point_calibration_20260925'   # the covariates of the committed runs whose RASQUAL and TReCASE results are reused (3aac315), of the stored null runs and of their re-run under 8a06803 (01_check_inputs.REPRO_COV); all predate a2f4314
+HALF_READ_SINCE = datetime.datetime(2026, 9, 30, 15, 36, 9, tzinfo=datetime.timezone.utc)   # commit a2f4314: the expression PCs move to the half-read build
+AFTER = C.AFTER_DF_FIX       # the committed run scored after commit 8a06803: BEFORE's datasets and covariates, no Meier's correction
+LIMITS = 'section 6' if INTERPRETED else 'the limits section'   # where the page lists what would run to make a comparison like for like
+
+
+def arms_cov(root):
+    """The covariate build a run's hapmixQTL, mixQTL and tensorQTL arms used, and how that is known: 03_run_arms.py's record in
+    run_arms_facts.json, or, for a run made before 03 recorded it, the build of the code of the date its arms ran."""
+    facts = root / 'results' / 'run_arms_facts.json'
+    rec = json.loads(facts.read_text()).get('covariates')
+    if rec:
+        return Path(rec), 'recorded by 03_run_arms.py'
+    ran = datetime.datetime.fromtimestamp(facts.stat().st_mtime, datetime.timezone.utc)
+    return (C.COV if ran >= HALF_READ_SINCE else JOINT_COV), f'inferred from the date its arms ran, {ran.date()}'
+
+
+ARMS_COV, ARMS_COV_HOW = arms_cov(C.ROOT)
+REF_COV, REF_COV_HOW = arms_cov(REF_RUN.parent)
+SAME_COV = ARMS_COV == JOINT_COV     # whether this run's arms used the covariates of the joint models and of the stored null runs
+STORED_PCS = '' if SAME_COV else ", and its total channel was fitted on the log2(CPM + 1) build's expression principal components"
 
 
 def cov_table(d):
@@ -57,16 +77,16 @@ def cov_table(d):
     return {name: [float(r[i]) for r in rows[1:]] for i, name in enumerate(rows[0]) if i > 0}
 
 
-COV_DIFF = [] if SAME_COV else [c for c, v in cov_table(JOINT_COV).items() if cov_table(C.COV)[c] != v]
+COV_DIFF = [] if SAME_COV else [c for c, v in cov_table(JOINT_COV).items() if cov_table(ARMS_COV)[c] != v]
 COV_OF_JOINT = 'those of the other arms' if SAME_COV else "the committed run's (end of this paragraph)"
 JOINT_COV_SUB = '' if SAME_COV else " and keep that run's covariates (section 2)"
 JOINT_COV_PARA = '' if SAME_COV else (
     f' Both joint models\' results are reused from {C.COMMITTED.name}, the committed run on these datasets, made with the '
-    f'covariates of {JOINT_COV.name}; the other arms use {C.COV.name}. The two builds differ only in {len(COV_DIFF)} of '
+    f'covariates of {JOINT_COV.name}; the other arms use {ARMS_COV.name} ({ARMS_COV_HOW}). The two builds differ only in {len(COV_DIFF)} of '
     f'the 17 columns ({COV_DIFF[0]} to {COV_DIFF[-1]}), the expression principal components, which the joint models\' '
     'build computes on log2(CPM + 1); the clinical covariates and the genotype principal components are identical.')
-JOINT_COV_NOTE = '' if SAME_COV else (' Both joint models ran with the committed run\'s covariates (section 2) and the other arms '
-                                      'with this code\'s, so every difference between them also contains that change.')
+JOINT_COV_NOTE = '' if SAME_COV else (' Not like for like: the joint models ran on the committed run\'s covariates '
+                                      + ('(sections 2 and 6).' if INTERPRETED else '(section 2 and the limits section).'))
 NATIVE = SC.NATIVE_ARMS              # 05b_native_arms.py: split weighting and TReCASE on native alignment counts; () where C.NATIVE does not exist
 SHOWN = ALL + NATIVE                 # every arm in the section 3 tables and Figures 1-4
 LABEL = {'gibbs': 'gibbs (1/v both channels, shipped)', 'split': 'split (1/v allelic, unit total)',
@@ -91,7 +111,19 @@ ALPHAS = ('0.05', '0.01', '0.001')
 DETECT = ('0.05', '0.001', '1e-05')
 INK, MUTED, GRID = '#0b0b0b', '#52514e', '#e1e0d9'
 LOG_TICKS = (0.25, 0.35, 0.5, 0.7, 1, 1.4, 2, 4, 8, 16, 32)
-S = SB = FX = FA = CG = CP = LF = JF = LD = SM = SF = NF = None   # the inputs, set once by load()
+S = SB = SA = SR = FX = FA = CG = CP = LF = JF = LD = SM = SF = NF = None   # the inputs, set once by load()
+
+
+def same_datasets(root):
+    """Whether another run's simulated datasets are this run's, every file and array."""
+    mine = sorted(p.relative_to(C.DATASETS) for p in C.DATASETS.rglob('rep*.npz'))
+    if mine != sorted(p.relative_to(root / 'datasets') for p in (root / 'datasets').rglob('rep*.npz')):
+        return False
+    for p in mine:
+        a, b = np.load(C.DATASETS / p), np.load(root / 'datasets' / p)
+        if set(a.files) != set(b.files) or not all(np.array_equal(a[k], b[k], equal_nan=a[k].dtype.kind == 'f') for k in a.files):
+            return False
+    return True
 
 
 def skipped(what, key):
@@ -99,7 +131,7 @@ def skipped(what, key):
 
 
 def load():
-    global S, SB, FX, FA, CG, CP, LF, JF, LD, SM, SF, NF
+    global S, SB, SA, SR, FX, FA, CG, CP, LF, JF, LD, SM, SF, NF
     S = json.loads(C.SUMMARY.read_text())
     if tuple(S['native_arms']) != NATIVE:
         raise SystemExit(f'{C.SUMMARY}: native arms {S["native_arms"]} differ from this script\'s {NATIVE}')
@@ -111,8 +143,13 @@ def load():
         print(f'native-input arms {list(C.NATIVE_ARMS)} skipped (tables, figures, their subsection and the sentences that cite '
               f'it): {C.NATIVE} does not exist', flush=True)
     SB = json.loads(BEFORE.read_text()) if BEFORE else skipped('the before/after comparison of commit 8a06803', 'before_df_fix')
+    SA = json.loads(AFTER.read_text()) if AFTER else skipped('the committed run scored after commit 8a06803', 'after_df_fix')
+    if SA is not None and not (same_datasets(C.COMMITTED) and same_datasets(REF_RUN.parent)):
+        raise SystemExit(f'{C.DATASETS} differs from {C.COMMITTED / "datasets"} or {REF_RUN.parent / "datasets"}; section 3.1 compares '
+                         'their scorings as runs on one set of datasets')
     FX = json.loads(DF_FIX.read_text()) if DF_FIX else skipped('the stored null re-run under 8a06803 (anchor percentiles, tail rates)', 'df_fix')
-    for path, X, arms in ((C.SUMMARY, S, ARMS), (BEFORE, SB, HM)):
+    SR = json.loads(REF_RUN.read_text())
+    for path, X, arms in ((C.SUMMARY, S, ARMS), (BEFORE, SB, HM), (AFTER, SA, HM)):
         if X is not None and (tuple(X['arms']) != arms or tuple(X['joint_arms']) != JOINT or tuple(X['bands']) != BANDS):
             raise SystemExit(f'{path}: arms {X["arms"]} + {X["joint_arms"]} / bands {X["bands"]} differ from this script\'s')
     if INTERPRETED and (S['one_df_genes'] != SB['one_df_genes'] or len(S['one_df_genes']) != 1):
@@ -918,8 +955,8 @@ def sec_head():
                 f'(commit a1b2ef4, section 2); this run\'s directory {C.ROOT}, with the hapmixQTL, mixQTL and tensorQTL arms '
                 f'run there on {run_date} and the RASQUAL and TReCASE results, which the correction does not touch, reused '
                 f'from {C.COMMITTED}{JOINT_COV_SUB}; units log2 aFC (beta = 1 is a twofold effect). The '
-                f'section "The {THIS_SET} against the {REF_SET}", after section 3, sets it against the {REF_SET}, this '
-                f'code\'s run on the {REF_SET} ({REF_RUN}), each set with its own intervals. The read bands of sections 2 and 3 use each gene\'s median '
+                f'section "The {THIS_SET} against the {REF_SET}", after section 3, sets it against the {REF_SET}\'s delivered '
+                f'run ({REF_RUN}), each set with its own intervals. The read bands of sections 2 and 3 use each gene\'s median '
                 f'over all donors, on which {SF["below"]} of these genes fall below {SF["lo"]} reads; the set\'s own measure is '
                 f'the median over admitted donors. In {C.COMMITTED.name}, the committed run whose RASQUAL and TReCASE results '
                 f'are reused here, {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
@@ -936,8 +973,9 @@ def sec_head():
                    f'(TReCASE and split weighting on alignment counts from the same BAMs, section {native_sec()})' if NATIVE else '')
                 + '; figures also written as PNG in '
                 f'{OUT}. The {REF_SET} page\'s interpretation paragraphs, its mixQTL ladder section '
-                f'and its closing sections (critique, meaning, limits) are not made for this set; the contrast section '
-                f'carries this set\'s comparisons, its limit and what it settles.</p>')
+                f'and its critique and meaning sections are not made for this set; the contrast section '
+                f'carries this set\'s comparisons, its limit and what it settles'
+                + (', and the limits section what the run cannot establish' if sec_closing_limits() else '') + '.</p>')
     return ('<h1>Simulated-effects eQTL benchmark: recovering known cis effects</h1>' + dated +
             '<p class="sub">hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on the BrainVar '
             'cohort\'s own Salmon output with injected effects'
@@ -949,8 +987,10 @@ def sec_head():
             'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
             f'(commit a1b2ef4; section 2); RASQUAL and TReCASE of 2026-09-27, reused from {C.COMMITTED} because the '
             f'correction does not touch them{JOINT_COV_SUB}; units log2 aFC '
-            f'(beta = 1 is a twofold effect). Made by benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
-            f'before commit 8a06803), {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
+            f'(beta = 1 is a twofold effect). Made by benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {BEFORE} and {AFTER} '
+            f'(the committed run\'s arms before and after commit 8a06803)'
+            + ('' if REF_RUN == C.SUMMARY else f', {REF_RUN} (the deep set\'s delivered run, with Meier\'s correction)')
+            + f', {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
             f'01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, the joint models\' summaries in {C.JOINT["rasqual"]} '
             f'and {C.JOINT["trecase"]}, '
             + (f'{C.LADDER}, and the native-input arms\' {C.NATIVE / "facts.json"} and '
@@ -1156,7 +1196,34 @@ f = {th["f"]}, and the allelic rule's arithmetic must hold on every informative 
 allelic slope{f' (genes with at least {mr} reads)' if mr else ''}; the same datasets give the allelic slope under 1/Va
 weights evaluated three ways. Its gene-clustered se is the standard deviation of the per-gene means over the square root
 of the number of genes, as 01_check_inputs.py computes it, not the resampling interval used elsewhere. {repro}</p>
+{earlier_runs_method()}
 {sec_scoring()}'''
+
+
+def earlier_runs_method():
+    """Section 2's account of the earlier runs the page reads and how each was made: design only, no outcome."""
+    reach = ('The allelic channel takes no covariates (it is fitted through the origin), so a covariate build reaches only the '
+             'total channel and, through it, the combined one; Meier\'s correction changes only the combined standard error.')
+    mine = f'This run\'s arms used {ARMS_COV.name} ({ARMS_COV_HOW}).'
+    if not INTERPRETED:
+        ref = (f'the {REF_SET}\'s delivered run ({REF_RUN.parent.name}), whose arms used {REF_COV.name} ({REF_COV_HOW})')
+        return f'''
+<p><b>Earlier runs this page reads.</b> Besides the joint models' results (above), the contrast section reads {ref}.
+{mine} {reach} Where a comparison crosses two covariate builds, the page says so where it is made, and {LIMITS} says what
+would have to run to make it like for like.</p>'''
+    deep = ('' if REF_RUN == C.SUMMARY else
+            f' The deep set\'s delivered run ({REF_RUN.parent.name}), also on these datasets, added Meier\'s correction to the '
+            'committed run\'s scoring after the commit and kept its covariates.')
+    return f'''
+<p><b>Earlier runs this page reads.</b> The stored 200-permutation null runs of the four hapmixQTL arms
+({C.HYBRID_NULL.name}, with gibbs in {C.GENE_DIR.name}) were made with the {JOINT_COV.name} covariates, the
+73-degree-of-freedom reference and no Meier's correction; their re-run under commit 8a06803 ({DF_FIX.parent.name}) refitted
+the same permutations on the same covariates with the per-pair references, also without Meier's correction. The committed
+run ({C.COMMITTED.name}) holds these same datasets scored before and after that commit ({BEFORE.name}, {AFTER.name}), on the
+{JOINT_COV.name} covariates and without Meier's correction, and its RASQUAL and TReCASE results are the ones reused
+here.{deep} {mine} {reach} Check (d) refits the stored null's first permutation on the stored runs' own covariates, so it is
+like for like by construction. Where a result is compared with an earlier run, the page says there whether the comparison is
+like for like and, if not, in which channels; {LIMITS} lists what would have to run to make each like for like.</p>'''
 
 
 def sec_scoring():
@@ -1169,12 +1236,13 @@ per dataset and averaged over the 3 datasets. Its interval is the range of the t
 three datasets, the 2.5% and 97.5% quantiles of the mean over datasets resampled with replacement are the smallest
 and largest dataset values. It is not a 95% interval, and it carries no gene-to-gene variation, because the three
 datasets hold the same 100 genes.'''
-        anchor_txt = '''For the
+        anchor_txt = f'''For the
 four hapmixQTL arms its rate is compared with the stored 100-gene, 200-permutation null runs of the same arms, as
-made before commit 8a06803 (06_score.py's reference) and as re-run under it (like for like except in the combined
-channel, whose stored runs predate Meier's correction): the
+made before commit 8a06803 (06_score.py's reference) and as re-run under it: the
 percentile of this dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their
-central 99%. This is descriptive: one permutation cannot test the plumbing.'''
+central 99%. Against the re-run the comparison is like for like in the allelic channel only; in the combined channel the
+stored runs predate Meier's correction{STORED_PCS.replace('its total channel was', 'their total channel was')}. This is
+descriptive: one permutation cannot test the plumbing.'''
     else:
         auc_txt = (f'It is computed per dataset and averaged over the {n_rep} datasets. Its interval is the 2.5% and 97.5% '
                    f'quantiles of the mean over datasets resampled with replacement ({n_rep} datasets); it carries no '
@@ -1456,10 +1524,27 @@ def gibbs_low():
             f'top of its ranking.')
 
 
+def ranking_step(X, Y):
+    """The largest change, over the hapmixQTL arms and |beta|, in power at 5% realized FDP and in AUC from one scoring to another."""
+    pw = lambda Z, b, a: Z['ranking'][f'beta{b}'][a]['fdp_matched']['all']['power']   # noqa: E731
+    au = lambda Z, b, a: Z['ranking'][f'beta{b}'][a]['auc']['all']['mean']   # noqa: E731
+    return (max(abs(pw(Y, b, a) - pw(X, b, a)) for b in BETAS for a in HAPMIX),
+            max(abs(au(Y, b, a) - au(X, b, a)) for b in BETAS for a in HAPMIX))
+
+
 def interp_ranking():
     Pb = lambda a: per_beta(lambda b: SB['ranking'][f'beta{b}'][a]['fdp_matched']['all']['power'])   # noqa: E731
-    dP = max(abs(fdp(b, a)['all']['power'] - SB['ranking'][f'beta{b}'][a]['fdp_matched']['all']['power']) for b in BETAS for a in HAPMIX)
-    dA = max(abs(auc(b, a)['mean'] - SB['ranking'][f'beta{b}'][a]['auc']['all']['mean']) for b in BETAS for a in HAPMIX)
+    Pa = lambda a: per_beta(lambda b: SA['ranking'][f'beta{b}'][a]['fdp_matched']['all']['power'])   # noqa: E731
+    dP, dA = ranking_step(SB, SA)
+    dP2, dA2 = ranking_step(SA, S)
+    if REF_RUN == C.SUMMARY or REF_COV != JOINT_COV:
+        steps = 'between the two, Meier\'s correction was added' + ('' if SAME_COV else ' and the expression principal components moved to the half-read build')
+    else:
+        (m1, a1), (m2, a2) = ranking_step(SA, SR), ranking_step(SR, S)
+        steps = (f'of that, adding Meier\'s correction ({REF_RUN.parent.name}, whose channel statistics equal the committed run\'s) '
+                 f'moves power by at most {f(m1)} and the AUC by at most {f(a1)}, and the half-read expression principal components '
+                 f'(this run, whose allelic statistics equal that run\'s) by at most {f(m2)} and {f(a2)} '
+                 '(release_closure_20261001/earlier_runs_chain.log)')
     g1 = one_df_gene()
     return f"""
 <p>At |beta| = 0.2 / 0.4 / 0.8 the AUC is {A_('split')} for split and {A_('plus_one')} for plus_one,
@@ -1479,11 +1564,13 @@ reflects null p values that are too small.</p>
 four hapmixQTL arms (section 3.7), while mixQTL, RASQUAL and TReCASE all leave that gene's allelic channel out, so the
 earlier version of this page called the hapmixQTL ranking power a lower bound in the comparison with the other
 methods. Since the commit hapmixQTL leaves it out as well (below the floor its combined statistic is the total
-channel's), and that exposure is gone. Rescored, power at 5% realized FDP went from {Pb('split')} to {P_('split')} for
-split, {Pb('unit')} to {P_('unit')} for unit, {Pb('plus_one')} to {P_('plus_one')} for plus_one and {Pb('gibbs')} to
-{P_('gibbs')} for gibbs at |beta| = 0.2 / 0.4 / 0.8: at most {f(dP)} in either direction, and the AUC by at most
-{f(dA)}. The change mixes the floor with the per-pair reference of every other gene and with Meier's correction (the
-ranking is by lead p), so it cannot be assigned to {g1} alone. Every ranking value on this page is the rescored one.</p>"""
+channel's), and that exposure is gone. On the committed run, whose datasets are this run's, scored before and after the
+commit on the same covariates and without Meier's correction, power at 5% realized FDP went from {Pb('split')} to
+{Pa('split')} for split, {Pb('unit')} to {Pa('unit')} for unit, {Pb('plus_one')} to {Pa('plus_one')} for plus_one and
+{Pb('gibbs')} to {Pa('gibbs')} for gibbs at |beta| = 0.2 / 0.4 / 0.8: at most {f(dP)} in either direction, and the AUC by at
+most {f(dA)}. That change mixes the floor with the per-pair reference of every other gene (the ranking is by lead p), so it
+cannot be assigned to {g1} alone. This run's values (above) differ from the committed run's after the commit by at most
+{f(dP2)} in power and {f(dA2)} in AUC; {steps}.</p>"""
 
 
 def interp_gene_level():
@@ -1702,7 +1789,8 @@ allelic channel shows the weights most directly: gibbs and split {D_('gibbs', 'a
 hapmixQTL arms (gibbs {D_('gibbs', 'total')}, unit {D_('unit', 'total')}), but gibbs's total channel rejects too often
 on null genes (section 3.7), so its detections there are not comparable at face value. The same holds for gibbs's
 combined statistic: at 1e-3 its 200-permutation null rate on the stored null re-run under commit 8a06803 (made before
-Meier's correction) is
+Meier's correction{STORED_PCS.replace(', and its total channel was fitted', ' and fitted')}, so not like for like with this
+run's combined statistic; {LIMITS}) is
 {st('gibbs')}, against {st('split')} / {st('unit')} / {st('plus_one')} for split / unit / plus_one (section 3.7);
 so its combined detection ({D_('gibbs')}) is not comparable at face value either. The other three arms'
 rates there are {f(min(r3), 2)} to {f(max(r3), 2)} times nominal. No null rate at 1e-5 was
@@ -1760,10 +1848,13 @@ def interp_null():
 unit combined {N_('unit')} and allelic {N_('unit', 'allelic')}; plus_one combined {N_('plus_one')};
 mixQTL combined {N_('mixqtl')} (published) and {N_('mixqtl_permissive')} (permissive). For the
 four hapmixQTL arms the pattern is that of the stored null runs, whose 200-permutation rates are in the anchor table;
-no stored null run exists for mixQTL here.</p>
+that agreement is like for like only in the allelic channel against their re-run under commit 8a06803 (section 2). No
+stored null run exists for mixQTL here.</p>
 <p><b>Rates at |beta| &gt; 0.</b> Thinning is expected to dilute the real data's coupling between weights and
 residuals and so to pull these rates toward nominal. They are compared here with the stored null re-run under commit
-8a06803, whose references are the ones these arms use. At 0.05 the dilution is not seen for gibbs: its total-channel
+8a06803, whose references are the ones these arms use; the comparison is like for like in the allelic channel{'' if SAME_COV else
+', not in the total channel, which the re-run fitted on the log2(CPM + 1) build' + "'" + 's expression principal components'} ({LIMITS}).
+At 0.05 the dilution is not seen for gibbs: its total-channel
 rates ({Rb('gibbs', 'total', '0.05')}) and allelic rates ({Rb('gibbs', 'allelic', '0.05')}) lie within {f(dmax, 4)} of
 that run's means ({svf('gibbs', 'total', '0.05')} and {svf('gibbs', 'allelic', '0.05')}), inside their intervals. At
 0.001 {low_txt}, and every interval includes that run's value (gibbs at |beta| 0.4,
@@ -1775,12 +1866,14 @@ N &minus; 2 &minus; 17 = 73 degrees of freedom, and the stored 200-permutation c
 {f(tb[0], 4)} for gibbs and {' / '.join(f(x, 4) for x in tb[1:])} for split / unit / plus_one, {f(min(tb) / 0.001, 1)}
 to {f(max(tb) / 0.001, 1)} times nominal. Most of the excess of split, unit and plus_one came from one null gene,
 {g1}: its allelic channel has two donors, so its through-origin allelic fit has one residual degree of freedom, and its
-allelic p was computed as if it had 73. On this benchmark's anchor, scored before the commit, the gene held
-{held(SB, 'split')} combined rejections at 0.001, {held(SB, 'unit')}, {held(SB, 'plus_one')} and {held(SB, 'gibbs')}.
+allelic p was computed as if it had 73. On this benchmark's anchor, scored on the committed run before the commit, the
+gene held {held(SB, 'split')} combined rejections at 0.001, {held(SB, 'unit')}, {held(SB, 'plus_one')} and {held(SB, 'gibbs')}.
 The commit refers each channel's p to its own degrees of freedom and the combined p to the Welch-Satterthwaite degrees
-of freedom (section 2), and {g1}, below the {MIN_ALLELIC_DONORS}-donor floor, is now tested on its total channel alone. On the anchor
-it now holds {held(S, 'split')}, {held(S, 'unit')}, {held(S, 'plus_one')} and {held(S, 'gibbs')}, the last from
-gibbs's own total channel. On the stored null re-run under the commit ({DF_FIX.parent.name}: the same
+of freedom (section 2), and {g1}, below the {MIN_ALLELIC_DONORS}-donor floor, is now tested on its total channel alone. Scored
+after the commit on the same run and covariates, the gene holds {held(SA, 'split')}, {held(SA, 'unit')},
+{held(SA, 'plus_one')} and {held(SA, 'gibbs')}, the last from gibbs's own total channel; this run, which adds Meier's
+correction{'' if SAME_COV else ' and the half-read expression principal components'}, has {held(S, 'split')},
+{held(S, 'unit')}, {held(S, 'plus_one')} and {held(S, 'gibbs')}. On the stored null re-run under the commit ({DF_FIX.parent.name}: the same
 {FX['n_draw']} permutations and genes, with slopes and standard errors unchanged), {g1}'s split combined rate at 0.001
 went from {f(g1r('split', 'before'), 4)} to {f(g1r('split', 'after'), 4)}, and the pooled combined rates at 0.001 are
 {ci(after('gibbs'), 'rate', 4)} for gibbs and {ci(after('split'), 'rate', 5)} / {ci(after('unit'), 'rate', 5)} /
@@ -1805,15 +1898,16 @@ allele-specific reads per record and five heterozygous donors), and since the co
 statistic, so the gene no longer has to be left out of a tail comparison across methods: on the anchor at 0.001 split
 reads {ci(S['null']['beta0.0']['split']['combined']['all']['0.001'], 'rate', 5)}, RASQUAL
 {ci(S['null']['beta0.0']['rasqual']['combined']['all']['0.001'], 'rate', 5)} and TReCASE
-{ci(S['null']['beta0.0']['trecase']['combined']['all']['0.001'], 'rate', 5)}.</p>
+{ci(S['null']['beta0.0']['trecase']['combined']['all']['0.001'], 'rate', 5)}.{JOINT_COV_NOTE}</p>
 <p><b>The anchor.</b> Its one permutation sits at the {rng(pct_old('total'))} percentile of the stored per-permutation
-total-channel rates in the four arms, like for like, since the commit does not change the total channel. For the
+total-channel rates in the four arms{', like for like, since the commit does not change the total channel' if SAME_COV else
+'; the commit does not change the total channel, but the stored runs fitted it on the log2(CPM + 1) build' + "'" + 's expression principal components, so this is not like for like (' + LIMITS + ')'}. For the
 combined and allelic channels 06_score.py's reference is the stored runs made before the commit, whose p used the 73-df
 reference; against it this dataset sits at the {rng(pct_old('allelic'))} percentile of the allelic rates and outside
-the central 99% for: {outside(old)}. Like for like, against the per-permutation rates of the stored null re-run under
-the commit, it sits at the {rng(pct_new('allelic'))} percentile of the allelic rates and the
-{rng(pct_new('combined'))} of the combined ones (that re-run predates Meier's correction, which this run's combined
-statistic carries, so in the combined channel the comparison is no longer like for like), and outside the central 99%
+the central 99% for: {outside(old)}. Against the per-permutation rates of the stored null re-run under the commit, it
+sits at the {rng(pct_new('allelic'))} percentile of the allelic rates, like for like, and the
+{rng(pct_new('combined'))} of the combined ones, not like for like (that re-run predates Meier's correction, which this
+run's combined statistic carries{STORED_PCS}; {LIMITS}), and outside the central 99%
 for: {outside(new)}. This says where one
 permutation fell. The plumbing was checked exactly by check (d) (described in section 2; its outcome opens section 3); that check is committed in
 01_check_inputs.py and is in the check file used here.</p>"""
@@ -1954,8 +2048,8 @@ def sec_contrast():
     return f'''
 <h2>The {THIS_SET} against the {REF_SET}</h2>
 <p>Every gene of each set, each value with its own set's interval; no interval of the difference is computed. The
-{REF_SET} is this code's run ({REF_RUN}) on the datasets of the first simulated-effects run ({FIRST_RUN.name}), with Meier's
-correction as here: the same benchmark on the {INTERPRETED_SET} genes, {SF["ref_above"]} of
+{REF_SET} is its delivered run ({REF_RUN}) on the datasets of the first simulated-effects run ({FIRST_RUN.name}), with Meier's
+correction as here{'' if REF_COV == ARMS_COV else f', but with its arms on {REF_COV.name} ({REF_COV_HOW}) where this run' + "'" + f's used {ARMS_COV.name}: the two sets' + "'" + ' total and combined channels are compared across covariate builds, so those comparisons are not like for like (' + LIMITS + ')'}: the same benchmark on the {INTERPRETED_SET} genes, {SF["ref_above"]} of
 which lie above this set's read range, scored by the same 06_score.py with {n_rep[REF_SET]} datasets per |beta|; the
 {THIS_SET} has {n_rep[THIS_SET]}. The two runs are not independent: the generator's streams are keyed on the replicate
 index alone, so both anchors carry {'the same' if SF['same_perm'] else 'DIFFERENT'} record permutation, label swaps and
@@ -2077,7 +2171,7 @@ two-sided), and power at realized FDP has no interval. At |beta| 0.2 their poole
 {thr('0.2', 'rasqual')} (RASQUAL) and {thr('0.2', 'trecase')} (TReCASE), against {thr('0.2', 'split')} for split: null
 genes' lead p reached below split's cut, as for gibbs. For TReCASE that agrees with its null-gene rates; RASQUAL's
 anchor rate is {f(n0('rasqual', '0.05')['rate'], 4)} at 0.05 but {f(n0('rasqual', '0.001')['rate'], 4)} at 0.001
-(section 3.7).</p>""",
+(section 3.7).{JOINT_COV_NOTE}</p>""",
         bias=f"""
 <p><b>The joint models.</b> Their one slope has estimand beta (section 2), so unlike the hapmixQTL combined slope its
 ratio to beta measures estimator bias. RASQUAL recovers {Bb('rasqual')} of beta and TReCASE {Bb('trecase')} at
@@ -2094,7 +2188,7 @@ genotype, and passes the fitted covariate effect as a fixed per-sample offset in
 (rasqual_src/src/main.c:631 and :641-643; nbem.c:297 and :334). That is the same two-step structure whose
 attenuation section 3.8 measures exactly for mixQTL, here inside a count likelihood and mixed with a covariate-free
 allelic part. (ii) RASQUAL fits a reference-mapping bias phi below 0.5 at the pseudo feature SNP, where no mapping
-bias can exist; a phi below 0.5 absorbs part of the allelic imbalance.</p>""",
+bias can exist; a phi below 0.5 absorbs part of the allelic imbalance.{JOINT_COV_NOTE}</p>""",
         precision=f"""
 <p><b>The joint models.</b> For RASQUAL and TReCASE the standard error is derived by the Wald inversion of
 &chi;<sup>2</sup> (section 2). On null genes z = &plusmn;&radic;&chi;<sup>2</sup>, so sd(z)<sup>2</sup> is, up to the
@@ -2117,7 +2211,7 @@ and on the anchor, with one exception: TReCASE at |beta| 0.8 ({exc('0.8', 'treca
 below split's ({exc('0.8', 'split')}), with overlapping intervals. That is a comparison of squared error, not of
 precision: on the count-scale truth unit weights' squared error contains their own bias (the next paragraph), which
 grows with beta<sup>2</sup>, while on the anchor's null genes, which carry no bias, TReCASE's slope has {En_('trecase', 'combined')}
-of unit weights' squared error. How much of the 0.8 value that bias accounts for was not separated.</p>""",
+of unit weights' squared error. How much of the 0.8 value that bias accounts for was not separated.{JOINT_COV_NOTE}</p>""",
         lead=f"""
 <p>RASQUAL's share of leads within r<sup>2</sup> &ge; 0.8 of the causal variant is {R_('rasqual')} and TReCASE's
 {R_('trecase')}, against {R_('split')} for split and {R_('unit')} for unit, with no interval. TReCASE's shares are below
@@ -2129,7 +2223,7 @@ unit's at every |beta|, by {dR('unit', 'trecase')}; RASQUAL's are the lowest of 
 joint arm's share (section 2). TReCASE's shares are within {f(dD, 3)} of split's. On the anchor, though, TReCASE's test
 rejects at 1e-3 in {ci(n0('trecase', '0.001'), 'rate', 4)} of null-gene tests and RASQUAL's in
 {ci(n0('rasqual', '0.001'), 'rate', 4)} (section 3.7), so neither is comparable at face value with the hapmixQTL arms
-above; RASQUAL's shares are below unit weights' at every |beta|.</p>""",
+above; RASQUAL's shares are below unit weights' at every |beta|.{JOINT_COV_NOTE}</p>""",
         null=f"""
 <p><b>The joint models.</b> Their likelihood-ratio p, referred to &chi;<sup>2</sup> with one degree of freedom,
 rejects at 0.05 on null genes in {N_('rasqual', 'combined', 4)} of tests for RASQUAL (over its converged rows) and {N_('trecase', 'combined', 4)} for
@@ -2143,7 +2237,7 @@ above 0.05 on the anchor and includes it at |beta| &gt; 0. Neither model fits {o
 (above), and without that gene their anchor rates at 0.001 are {f(n0('rasqual', '0.001', NO_ONE_DF)['rate'], 5)}
 and {f(n0('trecase', '0.001', NO_ONE_DF)['rate'], 5)}. No stored null run exists for them, so where the anchor's one
 permutation falls among their permutations is not known; the three datasets at each |beta| &gt; 0 are three further
-permutations, on half the genes and thinned.</p>
+permutations, on half the genes and thinned.{JOINT_COV_NOTE}</p>
 <p><b>Where TReCASE's excess comes from.</b> asSeq's final p is one of its component tests, chosen per test. Scored
 alone on the anchor's null genes, over the tests where its p is finite, each component rejects at 0.05 in
 {'; '.join(f'{name[k]} {ci(v, "rate", 4)} ({v["tests"]:,} tests)' for k, v in comp.items())}, against {f(fin, 4)} for
@@ -2169,7 +2263,9 @@ allelic donor), leaves the allelic null rate ({n_old - n_new:,} tests on the anc
 rate by the factor {n_old:,} / {n_new:,} = {f(n_old / n_new, 4)} against the convention before commit 8a06803. The stored
 null re-run under that commit, against which section 3.7 compares, uses the same convention.'''
         fig1_bar = 'range of the three per-dataset AUCs, not a 95% interval'
-        anchor_tab = f'''<p>The anchor against the stored null runs (hapmixQTL arms only):</p>
+        anchor_tab = f'''<p>The anchor against the stored null runs (hapmixQTL arms only). Only the allelic rows' re-run columns
+are like for like: the "before" columns used the 73-degree-of-freedom reference; in the combined rows the stored runs
+predate Meier's correction{'' if SAME_COV else '; and in the total and combined rows they used the log2(CPM + 1) build' + "'" + 's expression principal components'} (section 2).</p>
 {tab_anchor()}'''
     else:
         exc_txt = ''
@@ -2417,7 +2513,7 @@ native counts, and in {f(tests['trecase']['joint_na_share'], 2)} and {f(tests['t
 of all tests. Its total-count test alone reaches {per_beta(lambda b: tp(b, 'trecase')['fdp_power']['trec'])} power at
 5% realized FDP on Salmon's inputs and {per_beta(lambda b: tp(b, 'trecase_native')['fdp_power']['trec'])} on native
 counts, against tensorQTL's {P_(TQ)} on Salmon's totals.</p>
-{t2}{'' if INTERPRETED else native_limits()}'''
+{t2}'''
 
 
 def ladder_method():
@@ -2561,14 +2657,14 @@ def sec_critique():
 <p><b>The ranking is not free of calibration.</b> A within-dataset ranking uses no threshold, but the cut at 5%
 realized FDP is set by where the null genes land, and an arm whose null genes get too-small p pushes them up its
 ranking. gibbs's total channel does this: its null-gene rate at 0.05 is {f(an['rate'], 4)} on the anchor and
-{f(an['stored'], 4)} over the stored 200 permutations. In the ranking of section 3.1 gibbs {low02}, and at |beta| 0.4
+{f(an['stored'], 4)} over the stored 200 permutations{'' if SAME_COV else ' (fitted on the log2(CPM + 1) build' + "'" + 's expression principal components, so not like for like with the anchor; section 6)'}. In the ranking of section 3.1 gibbs {low02}, and at |beta| 0.4
 its cut fell at lead p {tg:.1e} against split's {ts:.1e}, {ts / tg:.0f}-fold smaller.
 If those null p values are too small, part of gibbs's ranking deficit is a calibration effect and not a lack of
 signal. The same objection applies to
 the joint models: at |beta| 0.2 their cuts fell at lead p {thr('0.2', 'rasqual')} (RASQUAL) and
 {thr('0.2', 'trecase')} (TReCASE) against split's {thr('0.2', 'split')}, and on the anchor their nominal p rejects at
 0.001 in {f(n3('rasqual'), 4)} and {f(n3('trecase'), 4)} of null-gene tests (section 3.7), so part of their ranking
-deficit may also be calibration. Before commit 8a06803 the hapmixQTL arms carried a null outlier of their own,
+deficit may also be calibration.{JOINT_COV_NOTE} Before commit 8a06803 the hapmixQTL arms carried a null outlier of their own,
 {one_df_gene()}, whose allelic p was referred to 73 degrees of freedom on a one-degree-of-freedom fit; the allelic
 admission floor took it out of their combined statistic, and section 3.1 gives the ranking before and after. In gibbs
 the gene still rejects too often through its Gibbs-weighted total channel (section 3.7).</p>
@@ -2610,7 +2706,9 @@ def sec_meaning():
     tband = lambda sc, part: ' / '.join(ci(prec(sc, 'gibbs', 'total', part, 'ratio_vs_unit', bn), 'value', 2) for bn in BANDS[1:])   # noqa: E731
     return f"""
 <h2>5. What it means for the open decisions</h2>
-<p><b>Which weighting ships.</b> Until now the decision rested on the stored 200-permutation null runs, whose
+<p><b>Which weighting ships.</b> Until now the decision rested on the stored 200-permutation null runs (made before
+Meier's correction{'' if SAME_COV else ' and on the log2(CPM + 1) build' + "'" + 's expression principal components'}; their re-run under 8a06803 is like for like with this
+run in the allelic channel only), whose
 combined rates at 0.05 were {st('gibbs', 'combined')} for gibbs, {st('split', 'combined')} for split,
 {st('unit', 'combined')} for unit and {st('plus_one', 'combined')} for plus_one (re-run under commit 8a06803:
 {' / '.join(f(fx(a, 'combined', 'after', '0.05')['rate'], 4) for a in HAPMIX)}), with gibbs's total channel at
@@ -2650,13 +2748,14 @@ value. It points the same way here and is of similar size in the comparable stra
 and split allelic squared error is {f(prec('beta0.4', 'gibbs', 'allelic', 'nonnull', 'ratio_vs_unit', '>=1000')['value'], 2)}
 of unit weights' at |beta| 0.4 and {f(prec('beta0.0', 'gibbs', 'allelic', 'null', 'ratio_vs_unit', '>=1000')['value'], 2)}
 on the anchor's null genes. The statistics differ (there a ratio of median variances over 40 null permutations, here
-a ratio of summed squared errors), so only the order of magnitude is compared. Pooled over all 100 genes the ratio
+a ratio of summed squared errors), so only the order of magnitude is compared; section 6 says what the same quantity here
+would take. Pooled over all 100 genes the ratio
 here is {E_('gibbs', 'allelic')}. The total channel was not part of that record. Here its Gibbs weights cost precision
 below 1,000 reads, on known effects as on the corrected pipeline's nulls (docs/pipeline_rules.md, "What made the total
 channel worse"). An earlier count-scale measurement on the pre-correction pipeline
 (brainvar_hapmix_deploy/count_scale_weights_20260925/) had found the total channel's Gibbs weights to buy nothing; on
 the corrected pipeline they cost precision below 1,000 reads. Those records differ from this one in gene set, pipeline
-and statistic, so only the direction is compared, not the magnitude.</p>
+and statistic, so only the direction is compared, not the magnitude (section 6).</p>
 <p><b>mixQTL as the baseline.</b> As run with the published cutoffs, mixQTL has the lowest AUC of the hapmixQTL and
 mixQTL arms at every |beta| ({A_('mixqtl')}) and the lowest point share of leads within r<sup>2</sup> &ge; 0.8 of the causal variant
 ({R_('mixqtl')}, no interval), leaves some gene units without any finite p, and attenuates its slopes in both channels.
@@ -2704,7 +2803,7 @@ joint model on ranking, on ranking power at 5% realized FDP or on lead placement
 estimate at |beta| 0.8 is lower, with overlapping intervals and a denominator that contains unit weights' own
 count-scale bias (section 3.4). TReCASE's advantage is in bias, and it comes with an anticonservative nominal p. Both joint models were run on
 Salmon point estimates at a pseudo feature SNP rather than on reads (section 6), so this measures them as run here, not
-joint likelihood modelling as such.{native_meaning()}</p>"""
+joint likelihood modelling as such.{JOINT_COV_NOTE}{native_meaning()}</p>"""
 
 
 def native_meaning():
@@ -2802,7 +2901,63 @@ Bonferroni bound over M<sub>eff</sub> tests on the arm's nominal p and inherits 
 p is referred to the arm's own null.
 Of the generator checks, only check (c)'s pass rule was fixed before its first run;
 the other thresholds of checks (a) to (c) were not pre-registered (01_check_inputs.py, its parameters' comments).</p>
-{native_limits()}'''
+{native_limits()}
+{earlier_runs_limits()}'''
+
+
+def earlier_runs_limits():
+    """The comparisons with earlier runs that are not like for like, what separates each, and what would have to run to make
+    it like for like; '' when there are none."""
+    rows = []
+    if not SAME_COV:
+        cost = ('on the committed run RASQUAL took about 126 CPU-hours (93 ms per tested variant over 4.87 million tests, on 64 '
+                'jobs) and TReCASE about three hours of wall time' if INTERPRETED else 'hours each')
+        rows.append([f'RASQUAL and TReCASE against every other arm ({"sections 3.1 to 3.7, 4 and 5" if INTERPRETED else "section 3 and the contrast section"})',
+                     C.COMMITTED.name,
+                     f'the expression principal components ({len(COV_DIFF)} of the 17 covariates: {JOINT_COV.name} against '
+                     f'{ARMS_COV.name}), in the joint models\' one test',
+                     '04_run_rasqual.py and 05_run_trecase.py into this run\'s directory (run_all.sh without the staged argument), '
+                     f'then 06_score.py and 08_report.py; {cost}; the core budget is a user decision'])
+    if FX is not None:
+        rows.append(['this run\'s anchor and null-gene rates against the stored 200-permutation null runs and their re-run under '
+                     'commit 8a06803 (sections 3.6, 3.7, 4 and 5, and the anchor table)',
+                     f'{C.HYBRID_NULL.name}, {C.GENE_DIR.name}, {DF_FIX.parent.name}',
+                     'allelic channel: nothing against the re-run, the 73-degree-of-freedom reference against the stored runs; '
+                     + ('' if SAME_COV else 'total channel: the expression principal components; ')
+                     + f'combined channel: {"" if SAME_COV else "the expression principal components and "}Meier\'s correction',
+                     'the four arms\' 200-permutation null rerun on the current code and this run\'s covariates, on the stored '
+                     'permutation stream: about an hour on the GPU (the re-run under 8a06803 took 56 minutes for the four arms). No '
+                     'script does it as it stands: scripts/allelic_df_null_check.py refits on the current covariates but stops when '
+                     'the fits differ from the stored draws, which the total channel then does, so it needs a variant without that '
+                     'gate that writes a new directory, for common.GENE_SETS (hybrid_null, df_fix) and 01_check_inputs.REPRO_COV '
+                     'to point at'])
+    if INTERPRETED:
+        rows.append(['the earlier records of section 5', 'mixqtl_replication_20260919, count_scale_weights_20260925', 'other genes (29 high-coverage genes in the first), the pre-correction pipeline, and other '
+                     'statistics (a ratio of median permutation variances in the first)',
+                     'each record\'s statistic recomputed on these datasets under this pipeline (for the first, the median over null '
+                     'permutations of the allelic slope\'s variance under 1/v weights over its unweighted value, on its 29 genes); '
+                     'not planned'])
+    elif REF_COV != ARMS_COV:
+        rows.append([f'this set against the {REF_SET} (the contrast section)', REF_RUN.parent.name,
+                     f'the expression principal components ({REF_COV.name} against {ARMS_COV.name}), in the total and combined channels',
+                     f'the {REF_SET} rerun on the current code into a new directory (run_all.sh staged, with SIMULATED_EFFECTS_ROOT '
+                     'set; 02 to 07 took about half an hour on 2026-10-01), and 08_report.py\'s REF_RUN pointed at its summary.json'])
+    if not rows:
+        return ''
+    like = ('Check (d) and the before and after of commit 8a06803, scored twice on the committed run (section 3.1), are like '
+            'for like and need nothing run. ' if INTERPRETED else '')
+    return f'''
+<p><b>Comparisons with earlier runs.</b> {like}The comparisons below cross two configurations, so a difference in them
+contains the change named in the third column as well as the one under study; the last column is what would have to run to
+make each like for like.</p>
+{table(['comparison', 'earlier run', 'what differs, by channel', 'what would make it like for like'], rows)}'''
+
+
+def sec_closing_limits():
+    """A non-interpreted page's limits section: the native-input arms' limits and the comparisons with earlier runs."""
+    body = native_limits() + earlier_runs_limits()
+    return f'''
+<h2>Limits: what this analysis cannot establish</h2>{body}''' if body else ''
 
 
 def main():
@@ -2810,7 +2965,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     figs = dict(ranking=fig_ranking(), bias=fig_bias(), lead=fig_lead(), efficiency=fig_efficiency())
     contrast = () if SF is None else (sec_contrast(),)   # a results section: after section 3
-    tail = (sec_critique(), sec_meaning(), sec_limits()) if INTERPRETED else ()
+    tail = (sec_critique(), sec_meaning(), sec_limits()) if INTERPRETED else (sec_closing_limits(),)
     body = '\n'.join((sec_head(), sec_why(), sec_run(), sec_results(figs)) + contrast + tail)
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             f'content="width=device-width, initial-scale=1"><title>Simulated-effects eQTL benchmark</title><style>{CSS}</style>'

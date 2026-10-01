@@ -45,6 +45,7 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
         committed='plasmode_20260926',                                     # the previous code at commit 3aac315
         hybrid_null='hybrid_weights_null_20260926',                        # the stored split / unit / plus_one null runs, with the gibbs run in gene_dir (06 ANCHOR, 01 REPRO_DRAWS)
         before_df_fix='plasmode_20260926/summary_before_df_fix.json',      # the arms scored before commit 8a06803 (08 BEFORE; a record, not regenerable)
+        after_df_fix='plasmode_20260926/summary.json',                     # the same run scored after 8a06803: same datasets and covariates, no Meier's correction (08 AFTER)
         df_fix='allelic_df_fix_20260927/summary.json',                     # the stored null re-run under 8a06803 (08 DF_FIX; scripts/allelic_df_null_check.py)
         trecase_smoke='plasmode_20260926/results_trecase_asseq/smoke/summary.json',    # the 2026-09-26 TReCASE smoke run (08: its largest theta gradient)
         ladder='ladder'),                                                  # 07's output directory under root (08 section 3.8)
@@ -53,13 +54,13 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
         root='plasmode_lowcov_meier_20260927',
         acceptance_root='plasmode2_stratum_acceptance_20260927',
         committed='plasmode_stratum30_100_20260927',                       # the previous code, commits 15aac90 to d3247e0
-        hybrid_null=None, before_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None)}
+        hybrid_null=None, before_df_fix=None, after_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None)}
 GS = GENE_SETS[GENE_SET]
 GENE_DIR = D / GS['gene_dir']
 GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', GENE_DIR / 'gene_design.tsv'
-ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
-    D / GS[k] if GS[k] else None for k in ('acceptance_root' if ACCEPTANCE else 'root', 'hybrid_null', 'before_df_fix', 'df_fix',
-                                           'trecase_smoke', 'committed'))
+ROOT, HYBRID_NULL, BEFORE_DF_FIX, AFTER_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
+    D / GS[k] if GS[k] else None for k in ('acceptance_root' if ACCEPTANCE else 'root', 'hybrid_null', 'before_df_fix',
+                                           'after_df_fix', 'df_fix', 'trecase_smoke', 'committed'))
 if os.environ.get('SIMULATED_EFFECTS_ROOT') and not ACCEPTANCE:   # a fresh output root instead of the gene set's delivered one
     ROOT = Path(os.environ['SIMULATED_EFFECTS_ROOT'])
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'

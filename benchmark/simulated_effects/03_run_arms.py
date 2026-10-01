@@ -307,7 +307,7 @@ def main():
         rule='user request 2026-09-27: mixqtl_permutation_scan on every dataset for both cutoff settings (the 2026-09-26 timing rule retired)',
         seconds_per_dataset={arm: float(np.median(secs[arm, 'mixqtl_permutation_scan'])) for arm in C.MIXQTL_ARMS}))
     C.write_json(C.RESULTS / 'run_arms_facts.json', dict(meta_n_cutoff=C.MX.META_N_CUTOFF, runs=facts,
-                                                         tensorqtl_vs_unit_total_t=tdiff))
+                                                         tensorqtl_vs_unit_total_t=tdiff, covariates=str(C.COV)))
     for (arm, step), v in secs.items():
         print(f'{arm:17s} {step:24s} {len(v)} datasets, seconds per dataset median {np.median(v):.1f} [{min(v):.1f}, {max(v):.1f}]')
     print(f'wrote {C.RESULTS}')

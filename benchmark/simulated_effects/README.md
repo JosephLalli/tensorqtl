@@ -59,26 +59,38 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   200-permutation gibbs null run, `summary.json` and `draws/`), the output directory (`ROOT`), and the
   stored runs of that gene set the scripts read: `hybrid_weights_null_20260926` (the split, unit and
   plus_one null runs; 06's anchors and 01's check d), `allelic_df_fix_20260927` (the stored null re-run
-  under commit 8a06803; 08's like-for-like anchor and tail comparison), `plasmode_20260926/summary_before_df_fix.json`
-  (the arms scored before that commit; a record the report compares against, not regenerable) and
+  under commit 8a06803; 08's anchor and tail comparison), `plasmode_20260926/summary_before_df_fix.json`
+  and `plasmode_20260926/summary.json` (the committed run's arms scored before and after that commit, on the
+  same datasets and covariates; 08's before and after of section 3.1, a record, not regenerable) and
   `plasmode_20260926/results_trecase_asseq/smoke/summary.json` (the TReCASE smoke run whose largest theta
   gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
   stops every script at import. `SIMULATED_EFFECTS_GENE_SET` in the environment selects the entry.
 - `stratum30_100`: the 30-100-read gene set, 100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100) with at least 15 admitted allelic donors, drawn once by
   `select_stratum_genes.py` into `plasmode_stratum30_100_20260927/gene_set` (with its log and
-  `pool_stratum.tsv`). Its entry names that directory, its root and its committed run; it has no stored null runs, before-fix record, TReCASE smoke run or ladder
+  `pool_stratum.tsv`). Its entry names that directory, its root and its committed run; it has no stored null runs, before- and after-fix records, TReCASE smoke run or ladder
   (`None`), so check (d), the anchor, 07 and the parts of 08 that read them print a skip. 06 scores it in
   the read bands <30 / 30-50 / 50-100, and 01's check (c) over every gene. Its report leaves out the
-  interpretation paragraphs of section 3, section 3.8 and sections 4-6 (they were written for the
-  default set) and adds a section setting it, the low-coverage set, against the deep set's run of this
-  code (`plasmode_meier_20260927/summary.json`), with three contrast figures, from its selection log,
+  interpretation paragraphs of section 3, section 3.8 and sections 4-5 (they were written for the
+  default set), closes with a limits section (the native arms' limits and the comparisons with earlier runs),
+  and adds a section setting it, the low-coverage set, against the deep set's delivered run
+  (`plasmode_meier_20260927/summary.json`), with three contrast figures, from its selection log,
   `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json` and the committed
   stratum run's `run_arms.log` (its dataset blocks).
 - `cohort/salmon.tsv`, `annot/tx2gene.tsv` and donor 100_D1's dumped equivalence classes (the Salmon
   premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, `common.OLD`).
   Check d reproduces those stored nulls with the covariates they were made with,
   `cov/log2cpm1_point_calibration_20260925` (`01_check_inputs.REPRO_COV`), not `common.COV`.
+- Which covariate build a run's arms used: `03_run_arms.py` records it in `run_arms_facts.json`
+  (`covariates`); for an output directory made before that record, 08 infers it from the date the arms ran
+  (commit a2f4314, 2026-09-30, moved the expression PCs to the half-read build) and says so. The stored
+  null runs, their re-run under 8a06803, the committed run (the joint models included) and the delivered
+  runs `plasmode_meier_20260927` and `plasmode_lowcov_meier_20260927` were made with `cov/log2cpm1_point_calibration_20260925` and, except the
+  delivered runs, before Meier's correction. The allelic channel takes no covariates, so a comparison across
+  builds is like for like in the allelic channel only; 08 says so at each such comparison and lists in its
+  limits section what would have to run to make each like for like. The chain the report relies on (identical
+  datasets; the Meier run's channel statistics equal the committed run's, and this code's allelic statistics
+  the Meier run's) is checked in `release_closure_20261001/earlier_runs_chain.log`.
 
 Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
 `plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `SIMULATED_EFFECTS_ACCEPTANCE=1` before
