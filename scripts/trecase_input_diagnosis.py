@@ -44,7 +44,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import common as C  # noqa: E402
 
 T, SC = C.module('05_run_trecase'), C.module('06_score')

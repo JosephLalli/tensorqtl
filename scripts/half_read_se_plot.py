@@ -31,7 +31,7 @@ FIELDS = ['phenotype_id', 'variant_id', 'slope', 'slope_se']
 
 def common_module(stratum):
     os.environ['PLASMODE_GENE_SET'] = SETS[stratum][0]
-    sys.path.insert(0, str(Path(__file__).resolve().parent/'plasmode'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
     import common as C
     if C.GENE_SET != SETS[stratum][0]:
         raise RuntimeError('use a separate process for each stratum')

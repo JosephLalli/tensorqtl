@@ -68,7 +68,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
 
     os.environ['PLASMODE_GENE_SET'] = SETS[args.stratum]
-    sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
     from half_read_trial import half_read
     import common as C
     import torch

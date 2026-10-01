@@ -1,4 +1,4 @@
-# Plasmode cis-eQTL benchmark (scripts/plasmode)
+# Plasmode cis-eQTL benchmark (benchmark/plasmode)
 
 > **Historical benchmark labels.** `split` is this pipeline's dated
 > `log2(CPM+1)` arm and `gibbs (shipped)` means shipped at that record's date.

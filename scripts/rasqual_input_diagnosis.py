@@ -1,7 +1,7 @@
 """RASQUAL input diagnosis on the deep plasmode set (task of 2026-09-28): is RASQUAL's weak gene ranking there its
 total-count model on our Salmon totals, or the pseudo feature SNP's estimated error rate delta?
 
-Two variants of the committed RASQUAL arm (scripts/plasmode/04_run_rasqual.py), each 04's command with ONE flag added
+Two variants of the committed RASQUAL arm (benchmark/plasmode/04_run_rasqual.py), each 04's command with ONE flag added
 and everything else identical (the same VCF text, pseudo feature SNP included, and Y / K / X binaries checked byte for
 byte against the committed arm's):
   population_only  --population-only: main.c:216 sets ASE = 0, main.c:516 then admits no feature SNP, so the allelic
@@ -45,7 +45,7 @@ import pandas as pd
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt   # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import common as C                # noqa: E402
 
 M4 = C.module('04_run_rasqual')

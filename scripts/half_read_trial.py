@@ -18,7 +18,7 @@ from scipy import stats
 
 from half_read_io import atomic_path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import common as C
 import tensorqtl.hapmixqtl as HM
 

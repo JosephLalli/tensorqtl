@@ -61,7 +61,7 @@ import pandas as pd
 os.environ['PLASMODE_ACCEPTANCE'] = '1'   # before common is imported: ROOT here and in every step run below is the set's acceptance_root
 import common as C   # noqa: E402
 
-OLD = C.COMMITTED                       # the committed run of the previous code (scripts/plasmode/ before f0c0b07)
+OLD = C.COMMITTED                       # the committed run of the previous code (benchmark/plasmode/ before f0c0b07)
 OLD_JOINT = C.COMMITTED_JOINT
 JOINT_CHECK = {'corrected_null_store_20260925': ('beta0.8', 0),   # the one dataset 04 and 05 are rerun on
                'stratum30_100': None}[C.GENE_SET]                 # None: the committed joint results are staged and scored only (task 2026-09-27)
@@ -360,7 +360,7 @@ def recorded_pass(arm):
     line = re.search(rf'(?m)^\(4, {arm}\) PASS: .*$', log)
     if line is None:
         raise SystemExit(f'{JOINT_PASS}: no (4, {arm}) PASS line')
-    then = dict((name, h) for h, name in re.findall(r'(?m)^([0-9a-f]{64})  \S*/scripts/plasmode2?/(\S+)$', log))
+    then = dict((name, h) for h, name in re.findall(r'(?m)^([0-9a-f]{64})  \S*/benchmark/plasmode2?/(\S+)$', log))
     script, imports = JOINT_STEPS[arm]
     changed = [f for f in (script, *imports, 'common.py', '02_make_datasets.py') if then.get(f) != sha(C.HERE / f)]
     return (f'the one-dataset rerun runs only with the argument joint; last recorded pass {JOINT_PASS}: "{line.group(0)}"; '

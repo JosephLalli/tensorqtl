@@ -884,7 +884,7 @@ def sec_head():
                 f'stream is keyed on the replicate index, so the kept replicates are unchanged), and its joint arms and '
                 f'scoring used those {sum(n_ds.values())}. This run\'s hapmixQTL, mixQTL and tensorQTL arms ran once, on its own '
                 f'{sum(n_ds.values())} datasets ({C.DATASETS}). Made by '
-                f'scripts/plasmode/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
+                f'benchmark/plasmode/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
                 f'{COMMITTED_RUN_LOG}, the check files that 01_check_inputs.py wrote into {C.CHECKS} on this run '
                 f'({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, and the '
                 f'joint models\' summaries in {C.JOINT["rasqual"]} and {C.JOINT["trecase"]}'
@@ -905,7 +905,7 @@ def sec_head():
             'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
             f'(commit a1b2ef4; section 2); RASQUAL and TReCASE of 2026-09-27, reused from {C.COMMITTED} because the '
             'correction does not touch them; units log2 aFC '
-            f'(beta = 1 is a twofold effect). Made by scripts/plasmode/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
+            f'(beta = 1 is a twofold effect). Made by benchmark/plasmode/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
             f'before commit 8a06803), {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
             f'01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, the joint models\' summaries in {C.JOINT["rasqual"]} '
             f'and {C.JOINT["trecase"]}, '
@@ -2344,7 +2344,7 @@ def sec_ladder():
     return f'''
 <h3>3.8 Why mixQTL trails unit weights</h3>
 <p>Sections 3.3 and 3.4 found mixQTL's total slope attenuated at every depth and its squared error above that of unit
-weights. A separate run (scripts/plasmode/07_mixqtl_ladder.py, output {C.LADDER / "ladder.json"}) went from the unit-weight arm to mixQTL one
+weights. A separate run (benchmark/plasmode/07_mixqtl_ladder.py, output {C.LADDER / "ladder.json"}) went from the unit-weight arm to mixQTL one
 change at a time, in the total channel, on the causal units where every step has a finite error: {per_beta(lambda b:
 cu[f"beta{b}"]["total"], 0)} of {cu["beta0.4"]["non_null"]} non-null units at |beta| = 0.2 / 0.4 / 0.8 (the <i>common
 set</i>). Every number in this section is read from that file.</p>

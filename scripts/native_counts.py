@@ -2,7 +2,7 @@
 
 WHY. The competitor arms (TReCASE, RASQUAL) are built for integer read counts, while the benchmark so far fed them
 Salmon point estimates. This writes their native inputs from the same STAR alignments, for every gene of the eQTL
-gene filter (the pool of scripts/plasmode/select_stratum_genes.py: cache genes in calibration_genes.txt), which
+gene filter (the pool of benchmark/plasmode/select_stratum_genes.py: cache genes in calibration_genes.txt), which
 covers the 199 genes of the two benchmark gene sets.
 
 TOTALS. featureCounts on cohort/bams.tsv (STAR 2.7.10a to T2T-CHM13v2.0; contigs NC_060925.1..., chrM) with the

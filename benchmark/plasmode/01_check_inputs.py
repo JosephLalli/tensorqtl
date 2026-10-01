@@ -80,16 +80,16 @@ SAMPLE = '100_D1'                    # first manifest row; the donor whose equiv
 SALMON_VERSION = '1.10.3'            # the version whose CollapsedGibbsSampler.cpp the rule is read from
 MIN_U = 20                           # informative reads per haplotype for a stable 1/u (exploratory run, 2026-09-26)
 RATIO_BAND = (0.8, 1.25)             # set after the first result (median 0.989, 2026-09-26)
-SHARE_BINS = ((0, .5), (.5, .8), (.8, .95), (.95, 1.01))   # ambiguous-share bins of the premise's per-bin ratio (scripts/plasmode/check_salmon_premise.py, 2026-09-26)
+SHARE_BINS = ((0, .5), (.5, .8), (.8, .95), (.95, 1.01))   # ambiguous-share bins of the premise's per-bin ratio (benchmark/plasmode/check_salmon_premise.py, 2026-09-26)
 SUFFIXES = ('_L', '_R')              # g2gtools haplotype suffixes
-# The (a) and (b) thresholds were set in scripts/plasmode/check_generator.py on 2026-09-26 without a recorded basis; the measured values are from
+# The (a) and (b) thresholds were set in benchmark/plasmode/check_generator.py on 2026-09-26 without a recorded basis; the measured values are from
 # the 100-gene set's checks/check_generator.json (plasmode_20260926 and this run).
 A_TOL, VA_RTOL = 1e-12, 1e-9         # measured 1.8e-15 / 7.6e-16
 F_B = 0.5                            # deeper than the largest scenario's 2^-0.8 = 0.574
 MIN_PAIRS = 1000                     # exempts the 1-9 read band (364 thinned pairs on the 100-gene set)
 FANO_BAND = (0.95, 1.02)             # measured 0.990-0.994 in the bands with >= MIN_PAIRS pairs
 RULE_RTOL = 1e-9                     # measured 3.8e-15
-C_BETA, C_N = 0.4, 20                # the middle scenario and 20 all-non-null datasets: scripts/plasmode/check_generator.py, 2026-09-26, basis not recorded
+C_BETA, C_N = 0.4, 20                # the middle scenario and 20 all-non-null datasets: benchmark/plasmode/check_generator.py, 2026-09-26, basis not recorded
 C_MIN_READS = {'corrected_null_store_20260925': 100,   # the lower edge of 06_score's 100-999 read band (user decision 2026-09-26)
                'stratum30_100': 0}[C.GENE_SET]         # every gene of the 30-100-read set (all-donor medians 0-78 reads); set 2026-09-27 before its first run
 C_SE_MULT = 3                        # set 2026-09-26 before the rule's first run

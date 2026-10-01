@@ -32,7 +32,7 @@ D = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy')
 GENE_SET = os.environ.get('PLASMODE_GENE_SET', 'corrected_null_store_20260925')   # the gene set this run uses: a key of GENE_SETS
 ACCEPTANCE = os.environ.get('PLASMODE_ACCEPTANCE') == '1'   # set by 99_acceptance.py for itself and the steps it runs: ROOT is then the set's acceptance_root
 GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, gene_design.tsv; for the default set also its stored
-                # 200-permutation gibbs null run), this pipeline's output directory, 99_acceptance.py's output directory, the committed run of the previous code (scripts/plasmode/ before f0c0b07) that
+                # 200-permutation gibbs null run), this pipeline's output directory, 99_acceptance.py's output directory, the committed run of the previous code (benchmark/plasmode/ before f0c0b07) that
                 # 99_acceptance.py compares with and whose RASQUAL and TReCASE results stage_joint_results copies, and the stored runs of that
                 # gene set the scripts read (None: the set has none, and each reader prints a skip); a new gene set adds an entry
     'corrected_null_store_20260925': dict(

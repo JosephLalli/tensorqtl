@@ -5,7 +5,7 @@
 # (CLAUDE.md, "R's BLAS crash is an environment clash").
 # Inputs (float64, [reps x N] C order = R's N x reps): <cond_dir>/Y.bin (total counts), Y1.bin / Y2.bin
 # (haplotype L / R allele-specific counts, integers), Z.bin (3 xL + xR: 0 ref|ref, 1 ref|alt, 3 alt|ref,
-# 4 alt|alt; haplotype 1 = L, as scripts/plasmode/05_run_trecase.py), offset.bin (log library size).
+# 4 alt|alt; haplotype 1 = L, as benchmark/plasmode/05_run_trecase.py), offset.bin (log library size).
 # X = log library size, the one covariate. asSeq cannot fit TReC without one: glmFit's intercept-only
 # branch (glm.c, M == 0) never sets convg and glmFit returns irls && convg (glm.c:161), so every
 # baseline TReC fit fails. Given the offset its true coefficient is 0; it costs one degree of freedom.

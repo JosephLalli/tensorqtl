@@ -74,7 +74,7 @@ import pyarrow.parquet as pq
 import torch
 from threadpoolctl import threadpool_limits
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import common as C                                               # noqa: E402
 from select_stratum_genes import CACHE, CAL                      # noqa: E402  the pool: cache genes passing the eQTL gene filter
 from tensorqtl import cis as TQ                                  # noqa: E402

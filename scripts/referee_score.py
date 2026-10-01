@@ -45,7 +45,7 @@ import pyarrow.parquet as pq      # noqa: E402
 from scipy.stats import false_discovery_control   # noqa: E402
 from sklearn.isotonic import IsotonicRegression    # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import common as C                # noqa: E402
 import referee_replication as RR  # noqa: E402
 import run_hapmixqtl_from_salmon as H   # noqa: E402
@@ -1175,7 +1175,7 @@ def page_text(S, figs):
         'otherwise give: the question at matched K is only whose top genes are more often real.</p>')
     body.append(
         '<h2>What was run</h2><h3>Discovery, 92 donors, observed records</h3><p>Every arm mapped the observed data '
-        '(records in place, nothing thinned), with the settings of the plasmode benchmark (scripts/plasmode/03_run_arms.py '
+        '(records in place, nothing thinned), with the settings of the plasmode benchmark (benchmark/plasmode/03_run_arms.py '
         'and 05_run_trecase.py).</p>' + table(['arm', 'what it fits', 'permutation p'], [[LABEL[a], d, p] for a, d, p in ARM_ROWS]))
     body.append(
         f'<h3>Genes, and the TReCASE subset</h3><p>The referee genes are the {N:,} genes of the eQTL gene filter with Gibbs '

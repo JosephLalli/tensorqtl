@@ -27,7 +27,7 @@ def main():
     source, output = args.deploy_root.resolve(strict=True), args.output.resolve()
     if output.exists():
         parser.error(f'output already exists: {output}; choose a new directory')
-    requirements = REPO / 'scripts/plasmode/requirements.txt'
+    requirements = REPO / 'benchmark/plasmode/requirements.txt'
     pins = dict(line.split('==') for line in requirements.read_text().splitlines()
                 if line and not line.startswith('#'))
     versions = {name: importlib.metadata.version(name) for name in pins}

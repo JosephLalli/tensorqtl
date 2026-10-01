@@ -52,7 +52,7 @@ import numpy as np
 import pandas as pd
 from threadpoolctl import threadpool_limits
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import common as C                                               # noqa: E402
 import referee_replication as RR                                 # noqa: E402
 import run_hapmixqtl_from_salmon as H                            # noqa: E402

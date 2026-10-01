@@ -1,6 +1,6 @@
 """Does the benchmark's pseudo-feature-SNP construction handicap RASQUAL? Observed data, 30 genes.
 
-In the plasmode benchmark (scripts/plasmode/run_rasqual.py) RASQUAL received Salmon
+In the plasmode benchmark (benchmark/plasmode/run_rasqual.py) RASQUAL received Salmon
 haplotype counts at ONE pseudo feature SNP per gene, so its read-level features -- per-SNP
 allelic counts at real exonic heterozygous sites, the reference-mapping bias phi, the
 sequencing/mapping (read allele) error rate delta and posterior genotype updating -- were bypassed. This script
@@ -183,7 +183,7 @@ STAGES
 MODULES. run_rasqual, run_arms and make_datasets were removed from scripts/plasmode by commit fc238df
 (2026-09-27 20:59), after every stage here had run on their fc238df^ versions (git blobs 97d880a, 41db9e4,
 76ba855); copies of those are kept in OUT/control/legacy_plasmode as the record. The script now imports
-scripts/plasmode/common.py and 04_run_rasqual.py, whose functions used here compute what the old ones did;
+benchmark/plasmode/common.py and 04_run_rasqual.py, whose functions used here compute what the old ones did;
 the old run_gene (no checkpoint file), admission and TIE, which have no equivalent there, are defined below.
 
 SAMPLE KEY. Every table is keyed on the DNA library id (100_D1, ...): the phASER manifest,
@@ -216,7 +216,7 @@ import pandas as pd
 from scipy.stats import binomtest, chi2, wilcoxon
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'plasmode'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark' / 'plasmode'))
 import build_targeted_gene_sets as BT                        # noqa: E402
 import compare_mixqtl_replication as CM                      # noqa: E402
 import corrected_null_store as CNS                           # noqa: E402
