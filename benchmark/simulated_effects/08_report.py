@@ -78,15 +78,40 @@ def cov_table(d):
 
 
 COV_DIFF = [] if SAME_COV else [c for c, v in cov_table(JOINT_COV).items() if cov_table(ARMS_COV)[c] != v]
-COV_OF_JOINT = 'those of the other arms' if SAME_COV else "the committed run's (end of this paragraph)"
-JOINT_COV_SUB = '' if SAME_COV else " and keep that run's covariates (section 2)"
-JOINT_COV_PARA = '' if SAME_COV else (
-    f' Both joint models\' results are reused from {C.COMMITTED.name}, the committed run on these datasets, made with the '
-    f'covariates of {JOINT_COV.name}; the other arms use {ARMS_COV.name} ({ARMS_COV_HOW}). The two builds differ only in {len(COV_DIFF)} of '
-    f'the 17 columns ({COV_DIFF[0]} to {COV_DIFF[-1]}), the expression principal components, which the joint models\' '
+
+
+def joint_run(model):
+    """A joint model's results in this directory: (the covariate build they used, whether they were run here). 04 and 05
+    record the build in their summary.json; results staged from the committed run carry no record and that run's build."""
+    rec = json.loads((C.JOINT[model] / 'summary.json').read_text()).get('covariates')
+    return (Path(rec), True) if rec else (JOINT_COV, False)
+
+
+JOINT_NAME = {'rasqual': 'RASQUAL', 'trecase': 'TReCASE'}
+JOINT_RUN = {m: joint_run(m) for m in JOINT}
+JOINT_HERE = [m for m in JOINT if JOINT_RUN[m][1]]           # run into this directory
+STAGED = [m for m in JOINT if not JOINT_RUN[m][1]]           # staged from the committed run
+JOINT_OFF = [m for m in JOINT if JOINT_RUN[m][0] != ARMS_COV]   # on another covariate build than this run's arms
+if set(JOINT_OFF) - set(STAGED):
+    raise SystemExit(f'{JOINT_OFF}: a joint model run here on another covariate build than the arms; reword section 2')
+names = lambda ms: ' and '.join(JOINT_NAME[m] for m in ms)   # noqa: E731
+JOINT_DATE = {m: datetime.date.fromtimestamp((C.JOINT[m] / 'summary.json').stat().st_mtime).isoformat() for m in JOINT_HERE}
+JOINT_HEAD = '; '.join(
+    ([f'{names(STAGED)} of 2026-09-27, reused from {C.COMMITTED} because Meier\'s correction does not touch '
+      + ('it' if len(STAGED) == 1 else 'them') + (" and on that run's covariates (section 2)" if JOINT_OFF else '')] if STAGED else [])
+    + [f'{JOINT_NAME[m]} run {JOINT_DATE[m]} into {C.ROOT} on this run\'s covariates' for m in JOINT_HERE])
+COV_OF = {m: 'those of the other arms' if m not in JOINT_OFF else "the committed run's (end of this paragraph)" for m in JOINT}
+JOINT_COV_PARA = '' if not JOINT_OFF else (
+    (' Both joint models\' results are' if len(JOINT_OFF) == 2 else f' {names(JOINT_OFF)}\'s results are')
+    + f' reused from {C.COMMITTED.name}, the committed run on these datasets, made with the covariates of {JOINT_COV.name}; '
+    + (f'{names(JOINT_HERE)} was run here and, like the other arms, uses' if JOINT_HERE else 'the other arms use')
+    + f' {ARMS_COV.name} ({ARMS_COV_HOW}). The two builds differ only in {len(COV_DIFF)} of '
+    f'the 17 columns ({COV_DIFF[0]} to {COV_DIFF[-1]}), the expression principal components, which the committed run\'s '
     'build computes on log2(CPM + 1); the clinical covariates and the genotype principal components are identical.')
-JOINT_COV_NOTE = '' if SAME_COV else (' Not like for like: the joint models ran on the committed run\'s covariates '
-                                      + ('(sections 2 and 6).' if INTERPRETED else '(section 2 and the limits section).'))
+JOINT_COV_NOTE = '' if not JOINT_OFF else (
+    (' Not like for like: the joint models ran on the committed run\'s covariates ' if len(JOINT_OFF) == 2 else
+     f' Not like for like for {names(JOINT_OFF)}, which ran on the committed run\'s covariates ')
+    + ('(sections 2 and 6).' if INTERPRETED else '(section 2 and the limits section).'))
 NATIVE = SC.NATIVE_ARMS              # 05b_native_arms.py: split weighting and TReCASE on native alignment counts; () where C.NATIVE does not exist
 SHOWN = ALL + NATIVE                 # every arm in the section 3 tables and Figures 1-4
 LABEL = {'gibbs': 'gibbs (1/v both channels, shipped)', 'split': 'split (1/v allelic, unit total)',
@@ -953,13 +978,12 @@ def sec_head():
                 f'({C.GENES}); hapmixQTL arms with commit 8a06803\'s per-channel t references and {MIN_ALLELIC_DONORS}-donor '
                 f'allelic floor and with Meier\'s correction of the combined standard error for estimated channel weights '
                 f'(commit a1b2ef4, section 2); this run\'s directory {C.ROOT}, with the hapmixQTL, mixQTL and tensorQTL arms '
-                f'run there on {run_date} and the RASQUAL and TReCASE results, which the correction does not touch, reused '
-                f'from {C.COMMITTED}{JOINT_COV_SUB}; units log2 aFC (beta = 1 is a twofold effect). The '
+                f'run there on {run_date}, and {JOINT_HEAD}; units log2 aFC (beta = 1 is a twofold effect). The '
                 f'section "The {THIS_SET} against the {REF_SET}", after section 3, sets it against the {REF_SET}\'s delivered '
                 f'run ({REF_RUN}), each set with its own intervals. The read bands of sections 2 and 3 use each gene\'s median '
                 f'over all donors, on which {SF["below"]} of these genes fall below {SF["lo"]} reads; the set\'s own measure is '
                 f'the median over admitted donors. In {C.COMMITTED.name}, the committed run whose RASQUAL and TReCASE results '
-                f'are reused here, {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
+                f'{"are" if STAGED else "were"} reused here, {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
                 f'datasets: its hapmixQTL and mixQTL arms first ran on {(ran - n_ds["0.0"]) // (len(n_ds) - 1)} replicates '
                 f'per |beta|, the datasets were then regenerated at {n_ds["0.4"]} (user decision 2026-09-27; every generator '
                 f'stream is keyed on the replicate index, so the kept replicates are unchanged), and its joint arms and '
@@ -985,8 +1009,7 @@ def sec_head():
             f'unchanged; hapmixQTL, mixQTL and tensorQTL arms and the mixQTL ladder run {run_date} into '
             f'{C.ROOT}, the hapmixQTL arms on commit 8a06803 (per-channel t references and a 15-donor allelic '
             'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
-            f'(commit a1b2ef4; section 2); RASQUAL and TReCASE of 2026-09-27, reused from {C.COMMITTED} because the '
-            f'correction does not touch them{JOINT_COV_SUB}; units log2 aFC '
+            f'(commit a1b2ef4; section 2); {JOINT_HEAD}; units log2 aFC '
             f'(beta = 1 is a twofold effect). Made by benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {BEFORE} and {AFTER} '
             f'(the committed run\'s arms before and after commit 8a06803)'
             + ('' if REF_RUN == C.SUMMARY else f', {REF_RUN} (the deep set\'s delivered run, with Meier\'s correction)')
@@ -1146,14 +1169,14 @@ reads to give it, each gene gets one pseudo feature SNP in its gene body, at whi
 arms admit to the allelic channel is heterozygous with allele counts equal to its thinned haplotype point estimates
 rounded to integers; the tested variants carry the real phased
 genotypes, the total counts are the thinned Salmon totals as they are (fractional), the size factor is the effective
-library size, and the 17 covariates are {COV_OF_JOINT}. RASQUAL's defaults are kept except its
+library size, and the 17 covariates are {COV_OF['rasqual']}. RASQUAL's defaults are kept except its
 Hardy-Weinberg filter on tested variants (a test that a variant's genotype counts match those expected from its allele
 frequency), turned off (-h 0) because these genotypes are the truth and no other arm filters on it (04_run_rasqual.py). <b>TReCASE</b> (asSeq 0.99.501) models total counts as negative binomial (TReC) and
 allele-specific counts as beta-binomial (ASE), fits both jointly, and runs a cis/trans test of whether the total and
 allelic effects agree; asSeq's final p is the joint p when that test does not reject at 0.05 and the total-count p
 otherwise, which is also what it reports when the joint fit fails. Its inputs are the same donor-gene pairs as allele-specific
 records (counts rounded per haplotype, because its beta-binomial needs integers), fractional totals, the log effective
-library size as offset, and the same 17 covariates; asSeq's defaults are kept except the p cutoff for writing a row
+library size as offset, and the 17 covariates, {COV_OF['trecase']}; asSeq's defaults are kept except the p cutoff for writing a row
 (05_run_trecase.py).{JOINT_COV_PARA}</p>
 {native_method()}
 <p><b>One scale for every method.</b> Every slope on this page is a log2 allelic fold change (aFC), ALT over REF,
@@ -1220,8 +1243,7 @@ would have to run to make it like for like.</p>'''
 73-degree-of-freedom reference and no Meier's correction; their re-run under commit 8a06803 ({DF_FIX.parent.name}) refitted
 the same permutations on the same covariates with the per-pair references, also without Meier's correction. The committed
 run ({C.COMMITTED.name}) holds these same datasets scored before and after that commit ({BEFORE.name}, {AFTER.name}), on the
-{JOINT_COV.name} covariates and without Meier's correction, and its RASQUAL and TReCASE results are the ones reused
-here.{deep} {mine} {reach} Check (d) refits the stored null's first permutation on the stored runs' own covariates, so it is
+{JOINT_COV.name} covariates and without Meier's correction{f', and its {names(STAGED)} results are the ones reused here' if STAGED else ''}.{deep} {mine} {reach} Check (d) refits the stored null's first permutation on the stored runs' own covariates, so it is
 like for like by construction. Where a result is compared with an earlier run, the page says there whether the comparison is
 like for like and, if not, in which channels; {LIMITS} lists what would have to run to make each like for like.</p>'''
 
@@ -2873,7 +2895,7 @@ its Hardy-Weinberg filter on tested variants is off (-h 0).</p>
 {tr["joint_fail_theta"]:,} of the missing fits ({pct(tr["joint_fail_theta"] / tr["tests"])} of all tests) to the
 overdispersion step's search ending abnormally in its line search; that search is L-BFGS-B, an iterative optimizer
 that approximates the curvature of the likelihood from its gradients, within bounds. The largest absolute gradient at
-such a stop was {tr["theta_gradient_max"]:.1e} over the run, against at most {sci(SM)} in the smoke run ({"/".join(SMOKE.parts[-4:-1])}), which
+such a stop was {tr["theta_gradient_max"]:.1e} over the run, against at most {sci(SM)} in the smoke run ({"/".join(SMOKE.parts[-4:-1])}{", made on the committed run's covariates, so not like for like" if 'trecase' in JOINT_HERE else ''}), which
 the earlier run_trecase_asseq.py read as a stop at essentially the optimum; whether the full run's abnormal stops are at the optimum
 was not checked. Treating them as converged would require patching asSeq and was not done. Where the joint fit is
 missing, asSeq's final p is its total-count test; at the causal variants the final p was the total-count test in
@@ -2912,15 +2934,17 @@ def earlier_runs_limits():
     """The comparisons with earlier runs that are not like for like, what separates each, and what would have to run to make
     it like for like; '' when there are none."""
     rows = []
-    if not SAME_COV:
-        cost = ('on the committed run RASQUAL took about 126 CPU-hours (93 ms per tested variant over 4.87 million tests, on 64 '
-                'jobs) and TReCASE about three hours of wall time' if INTERPRETED else 'hours each')
-        rows.append([f'RASQUAL and TReCASE against every other arm ({"sections 3.1 to 3.7, 4 and 5" if INTERPRETED else "section 3 and the contrast section"})',
+    if JOINT_OFF:
+        step = {'rasqual': '04_run_rasqual.py', 'trecase': '05_run_trecase.py'}
+        cost = {'rasqual': 'RASQUAL took about 126 CPU-hours (93 ms per tested variant over 4.87 million tests, on 64 jobs)',
+                'trecase': 'TReCASE about three hours of wall time on 7 genes at a time'}
+        rows.append([f'{names(JOINT_OFF)} against every other arm ({"sections 3.1 to 3.7, 4 and 5" if INTERPRETED else "section 3 and the contrast section"})',
                      C.COMMITTED.name,
                      f'the expression principal components ({len(COV_DIFF)} of the 17 covariates: {JOINT_COV.name} against '
-                     f'{ARMS_COV.name}), in the joint models\' one test',
-                     '04_run_rasqual.py and 05_run_trecase.py into this run\'s directory (run_all.sh without the staged argument), '
-                     f'then 06_score.py and 08_report.py; {cost}; the core budget is a user decision'])
+                     f'{ARMS_COV.name}), in {"the joint models" + chr(39) + " one test" if len(JOINT_OFF) == 2 else "its one test"}',
+                     ' and '.join(step[m] for m in JOINT_OFF) + ' into this run\'s directory, then 06_score.py and 08_report.py; '
+                     + (f'on the committed run {" and ".join(cost[m] for m in JOINT_OFF)}' if INTERPRETED else 'hours each')
+                     + '; the core budget is a user decision'])
     if FX is not None:
         rows.append(['this run\'s anchor and null-gene rates against the stored 200-permutation null runs and their re-run under '
                      'commit 8a06803 (sections 3.6, 3.7, 4 and 5, and the anchor table)',

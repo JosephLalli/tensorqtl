@@ -240,7 +240,7 @@ def run(S, datasets, out, work, run_list, jobs, arm='trecase', counts=allelic_co
                   causal_final_joint=tot('causal_final_joint'), causal_final_trec=tot('causal_final_trec'),
                   causal_final_na=tot('causal_final_na'))
     C.write_json(out / 'summary.json', dict(per_dataset=summary, pooled=pooled, jobs=jobs,
-                                             wall_minutes=(time.perf_counter() - t_all) / 60))
+                                             wall_minutes=(time.perf_counter() - t_all) / 60, covariates=str(C.COV)))
     print(f'pooled over {len(summary)} datasets: {json.dumps(pooled)}; wrote {out}', flush=True)
 
 
