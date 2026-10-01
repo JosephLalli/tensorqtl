@@ -179,7 +179,7 @@ def null_calibration(results, U, sc, arm, genes, bsel, bidx, cols=None):
         n = np.zeros((len(reps), len(genes)))
         for i, r in enumerate(reps):
             nulls = U[(U.scenario == sc) & (U.rep == r) & U.is_null].gene.tolist()
-            k, n[i] = C.CNS.rates_by_gene([arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet'], genes, col,
+            k, n[i] = C.rates_by_gene([arm_dir(results, sc, arm) / f'nominal_rep{r:03d}.parquet'], genes, col,
                                           gene_filter=nulls)
             for al in C.ALPHAS:
                 K[al][i] = k[al]

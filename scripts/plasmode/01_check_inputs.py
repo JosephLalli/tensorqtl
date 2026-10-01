@@ -20,7 +20,7 @@ non-zero if any check fails; nothing downstream re-checks what passes here.
     the allelic rule's arithmetic: (Va' - q_a') / (Va - q_a) = q(pL', pR') / q(pL, pR) within
     RULE_RTOL on every informative record, Va' = 0 wherever pL' + pR' = 0.
 (c) RECOVERY of an injected |beta| = C_BETA over C_N all-non-null datasets: per gene the allelic
-    slope at the causal variant (null_permutation_instrument.fit_channels, through-origin weighted
+    slope at the causal variant (common.fit_channels, through-origin weighted
     least squares over the records common.allelic_kept admits) under eight weight / truth pairs (one,
     unit no drop, weights 1 over every record with Va' > EPS, the zero-haplotype drop not applied:
     added 2026-09-27 for the 30-100-read set to measure the drop rule's part of the low-depth
@@ -70,7 +70,6 @@ import numpy as np
 import pandas as pd
 
 import common as C
-from null_permutation_instrument import fit_channels
 from tensorqtl.hapmixqtl import LN2, MIN_ALLELIC_DONORS, get_t_pval, summaries_from_point_estimates
 
 MD, RA = C.module('02_make_datasets'), C.module('03_run_arms')
@@ -246,7 +245,7 @@ def gate_nominal(S, ds, df, Va, Vt):
     for k, g in enumerate(S['genes']):
         v = str(ds['causal_variant'][k])
         j = S['rows'][v]
-        fc = fit_channels(ds['A'][k], (I['xL'][j] - I['xR'][j]).astype(float), Va[k], ds['T'][k],
+        fc = C.fit_channels(ds['A'][k], (I['xL'][j] - I['xR'][j]).astype(float), Va[k], ds['T'][k],
                           I['dos'][j].astype(float) / 2.0, Vt[k], Cg)
         if fc is None:
             continue
@@ -274,7 +273,7 @@ def check_recovery(I, R, tested):
             va = {'inv_va_nodrop': ds['Va'][k], 'inv_va': np.where(kept, ds['Va'][k], 0.0),
                   'inv_va_exp': np.where(kept, va_exp[k], 0.0), 'inv_va_real': np.where(kept, va_real[k], 0.0),
                   'unit': kept.astype(float), 'unit_nodrop': (ds['Va'][k] > C.EPS).astype(float)}
-            fc = {w: fit_channels(ds['A'][k], s, v, ds['T'][k], I['dos'][j].astype(float) / 2.0, ds['Vt'][k], Cg) for w, v in va.items()}
+            fc = {w: C.fit_channels(ds['A'][k], s, v, ds['T'][k], I['dos'][j].astype(float) / 2.0, ds['Vt'][k], Cg) for w, v in va.items()}
             if any(x is None for x in fc.values()):
                 none += 1
                 continue
@@ -366,7 +365,7 @@ def check_reproduction(I, R, S, scratch):
     gcols = (REPRO_COV / 'genotype_covariates.txt').read_text().split()
     I = dict(I, cov_df=cov.drop(columns=gcols), geno_cov_df=cov[gcols])
     S = dict(S, I=I)
-    old = np.load(C.CNS.OLD / 'permutations.npz')
+    old = np.load(C.OLD / 'permutations.npz')
     perm, swap = old['perms'][0], old['flips'][0].astype(np.int8)
     G, N = R['pL'].shape
     ones = np.ones((G, N))
@@ -461,7 +460,7 @@ def check_gates(S, ds, scratch):
     for k, g in enumerate(S['genes']):
         rows = S['tested_rows'][g]
         Ig = dict(base, vdf=I['vdf'].iloc[rows], xL=I['xL'][rows], xR=I['xR'][rows], idx=np.arange(len(rows)))
-        r = C.CM.mixqtl_gene(Ig, g, k, y1, y2, yt)
+        r = C.mixqtl_gene(Ig, g, k, y1, y2, yt)
         d = mix[mix.phenotype_id == g]
         stat = np.abs(d.slope.to_numpy(float) / d.slope_se.to_numpy(float))
         lead = None

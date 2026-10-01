@@ -8,7 +8,7 @@ tests per gene.
 hapmixQTL arms (common.arm_variances, after the zero-haplotype admission): gibbs = Gibbs variance
 in both channels (the shipped default); split = Gibbs allelic, unit total; unit = 1 everywhere;
 plus_one = v + 1 in both. map_nominal and map_cis get the RNA-tied covariates in the dataset's
-record order, the genotype PCs in place, the allelic channel through the origin, window CM.WIN,
+record order, the genotype PCs in place, the allelic channel through the origin, window WIN,
 default mode; A is already swapped in the dataset. Stored per tested variant: COLS + DOF_COLS
 (map_nominal's own dtypes; each p's t reference and whether the gene's allelic channel entered the
 combination, hapmixqtl.MIN_ALLELIC_DONORS = 15). The combined standard error carries Meier's
@@ -36,7 +36,7 @@ processes, forked before this process touches the GPU, while this process maps t
 
 tensorqtl arm: tensorqtl.cis.map_nominal and map_cis on the dataset's total phenotype T
 (log2(CPM + 1)), unweighted, no allelic channel, with the same 17 covariates as one covariates_df
-(the 14 RNA-tied in record order, the 3 genotype PCs in place), window CM.WIN and the same genotype
+(the 14 RNA-tied in record order, the 3 genotype PCs in place), window WIN and the same genotype
 frame, so the same tested variants per gene (row count checked; map_cis's num_var checked against
 the tested variants with varying dosage); map_cis with NPERM permutations of its own null (the
 covariate-residualized phenotype permuted) and the Beta approximation. slope and slope_se are
@@ -103,7 +103,7 @@ def run_cis(S, ds, arm, seed):
     """map_cis on the arm's inputs; tau_refit is inert in default mode (map_cis refits only for tau_mode 'estimate')."""
     A, T, Va, Vt, cov, _ = C.phenotypes(S, ds, arm)
     res = C.quiet(map_cis, S['gdf'], S['vdf'][['chrom', 'pos']], A, T, Va, Vt, S['gp'], xL_df=S['xLdf'], xR_df=S['xRdf'],
-                  covariates_df=cov, genotype_covariates_df=S['I']['geno_cov_df'], window=C.CM.WIN, nperm=NPERM,
+                  covariates_df=cov, genotype_covariates_df=S['I']['geno_cov_df'], window=C.WIN, nperm=NPERM,
                   seed=seed, perm_scheme=PERM_SCHEME, tau_refit=True, verbose=False, ase_covariates_df=None)
     res = res.reset_index()[CIS_COLS]
     res['variant_id'] = res['variant_id'].astype(str)
@@ -119,7 +119,7 @@ def run_tensorqtl(S, ds, seed, scratch):
     scratch.mkdir(parents=True, exist_ok=True)
     for q in scratch.glob('*'):
         q.unlink()
-    C.quiet(TQ.map_nominal, S['gdf'], S['vdf'][['chrom', 'pos']], T, S['gp'], 't', covariates_df=cov17, window=C.CM.WIN,
+    C.quiet(TQ.map_nominal, S['gdf'], S['vdf'][['chrom', 'pos']], T, S['gp'], 't', covariates_df=cov17, window=C.WIN,
             output_dir=str(scratch), verbose=False)
     nom = pd.concat([pd.read_parquet(q, columns=C.COLS[:5]) for q in sorted(scratch.glob('t.cis_qtl_pairs.*.parquet'))],
                     ignore_index=True)
@@ -128,7 +128,7 @@ def run_tensorqtl(S, ds, seed, scratch):
         raise SystemExit(f'tensorqtl map_nominal returned {len(nom):,} rows against {int(S["n_tested"].sum()):,} tested pairs')
     nom['slope'], nom['slope_se'] = 2 * nom['slope'], 2 * nom['slope_se']
     res = C.quiet(TQ.map_cis, S['gdf'], S['vdf'][['chrom', 'pos']], T, S['gp'], covariates_df=cov17, nperm=NPERM,
-                  window=C.CM.WIN, seed=seed, verbose=False, warn_monomorphic=False)
+                  window=C.WIN, seed=seed, verbose=False, warn_monomorphic=False)
     res = res.reset_index()[TQ_CIS_COLS]
     res['variant_id'] = res['variant_id'].astype(str)
     if list(res.phenotype_id) != S['genes'] or list(res.num_var) != [len(S['scanned'][g]) for g in S['genes']]:

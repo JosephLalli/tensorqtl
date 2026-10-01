@@ -40,13 +40,12 @@ import numpy as np
 import pandas as pd
 
 import common as C
-import compare_mixqtl_replication as CM
 from tensorqtl.hapmixqtl import MIN_ALLELIC_DONORS, summaries_from_point_estimates
 
 SET_NAME = 'stratum30_100'                      # the common.GENE_SETS entry this script fills
 OUT = C.D / C.GENE_SETS[SET_NAME]['gene_dir']
-CACHE = Path(CM.CACHE)                          # the Gibbs cache and its point estimates
-CAL = Path(CM.PE) / 'edger' / 'calibration_genes.txt'   # the eQTL gene filter load_point_estimate_inputs enforces
+CACHE = C.CACHE                          # the Gibbs cache and its point estimates
+CAL = C.PE / 'edger' / 'calibration_genes.txt'   # the eQTL gene filter load_point_estimate_inputs enforces
 GENES_TSV = C.D / 'annot' / 'genes.tsv'         # gene, chr, start, end, pos (TSS); no header
 STRATUM_LO, STRATUM_HI = 30, 100                # reads; the transcriptome-wide stratum of coupling_reach.py (task, 2026-09-27)
 N_GENES = 100                                   # as the committed set (task, 2026-09-27)
@@ -62,8 +61,8 @@ def load_pool():
     pool = [g for g in genes if g in cal]
     gi = {g: i for i, g in enumerate(genes)}
     rows = np.array([gi[g] for g in pool])
-    pL = np.asarray(np.load(Path(CM.PE) / 'pL.npy', mmap_mode='r')[rows])
-    pR = np.asarray(np.load(Path(CM.PE) / 'pR.npy', mmap_mode='r')[rows])
+    pL = np.asarray(np.load(C.PE / 'pL.npy', mmap_mode='r')[rows])
+    pR = np.asarray(np.load(C.PE / 'pR.npy', mmap_mode='r')[rows])
     hap = pL + pR
     adm = (hap > 0) & ~((pL < C.EXPRESSIBLE_MIN) ^ (pR < C.EXPRESSIBLE_MIN))
     t = pd.DataFrame(dict(
@@ -91,18 +90,18 @@ def main():
     sel['source'] = SET_NAME
     C.write_atomic(OUT / 'gene_selection.tsv', lambda fh: sel.to_csv(fh, sep='\t', index=False), 'w')
     C.write_atomic(OUT / 'regions.bed', lambda fh: fh.write(''.join(
-        f'{r.chr}\t{max(0, min(r.start, r.pos) - CM.WIN - 1000)}\t{max(r.end, r.pos) + CM.WIN + 1000}\t{r.gene}\n'
+        f'{r.chr}\t{max(0, min(r.start, r.pos) - C.WIN - 1000)}\t{max(r.end, r.pos) + C.WIN + 1000}\t{r.gene}\n'
         for r in sel.itertuples())), 'w')
     C.write_atomic(OUT / 'genes.txt', lambda fh: fh.write('\n'.join(genes) + '\n'), 'w')
     print(f'{len(genes)} genes selected from {len(cand):,} candidates (SeedSequence({SEED}, spawn_key=({SELECT_KEY},))); '
           f'chromosomes {sel.chr.value_counts().sort_index().to_dict()}', flush=True)
 
     # the pipeline's own load: VCF coverage of every cis window, and the design as corrected_null_store writes it
-    I = CM.load_point_estimate_inputs(gene_list=str(OUT / 'genes.txt'), regions=str(OUT / 'regions.bed'))
+    I = C.load_point_estimate_inputs(gene_list=str(OUT / 'genes.txt'), regions=str(OUT / 'regions.bed'))
     keep = I['keep']
     if list(I['genes']) != genes or sorted(I['order']) != sorted((CACHE / 'samples.txt').read_text().split()):
         raise SystemExit('loader genes or donors differ from the selection or the cache')
-    n_tested = pd.Series({g: len(CM.gene_variant_index(I, g)) for g in genes})
+    n_tested = pd.Series({g: len(C.gene_variant_index(I, g)) for g in genes})
     none = sorted(n_tested.index[n_tested == 0])
     if none:
         raise SystemExit(f'{len(none)} genes have no tested variant (cis window not covered by the VCF): {none}')

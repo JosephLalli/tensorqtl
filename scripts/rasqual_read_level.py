@@ -221,9 +221,9 @@ import build_targeted_gene_sets as BT                        # noqa: E402
 import compare_mixqtl_replication as CM                      # noqa: E402
 import corrected_null_store as CNS                           # noqa: E402
 import common as C                                           # noqa: E402
-from compare_pipelines import RASQUAL_FIELDS                 # noqa: E402
 from tensorqtl.hapmixqtl import map_nominal, summaries_from_point_estimates   # noqa: E402
 RR = C.module('04_run_rasqual')
+RASQUAL_FIELDS = C.RASQUAL_FIELDS
 
 D = BT.D
 OUT = D / 'rasqual_read_level_20260927'

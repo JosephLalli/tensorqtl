@@ -109,7 +109,7 @@ def main():
             print(f'   band {bn}: combined {x["combined"][bn]["mean"]:.3f} [{x["combined"][bn]["lo"]:.3f}, '
                   f'{x["combined"][bn]["hi"]:.3f}], TReCASE {x["trecase_native"][bn]["mean"]:.3f}', flush=True)
     OUT.mkdir(exist_ok=True)
-    C.write_json(OUT / f'recovery_{C.GENE_SET}.json', dict(gene_set=C.GENE_SET, covariates=str(C.CM.COV),
+    C.write_json(OUT / f'recovery_{C.GENE_SET}.json', dict(gene_set=C.GENE_SET, covariates=str(C.COV),
                                                            betas=list(BETAS), result=res))
     C.write_atomic(OUT / f'causal_units_{C.GENE_SET}.parquet', lambda fh: F.to_parquet(fh, index=False))
     print(f'wrote {OUT / f"recovery_{C.GENE_SET}.json"}')

@@ -241,7 +241,7 @@ def score():
             L.attrs['power'] = rk['fdp_matched']['all']['power']
             leadsets[sc][arm] = L
         u0 = U[(U.scenario == 'beta0.0') & (U.rep == 0)]
-        K, n = C.CNS.rates_by_gene([nominal_path(arm, 'beta0.0', 0)], genes, 'pval_nominal', gene_filter=u0[u0.is_null].gene.tolist())
+        K, n = C.rates_by_gene([nominal_path(arm, 'beta0.0', 0)], genes, 'pval_nominal', gene_filter=u0[u0.is_null].gene.tolist())
         res[arm]['anchor'] = {str(al): S6.pooled(K[al][None], n[None], bsel['all'], bidx['all']) for al in ALPHAS}
     for arm in ('rasqual', 'tensorqtl'):   # the committed arms through this code must reproduce 06_score's summary
         for sc in ('beta0.4', 'beta0.8'):

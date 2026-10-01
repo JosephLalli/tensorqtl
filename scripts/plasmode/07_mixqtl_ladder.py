@@ -63,7 +63,7 @@ def total_channel(S, ds, cutoff):
     """At every gene's causal variant: mixQTL's trc slope, the two one-step slopes, R^2, |S| and donors."""
     I, MX, tc = S['I'], C.MX, CUTOFFS[cutoff]['trc_cutoff']
     _, _, yt = MX.inputs_from_point_estimates(ds['pL'], ds['pR'], ds['pT'])
-    Cv = MX._stack_covariates(I['cov_df'].values[ds['perm']], I['geno_cov_df'].values)
+    Cv = C.stack_covariates(I['cov_df'].values[ds['perm']], I['geno_cov_df'].values)
     rec = []
     for k, g in enumerate(S['genes']):
         v = str(ds['causal_variant'][k])

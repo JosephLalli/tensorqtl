@@ -35,13 +35,12 @@ import pandas as pd
 from scipy.stats import chi2
 
 import common as C
-from compare_pipelines import RASQUAL_FIELDS
 
-RASQUAL = '/mnt/ssd/lalli/tensorqtl/.claude/worktrees/mixqtl-replication/rasqual_src/src/rasqual'   # the build the 2026-09-26 run used; run() checks its sha256
+RASQUAL = '/mnt/ssd/lalli/usr/local/rasqual/bin/rasqual'   # the build the 2026-09-26 run used (copied 2026-10-01 from its worktree); run() checks its sha256
 RASQUAL_SHA256 = 'ac3bd0563862fb9e3c3fdc355f6c588ed42247736eb0e3cde55e94e2820cb363'
 OUT = C.JOINT['rasqual']
 JOBS = 15                      # genes in parallel, one RASQUAL process each: 15 plus this driver = the shared host's cap of 16 live processes (2026-09-27)
-MAF = C.CM.MAF                 # 0.05, the tested set's MAF floor, passed as -a
+MAF = C.MAF                 # 0.05, the tested set's MAF floor, passed as -a
 MIN_COVERAGE = 0.05            # -d, RASQUAL's default (usage.c:46)
 HWE_P = 0.0                    # -h; 0 turns the rSNP HWE filter off (default 1e-8, main.c:387/498), see the docstring
 GT = np.array(['0|0:0,0', '0|1:0,0', '1|0:0,0', '1|1:0,0'])   # index 2 xL + xR
@@ -100,10 +99,10 @@ def run_gene(k, g, site, text, bins, n, raw):
         secs, skipped = time.perf_counter() - t0, False
         C.write_atomic(raw, lambda fh: fh.write(out), 'w')
     rows = [ln.split('\t') for ln in out.splitlines()]
-    bad = [r for r in rows if len(r) != len(RASQUAL_FIELDS) or r[0] != g or r[1] == 'SKIPPED']
+    bad = [r for r in rows if len(r) != len(C.RASQUAL_FIELDS) or r[0] != g or r[1] == 'SKIPPED']
     if bad or not rows:
         raise SystemExit(f'{g}: {len(rows)} RASQUAL rows, {len(bad)} malformed or SKIPPED, e.g. {bad[:1]}')
-    return pd.DataFrame(rows, columns=RASQUAL_FIELDS), secs, skipped
+    return pd.DataFrame(rows, columns=C.RASQUAL_FIELDS), secs, skipped
 
 
 def assemble(g, raw, tested, causal):
