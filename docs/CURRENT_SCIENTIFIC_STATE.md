@@ -1,9 +1,10 @@
 # Current scientific state: hapmixQTL
 
-Reconciled 2026-09-16 and updated through the accepted 2026-09-29 half-read
-default. This is a router: the latest current behavior is the 2026-09-29
-entry below; earlier dated sections retain their evidence and historical
-decisions.
+Reconciled 2026-09-16 and updated through 2026-10-01. This is a router: the
+current association default is the 2026-09-29 entry below (expression PCs in
+its unit since 2026-09-30); the newest entry, 2026-10-01, concerns the Salmon
+Gibbs draws that supply `Va` and changes no hapmixQTL code. Earlier dated
+sections retain their evidence and historical decisions.
 
 Documentation was reconciled after merge `86b947f`: the README, current
 method/API and output guides, runbook, internal handoffs, report templates,
@@ -34,7 +35,87 @@ No numerical results or estimator behavior changed in this documentation pass.
 >
 > The sections on what `v_ig` IS — that it is a donor-by-gene interaction, the
 > RTA comparison, the draw-count adequacy, the `squeezeVar` diagnostics — remain
-> live: they measure the Gibbs variance itself, not a choice among models.
+> live: they measure the Gibbs variance itself, not a choice among models. They
+> were measured on the production draws, which stock Salmon samples under a
+> Gibbs prior of 1 per active transcript (see "Salmon Gibbs prior and the
+> calibration of `Va`, 2026-10-01" below).
+
+## Salmon Gibbs prior and the calibration of `Va`, 2026-10-01
+
+This entry concerns the quantifier input that supplies the allelic channel's
+Gibbs variance. It is not a third mode and changes no estimator: the hapmixQTL
+library, the Salmon runner and `docs/pipeline_rules.md` are unchanged. Record:
+`/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md`,
+sections "The --gibbsPriorGroups option", "Split-half calibration of Va" and
+"Why the point-estimate and Gibbs priors differ"; page
+`split_half/split_half_calibration.html` in the same folder (summary table
+`split_half/split_half_summary.tsv`). The numbers live there; this section
+routes.
+
+- **Established about the production draws.** Salmon 1.10.3 with default
+  flags, as production ran, fits its point estimate by variational Bayes (an
+  EM-like optimizer that adds a prior pseudocount, `--vbPrior`, of 0.01 per
+  transcript) but samples its Gibbs draws under a prior of max(1, `--vbPrior`)
+  = 1 per active transcript (`CollapsedGibbsSampler.cpp`; the floor dates from
+  Salmon v1.2.0). The record's re-implementation of the sampler
+  (`scripts/gene_sampler.py`) reproduces Salmon's draws on four genes only
+  with that prior. Every Gibbs variance in this project's stored results,
+  including the default's `Va`, is therefore the posterior variance under a
+  prior of 1 per active transcript, not under the point estimate's prior.
+- **Implemented.** A Salmon v1.10.3 fork,
+  `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior`, with one option,
+  `--gibbsPriorGroups <file>` (columns transcript, group): each transcript's
+  Gibbs prior is divided by the number of its group's transcripts that appear
+  in an equivalence class. Off unless given; the point estimate and the
+  `--numBootstraps` path are unchanged. Patch
+  `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior-groups.patch`, binary
+  `/mnt/ssd/lalli/usr/local/salmon-1.10.3-gibbspriorgroups`, patch and build
+  scripts in the record's `scripts/`. A gene x haplotype groups file, built
+  per donor from its own index transcript list (`scripts/make_prior_groups.py`),
+  makes the Gibbs prior 1/k, k the gene's active paired isoforms on that
+  haplotype. Not yet committed in the fork (the user commits). The earlier
+  fork options `--gibbsMinPrior` and `--priorGroups` were removed; their
+  patches are kept in the record's `superseded_salmon_patches/` because the
+  record's earlier runs used that build.
+- **Validated: donor 100 only, random error only.** Donor 100's read pairs
+  were split at random into two disjoint half libraries, each quantified under
+  five prior configurations, and per gene z = (A1 - A2) / sqrt(Va1 + Va2) was
+  formed from the pipeline's `Va` with the counting term q included (rule 6
+  keeps it on); mean z^2 is 1 when `Va` matches the between-half error. Bands
+  are full-depth haplotype-informative reads. With stock draws `Va`
+  understates that error 1.5- to 3.2-fold at 3-30 reads (the range spans the
+  ratio of summed squared differences to summed `Va` and the mean z^2),
+  concentrated in a tail of over-confident genes. `--gibbsPriorGroups` with
+  1/k groups comes closest to calibrated of the five, on the typical gene and
+  on the tail, with full-depth point estimates within 0.1 log2 of stock in
+  99.5% of genes (stock against itself 99.4%); it matches the earlier
+  `0.01/k / 1/k` build, which also changed the point-estimate prior. Every
+  configuration keeps an excess at 10-30 reads, source untested; bands below
+  3 reads were not judged. Not established: other donors, full depth, errors
+  shared by both halves (reference bias, phasing), a prior of 1 for both
+  point estimate and draws (`--vbPrior 1`, not run), and anything about
+  association calibration, which needs the cohort re-quantified.
+- **Proposed (requested 2026-10-01; mapping mode, each donor's index rebuilt with
+  production's recipe).** Re-quantify all 92 donors with `--gibbsPriorGroups`
+  (gene x haplotype groups, 1/k) to give the default a better-calibrated
+  allelic `Va`. Output root
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbspriorgroups_20261001/`.
+- **Run state when this was written (2026-10-01).** The output root holds
+  only `manifest.tsv` (92 donors); no Salmon process was running. No
+  association, benchmark or calibration result exists under the new draws.
+- **Reading earlier statements.** Default mode uses `Va` as a shape under a
+  per-variant fitted scale; that scale absorbs a uniform scale error in `Va`
+  by construction, while an error that varies with read count, as the stock
+  understatement above does, was not tested (`CLAUDE.md`, the external
+  benchmark's "SHAPE error" scope note). Where this file, `CLAUDE.md`,
+  `docs/hapmixqtl_methods.md` or `docs/ase_validation.md` calls the Gibbs
+  variance "the quantifier's
+  uncertainty" or relies on its calibration, read it as the stock sampler's
+  posterior variance under a prior of 1 per active transcript. Measurements
+  made with stock draws are not withdrawn: the controlled counting simulation
+  and, on the production draws, the RTA comparison, the draw-count adequacy
+  and the donor-by-gene structure of `v` (`CLAUDE.md`, "Facts that are easy
+  to get wrong").
 
 ## Expression-PC unit, 2026-09-30 (implemented)
 
@@ -146,6 +227,10 @@ genotype/Salmon dependencies. No new scientific phase is opened by this cleanup.
   normal-interval coverage was 91.5%, so average variance agreement is not
   interval calibration. Read
   `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbs_counting_sim_20260915/REPORT.md`.
+  It used stock Salmon 1.10.3 (Gibbs prior 1 per transcript) on singleton
+  equivalence classes at about 100 reads per haplotype; the split-half test
+  on real reads in the 2026-10-01 entry is the one at low, ambiguous read
+  counts.
 - **Structural relationship to limma/edgeR/sleuth/swish clarified
   (2026-09-18):** read fresh upstream source (git clones made on 2026-09-18, not the
   older installed R packages) for edgeR's quasi-likelihood pipeline, limma's

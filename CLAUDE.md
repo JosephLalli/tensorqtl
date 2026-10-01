@@ -159,6 +159,7 @@ status as current practice is.
 | What is implemented, proposed, validated, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What merged the half-read default, and what was verified? | `brainvar_hapmix_deploy/half_read_default_adoption_20260929/verification.json` and `integration.json`: merge `86b947f`, 159 selected tests passed across the initial run and assertion-harness rerun, 15 targeted rerun tests passed, and the Salmon self-test passed including STR/multiallelic paths. This verifies association-input and mapping parity; it does not validate fine-mapping credible sets or PIPs. |
 | What changed in the 2026-09-30 engineering cleanup? | `docs/CURRENT_SCIENTIFIC_STATE.md`, "Engineering-cleanup checkpoint, 2026-09-30 (implemented)": skip unused default-route `YT`, explicit lead-selection exclusions, atomic outputs, verified cache reuse, and a supplied-root analysis driver. `docs/half_read_analysis.md` gives the entry point and check scope; `docs/pipeline_rules.md` remains the method contract. 39 targeted tests and runner self-test passed; 16 numerical tables reproduce exactly. No estimator/kernel or scientific conclusion changed. |
+| What Gibbs prior do Salmon's draws carry, how well calibrated is `Va` on split halves, and what is the `--gibbsPriorGroups` fork (2026-10-01)? | `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md` (sections "The --gibbsPriorGroups option", "Split-half calibration of Va", "Why the point-estimate and Gibbs priors differ") and `split_half/split_half_calibration.html` beside it; cohort re-quantification output `brainvar_hapmix_deploy/salmon_gibbspriorgroups_20261001/`; state in `docs/CURRENT_SCIENTIFIC_STATE.md`, its 2026-10-01 section |
 | What was deprecated on 2026-09-23 and why? | `brainvar_hapmix_deploy/deprecated_models/README.md` |
 | What rules govern values, units, gene filter and permutation (2026-09-25)? | `docs/pipeline_rules.md` |
 | How are benchmark datasets with known effects made, and what did they show? | `scripts/plasmode/README.md` (run order `run_all.sh`, acceptance `99_acceptance.py`; native-input arms, its section of that name). Pages `<root>/report/plasmode_report.html` under `brainvar_hapmix_deploy/`: current library (commit a1b2ef4) `plasmode_meier_20260927` (deep set) and `plasmode_lowcov_meier_20260927` (low-coverage set, 30-100 reads); earlier code and library `plasmode_20260926`, `plasmode_stratum30_100_20260927`. The thinning rule against Salmon itself: `salmon_half_depth_20260927/salmon_half_depth.html` |
@@ -452,7 +453,10 @@ experiment.
   `catchSalmon`. Separately the across-draw variance of our log-total statistic
   is 0.98x (IQR 0.91-1.05) what an RTA-inflated Poisson predicts: an
   independent, differently-derived confirmation that Salmon's default Gamma draw
-  carries shot noise. `variance_layer_mapping_20260918/rta_vs_c.py`.
+  carries shot noise. `variance_layer_mapping_20260918/rta_vs_c.py`. These are
+  the production draws, sampled under Salmon's Gibbs prior of 1 per active
+  transcript, not the point estimate's 0.01 (2026-10-01 row of the table
+  above).
 
 - **A gene-by-sample quantification-uncertainty correction already exists in
   this project's RNA pipeline**, predating `catchSalmonGene`:

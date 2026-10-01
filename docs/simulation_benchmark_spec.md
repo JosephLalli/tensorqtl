@@ -1800,7 +1800,13 @@ Each entry names the measurement that would set it.
    quantity** (allocated count or rescaled abundance): from
    `CollapsedGibbsSampler.cpp` at 1.10.3, pinned by a unit test; the
    zeroed-side block ratio (1.00 / 1.03 / 1.46 / 3.0 by band) is the
-   acceptance target that discriminates the prior.
+   acceptance target that discriminates the prior. **Prior value settled
+   2026-10-01** from the v1.10.3 source and a re-implementation of the
+   sampler that reproduces Salmon's draws on four genes: the Gibbs prior is
+   max(1, `--vbPrior`) = 1 per active transcript under the default optimizer,
+   so section 3's inference against a prior of 1 was wrong (its block-ratio
+   measurement is not withdrawn); record
+   `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md`.
 7. **The rule behind point-estimate zeros on both haplotypes with positive
    draws** (1.0% of calibration pairs): reproduced by rate only.
 8. **Isoform proportions per transcript**: cohort-level shares from Gibbs

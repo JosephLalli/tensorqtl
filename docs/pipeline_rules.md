@@ -70,6 +70,11 @@ and its checks; dated reports retain their original method settings.
    admission also excludes an exclusive one-sided point estimate (`pL < .5`
    XOR `pR < .5`). The total channel has unit working variance, so it has no
    total draw variance, total counting floor, or `Cat` contribution.
+   The Gibbs variance is that of stock Salmon 1.10.3's draws, sampled under a
+   prior of 1 per active transcript while the point estimate uses 0.01; its
+   split-half calibration and the `--gibbsPriorGroups` fork are recorded in
+   `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md`
+   (2026-10-01; this rule is unchanged).
 
 ## Where each rule is implemented
 
@@ -136,7 +141,9 @@ of a different allelic estimator remains separate from this admission rule.
 Found 2026-09-25 by the first corrected run of the mixQTL driver. Salmon
 1.10.3 ran with default options (`cmd_info.json`: no `--useEM`), so its point
 estimate is its default variational-EM optimum, while the Gibbs sampler
-draws from the posterior. Where the two haplotype copies of a transcript are
+draws from the posterior. The two also use different priors, 0.01 per
+transcript for the point estimate and 1 per active transcript for the Gibbs
+sampler (rule 6). Where the two haplotype copies of a transcript are
 hard to tell apart, the point estimate can assign every read to one copy
 while the draws keep splitting them. Example: CAMSAP2 in donor 418_D1 has NumReads 0 on
 all seven `_L` transcripts, while the Gibbs draws average 944 reads on `_L`

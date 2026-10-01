@@ -54,8 +54,9 @@ $L^{\mathrm{eff}}$ is edgeR's effective library size. It retains the original
 Gibbs ASE variance and counting-noise/no-coverage handling, then sets
 $v_{t,i}=1$; it does not compute total draw variance or `Cat`. ASE admission
 requires `Va > 1e-12` and excludes `pL < .5` XOR `pR < .5`. Fitted residual
-scales, Meier combination, and GPU fitting are unchanged. Expression PCs
-remain `log2(CPM+1)` by design. **Equations (2)-(4) below describe
+scales, Meier combination, and GPU fitting are unchanged. Expression PCs are
+built on the same half-read transform since 2026-09-30 (`docs/pipeline_rules.md`,
+rule 2). **Equations (2)-(4) below describe
 `compute_summaries_from_gibbs`**, the natural-log draws-mean phenotype that
 every result recorded before 2026-09-25 used and that `compare_pipelines.py`
 still uses. Rules, code map and open decisions: `docs/pipeline_rules.md`.
@@ -110,7 +111,7 @@ With pseudocount $\kappa = 0.5$, for every sample and draw
 $$ a^{(k)}_i = \log\!\big(y^{(k)}_{L,i} + \kappa\big) - \log\!\big(y^{(k)}_{R,i} + \kappa\big), \qquad t^{(k)}_i = \log\!\big(y^{(k)}_{T,i}/2 + \kappa\big). \tag{2} $$
 The summaries are the draw means and population variances (divisor $K$):
 $$ a_i = \frac{1}{K}\sum_k a^{(k)}_i, \quad t_i = \frac{1}{K}\sum_k t^{(k)}_i, \quad v^{\mathrm{inf}}_{a,i} = \frac{1}{K}\sum_k \big(a^{(k)}_i - a_i\big)^2, \quad v^{\mathrm{inf}}_{t,i} = \frac{1}{K}\sum_k \big(t^{(k)}_i - t_i\big)^2. \tag{3} $$
-$v^{\mathrm{inf}}$ is the inferential variance: the uncertainty of assigning the sample's reads to haplotypes and transcripts. The inferential covariance $\mathrm{Cov}_k(a^{(k)}_i, t^{(k)}_i)$ is computed for inspection and deliberately not used (Section 4.4).
+$v^{\mathrm{inf}}$ is the inferential variance: the uncertainty of assigning the sample's reads to haplotypes and transcripts. It depends on the sampler's prior: stock Salmon 1.10.3 samples its Gibbs draws under a prior of 1 per active transcript, not the point estimate's 0.01, and the split-half calibration of the resulting `Va` and the `--gibbsPriorGroups` fork are recorded in `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md` (2026-10-01). The inferential covariance $\mathrm{Cov}_k(a^{(k)}_i, t^{(k)}_i)$ is computed for inspection and deliberately not used (Section 4.4).
 
 **Counting noise.** Gibbs draws reassign one fixed set of reads, so their across-draw variance excludes the sampling variance of the counts themselves; a sample whose count is identical in every draw (zero reads, or reads compatible with nothing else) has $v^{\mathrm{inf}} = 0$ and would otherwise receive the largest weight in the gene. With $\bar y$ denoting the draw mean, the plug-in Poisson variance of a log count ($\mathrm{Var}\log(y+\kappa) \approx 1/(y+\kappa)$) is added:
 $$ v_{a,i} = \begin{cases} v^{\mathrm{inf}}_{a,i} + \dfrac{1}{\bar y_{L,i} + \kappa} + \dfrac{1}{\bar y_{R,i} + \kappa} & \bar y_{L,i} + \bar y_{R,i} > 0 \\[2ex] 0 & \text{otherwise,} \end{cases} \qquad v_{t,i} = v^{\mathrm{inf}}_{t,i} + \frac{1}{\bar y_{T,i} + 2\kappa}. \tag{4} $$
