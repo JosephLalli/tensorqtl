@@ -203,8 +203,8 @@ while its point estimate uses 0.01. For donor-gene pairs with few
 haplotype-informative reads, about 3 to 30, that prior shapes `Va` and makes
 it too small: on independent split halves of donor 100's reads, the stock
 draws understate the random error of the allelic ratio 1.5- to 3.2-fold in
-that range. A Salmon 1.10.3 fork with a `--gibbsPriorGroups` option, which
-divides the prior over gene-by-haplotype groups, was built and validated on
+that range. A Salmon 1.10.3 fork with a `--gibbsPriorAggregation` switch, which
+divides the prior over the `--geneMap` genes (gene-by-haplotype groups here), was built and validated on
 that one donor. Re-quantifying the 92 donors with it is prepared and on hold
 (user decision, 2026-10-01); every current result uses the stock draws. The
 evidence is in `$DEPLOY/salmon_informative_reads_20260930/README.md` (and

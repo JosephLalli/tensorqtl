@@ -39,7 +39,7 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   predecessor configuration (split weighting on a `log2(CPM + 1)` total with
   `log2(CPM + 1)` expression PCs) and are labelled so below.
 - **On hold or deferred.** Re-quantifying the 92 donors with the
-  `--gibbsPriorGroups` Salmon fork (user decision 2026-10-01); every current
+  `--gibbsPriorAggregation` Salmon fork (user decision 2026-10-01); every current
   result uses stock Salmon draws, whose `Va` is too small for donor-gene pairs
   with few haplotype-informative reads. Re-running the stored nulls under
   Meier's correction.
@@ -450,13 +450,17 @@ point-estimate and Gibbs priors differ") and page
   haplotype-informative reads 3-10 / 10-30 / 30-100 / >=100 is 2.70 / 3.17 /
   1.81 / 1.20: `Va` understates the error 1.5- to 3.2-fold at 3-30 reads,
   concentrated in a tail of over-confident genes.
-- **The fork.** `--gibbsPriorGroups <file>` divides each transcript's Gibbs
-  prior by the number of its group's transcripts in an equivalence class; with
+- **The fork.** `--gibbsPriorAggregation` (a switch used with `--geneMap`;
+  until 2026-10-01 the file option `--gibbsPriorGroups <file>`, which divides by
+  the same group sizes and made the measurements below) divides each
+  transcript's Gibbs prior by the number of its gene's transcripts in an
+  equivalence class; with
   gene x haplotype groups the prior is 1/k. Point estimates and the
   `--numBootstraps` path are unchanged. Source
   `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior` (uncommitted there when
   last recorded),
-  patch `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior-groups.patch`, binary
+  patch `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior-aggregation.patch`
+  (the earlier form's `salmon-gibbs-prior-groups.patch` beside it), binary
   `/mnt/ssd/lalli/usr/local/salmon-1.10.3-gibbspriorgroups`. On donor 100 it
   gives mean z^2 1.04 / 1.56 / 1.23 / 1.06, the closest to calibrated of the
   five configurations, with full-depth point estimates within 0.1 log2 of stock
@@ -541,7 +545,7 @@ half-depth check as its limit at that depth.
 
 ## Proposed or on hold
 
-- **Cohort re-quantification with `--gibbsPriorGroups`: prepared, on hold
+- **Cohort re-quantification with `--gibbsPriorAggregation`: prepared, on hold
   (user decision 2026-10-01).** Manifest and driver in
   `salmon_gibbspriorgroups_20261001/` (README there): per donor, rebuild the
   personalized index with production's recipe, write the gene x haplotype

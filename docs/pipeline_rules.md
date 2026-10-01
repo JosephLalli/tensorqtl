@@ -76,7 +76,7 @@ report reproduction and its checks are in the
    contribution, and keeps every donor. The Gibbs variance is that of stock
    Salmon 1.10.3's draws, sampled under a prior of 1 per active transcript
    while the point estimate uses 0.01; its split-half calibration and the
-   `--gibbsPriorGroups` fork are recorded in
+   `--gibbsPriorAggregation` fork are recorded in
    `salmon_informative_reads_20260930/README.md` (2026-10-01; this rule is
    unchanged). Caveat kept by user decision instead of re-quantifying: for
    donor-gene pairs with few haplotype-informative reads (low expression or few
