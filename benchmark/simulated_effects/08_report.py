@@ -1815,7 +1815,7 @@ the commit, it sits at the {rng(pct_new('allelic'))} percentile of the allelic r
 {rng(pct_new('combined'))} of the combined ones (that re-run predates Meier's correction, which this run's combined
 statistic carries, so in the combined channel the comparison is no longer like for like), and outside the central 99%
 for: {outside(new)}. This says where one
-permutation fell. The plumbing was checked exactly by check (d) (described in section 2, its outcome in section 3); that check is committed in
+permutation fell. The plumbing was checked exactly by check (d) (described in section 2; its outcome opens section 3); that check is committed in
 01_check_inputs.py and is in the check file used here.</p>"""
 
 
@@ -2771,7 +2771,7 @@ its Hardy-Weinberg filter on tested variants is off (-h 0).</p>
 {tr["joint_fail_theta"]:,} of the missing fits ({pct(tr["joint_fail_theta"] / tr["tests"])} of all tests) to the
 overdispersion step's search ending abnormally in its line search; that search is L-BFGS-B, an iterative optimizer
 that approximates the curvature of the likelihood from its gradients, within bounds. The largest absolute gradient at
-such a stop was {tr["theta_gradient_max"]:.1e} over the run, against at most {sci(SM)} in the smoke run ({SMOKE.parent.name}), which
+such a stop was {tr["theta_gradient_max"]:.1e} over the run, against at most {sci(SM)} in the smoke run ({"/".join(SMOKE.parts[-4:-1])}), which
 the earlier run_trecase_asseq.py read as a stop at essentially the optimum; whether the full run's abnormal stops are at the optimum
 was not checked. Treating them as converged would require patching asSeq and was not done. Where the joint fit is
 missing, asSeq's final p is its total-count test; at the causal variants the final p was the total-count test in
@@ -2784,7 +2784,7 @@ boundary under the alternative), so asSeq reports no p for them. They are absent
 detection, but their slope and derived standard error (&chi;<sup>2</sup> &gt; 0) enter bias and the precision
 statistics, where the derived standard error is not a standard error.</p>
 <p>Both joint arms receive exactly the allele-specific records the hapmixQTL arms admit (the zero-haplotype rule of
-section 2 removes {tr["zeroed"][0]:,} to {tr["zeroed"][1]:,} haplotype-informative donor-gene pairs per dataset).
+section 2 removes {tr["zeroed"][0]:,} to {tr["zeroed"][1]:,} haplotype-informative donor-gene pairs per dataset, section 3).
 Rounding sets {rq["as00"][0]} to {rq["as00"][1]} of them per dataset to zero reads on both haplotypes for RASQUAL, and
 asSeq's own floors then drop {tr["asseq_dropped"][0]} to {tr["asseq_dropped"][1]} records per dataset (fewer than five
 allele-specific reads) and the allele-specific model at the {tr["few_het"]:,} tests above. Both likelihoods are
