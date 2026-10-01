@@ -740,6 +740,12 @@ GTEx overdispersion, depth and zero-inflation structure.
 
 ## Known and unfixed
 
+- **Low-information allelic `Va` is shaped by Salmon's Gibbs prior; kept as a
+  caveat, not fixed (user decision, 2026-10-01).** Current results use stock
+  draws (prior 1 per active transcript); pairs with few haplotype-informative
+  reads get too small a `Va`. Re-quantification with `--gibbsPriorGroups` is
+  prepared but on hold. State and numbers: `docs/CURRENT_SCIENTIFIC_STATE.md`,
+  2026-10-01 section.
 - **chr14, chr15 and chr22 are excluded, short term, by user decision
   (2026-09-28).** Every copy of the phased genotypes (and the personalized
   diploid references built from them) stops within the first 1.5-3.1 Mb of

@@ -95,14 +95,21 @@ routes.
   shared by both halves (reference bias, phasing), a prior of 1 for both
   point estimate and draws (`--vbPrior 1`, not run), and anything about
   association calibration, which needs the cohort re-quantified.
-- **Proposed (requested 2026-10-01; mapping mode, each donor's index rebuilt with
-  production's recipe).** Re-quantify all 92 donors with `--gibbsPriorGroups`
-  (gene x haplotype groups, 1/k) to give the default a better-calibrated
-  allelic `Va`. Output root
-  `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbspriorgroups_20261001/`.
-- **Run state when this was written (2026-10-01).** The output root holds
-  only `manifest.tsv` (92 donors); no Salmon process was running. No
-  association, benchmark or calibration result exists under the new draws.
+- **On hold (user decision, 2026-10-01): current results stay on the stock
+  draws.** Re-quantifying all 92 donors with `--gibbsPriorGroups` (mapping
+  mode, each donor's index rebuilt with production's recipe, about 19 hours at
+  120 threads) was prepared and not run. Manifest and driver are in
+  `/mnt/ssd/lalli/brainvar_hapmix_deploy/salmon_gibbspriorgroups_20261001/`
+  (README there). No association, benchmark or calibration result exists under
+  the new draws.
+- **Caveat on every current result (user decision, 2026-10-01).** The
+  allelic `Va` of donor-gene pairs with few haplotype-informative reads is
+  shaped by Salmon's Gibbs prior: on donor 100 the stock draws understate the
+  allelic error most at 3-30 informative reads and least above 100. Few
+  informative reads come with low expression, few heterozygous sites, or both,
+  and the effect grows with the gene's isoform count. Those pairs therefore
+  carry more weight in the allelic channel than their information supports;
+  well-covered pairs are close to unaffected.
 - **Reading earlier statements.** Default mode uses `Va` as a shape under a
   per-variant fitted scale; that scale absorbs a uniform scale error in `Va`
   by construction, while an error that varies with read count, as the stock

@@ -74,7 +74,10 @@ and its checks; dated reports retain their original method settings.
    prior of 1 per active transcript while the point estimate uses 0.01; its
    split-half calibration and the `--gibbsPriorGroups` fork are recorded in
    `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md`
-   (2026-10-01; this rule is unchanged).
+   (2026-10-01; this rule is unchanged). Caveat kept by user decision instead
+   of re-quantifying: for donor-gene pairs with few haplotype-informative reads
+   (low expression or few heterozygous sites) this `Va` is shaped by the prior
+   and runs too small, most at 3-30 informative reads on donor 100.
 
 ## Where each rule is implemented
 
