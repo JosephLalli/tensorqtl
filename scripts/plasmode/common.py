@@ -60,6 +60,8 @@ GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', 
 ROOT, HYBRID_NULL, BEFORE_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
     D / GS[k] if GS[k] else None for k in ('acceptance_root' if ACCEPTANCE else 'root', 'hybrid_null', 'before_df_fix', 'df_fix',
                                            'trecase_smoke', 'committed'))
+if os.environ.get('PLASMODE_ROOT') and not ACCEPTANCE:   # a fresh output root instead of the gene set's delivered one
+    ROOT = Path(os.environ['PLASMODE_ROOT'])
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
 NATIVE_COUNTS = D / 'native_counts_wasp_20260928'   # featureCounts totals and WASP-filtered strand-split exonic phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)

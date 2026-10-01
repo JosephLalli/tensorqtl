@@ -64,6 +64,8 @@ Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene
 `plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `PLASMODE_ACCEPTANCE=1` before
 importing `common`, which makes `common.ROOT` the gene set's `acceptance_root` (`plasmode2_acceptance_20260927`,
 `plasmode2_stratum_acceptance_20260927`) for it and every step it runs, so the acceptance never writes into those two.
+Outside the acceptance, `PLASMODE_ROOT` in the environment sends every output to that directory instead (a fresh run to
+compare against a delivered one).
 
 ## Generator (02_make_datasets.py)
 

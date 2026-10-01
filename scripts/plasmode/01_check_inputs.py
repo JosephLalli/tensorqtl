@@ -99,7 +99,8 @@ C_BANDS = ([0, 10, 100, 1000, np.inf], ['0-9', '10-99', '100-999', '1000+'])   #
 REPRO_DRAWS = ({'gibbs': C.GENE_DIR / 'draws' / 'drop_000.parquet', 'unit': C.HYBRID_NULL / 'draws' / 'unit_000.parquet'}
                if C.HYBRID_NULL else None)
 REPRO_ALPHAS = C.ALPHAS
-REPRO_SLOPE_TOL = 1e-4               # stored draws are float32; 2026-09-26 measured 5.5e-6 (the combined se against stored x sqrt(M) since a1b2ef4)
+REPRO_COV = C.D / 'cov' / 'log2cpm1_point_calibration_20260925'   # the covariates the stored null runs were made with (expression PCs on log2(CPM + 1); the current build replaced it at a2f4314)
+REPRO_SLOPE_TOL = 1e-4              # stored draws are float32; 2026-09-26 measured 5.5e-6 (the combined se against stored x sqrt(M) since a1b2ef4)
 REPRO_P_RTOL, DOF_RTOL = 1e-3, 1e-5  # set 2026-09-27 before their first run (p and dof from float32 statistics)
 STORED_RTOL = 1e-6                   # the stored p against its own statistic: measured 6.0e-8 (one float32 rounding of t)
 GATE_TOL = 1e-3                      # corrected_null_store.py's gate, max |diff| / se
@@ -359,6 +360,12 @@ def meier(se_a, se_t, dof_a, dof_t, admitted):
 
 
 def check_reproduction(I, R, S, scratch):
+    cov = pd.read_csv(REPRO_COV / 'covariates.tsv', sep='\t', index_col=0)
+    cov.index = cov.index.astype(str)
+    cov = cov.loc[I['order']]
+    gcols = (REPRO_COV / 'genotype_covariates.txt').read_text().split()
+    I = dict(I, cov_df=cov.drop(columns=gcols), geno_cov_df=cov[gcols])
+    S = dict(S, I=I)
     old = np.load(C.CNS.OLD / 'permutations.npz')
     perm, swap = old['perms'][0], old['flips'][0].astype(np.int8)
     G, N = R['pL'].shape
