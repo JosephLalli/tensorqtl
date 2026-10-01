@@ -13,6 +13,7 @@ half-depth test (HALF_DEPTH) and the committed run's dataset blocks (COMMITTED_R
 contrast figures and their tables; every input the set lacks is skipped with a printed line.
 """
 import base64
+import datetime
 import html
 import json
 import os
@@ -58,6 +59,7 @@ def cov_table(d):
 
 COV_DIFF = [] if SAME_COV else [c for c, v in cov_table(JOINT_COV).items() if cov_table(C.COV)[c] != v]
 COV_OF_JOINT = 'those of the other arms' if SAME_COV else "the committed run's (end of this paragraph)"
+JOINT_COV_SUB = '' if SAME_COV else " and keep that run's covariates (section 2)"
 JOINT_COV_PARA = '' if SAME_COV else (
     f' Both joint models\' results are reused from {C.COMMITTED.name}, the committed run on these datasets, made with the '
     f'covariates of {JOINT_COV.name}; the other arms use {C.COV.name}. The two builds differ only in {len(COV_DIFF)} of '
@@ -931,17 +933,22 @@ def sec_head():
                 f'{OUT}. The {REF_SET} page\'s interpretation paragraphs, its mixQTL ladder section '
                 f'and its closing sections (critique, meaning, limits) are not made for this set; the contrast section '
                 f'carries this set\'s comparisons, its limit and what it settles.</p>')
+    run_date = datetime.date.fromtimestamp((C.RESULTS / 'run_arms_facts.json').stat().st_mtime).isoformat()   # when 03 wrote this root's arms
     return ('<h1>Simulated-effects eQTL benchmark: recovering known cis effects</h1>'
+            f'<p class="sub"><b>Dated text.</b> The arm labels{", the interpretation paragraphs and sections 4 and 5" if INTERPRETED else ""} '
+            'keep the reasoning of 2026-09-27: "shipped" means the default of that date (gibbs), and the weighting decision '
+            'they discuss was made on 2026-09-29, adopting half-read split, which is none of these arms (their split uses the '
+            'log2(CPM + 1) total; benchmark/simulated_effects/README.md).</p>'
             '<p class="sub">hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on the BrainVar '
             'cohort\'s own Salmon output with injected effects'
             + (', and TReCASE and split weighting also on alignment counts from '
                f'the same BAMs (section {native_sec()}, run 2026-09-28 into {C.NATIVE})' if NATIVE else '')
             + '; 100 genes x 92 donors; datasets of 2026-09-26, regenerated '
-            'unchanged; hapmixQTL, mixQTL and tensorQTL arms and the mixQTL ladder run 2026-09-27 into '
+            f'unchanged; hapmixQTL, mixQTL and tensorQTL arms and the mixQTL ladder run {run_date} into '
             f'{C.ROOT}, the hapmixQTL arms on commit 8a06803 (per-channel t references and a 15-donor allelic '
             'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
             f'(commit a1b2ef4; section 2); RASQUAL and TReCASE of 2026-09-27, reused from {C.COMMITTED} because the '
-            'correction does not touch them; units log2 aFC '
+            f'correction does not touch them{JOINT_COV_SUB}; units log2 aFC '
             f'(beta = 1 is a twofold effect). Made by benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {BEFORE} (the arms '
             f'before commit 8a06803), {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
             f'01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, the joint models\' summaries in {C.JOINT["rasqual"]} '
@@ -981,9 +988,10 @@ This run repeats the benchmark, unchanged, on genes of that bin.</p>'''
 <p>The question: on data with the real cohort's structure, how well do the four hapmixQTL weightings, and
 mixQTL mode (the published estimator, which never sees the Gibbs draws), rank non-null genes above null ones,
 discover them at a controlled false-discovery rate, estimate the injected slope without bias, state their
-standard error correctly, and place the lead variant on the causal one? The answers bear on the open decision
-of which weighting ships (docs/pipeline_rules.md, "Open decision: which weighting configuration ships"), which
-so far rests on ''' + ('null calibration alone' if SF is None else f'null calibration and the {REF_SET}') + '''.</p>
+standard error correctly, and place the lead variant on the causal one? The answers bore on the decision of
+which weighting ships, which then rested on ''' + ('null calibration alone' if SF is None else f'null calibration and the {REF_SET}') + '''
+and was made on 2026-09-29 (docs/pipeline_rules.md, "Decision, 2026-09-29: half-read split is the default weighting
+configuration").</p>
 <p>mixQTL is one published way to use allele-specific and total counts together. RASQUAL and TReCASE are two others,
 which fit both kinds of count in one likelihood; they were run on the same datasets as further comparators, with every
 method's effect put on one scale.''' + (''' And because mixQTL trails the unit-weight arm, a separate run took the two apart one
@@ -1267,9 +1275,8 @@ statistics only, and stay in the ranking, the null rates and squared error. {no_
 units without a row, at |beta| = 0.2 / 0.4 / 0.8 (of {S['lead']['beta0.4']['gibbs']['all']['units']} each): RASQUAL
 {miss('rasqual')}, TReCASE {miss('trecase')}. They are left out of that arm's causal-variant detection shares, and in
 bias and precision they are non-finite and so excluded and counted like any other non-finite unit.</p>
-<p><b>Checks before the run.</b> 01_check_inputs.py was not rerun for this run: its check files are those of the same
-script on the same datasets before Meier's correction, which changes the combined standard error and p (and so check
-(d)'s pinned combined values) and none of checks (p) and (a) to (c). The premise of the allelic rule was tested on donor {CP["sample"]}'s dumped
+<p><b>Checks before the run.</b> The check files are those 01_check_inputs.py wrote on this run's datasets
+({C.CHECKS}), with check (d) made for commits 8a06803 and a1b2ef4. The premise of the allelic rule was tested on donor {CP["sample"]}'s dumped
 equivalence classes: the observed allelic Gibbs variance beyond counting noise, over the variance predicted
 from the shared-read share s, has median {f(CP["ratio_median"])} (interquartile range {f(CP["ratio_iqr"][0])} to
 {f(CP["ratio_iqr"][1])}) over {CP["genes_retained"]:,} of the {CP["genes_min_u"]:,} genes with at least
@@ -1979,7 +1986,7 @@ unit's at every |beta|, by {dR('unit', 'trecase')}; RASQUAL's are the lowest of 
         detection=f"""
 <p>RASQUAL detects the causal variant at p &lt; 1e-3 in {D_('rasqual')} of non-null gene units and TReCASE in
 {D_('trecase')}, against {D_('split')} for split and {D_('unit')} for unit; a causal unit without a row is left out of a
-joint arm's share (section 2). TReCASE's shares are within {f(dD, 2)} of split's. On the anchor, though, TReCASE's test
+joint arm's share (section 2). TReCASE's shares are within {f(dD, 3)} of split's. On the anchor, though, TReCASE's test
 rejects at 1e-3 in {ci(n0('trecase', '0.001'), 'rate', 4)} of null-gene tests and RASQUAL's in
 {ci(n0('rasqual', '0.001'), 'rate', 4)} (section 3.7), so neither is comparable at face value with the hapmixQTL arms
 above; RASQUAL's shares are below unit weights' at every |beta|.</p>""",
