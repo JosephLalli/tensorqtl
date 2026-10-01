@@ -3272,7 +3272,8 @@ def fine_mapping_provenance(summary):
     if 'zero' in modes:
         return dict(status='stale', tau_modes=modes, message=(
             "produced under tau_mode='zero': credible sets and PIPs are invalid "
-            '(docs/ase_validation.md sec 7g); redo with the default tau_mode.'))
+            '(docs/ase_validation.md sec 7g). map_susie now refuses that setting and is '
+            'not supported in default mode, so there is no default-mode fine-mapping to redo it with.'))
     return dict(status='ok', tau_modes=modes,
                 message='produced under tau_mode=' + '/'.join(modes))
 

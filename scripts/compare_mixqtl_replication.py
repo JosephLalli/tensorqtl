@@ -64,7 +64,9 @@ INPUTS SINCE 2026-09-25 (user rules)
     the Gibbs cache, scripts/build_point_estimate_cache.py); the Gibbs draws
     are read only for hapmixQTL's measurement variance, and the mixQTL arm
     never reads them (tensorqtl.mixqtl_replication.inputs_from_point_estimates).
-    hapmixQTL's values are log2((L+0.5)/(R+0.5)) and log2(CPM+1); mixQTL keeps
+    hapmixQTL's values here are log2((L+0.5)/(R+0.5)) and log2(CPM+1), the
+    2026-09-25 summaries (the shipped default's total is the half-read log CPM,
+    prepare_default_inputs, since 2026-09-29); mixQTL keeps
     its published natural-log response log(YT/2/L). Both use the SAME
     effective library size L, edgeR lib.size x TMM factor. Covariates are
     cov/half_read_point_calibration_20260930/: the genotype PCs listed in its

@@ -39,7 +39,6 @@ from scipy import stats as sps
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import compare_pipelines as CP            # noqa: E402
 import compare_mixqtl_replication as CM   # noqa: E402
 import tensorqtl.mixqtl_replication as MX  # noqa: E402
 
@@ -74,6 +73,9 @@ def rasqual_null_betas(gene, variant, n_draw):
 
 
 def main():
+    raise SystemExit('Not runnable since 2026-10-01: it called compare_pipelines.hapmix_at, which was removed with that '
+                     'driver (brainvar_hapmix_deploy/retired_scripts_20261001/README.md). Its recorded results stand as '
+                     'records; to rerun them, check out commit 8e347fd~1.')
     n_draw = int(sys.argv[1]) if len(sys.argv) > 1 else 20
     me = pd.read_csv(RUN / 'matched_effects.tsv', sep='\t')
     null46 = {l.strip() for l in open(D / 'genes_null46_20260923.txt') if l.strip()}

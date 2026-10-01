@@ -7,9 +7,12 @@ NON-STANDARD AND OPTIONAL
 Standard cis-QTL mapping tests biallelic SNPs. Everything in this module --
 STRs in the lead scan, split rows for multi-ALT sites, and the two second-pass
 models -- is a deliberate departure from that, and it is OFF unless asked for:
-here via --str-vcf / --multiallelic, and in run_hapmixqtl_from_salmon.py and
-compare_pipelines.py via the same two flags. Without them those scripts test
-biallelic SNPs only and their output is unchanged.
+here via --str-vcf / --multiallelic, and in run_hapmixqtl_from_salmon.py via
+the same two flags. Without them the runner tests biallelic SNPs only and its
+output is unchanged. The two second-pass models are NOT supported in default
+mode (2026-10-01): they have known-variance standard errors only, so
+hapmixqtl._second_pass refuses tau_mode='zero'. STR and multi-ALT rows still
+enter the lead scan.
 
 Encodes every variant class into the per-haplotype dosage matrices (xL, xR)
 the lead scan already uses, and writes the sidecars the two second-pass
@@ -39,6 +42,7 @@ in ONE lead-variant test with ONE permutation FDR.
 
 SECOND PASS (tensorqtl.hapmixqtl.map_str_curvature / map_multiallelic)
 =====================================================================
+Not supported in default mode (see above); the sidecars are still written.
 STR: repeat sites are modeled linearly by length, or linearly plus a
 non-linear component. The second pass fits f(L) = b1 L + b2 L^2 PER
 HAPLOTYPE (the total row is (f(L_A) + f(L_B))/2, not f of the mean), and
@@ -393,7 +397,7 @@ def build_hapdose(samples, str_rows, snp_vcf=None, ma_sites=None):
 def extend_scan(vdf, dos, xL, xR, order, str_rows=None, ma_sites=None):
     """Append STR rows and/or multi-ALT split rows to a biallelic-SNP scan.
 
-    Shared by run_hapmixqtl_from_salmon.py and compare_pipelines.py, which read
+    Used by run_hapmixqtl_from_salmon.py, which reads
     SNPs with read_phased_vcf (variant_df indexed by id with chrom/pos, plus
     dosage / xL / xR [V, N] in sample order `order`). Returns the same four
     objects extended and re-sorted by (chrom, pos) so InputGeneratorCis sees
@@ -492,21 +496,21 @@ def main(argv=None):
     print(f'wrote {args.out}/: {len(vdf)} variants {counts}; sidecars: '
           f'{[k for k in aux if not k.endswith("phased")] or "none"}')
     print('Run map_cis with maf_threshold=0; the af/ma_samples columns are meaningless '
-          'for STR rows. Second pass: load_aux() -> map_str_curvature / map_multiallelic.')
+          'for STR rows.')
 
 
 # ---------------------------------------------------------------------------
-#  Validation: planted effects, real map_cis + real second-pass functions
+#  Validation: simulated effects through the real map_cis
 # ---------------------------------------------------------------------------
 
 def selftest():
     import contextlib, io, tempfile, warnings
     warnings.filterwarnings('ignore')
     try:
-        from tensorqtl.hapmixqtl import map_cis, map_multiallelic, map_str_curvature
+        from tensorqtl.hapmixqtl import map_cis
     except ImportError:
         sys.path.insert(0, str(HERE.parent / 'tensorqtl'))
-        from hapmixqtl import map_cis, map_multiallelic, map_str_curvature
+        from hapmixqtl import map_cis
     td = Path(tempfile.mkdtemp()); rng = np.random.RandomState(0)
     N = 200
     samples = [f'S{i:03d}' for i in range(N)]
@@ -704,79 +708,6 @@ def selftest():
     print('checks: STR leads recovered with beta per repeat unit; unphased STR via total '
           'channel; SNP unchanged; nulls null; multi-ALT split rows can lead')
 
-    # ---- second pass 1: categorical model on the multi-ALT sites ---------------
-    with contextlib.redirect_stdout(io.StringIO()):
-        site_res, allele_res = map_multiallelic(
-            aux['ma_alleles'], aux['ma_sites'].set_index('site_id'), aux['samples'],
-            mk(A), mk(T), mk(Va), mk(Vt), pos_df, hap_phased=aux['ma_phased'],
-            window=20000, min_hap=10, verbose=False)
-    site_res = site_res.set_index(['phenotype_id', 'site_id'])
-    allele_res = allele_res.set_index(['phenotype_id', 'site_id', 'allele'])
-    print('\nmap_multiallelic (joint fit of the split rows, log aFC vs reference allele):')
-    print(f"  {'gene':5s} {'site':5s} {'allele':7s} {'n_hap':>5s} {'slope':>7s} {'se':>6s} "
-          f"{'planted':>8s} {'pval':>9s} | {'joint p':>9s} {'df':>2s}")
-    for (g, s), row in site_res.iterrows():
-        j = int(g[1:])
-        for al, ar in allele_res.loc[(g, s)].iterrows():
-            planted = ma_beta[j][int(al) - 1] if al != 'other' else 0
-            print(f"  {g:5s} {s:5s} {al:7s} {int(ar['n_hap']):5d} {ar['slope']:7.3f} {ar['slope_se']:6.3f} "
-                  f"{planted:8.2f} {ar['pval']:9.2e} | {row['pval_joint']:9.2e} {int(row['n_tested']):2d}")
-    # G7: ALT2 carries the effect, ALT1 does not; joint test fires
-    assert abs(allele_res.loc[('G7', 'MA7', '2'), 'slope'] - 0.5) < 0.1
-    assert abs(allele_res.loc[('G7', 'MA7', '1'), 'slope']) < 0.1
-    assert site_res.loc[('G7', 'MA7'), 'pval_joint'] < 1e-6 and site_res.loc[('G7', 'MA7'), 'n_tested'] == 2
-    # G8: opposite effects on the two ALTs; the joint fit recovers both against the
-    # clean reference, where the marginal split-row fit lumps the other ALT into "not k"
-    assert abs(allele_res.loc[('G8', 'MA8', '1'), 'slope'] - 0.4) < 0.1
-    assert abs(allele_res.loc[('G8', 'MA8', '2'), 'slope'] + 0.4) < 0.1
-    assert site_res.loc[('G8', 'MA8'), 'pval_joint'] < 1e-6
-    lead8 = res.loc['G8']
-    print(f"  (G8 lead-scan marginal slope for {lead8['variant_id']}: {lead8['slope']:.3f}; "
-          f"joint per-allele slopes above are the clean contrasts)")
-    # G9: null; the 2% ALT3 (below min_hap, pool too small) is treated as missing
-    assert site_res.loc[('G9', 'MA9'), 'pval_joint'] > 0.01
-    assert site_res.loc[('G9', 'MA9'), 'n_tested'] == 2 and site_res.loc[('G9', 'MA9'), 'n_missing_hap'] > 0
-    print('checks: per-allele log aFC recovered vs a clean reference; ALT-specific effect '
-          'isolated; joint K-1 df test fires; null null; rare allele handled by min_hap')
-
-    # ---- second pass 2: linear + curvature on the STRs --------------------------
-    with contextlib.redirect_stdout(io.StringIO()):
-        cur = map_str_curvature(
-            aux['str_len'], aux['str_phased'], aux['str_sites'].set_index('id'), aux['samples'],
-            mk(A), mk(T), mk(Va), mk(Vt), pos_df, window=20000, verbose=False)
-    cur = cur.set_index(['phenotype_id', 'str_id'])
-    print('\nmap_str_curvature (per-haplotype f(L) = b1 L + b2 L^2, L relative to the reference):')
-    print(f"  {'gene':5s} {'str':6s} {'slope_lin':>9s} {'b2':>7s} {'se':>6s} {'planted b2':>10s} "
-          f"{'p_curv':>9s} {'p_joint2':>9s} {'b1@ref':>7s} {'planted':>7s} {'phased':>6s}")
-    for (g, s), row in cur.iterrows():
-        j = int(s[3:])
-        pb1 = quad.get(j, (beta.get(j, 0.0), 0))[0]
-        print(f"  {g:5s} {s:6s} {row['slope_lin']:9.3f} {row['slope_sq']:7.3f} {row['slope_sq_se']:6.3f} "
-              f"{quad.get(j, (0, 0))[1]:10.2f} {row['pval_curv']:9.2e} {row['pval_joint2']:9.2e} "
-              f"{row['slope_at_ref']:7.3f} {pb1:7.2f} {int(row['n_phased']):6d}")
-    # the linear-only fit of the second pass must reproduce the lead scan's slope
-    for j in (0, 1, 2):
-        assert abs(cur.loc[(f'G{j}', f'STR{j}'), 'slope_lin'] - res.loc[f'G{j}', 'slope']) < 2e-3, \
-            f'second-pass linear slope must equal the lead-scan slope for STR{j}'
-    # curvature recovered where planted (phased: both channels; unphased: total only)
-    assert abs(cur.loc[('G10', 'STR10'), 'slope_sq'] - 0.12) < 0.05 and cur.loc[('G10', 'STR10'), 'pval_curv'] < 1e-4
-    assert abs(cur.loc[('G11', 'STR11'), 'slope_sq'] - 0.12) < 0.08 and cur.loc[('G11', 'STR11'), 'pval_curv'] < 1e-2
-    assert np.isnan(cur.loc[('G11', 'STR11'), 'slope_sq_a']), 'unphased STR has no ASE-channel curvature fit'
-    # no curvature where the planted effect is linear
-    for j in (0, 1, 2):
-        assert abs(cur.loc[(f'G{j}', f'STR{j}'), 'slope_sq']) < 0.06 and \
-            cur.loc[(f'G{j}', f'STR{j}'), 'pval_curv'] > 0.01, f'spurious curvature at STR{j}'
-    # the quadratic basis is centred on the cohort mean for conditioning, but
-    # slope_at_ref reports the curve's slope on the encoder's REFERENCE origin:
-    # the planted b1 = 0.10 is defined at L = 0, so that is what must come back
-    for j in (10, 11):
-        assert abs(cur.loc[(f'G{j}', f'STR{j}'), 'slope_at_ref'] - 0.10) < 0.08, \
-            f'slope at the reference length off for STR{j}'
-        assert np.isfinite(cur.loc[(f'G{j}', f'STR{j}'), 'slope_at_ref_se'])
-    assert abs(cur.loc[('G0', 'STR0'), 'slope_at_ref'] - cur.loc[('G0', 'STR0'), 'slope_lin']) < 0.05, \
-        'with no curvature the slope at the reference equals the linear slope'
-    print('checks: linear slope identical to the lead scan; b2 recovered (phased and unphased); '
-          'linear eSTRs show no curvature; slope_at_ref recovers the planted b1 at the reference')
     print('\nSELF-TEST OK')
     return 0
 

@@ -82,12 +82,12 @@ NON-STANDARD, OPT-IN (off by default; output is byte-for-byte the standard
 =========================================================================
 biallelic-SNP analysis unless you pass them)
   --str-vcf hipstr.vcf.gz   STRs enter the lead scan as per-haplotype repeat
-                            length (log aFC per repeat unit), and a second
-                            pass fits linear + curvature per STR.
+                            length (log aFC per repeat unit).
   --multiallelic            multi-ALT rows of --vcf (normally skipped) enter
-                            the scan as one split row per ALT allele, and a
-                            second pass fits the categorical per-allele model.
-  Both change which variant can be a lead. The RASQUAL comparison always uses
+                            the scan as one split row per ALT allele.
+  Both change which variant can be a lead. The STR-curvature and categorical
+  second pass is not run: it has known-variance standard errors only and is
+  not supported in default mode. The RASQUAL comparison always uses
   the biallelic SNPs only. See scripts/str_integrate.py and
   docs/ase_validation.md sec 7j.
 
@@ -162,6 +162,7 @@ ASC_CUTOFF, TRC_CUTOFF, MIN_SAMPLES = 5, 20, 30
 # mixQTL mode, which is a different estimator entirely -- the NumPy port in
 # tensorqtl/mixqtl_replication.py, driven by scripts/compare_mixqtl_replication.py.
 TAU_MODE, SE_MODE = 'zero', 'fitted'
+SEED = 42   # the permutation stream, so pval_perm and pval_beta reproduce run to run
 
 
 # ---------------------------------------------------------------------------
@@ -1381,7 +1382,7 @@ def main():
           f"{', count cutoffs' if keep_a_df is not None else ''})")
     res = map_cis(gdf, vdf, sdf, tdf, vadf, vtdf, map_pos,
                   xL_df=xLdf, xR_df=xRdf, window=args.window,
-                  verbose=True, perm_scheme=args.perm_scheme,
+                  verbose=True, perm_scheme=args.perm_scheme, seed=SEED,
                   tau_mode=TAU_MODE, se_mode=SE_MODE,
                   keep_a_df=keep_a_df, keep_t_df=keep_t_df,
                   covariates_df=cov, genotype_covariates_df=gcov)
@@ -1403,7 +1404,7 @@ def main():
         'median_Va': float(np.median(Va)), 'median_Vt': float(np.median(Vt)),
         'mode': 'default_half_read_split', 'tau_mode': TAU_MODE, 'se_mode': SE_MODE,
         'total_working_variance': 'unit',
-        'tau_refit': False})
+        'tau_refit': False, 'seed': SEED})
     if vtype is not None:
         bundle['nonstandard'] = nonstandard_summary(
             res, vtype, {'str_vcf': bool(args.str_vcf), 'multiallelic': bool(args.multiallelic)})

@@ -77,11 +77,11 @@ hapmixQTL divides by it inside log2(CPM + 1), mixQTL inside log(YT / 2 / L).
 
 VALIDATION BOUNDARY
 -------------------
-The R reference CANNOT be executed on this host: ``libR.so`` links both
-``libblas.so.3`` and ``libopenblas.so.0``, and every linear-algebra entry
-point tested (``lm``, ``%*%``, ``crossprod``) segfaults; ``tensorA`` and
-``glmnet`` are not installed and sudo is unavailable. So there is no
-cross-language execution check behind this port. Its algebra is validated
+No cross-language execution check has been run against the R reference.
+R's linear algebra segfaulted on this host until 2026-09-26 (``libR.so``
+loaded Homebrew OpenBLAS beside Debian's; run R with
+``R_LD_LIBRARY_PATH=/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu``), and
+``tensorA`` and ``glmnet`` are not installed. Its algebra is validated
 against ``numpy.linalg.lstsq`` per variant, and each filtering/weighting rule
 is pinned by a unit test that cites the R source line it encodes. See
 ``tests/test_mixqtl_replication.py``.
