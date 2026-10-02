@@ -1128,8 +1128,8 @@ datasets hold the same 100 genes.'''
         anchor_txt = f'''For the
 three hapmixQTL arms its rate is compared with the stored null on this pipeline (section 2): the percentile of this
 dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their central 99%. The stored null
-holds the same records under 200 permutations, the first of them this one, so this is descriptive: it says where one
-permutation fell, and check (d), not this comparison, tests the plumbing.'''
+holds the same records under 200 other permutations (the anchor's own permutation is not among them), so this is
+descriptive: it says where one further permutation fell, and check (d), not this comparison, tests the plumbing.'''
     else:
         auc_txt = (f'It is computed per dataset and averaged over the {n_rep} datasets. Its interval is the 2.5% and 97.5% '
                    f'quantiles of the mean over datasets resampled with replacement ({n_rep} datasets); it carries no '
@@ -1585,9 +1585,9 @@ gibbs's total-channel rates at 0.05 at |beta| &gt; 0 ({per_beta(lambda b: S['nul
 in their intervals, so the dilution is {'not seen' if covers('gibbs', 'total') else 'not resolved'} here.</p>
 <p><b>The anchor.</b> Its one permutation sits at the {rng(pct('total'))} percentile of the stored per-permutation
 total-channel rates in the three arms, the {rng(pct('allelic'))} of the allelic and the {rng(pct('combined'))} of the
-combined ones, and outside the central 99% for: {outside}. The anchor is permutation 0 of the stored stream, so this
-says where one permutation fell, a low draw for the total channel in all three arms; check (d), not this placement,
-tests the plumbing.</p>"""
+combined ones, and outside the central 99% for: {outside}. The anchor's permutation is not one of the stored 200, so this
+says where one further permutation fell, a low draw for the total channel in all three arms; check (d), not this
+placement, tests the plumbing.</p>"""
 
 
 def where(d, x):
@@ -2340,7 +2340,7 @@ split allelic squared error on the anchor's null genes is {En_('split', 'allelic
 {E_('split', 'allelic')} at the causal variants. The total channel's loss under gibbs is on the anchor too
 ({En_('gibbs', 'total')}). Neither comes from the generator's rule.</p>
 <p><b>A third: one anchor permutation.</b> {', '.join(f'{" and ".join(v)} {ch}' for ch, v in lowest.items() if v) or 'No arm'}
-sits at the 0th percentile of the stored permutations at 0.05. The anchor is the stored stream's permutation 0, a low
+sits at the 0th percentile of the stored permutations at 0.05. The anchor is one further permutation, a low
 draw for the total channel in every arm (section 3.7), so the anchor's rates are low by an amount the stored null
 measures; the conclusions above that rest on the anchor are its squared-error ratios, which compare arms on the same
 permutation, not its rates.</p>

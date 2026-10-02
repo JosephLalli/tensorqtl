@@ -218,27 +218,34 @@ def fig_calibration():
 
 
 def gl_counts(k):
-    files = sorted((ROOT[k] / 'gene_level_null').glob('cis_r*.parquet'))
+    files = sorted((ROOT[k] / 'gene_level_null' / 'split').glob('cis_r*.parquet'))
     return np.array([int((pd.read_parquet(f).pval_beta < 0.05).sum()) for f in files])
 
 
+GLA = ('split', 'unit', 'tensorqtl')   # the arms with a gene-level null (gene_level_null.py)
+
+
 def fig_gene_level():
-    """split's gene-level p over 100 all-null datasets per set: share below thresholds, and the anchor among the datasets."""
+    """Gene-level p over 100 all-null datasets per set for split, the ablation and tensorQTL; split's anchor among them."""
     alphas = ('0.05', '0.01', '0.001')
+    cls_of = {a: c for (a, _), c in zip(ARMS, CAT)}
+    lab_of = dict(ARMS)
     series = []
-    for k, n, _, cls in SETS:
-        pts = []
-        for al in alphas:
-            r, a = GL[k]['rates'][al], float(al)
-            pts.append((r['share'] / a, r['lo'] / a, r['hi'] / a, f'{n}, pval_beta < {al}: {r["share"]:.4f} [{r["lo"]:.4f}, {r["hi"]:.4f}]'))
-        series.append((n, cls, k == 'lowcov', pts))
+    for arm in GLA:
+        for k, n, _, _ in SETS:
+            pts = []
+            for al in alphas:
+                r, a = GL[k]['arms'][arm]['rates'][al], float(al)
+                pts.append((r['share'] / a, r['lo'] / a, r['hi'] / a,
+                            f'{lab_of[arm]}, {n}, pval_beta < {al}: {r["share"]:.4f} [{r["lo"]:.4f}, {r["hi"]:.4f}]'))
+            series.append((f'{lab_of[arm]}, {n}', cls_of[arm], k == 'lowcov', pts))
     left = dot_ci_columns([f'p < {a}' for a in alphas], series, 1.0, 'share below threshold ÷ threshold (1 = nominal)',
                           'Gene-level p on all-null data', w=420, h=260)
     W, H = 420, 260
     b = ''
     for j, (k, n, _, cls) in enumerate(SETS):
         c = gl_counts(k)
-        anc = GL[k]['rates']['0.05']['anchor_genes_below']
+        anc = GL[k]['arms']['split']['rates']['0.05']['anchor_genes_below']
         x0, pw, top, bot = 16 + j * 205, 190, 40, H - 44
         nb = 14
         hist = np.bincount(np.minimum(c, nb - 1), minlength=nb)
@@ -252,22 +259,26 @@ def fig_gene_level():
         ax = x0 + (min(anc, nb - 1) + 0.5) * bw
         b += vline(ax, top - 8, bot, 'anchor') + text(ax + (4 if anc < 8 else -4), top - 12 + 14, f'anchor {anc}', 'anno', 'start' if anc < 8 else 'end')
         b += ''.join(text(x0 + (v + 0.5) * bw, bot + 16, f'{v}{"+" if v == nb - 1 else ""}', anchor='middle') for v in (0, 5, 10, 13))
-    b += text(16, H - 6, 'null genes below 0.05 per all-null dataset (5 expected)', 'axis')
+    b += text(16, H - 6, 'split: null genes below 0.05 per all-null dataset (5 expected)', 'axis')
     right = svg(W, H, b, 'Null genes below 0.05 per all-null dataset')
-    bh = {k: GL[k]['bh_any_call_share'] for k, *_ in SETS}
-    pos = {k: GL[k]['rates']['0.05']['anchor_share_of_replicates_at_or_above'] for k, *_ in SETS}
-    ok = all(bh[k] <= 0.05 for k, *_ in SETS)
-    finding = (('Gene discovery holds its error rate' if ok else 'Gene discovery exceeds its error rate on at least one set') + f': over 100 fresh all-null datasets per set, split\'s gene-level p falls below 0.05 '
-               f'for {GL["deep"]["rates"]["0.05"]["share"]:.3f} and {GL["lowcov"]["rates"]["0.05"]["share"]:.3f} of genes, and '
-               f'Benjamini-Hochberg at 5% calls any gene in {bh["deep"] * 100:.0f} and {bh["lowcov"] * 100:.0f} of 100 datasets '
-               f'(at most 5 expected). The benchmark\'s own anchor was a low draw on the deep set ({pos["deep"] * 100:.0f}% of datasets '
-               f'have as many null genes below 0.05) and a high one on the low-coverage set ({pos["lowcov"] * 100:.0f}%).')
-    return finding, legend([(n, cls, k == 'lowcov') for k, n, _, cls in SETS]) + f'<div class="pair">{left}{right}</div>', (
+    bh = {(a, k): GL[k]['arms'][a]['bh_any_call_share'] for a in GLA for k, *_ in SETS}
+    sh = [GL[k]['arms'][a]['rates']['0.05']['share'] for a in GLA for k, *_ in SETS]
+    pos = {k: GL[k]['arms']['split']['rates']['0.05']['anchor_share_of_replicates_at_or_above'] for k, *_ in SETS}
+    draw = lambda q: 'a low draw' if q >= 0.9 else 'a high draw' if q <= 0.1 else 'a typical draw'   # noqa: E731
+    ok = all(v <= 0.05 for v in bh.values())
+    finding = (('Gene discovery holds its error rate' if ok else 'Gene discovery exceeds its error rate in at least one arm and set')
+               + f': over 100 fresh all-null datasets per set, the gene-level p of split, unit weights and tensorQTL falls below 0.05 '
+               f'for {min(sh):.3f} to {max(sh):.3f} of genes, and Benjamini-Hochberg at 5% calls any gene in '
+               f'{min(bh.values()) * 100:.0f} to {max(bh.values()) * 100:.0f} of 100 datasets (at most 5 expected). '
+               + ' '.join(f'The benchmark\'s own anchor was {draw(pos[k])} for split on the {NAME[k].lower()} '
+                          f'({pos[k] * 100:.0f}% of datasets have as many null genes below 0.05).' for k, *_ in SETS))
+    return finding, legend([(lab_of[a], cls_of[a], False) for a in GLA] + [('deep set: filled', 'c0', False),
+                                                                           ('low-coverage set: open', 'c0', True)]) + f'<div class="pair">{left}{right}</div>', (
         'pval_beta: the gene-level p from 1,000 permutations of donor records with haplotype-label swaps, smoothed by a fitted '
-        'Beta distribution. Left: share of gene-dataset units below each threshold, over the threshold, with gene-clustered 95% '
-        'intervals. Right: how many of a dataset\'s 100 null genes fall below 0.05, across 100 datasets; the line marks the '
-        'benchmark\'s anchor dataset. This null is built by the same permutation the test uses, so it checks the machinery, '
-        'not calibration on real data.')
+        'Beta distribution (tensorQTL: its own permutation of the residualized phenotype). Left: share of gene-dataset units below '
+        'each threshold, over the threshold, with gene-clustered 95% intervals. Right: how many of a dataset\'s 100 null genes '
+        'fall below 0.05 for split, across 100 datasets; the line marks the benchmark\'s anchor dataset. This null is built by '
+        'the same permutation the test uses, so it checks the machinery, not calibration on real data.')
 
 
 def fig_bias():

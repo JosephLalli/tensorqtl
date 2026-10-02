@@ -445,6 +445,9 @@ def ranking(L, key):
     top[o[:k]] = True
     res['fdp_matched'] = dict(fdr=FDR, discoveries=k, false=int((top & L.is_null.values).sum()),
                               p_threshold=float(L.lead_p.values[o[k - 1]]) if k else float('nan'))
+    ends = np.flatnonzero(np.r_[rank[o][1:] != rank[o][:-1], True])   # the walk's cut points: the last unit of each tied rank
+    res['fdp_curve'] = dict(called=(ends + 1).tolist(), false=np.cumsum(L.is_null.values[o])[ends].astype(int).tolist(),
+                            non_null=int((~L.is_null).sum()))   # null gene units among the top k, for every k the walk can stop at
     for bn, _, _ in BANDS:
         m = (~L.is_null).values & ((L.band == bn).values | (bn == 'all'))
         if m.any():
