@@ -11,8 +11,10 @@ non-zero if any check fails; nothing downstream re-checks what passes here.
     median of observed / predicted excess is in RATIO_BAND and its Spearman correlation with the
     observed excess exceeds the counting term's (thresholds set after the first result, 2026-09-26:
     a regression guard of the derivation).
-(a) IDENTITY. With every thinning factor 1, no permutation and no swap, the generator's A, T, Va,
-    Vt equal summaries_from_point_estimates on the cache exactly; with dataset 0's permutation and
+(a) IDENTITY. With every thinning factor 1, no permutation and no swap, the generator's A and Va
+    equal summaries_from_point_estimates on the cache (the same allelic definition as
+    prepare_default_inputs), T equals hapmixqtl.half_read_log_cpm and Vt
+    hapmixqtl.half_read_total_gibbs_variance, all exactly; with dataset 0's permutation and
     swap, T and Vt equal the real ones moved, A equals swap x A moved within A_TOL and Va within
     VA_RTOL (swapping L and R rounds log2(x/y) differently from log2(y/x)).
 (b) THINNING keeps Salmon's draw behaviour: every gene thinned by F_B; by band of pL + pR the
@@ -29,19 +31,13 @@ non-zero if any check fails; nothing downstream re-checks what passes here.
     pipeline-scale truth is within C_SE_MULT gene-clustered se of 1 (rule set 2026-09-26 before its
     first run), and map_nominal (gibbs) on dataset 0 matches fit_channels at every causal variant
     within GATE_TOL of the se.
-(d) EXACT REPRODUCTION of a stored null: given the stored null runs' own permutation 0 and swap
-    signs, the beta = 0 path through map_nominal (gibbs and unit) reproduces those runs' draw 0
-    in everything commits 8a06803 and a1b2ef4 leave alone (channel slopes and se within
-    REPRO_SLOPE_TOL, the admitted combined slope, pval_t and its calls at REPRO_ALPHAS), the
-    admitted combined se equals the stored one times sqrt(M) within REPRO_SLOPE_TOL relative, M
-    Meier's factor (commit a1b2ef4, hapmixqtl._meier_factor) recomputed from the stored channel se
-    and dof, and the new t references recompute from the stored statistics (pval_a at dof_a =
-    n_a - 1, the admitted pval_nominal on the stored combined t over sqrt(M) at the
-    Welch-Satterthwaite dof within DOF_RTOL, the total channel cloned below the
-    MIN_ALLELIC_DONORS floor, where M is 1); the stored p equal 2 t.sf(|t|, OLD_DOF) of their own
-    statistic.
-    Skipped with a printed line for a gene set without stored null runs (common.HYBRID_NULL None);
-    the check file's reproduction is then null.
+(d) EXACT REPRODUCTION of the stored null on this pipeline (common.STORED_NULL,
+    scripts/half_read_stored_null.py): given its permutation 0 and swap signs, the beta = 0 path
+    through map_nominal reproduces its draw 0 for every hapmixQTL arm, every column: channel and
+    combined slopes within REPRO_SLOPE_TOL of their se and se within REPRO_SLOPE_TOL relative, the
+    three p within REPRO_P_RTOL relative with no call differing at REPRO_ALPHAS, and dof_a, dof_t,
+    dof_nominal and allelic_admitted equal. Skipped with a printed line for a gene set without a
+    stored null run (common.STORED_NULL None); the check file's reproduction is then null.
 (e) PLUMBING GATES, once, on dataset 0 of check (c) (the earlier pipeline's per-dataset gates):
     mixqtl_scan's lead (largest |meta stat|), beta and se equal compare_mixqtl_replication.
     mixqtl_gene's on the same inputs in every gene; map_cis (gibbs) scans exactly the tested
@@ -70,7 +66,8 @@ import numpy as np
 import pandas as pd
 
 import common as C
-from tensorqtl.hapmixqtl import LN2, MIN_ALLELIC_DONORS, get_t_pval, summaries_from_point_estimates
+from tensorqtl.hapmixqtl import (LN2, MIN_ALLELIC_DONORS, half_read_log_cpm, half_read_total_gibbs_variance,
+                                 summaries_from_point_estimates)
 
 MD, RA = C.module('02_make_datasets'), C.module('03_run_arms')
 CACHE = C.D / 'cache' / 'gibbs_56b63c3b37ed5df8'     # the Gibbs draws, the pipeline's input
@@ -95,13 +92,10 @@ C_MIN_READS = {'corrected_null_store_20260925': 100,   # the lower edge of 06_sc
 C_SE_MULT = 3                        # set 2026-09-26 before the rule's first run
 BANDS = ((1, 10), (10, 100), (100, 1000), (1000, np.inf))                     # decades of pL + pR per donor-gene pair (check b)
 C_BANDS = ([0, 10, 100, 1000, np.inf], ['0-9', '10-99', '100-999', '1000+'])   # the same decades of a gene's median haplotype reads (check c)
-REPRO_DRAWS = ({'gibbs': C.GENE_DIR / 'draws' / 'drop_000.parquet', 'unit': C.HYBRID_NULL / 'draws' / 'unit_000.parquet'}
-               if C.HYBRID_NULL else None)
+REPRO_DRAWS = ({a: C.STORED_NULL / 'draws' / f'{a}_000.parquet' for a in C.HAPMIX_ARMS} if C.STORED_NULL else None)
 REPRO_ALPHAS = C.ALPHAS
-REPRO_COV = C.D / 'cov' / 'log2cpm1_point_calibration_20260925'   # the covariates the stored null runs were made with (expression PCs on log2(CPM + 1); the current build replaced it at a2f4314)
-REPRO_SLOPE_TOL = 1e-4              # stored draws are float32; 2026-09-26 measured 5.5e-6 (the combined se against stored x sqrt(M) since a1b2ef4)
+REPRO_SLOPE_TOL = 1e-4              # stored draws are float32; 2026-09-26 measured 5.5e-6 against the earlier stored runs
 REPRO_P_RTOL, DOF_RTOL = 1e-3, 1e-5  # set 2026-09-27 before their first run (p and dof from float32 statistics)
-STORED_RTOL = 1e-6                   # the stored p against its own statistic: measured 6.0e-8 (one float32 rounding of t)
 GATE_TOL = 1e-3                      # corrected_null_store.py's gate, max |diff| / se
 IVW_TOL = 1e-4                       # combined slope vs the inverse-variance combination, / se (float32; measured 2.6e-6 at causal units)
 ESTIMATES = (('inv_va_nodrop_beta', "1/Va' no drop, vs beta"), ('inv_va_beta', "1/Va', vs beta"),
@@ -177,8 +171,9 @@ def salmon_premise():
 
 def check_identity(I, R):
     G, N = R['pL'].shape
-    ref = dict(zip(('A', 'T', 'Va', 'Vt'), summaries_from_point_estimates(
-        I['pL'], I['pR'], I['pT'], I['eff_lib'], I['YL'], I['YR'], I['YT'])[:4]))
+    A, _, Va, _, _ = summaries_from_point_estimates(I['pL'], I['pR'], I['pT'], I['eff_lib'], I['YL'], I['YR'], I['YT'])
+    ref = dict(A=A, T=half_read_log_cpm(I['pT'], I['eff_lib']), Va=Va,
+               Vt=half_read_total_gibbs_variance(I['pT'], I['eff_lib'], I['YT']))
     ref = {k: v[:, I['keep']] for k, v in ref.items()}
     ones = np.ones((G, N))
     rng = np.random.default_rng(np.random.SeedSequence(C.SEED, spawn_key=(10,)))
@@ -304,13 +299,6 @@ def check_recovery(I, R, tested):
     return ok, res, first
 
 
-def t_stat(d, s, se):
-    """map_nominal's statistic: float32 slope / se, 0 where se is not finite and positive; as float64."""
-    x, e = d[s].to_numpy(np.float32), d[se].to_numpy(np.float32)
-    ok = np.isfinite(e) & (e > 0)
-    return np.where(ok, x / np.where(ok, e, np.float32(1)), np.float32(0)).astype(np.float64)
-
-
 def p_agree(p, q, rtol, alphas=REPRO_ALPHAS):
     """p against q: calls differing per alpha, max relative |p - q|; passed if NaN and zero patterns match too."""
     fp, fq = np.isfinite(p), np.isfinite(q)
@@ -335,36 +323,8 @@ def pinned(m, rows, s, se, scale=1.0):
                 passed=bool(same_rest and ds <= REPRO_SLOPE_TOL and de <= REPRO_SLOPE_TOL))
 
 
-def satterthwaite(se_a, se_t, dof_a, dof_t):
-    """hapmixqtl._satterthwaite_dof in float64 from the stored se: weights 1/se^2, channel dof clamped at 1."""
-    with np.errstate(divide='ignore', invalid='ignore'):
-        wa = np.where(np.isfinite(se_a) & (se_a > 0), 1.0 / se_a ** 2, 0.0)
-        wt = np.where(np.isfinite(se_t) & (se_t > 0), 1.0 / se_t ** 2, 0.0)
-        nu_a, nu_t = np.maximum(np.nan_to_num(dof_a, nan=1.0), 1.0), np.maximum(np.nan_to_num(dof_t, nan=1.0), 1.0)
-        nu = (wa + wt) ** 2 / (wa ** 2 / nu_a + wt ** 2 / nu_t)
-    nu = np.where(wa > 0, np.where(wt > 0, nu, nu_a), nu_t)
-    return np.where(wa + wt > 0, nu, np.nan)
-
-
-def meier(se_a, se_t, dof_a, dof_t, admitted):
-    """hapmixqtl._meier_factor in float64 from the stored se: M = 1 + 4 f_a f_t (1/nu_a + 1/nu_t), f the channel weight
-    shares 1/se^2 (the allelic weight 0 below the floor), channel dof clamped at 1; 1 unless both channels carry weight."""
-    with np.errstate(divide='ignore', invalid='ignore'):
-        wa = np.where(admitted & np.isfinite(se_a) & (se_a > 0), 1.0 / se_a ** 2, 0.0)
-        wt = np.where(np.isfinite(se_t) & (se_t > 0), 1.0 / se_t ** 2, 0.0)
-        nu_a, nu_t = np.maximum(np.nan_to_num(dof_a, nan=1.0), 1.0), np.maximum(np.nan_to_num(dof_t, nan=1.0), 1.0)
-        fa = wa / (wa + wt)
-        m = 1.0 + 4.0 * fa * (1.0 - fa) * (1.0 / nu_a + 1.0 / nu_t)
-    return np.where((wa > 0) & (wt > 0), m, 1.0)
-
-
 def check_reproduction(I, R, S, scratch):
-    cov = pd.read_csv(REPRO_COV / 'covariates.tsv', sep='\t', index_col=0)
-    cov.index = cov.index.astype(str)
-    cov = cov.loc[I['order']]
-    gcols = (REPRO_COV / 'genotype_covariates.txt').read_text().split()
-    I = dict(I, cov_df=cov.drop(columns=gcols), geno_cov_df=cov[gcols])
-    S = dict(S, I=I)
+    """(d) The beta = 0 path at the stored null's permutation 0 and swap reproduces its draw 0, every arm, every column."""
     old = np.load(C.OLD / 'permutations.npz')
     perm, swap = old['perms'][0], old['flips'][0].astype(np.int8)
     G, N = R['pL'].shape
@@ -372,8 +332,6 @@ def check_reproduction(I, R, S, scratch):
     g = MD.generate(R, perm, swap, ones, ones, np.random.default_rng(np.random.SeedSequence(C.SEED, spawn_key=(13,))))
     ds = dict(A=g['A'], T=g['T'], Va=g['Va'], Vt=g['Vt'], pL=g['pL'], pR=g['pR'], perm=perm,
               causal_variant=np.array([min(S['tested'][x]) for x in S['genes']]))
-    old_dof = N - 2 - I['cov_df'].shape[1] - I['geno_cov_df'].shape[1]
-    keep_design = pd.read_csv(C.GENE_DESIGN, sep='\t').set_index('gene').n_allelic_drop.loc[S['genes']]
     ok, res = True, {}
     for arm, path in REPRO_DRAWS.items():
         df, _ = C.run_nominal(S, ds, arm, scratch)
@@ -382,54 +340,20 @@ def check_reproduction(I, R, S, scratch):
         if len(m) != len(ref) or len(m) != len(df):
             raise SystemExit(f'(d) {arm}: {len(m):,} matched tests, {len(df):,} here, {len(ref):,} in {path}')
         col = lambda c: m[c].to_numpy(float)   # noqa: E731
-        n_a = pd.Series((C.arm_variances(ds, arm)[0] > C.EPS).sum(1), index=S['genes'])
-        na, adm = n_a.loc[m.phenotype_id].to_numpy(), m.allelic_admitted.to_numpy(bool)
-        structure = dict(n_a_equals_gene_design=bool((n_a == keep_design).all()),
-                         dof_a=bool(np.array_equal(col('dof_a'), np.where(na >= 2, na - 1.0, np.nan), equal_nan=True)),
-                         dof_t_all_old_dof=bool((col('dof_t') == old_dof).all()),
-                         allelic_admitted=bool(np.array_equal(adm, na >= MIN_ALLELIC_DONORS)))
         every = np.ones(len(m), bool)
-        root_m = np.sqrt(meier(col('slope_a_se_stored'), col('slope_t_se_stored'), col('dof_a'), col('dof_t'), adm))
-        both = adm & (root_m > 1)
         pin = dict(allelic=pinned(m, every, 'slope_a', 'slope_a_se'), total=pinned(m, every, 'slope_t', 'slope_t_se'),
-                   combined_admitted=pinned(m, adm, 'slope', 'slope_se', root_m),
-                   pval_t=p_agree(col('pval_t'), col('pval_t_stored'), REPRO_P_RTOL))
-        t_a, t_t, t_c = (t_stat(m, f'{s}_stored', f'{se}_stored') for s, se in (('slope_a', 'slope_a_se'), ('slope_t', 'slope_t_se'), ('slope', 'slope_se')))
-        stored_ref = {c: p_agree(col(f'{c}_stored'), get_t_pval(t, old_dof), STORED_RTOL, alphas=())
-                      for c, t in (('pval_a', t_a), ('pval_t', t_t), ('pval_nominal', t_c))}
-        ws = satterthwaite(col('slope_a_se'), col('slope_t_se'), col('dof_a'), col('dof_t'))[adm]
-        dn = col('dof_nominal')[adm]
-        fin = np.isfinite(ws) & np.isfinite(dn)
-        dof_rel = float(np.max(np.abs(dn[fin] - ws[fin]) / ws[fin]))
-        changed = dict(pval_a=p_agree(col('pval_a'), get_t_pval(t_a, col('dof_a')), REPRO_P_RTOL),
-                       dof_nominal_admitted=dict(max_rel=dof_rel, passed=bool(np.array_equal(np.isfinite(ws), np.isfinite(dn)) and dof_rel <= DOF_RTOL)),
-                       pval_nominal_admitted=p_agree(col('pval_nominal')[adm], get_t_pval(t_c[adm] / root_m[adm], dn), REPRO_P_RTOL))
-        sqrt_m = dict(tests=int(both.sum()), min=float(root_m[both].min()), median=float(np.median(root_m[both])),
-                      max=float(root_m[both].max()))
-        b = ~adm
-        bt = b & np.isfinite(col('slope_t_se'))
-        eq = lambda x, y: bool(np.array_equal(col(x)[bt], col(y)[bt]))   # noqa: E731
-        below = dict(genes=sorted(m.phenotype_id[b].unique()), tests=int(b.sum()), slope=eq('slope', 'slope_t'),
-                     slope_se=eq('slope_se', 'slope_t_se'), dof_nominal=eq('dof_nominal', 'dof_t'),
-                     pval_nominal=eq('pval_nominal', 'pval_t'), nan_without_total=bool(m.pval_nominal[b & ~bt].isna().all()))
-        moved = {ch: {str(a): int(((m[c].fillna(1.0) < a) != (m[f'{c}_stored'].fillna(1.0) < a)).sum()) for a in REPRO_ALPHAS}
-                 for ch, c in C.CHANNELS.items()}
-        passed = bool(all(structure.values()) and all(x['passed'] for x in pin.values()) and all(x['passed'] for x in stored_ref.values())
-                      and all(x['passed'] for x in changed.values())
-                      and all(below[k] for k in ('slope', 'slope_se', 'dof_nominal', 'pval_nominal', 'nan_without_total')))
+                   combined=pinned(m, every, 'slope', 'slope_se'))
+        pv = {c: p_agree(col(c), col(f'{c}_stored'), REPRO_P_RTOL) for c in ('pval_a', 'pval_t', 'pval_nominal')}
+        same = {c: bool(np.array_equal(col(c), col(f'{c}_stored'), equal_nan=True))
+                for c in ('dof_a', 'dof_t', 'dof_nominal', 'allelic_admitted')}
+        passed = bool(all(x['passed'] for x in pin.values()) and all(x['passed'] for x in pv.values()) and all(same.values()))
         ok &= passed
-        res[arm] = dict(stored=str(path), tests=len(m), old_dof=old_dof, structure=structure, pinned=pin, stored_reference=stored_ref,
-                        changed=changed, sqrt_meier=sqrt_m, below_floor=below, calls_moved=moved, passed=passed)
-        print(f'(d) {arm} vs {path.name}: {len(m):,} tests; structure {structure}; pinned slopes within '
-              f'{max(pin[k]["max_slope_diff_se"] for k in ("allelic", "total", "combined_admitted")):.1e} se, combined se within '
-              f'{pin["combined_admitted"]["max_se_rel"]:.1e} relative of stored x sqrt(M) (sqrt(M) over {sqrt_m["tests"]:,} tests with '
-              f'both channels: {sqrt_m["min"]:.4f} / {sqrt_m["median"]:.4f} / {sqrt_m["max"]:.4f}), pval_t calls differing '
-              f'{pin["pval_t"]["calls_differ"]}; stored p at t({old_dof}) max relative {max(x["max_rel"] for x in stored_ref.values()):.1e}; '
-              f'new references: pval_a calls differing {changed["pval_a"]["calls_differ"]}, dof_nominal max relative {dof_rel:.1e}, '
-              f'pval_nominal calls differing {changed["pval_nominal_admitted"]["calls_differ"]}; below the floor {below["genes"]} '
-              f'({below["tests"]:,} tests) cloned from the total channel; calls moved {moved}  {status(passed)}', flush=True)
+        res[arm] = dict(stored=str(path), tests=len(m), pinned=pin, pvalues=pv, equal=same, passed=passed)
+        print(f'(d) {arm} vs {path.parent.parent.name}/{path.name}: {len(m):,} tests; slopes within '
+              f'{max(x["max_slope_diff_se"] for x in pin.values()):.1e} se, se within {max(x["max_se_rel"] for x in pin.values()):.1e} '
+              f'relative; p within {max(x["max_rel"] for x in pv.values()):.1e} relative, calls differing '
+              f'{ {c: sum(x["calls_differ"].values()) for c, x in pv.items()} }; equal {same}  {status(passed)}', flush=True)
     return ok, res
-
 
 def ivw_dev(df, mixqtl):
     """Max |combined slope - inverse-variance combination of the channel slopes| / se over the finite rows."""
@@ -503,7 +427,7 @@ def main():
     if REPRO_DRAWS:
         okd, rd = check_reproduction(I, R, S, scratch)
     else:
-        print(f'(d) skipped: gene set {C.GENE_SET} has no stored null runs to reproduce (common.HYBRID_NULL is None)', flush=True)
+        print(f'(d) skipped: gene set {C.GENE_SET} has no stored null run to reproduce (common.STORED_NULL is None)', flush=True)
     oke, re_ = check_gates(S, ds0, scratch)
     rc['map_nominal_gate'] = re_['map_nominal_vs_fit_channels']
     rc['passed'] = bool(okc and re_['map_nominal_vs_fit_channels']['max_abs_diff_over_se'] < GATE_TOL)

@@ -444,6 +444,34 @@ def half_read_log_cpm(counts, eff_lib_size):
     return np.log2((counts + 0.5) / (L[None, :] + 1.0) * 1e6)
 
 
+def half_read_total_gibbs_variance(pT, eff_lib_size, yT, count_noise=True):
+    """Gibbs variance of the half-read log CPM total, for a total channel weighted by 1/Vt.
+
+    The shipped default weights the total by a unit working variance and computes
+    no total Gibbs transform; this serves comparison arms that weight the total by
+    its measurement variance (the simulated-effects benchmark's gibbs arm, user
+    decision 2026-10-01). Vt is the across-draw variance (ddof 0) of
+    half_read_log_cpm applied to each Gibbs draw of the total, plus, with
+    count_noise, the delta-method Poisson variance of the same transform at the
+    point estimate plus one half read, 1 / ((pT + 0.5) ln2^2): the construction
+    summaries_from_point_estimates uses on log2(CPM + 1). pT [features, samples]
+    and yT [features, samples, draws] sum ALL transcripts.
+    """
+    pT, yT = np.asarray(pT, dtype=float), np.asarray(yT, dtype=float)
+    L = np.asarray(eff_lib_size, dtype=float)
+    if pT.ndim != 2 or yT.ndim != 3 or yT.shape[:2] != pT.shape or yT.shape[2] == 0:
+        raise ValueError('pT must be [features, samples] and yT nonempty [features, samples, draws] matching it')
+    for name, values in (('pT', pT), ('yT', yT)):
+        if not np.all(np.isfinite(values)) or np.any(values < 0):
+            raise ValueError(f'{name} counts must be finite and nonnegative')
+    if L.shape != (pT.shape[1],) or not np.all(np.isfinite(L)) or not np.all(L > 0):
+        raise ValueError('eff_lib_size must be one finite positive value per sample')
+    Vt = np.log2((yT + 0.5) / (L[None, :, None] + 1.0) * 1e6).var(axis=2, ddof=0)
+    if count_noise:
+        Vt = Vt + 1.0 / ((pT + 0.5) * LN2 ** 2)
+    return Vt
+
+
 def prepare_default_inputs(pL, pR, pT, eff_lib_size, yL, yR,
                            kappa=0.5, count_noise=True):
     """Prepare the half-read split default adopted on 2026-09-29.

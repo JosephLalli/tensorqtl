@@ -3,7 +3,7 @@ precision and stated standard error of its slopes, the nominal-p rate on null ge
 recovery, gene ranking, and gene-level results: the permutation p of every arm that has one and
 eigenMT for all nine.
 
-Arms: the seven of 03_run_arms.py plus the joint models RASQUAL and TReCASE (JOINT), each one test
+Arms: the six of 03_run_arms.py plus the joint models scored (common.JOINT: TReCASE; RASQUAL dropped for now), each one test
 per variant scored as its combined channel with truth beta (both put the total mean at 1,
 (1 + kappa)/2, kappa, the generator's expected total fold); their slope_se is DERIVED (|slope| /
 sqrt(chisq)), so their null sd(z) is the calibration of the likelihood-ratio statistic. The
@@ -64,11 +64,8 @@ from scipy.stats import false_discovery_control
 import common as C
 from tensorqtl import eigenmt
 
-ANCHOR = {   # arm: (stored null summary, its key prefix); the 100-gene x 200-permutation null runs of the GENE_SET genes
-    'gibbs': (C.GENE_DIR / 'summary.json', 'drop'),
-    'split': (C.HYBRID_NULL / 'summary.json', 'hybrid'),
-    'unit': (C.HYBRID_NULL / 'summary_unit.json', 'unit'),
-    'plus_one': (C.HYBRID_NULL / 'summary_plus_one.json', 'plus_one')} if C.HYBRID_NULL else None
+ANCHOR = ({arm: (C.STORED_NULL / 'summary.json', arm) for arm in C.HAPMIX_ARMS}   # arm: (stored null summary, its draws'
+          if C.STORED_NULL else None)   # prefix); the 200-permutation null of the GENE_SET genes on this pipeline
 N_BOOT = 2000                 # task spec 2026-09-26
 ANCHOR_ALPHA = 0.05           # the only alpha with an anchor rule (task spec 2026-09-26)
 ANCHOR_CENTRAL = 0.99         # the anchor is ONE permutation: inside the stored central 99% of per-permutation rates
@@ -598,7 +595,7 @@ def anchor(null0):
             res[arm][ch] = {}
             for al in map(str, C.ALPHAS):
                 m = null0[arm][ch]['all'][al]
-                row = dict(stored=stored['rates'][f'{prefix} {ch}'][al]['rate'], rate=m['rate'], lo=m['lo'], hi=m['hi'])
+                row = dict(stored=stored['rates'][prefix][ch]['all']['after'][al]['rate'], rate=m['rate'], lo=m['lo'], hi=m['hi'])
                 if float(al) == ANCHOR_ALPHA:
                     r = per_perm[ch]
                     row.update(perm_lo=float(np.quantile(r, q_lo)), perm_hi=float(np.quantile(r, q_hi)),
@@ -671,7 +668,7 @@ def main():
     C.write_json(C.SUMMARY, S)
     a = S['anchor']
     if a is None:
-        print(f'anchor comparison skipped: gene set {C.GENE_SET} has no stored null runs (common.HYBRID_NULL is None)')
+        print(f'anchor comparison skipped: gene set {C.GENE_SET} has no stored null run (common.STORED_NULL is None)')
     else:
         print('anchor at 0.05, this dataset vs stored mean (percentile among stored permutations): '
               + '; '.join(f'{arm} {ch} {a[arm][ch]["0.05"]["rate"]:.4f} vs {a[arm][ch]["0.05"]["stored"]:.4f} '

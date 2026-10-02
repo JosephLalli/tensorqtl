@@ -1,13 +1,14 @@
-"""Map every simulated-effects dataset under seven arms (README: Arms): four hapmixQTL weightings through
+"""Map every simulated-effects dataset under six arms (README: Arms): three hapmixQTL weightings through
 map_nominal (nominal p per tested variant) and map_cis (gene-level pval_perm and pval_beta from
 NPERM records_signflip permutations, GPU), mixQTL mode at two cutoff settings through mixqtl_scan
 on the thinned point estimates (never the draws) and its own permutation scan, and the total-only
 tensorQTL scan (tensorqtl.cis.map_nominal and map_cis, GPU). Also eigenMT's effective number of
 tests per gene.
 
-hapmixQTL arms (common.arm_variances, after the zero-haplotype admission): gibbs = Gibbs variance
-in both channels (the shipped default); split = Gibbs allelic, unit total; unit = 1 everywhere;
-plus_one = v + 1 in both. map_nominal and map_cis get the RNA-tied covariates in the dataset's
+hapmixQTL arms (common.arm_variances, after the zero-haplotype admission), all on the dataset's
+half-read total T (user decision 2026-10-01): split = allelic 1/Va, total unit working variance (the
+shipped default); gibbs = allelic 1/Va, total 1/Vt (Vt the Gibbs variance of the half-read total);
+unit = 1 in both channels. map_nominal and map_cis get the RNA-tied covariates in the dataset's
 record order, the genotype PCs in place, the allelic channel through the origin, window WIN,
 default mode; A is already swapped in the dataset. Stored per tested variant: COLS + DOF_COLS
 (map_nominal's own dtypes; each p's t reference and whether the gene's allelic channel entered the
@@ -35,7 +36,7 @@ timing rule that had left it out): both mixQTL arms of a dataset run in one of a
 processes, forked before this process touches the GPU, while this process maps the GPU arms.
 
 tensorqtl arm: tensorqtl.cis.map_nominal and map_cis on the dataset's total phenotype T
-(log2(CPM + 1)), unweighted, no allelic channel, with the same 17 covariates as one covariates_df
+(the half-read log2 CPM), unweighted, no allelic channel, with the same 17 covariates as one covariates_df
 (the 14 RNA-tied in record order, the 3 genotype PCs in place), window WIN and the same genotype
 frame, so the same tested variants per gene (row count checked; map_cis's num_var checked against
 the tested variants with varying dosage); map_cis with NPERM permutations of its own null (the

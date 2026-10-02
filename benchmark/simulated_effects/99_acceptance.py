@@ -344,7 +344,7 @@ def check_joint(arm):
     cols = list(pd.read_parquet(old).columns)
     n, diff = same_table(old, joint_file(arm), cols)
     key = f'{JOINT_CHECK[0]} rep {JOINT_CHECK[1]:03d}'
-    ref = (C.JOINT['rasqual'] if arm == 'rasqual' else OLD_JOINT['trecase']) / 'summary.json'
+    ref = (C.JOINT_OUT['rasqual'] if arm == 'rasqual' else OLD_JOINT['trecase']) / 'summary.json'
     new = json.loads((joint_file(arm).parents[2] / 'summary.json').read_text())['per_dataset'][key]
     old_counts = json.loads(ref.read_text())['per_dataset'][key]
     m, worst, bad, _, _ = compare_json(pick(new, JOINT_KEYS[arm]), pick(old_counts, JOINT_KEYS[arm]))

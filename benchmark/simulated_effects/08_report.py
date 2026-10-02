@@ -832,16 +832,12 @@ def tab_conversion():
     truth = ('allelic: beta; total: per-gene total truth; combined: beta for bias, the inverse-variance combination '
              'of beta and the per-gene total truth for squared error')
     rows = [
-        ['hapmixQTL, four weightings', 'allelic: slope of log2((L + 0.5)/(R + 0.5)) on xL &minus; xR; total: slope of '
-         'log2(CPM + 1) on g/2; combined: their inverse-variance combination', 'none (log2 already)',
+        ['hapmixQTL, three weightings', 'allelic: slope of log2((L + 0.5)/(R + 0.5)) on xL &minus; xR; total: slope of '
+         'the half-read log2 CPM on g/2; combined: their inverse-variance combination', 'none (log2 already)',
          'stated by the weighted least-squares fit', truth],
         ['mixQTL, two cutoff settings', 'the same three slopes on natural-log responses (asc log(L/R), trc '
          'log(total / 2 library size)); meta = inverse-variance combination', 'slope and se / ln 2',
          'stated by mixQTL\'s least-squares fits', truth],
-        ['RASQUAL', '&pi;, the ALT allele\'s expected share of expression: RASQUAL scales expression by 2(1 &minus; &pi;), '
-         '1, 2&pi; at ALT dosage 0, 1, 2 (nbem.c:1058)', 'log2(&pi; / (1 &minus; &pi;))',
-         '<b>derived</b>: |slope| / &radic;&chi;<sup>2</sup>, &chi;<sup>2</sup> its likelihood-ratio statistic '
-         '(RASQUAL reports none)', 'beta'],
         ['TReCASE (asSeq)', 'b = ln &kappa;, &kappa; the ALT over REF expression ratio, from the joint model, or from the '
          'total-count (TReC) model when asSeq\'s final p used it; the TReC mean is 1, (1 + &kappa;)/2, &kappa; at ALT '
          'dosage 0, 1, 2 (glmNBlog, glm.c:1577; the joint model, trecase.c:1049; genotypes recoded 3 &rarr; 1, '
@@ -1067,16 +1063,14 @@ def sec_run():
                 else f'the {n_genes} genes of the {C.GENE_SET} gene set ({C.GENES})')
     band_desc = 'fewer than 100, 100-999, at least 1,000' if INTERPRETED else BAND_HTML.replace(' / ', ', ')
     if rp is not None:
-        repro = ('Check (d), exact reproduction of a stored null: given the stored 200-permutation null runs\' own '
-                 'permutation 0, the beta = 0 path under commits 8a06803 and a1b2ef4 must reproduce that run\'s first '
-                 'permutation draw: the channel slopes and the admitted combined slope, the admitted combined standard '
-                 'error times sqrt(M), M Meier\'s factor recomputed from the stored channel standard errors and degrees of '
-                 'freedom, the total-channel calls, and the allelic and admitted combined p recomputed from the stored '
-                 'statistics; below the floor the combined statistic must be the total channel\'s exactly. The gates of '
-                 'the stored null\'s re-run (section 3.7) pair every arm\'s statistics with the stored draw the same way.')
+        repro = ('Check (d), exact reproduction of the stored null: given the stored null run\'s own permutation 0 and '
+                 'haplotype swaps, the beta = 0 path through map_nominal must reproduce that run\'s first permutation for '
+                 'every hapmixQTL arm in every column: the channel and combined slopes, their standard errors, the three p '
+                 'values and their calls, the degrees of freedom and the allelic admission. The stored null is made by the '
+                 'same code on the same inputs (below), so the check tests the plumbing that connects the generator to it.')
     else:
         repro = (f'Check (d), exact reproduction of a stored null permutation, needs the stored 200-permutation null '
-                 f'runs, which exist for the {INTERPRETED_SET} gene set only, and is skipped for this set.')
+                 f'run, which exists for the {INTERPRETED_SET} gene set only, and is skipped for this set.')
     mix_perm_txt = f'''mixQTL's own permutation scan ran on every dataset at both cutoff settings, {mp["nperm"]:,}
 permutations on CPU, under mixQTL's published null: the phenotype bundle (the two haplotype counts, the total
 and the library size) and the RNA-tied covariates move with the donor record, the genotype principal components stay,
@@ -1117,12 +1111,18 @@ effect sizes are paired, not independent replicates. A gene is non-null in about
 over gene-dataset units (a <i>causal unit</i> is one non-null gene in one dataset, at its causal variant).
 Genes are grouped into three <i>read bands</i> by their real median haplotype-informative reads over donors
 ({band_desc}).{"" if SF is None else " This run repeats the benchmark, unchanged, on the genes of the coverage bin named in section 1."}</p>
-<p><b>Arms.</b> Four hapmixQTL weightings, all in default mode, Var(eps) = sigma<sup>2</sup> v: eps is a record's
-residual, v its Gibbs variance, and sigma<sup>2</sup> the residual scale fitted per variant. All run after the
-zero-haplotype admission rule (an allelic record with exactly one haplotype below 0.5 reads is excluded):
-<b>gibbs</b>, weights 1/v in both channels (the shipped default); <b>split</b>, 1/v in the allelic channel and
-weight 1 in the total channel; <b>unit</b>, weight 1 in both channels; <b>plus_one</b>, 1/(v + 1) in both
-channels. All four run on commit 8a06803 and with Meier's correction (below). Each channel's p is referred to t with that channel's own residual degrees of
+<p><b>Arms.</b> Three hapmixQTL weightings, all in default mode and all on the same two phenotypes: the allelic
+contrast A = log2((pL + 0.5)/(pR + 0.5)) and the <i>half-read total</i> T = log2((pT + 0.5)/(L + 1) x 10<sup>6</sup>),
+pT the total point-estimate reads of the gene (every transcript) and L the donor's effective library size, the
+shipped default's total since 2026-09-29 (user decision 2026-10-01: every arm on it). A is also the difference of the two
+haplotypes' half-read log2 CPM, the library cancelling. Each record's residual has variance sigma<sup>2</sup> w, w the
+arm's working variance and sigma<sup>2</sup> the residual scale fitted per variant. All run after the zero-haplotype
+admission rule (an allelic record with exactly one haplotype below 0.5 reads is excluded):
+<b>split</b>, the shipped default, w = Va in the allelic channel (Va the Gibbs variance of A over Salmon's 200 Gibbs
+draws plus its counting term) and w = 1 in the total channel; <b>gibbs</b>, w = Va in the allelic channel and w = Vt in
+the total channel, Vt the Gibbs variance of T over the draws plus its counting term 1/((pT + 0.5) ln<sup>2</sup>2), so
+the total channel too is weighted by its measurement variance; <b>unit</b>, w = 1 in both channels, the control without
+the Gibbs draws. Each channel's p is referred to t with that channel's own residual degrees of
 freedom (informative donors minus the fitted columns), and the combined p to the <i>Welch-Satterthwaite</i> degrees of
 freedom of the inverse-variance combination: the degrees of freedom of the scaled &chi;<sup>2</sup> whose first two
 moments match those of a fixed weighted sum of independent variance estimates, here
@@ -1130,15 +1130,13 @@ moments match those of a fixed weighted sum of independent variance estimates, h
 w<sub>t</sub><sup>2</sup>/&nu;<sub>t</sub>) with w = 1/se<sup>2</sup> and &nu; each channel's degrees of freedom. The
 allelic channel enters the combined statistic only for a gene with at least {MIN_ALLELIC_DONORS} informative allelic donors, mixQTL's
 own cutoff for combining its two channels; below that the combined slope, se and p are the total channel's.
-Since commit a1b2ef4 the combined standard error also carries <i>Meier's correction</i> (Meier 1953) for channel
+The combined standard error carries <i>Meier's correction</i> (Meier 1953) for channel
 weights estimated from the residuals they combine: the plug-in variance 1/(w<sub>a</sub> + w<sub>t</sub>) is
 multiplied by M = 1 + 4 f<sub>a</sub> f<sub>t</sub> (1/&nu;<sub>a</sub> + 1/&nu;<sub>t</sub>), f being each
 channel's share of the weight, so the combined t falls by &radic;M on the same Welch-Satterthwaite degrees of
 freedom; M is 1 wherever one channel carries all the weight, and slopes and per-channel statistics are unchanged. It
-applies in map_nominal and in map_cis's scan and every permutation alike. Before commit
-8a06803 every hapmixQTL p was referred to t with 73 degrees of freedom (N &minus; 2 &minus; 17 covariates){
-'; section 3.7 compares the two' if BEFORE else ''} (docs/hapmixqtl_methods.md, Section 4.5, has the derivation and the
-reference's measured cost).
+applies in map_nominal and in map_cis's scan and every permutation alike (docs/hapmixqtl_methods.md, Section 4.5, has
+the derivation and the reference's measured cost).
 Two mixQTL-mode arms run on the thinned point estimates, never
 on the draws: <b>published cutoffs</b> (total reads 100, allelic reads 50 to 1,000, weight cap 10) and
 <b>permissive cutoffs</b> (20, 5 to 5,000, cap 100). The realized fold cap is min(weight cap, floor(n/10)) for n
@@ -1149,7 +1147,7 @@ errors are divided by ln 2. The hapmixQTL arms were also run through
 map_cis for gene-level p (1,000 permutations of donor records with haplotype-label swaps, GPU), with the Beta
 approximation: a Beta distribution fitted to the permuted minimum p values, used to smooth the gene-level p. {mix_perm_txt}</p>
 <p><b>Total-only tensorQTL.</b> tensorQTL's own cis scan (tensorqtl.cis map_nominal and map_cis) on the total phenotype T
-alone, log2(CPM + 1), unweighted and with no allelic channel, with the same 17 covariates (the genotype principal
+alone, the half-read total, unweighted and with no allelic channel, with the same 17 covariates (the genotype principal
 components among them as ordinary covariates) and the same tested variants per gene; map_cis permutes the
 covariate-residualized phenotype 1,000 times and fits the Beta approximation. It regresses on ALT dosage g, so its
 slope and standard error are doubled to put them on g/2, the scale of the hapmixQTL total channel and of the truth.
@@ -1157,51 +1155,43 @@ It is the standard total-expression eQTL scan, and its least-squares fit is unit
 as a one-test arm: its one slope is the combined row, held to the total truth (pipeline scale at the causal variant, as
 for the hapmixQTL arms; count scale across methods), and its squared error is compared with unit weights' combined
 slope, so that ratio measures what the allelic channel adds to a total-only scan.</p>
-<p><b>Joint models.</b> Two published methods that fit the total and allele-specific counts in one likelihood were
-run on every dataset as further comparators, nominal only (no permutation p; eigenMT gives them a gene-level p). Each
-gives one test per variant, scored here as its combined channel; their allelic and total rows read n/a.
-<b>RASQUAL</b> models total counts as negative binomial and
-allele-specific counts as beta-binomial (the two count models that allow <i>overdispersion</i>, variance of the
-counts beyond that of a Poisson or binomial count), sharing one allelic parameter, and adds a reference-mapping bias,
-a sequencing error rate and genotype uncertainty; it reports a <i>likelihood-ratio statistic</i> &chi;<sup>2</sup>,
-twice the gain in log-likelihood when the variant's effect is added to the model. With no
-reads to give it, each gene gets one pseudo feature SNP in its gene body, at which every donor-gene pair the hapmixQTL
-arms admit to the allelic channel is heterozygous with allele counts equal to its thinned haplotype point estimates
-rounded to integers; the tested variants carry the real phased
-genotypes, the total counts are the thinned Salmon totals as they are (fractional), the size factor is the effective
-library size, and the 17 covariates are {COV_OF['rasqual']}. RASQUAL's defaults are kept except its
-Hardy-Weinberg filter on tested variants (a test that a variant's genotype counts match those expected from its allele
-frequency), turned off (-h 0) because these genotypes are the truth and no other arm filters on it (04_run_rasqual.py). <b>TReCASE</b> (asSeq 0.99.501) models total counts as negative binomial (TReC) and
-allele-specific counts as beta-binomial (ASE), fits both jointly, and runs a cis/trans test of whether the total and
+<p><b>Joint model.</b> TReCASE, a published method that fits the total and allele-specific counts in one likelihood,
+was run on every dataset as a further comparator, nominal only (no permutation p; eigenMT gives it a gene-level p). It
+gives one test per variant, scored here as its combined channel; its allelic and total rows read n/a. RASQUAL, the
+other joint model of earlier versions of this page, is left out for now (user decision 2026-10-01; 04_run_rasqual.py is
+kept). <b>TReCASE</b> (asSeq 0.99.501) models total counts as negative binomial (TReC), a count model that allows
+<i>overdispersion</i>, variance beyond that of a Poisson count, and allele-specific counts as beta-binomial (ASE), its
+binomial counterpart; it fits both jointly and runs a cis/trans test of whether the total and
 allelic effects agree; asSeq's final p is the joint p when that test does not reject at 0.05 and the total-count p
-otherwise, which is also what it reports when the joint fit fails. Its inputs are the same donor-gene pairs as allele-specific
+otherwise, which is also what it reports when the joint fit fails. Each p comes from a <i>likelihood-ratio
+statistic</i> &chi;<sup>2</sup>, twice the gain in log-likelihood when the variant's effect is added. Its inputs are the
+donor-gene pairs the hapmixQTL arms admit to the allelic channel as allele-specific
 records (counts rounded per haplotype, because its beta-binomial needs integers), fractional totals, the log effective
 library size as offset, and the 17 covariates, {COV_OF['trecase']}; asSeq's defaults are kept except the p cutoff for writing a row
 (05_run_trecase.py).{JOINT_COV_PARA}</p>
 {native_method()}
 <p><b>One scale for every method.</b> Every slope on this page is a log2 allelic fold change (aFC), ALT over REF,
 where beta = 1 is a twofold effect. The table gives each arm's published effect, its conversion, and where its
-standard error comes from. RASQUAL and TReCASE report no standard error: it is derived as |slope| / &radic;&chi;<sup>2</sup>
+standard error comes from. TReCASE reports no standard error: it is derived as |slope| / &radic;&chi;<sup>2</sup>
 (the Wald inversion of &chi;<sup>2</sup>: the standard error at which (slope / se)<sup>2</sup> equals
 &chi;<sup>2</sup>), so under truth 0 (null genes) z = slope / se is &plusmn;&radic;&chi;<sup>2</sup>
-by construction, and their realized-over-stated standard error on null genes (section 3.4) measures the calibration of
-their likelihood-ratio test, not a reported standard error. At the causal variant z = (slope &minus; beta) / se instead
+by construction, and its realized-over-stated standard error on null genes (section 3.4) measures the calibration of
+its likelihood-ratio test, not a reported standard error. At the causal variant z = (slope &minus; beta) / se instead
 measures how well the derived se describes the slope's spread around beta, and absorbs bias. For
 comparisons across methods every arm is held to the count-scale truth (defined below); the pipeline-scale
-truth is a hapmixQTL-only diagnostic and never ranks methods. In both joint models the total mean at ALT dosage
+truth is a hapmixQTL-only diagnostic and never ranks methods. In TReCASE the total mean at ALT dosage
 0, 1, 2 is proportional to 1, (1 + &kappa;)/2, &kappa; for an ALT over REF ratio &kappa;. That is the expected form,
 averaged over donors, of the total fold the generator injects: thinning one haplotype's reads and the shared reads by
 different factors gives exactly this form only for a donor whose haplotype-specific reads are balanced, and on average
-over the random direction of real imbalance. Their estimand is therefore log2 &kappa; = beta, also when asSeq falls back
+over the random direction of real imbalance. Its estimand is therefore log2 &kappa; = beta, also when asSeq falls back
 to its total-count test, whose model has the same dosage form (glm.c:1577); the per-gene total truth, a straight-line fit
 of that fold on g/2, is the estimand of the linear total channels of hapmixQTL and mixQTL. One asSeq fallback cannot be
 identified per test: where its total-count dosage model fails it refits the dosage as a linear covariate, whose slope
 is a log fold per ALT allele, about half of ln &kappa;, so about half of beta after the conversion. Such a row at a
 causal variant lowers TReCASE's bias ratio and raises its squared error; the rows are not flagged.</p>
 {tab_conversion()}
-<p><b>Missing rows.</b> RASQUAL's rows where its fit did not converge are left out. Rows with &chi;<sup>2</sup> &le; 0
-(p = 1), whose derived standard error is undefined, are left out of the standard-error statistics only, and stay in the
-ranking, the null rates and squared error. TReCASE has no row for a tested pair whose ALT dosage is the same in every
+<p><b>Missing rows.</b> TReCASE's rows with &chi;<sup>2</sup> &le; 0 (p = 1), whose derived standard error is undefined,
+are left out of the standard-error statistics only, and stay in the ranking, the null rates and squared error. TReCASE has no row for a tested pair whose ALT dosage is the same in every
 donor. A causal unit without a row is left out of that arm's causal-variant detection share, and in bias and precision
 it is non-finite and so excluded and counted like any other non-finite unit.</p>
 {ladder_method() if LD is not None else ''}
@@ -1212,7 +1202,7 @@ set against the variance predicted from the shared-read share s, and the predict
 excess against the counting term's; its pass thresholds were set after its first result, so it guards the derivation
 against regression rather than testing it independently. Check (a), identity: with every thinning factor 1, the
 generator must reproduce the pipeline's inputs exactly: A, the allelic log2 ratio log2((pL + 0.5)/(pR + 0.5)); T, the
-total log2(CPM + 1); and Va and Vt, their Gibbs variances, also after a permutation and swap. Check (b), thinning: the
+half-read total; and Va and Vt, their Gibbs variances, also after a permutation and swap. Check (b), thinning: the
 Fano factor (across-draw variance over mean) of the total Gibbs draws must stay at its real value after thinning by
 f = {th["f"]}, and the allelic rule's arithmetic must hold on every informative record. Check (c), recovery: over
 {rc["n_datasets"]} all-non-null datasets at |beta| = {rc["beta"]}, unit weights must recover the pipeline-scale truth of the
@@ -1224,28 +1214,19 @@ of the number of genes, as 01_check_inputs.py computes it, not the resampling in
 
 
 def earlier_runs_method():
-    """Section 2's account of the earlier runs the page reads and how each was made: design only, no outcome."""
-    reach = ('The allelic channel takes no covariates (it is fitted through the origin), so a covariate build reaches only the '
-             'total channel and, through it, the combined one; Meier\'s correction changes only the combined standard error.')
-    mine = f'This run\'s arms used {ARMS_COV.name} ({ARMS_COV_HOW}).'
+    """Section 2's account of the stored runs the page reads besides this run: design only, no outcome."""
     if not INTERPRETED:
-        ref = (f'the {REF_SET}\'s delivered run ({REF_RUN.parent.name}), whose arms used {REF_COV.name} ({REF_COV_HOW})')
         return f'''
-<p><b>Earlier runs this page reads.</b> Besides the joint models' results (above), the contrast section reads {ref}.
-{mine} {reach} Where a comparison crosses two covariate builds, the page says so where it is made, and {LIMITS} says what
-would have to run to make it like for like.</p>'''
-    deep = ('' if REF_RUN == C.SUMMARY else
-            f' The deep set\'s delivered run ({REF_RUN.parent.name}), also on these datasets, added Meier\'s correction to the '
-            'committed run\'s scoring after the commit and kept its covariates.')
+<p><b>Other runs this page reads.</b> The contrast section reads the {REF_SET}\'s run ({REF_RUN.parent.name}), whose arms
+used {REF_COV.name} ({REF_COV_HOW}); this run\'s arms used {ARMS_COV.name} ({ARMS_COV_HOW}). Where the two differ, the
+contrast section says so and {LIMITS} says what would have to run to make the comparison like for like.</p>'''
     return f'''
-<p><b>Earlier runs this page reads.</b> The stored 200-permutation null runs of the four hapmixQTL arms
-({C.HYBRID_NULL.name}, with gibbs in {C.GENE_DIR.name}) were made with the {JOINT_COV.name} covariates, the
-73-degree-of-freedom reference and no Meier's correction; their re-run under commit 8a06803 ({DF_FIX.parent.name}) refitted
-the same permutations on the same covariates with the per-pair references, also without Meier's correction. The committed
-run ({C.COMMITTED.name}) holds these same datasets scored before and after that commit ({BEFORE.name}, {AFTER.name}), on the
-{JOINT_COV.name} covariates and without Meier's correction{f', and its {names(STAGED)} results are the ones reused here' if STAGED else ''}.{deep} {mine} {reach} Check (d) refits the stored null's first permutation on the stored runs' own covariates, so it is
-like for like by construction. Where a result is compared with an earlier run, the page says there whether the comparison is
-like for like and, if not, in which channels; {LIMITS} lists what would have to run to make each like for like.</p>'''
+<p><b>The stored null.</b> The anchor dataset is one permutation; to place it, and for the null rates of 200
+permutations, the page reads a stored null run on this pipeline ({C.STORED_NULL.name}, scripts/half_read_stored_null.py):
+the three hapmixQTL weightings on the real records of these 100 genes, with no effect injected and no thinning, under
+200 permutations of donor records against genotypes with haplotype-label swaps, on the same code, phenotypes, covariates
+({ARMS_COV.name}) and Meier's correction as this run. Its comparisons with this run are like for like in every channel.
+Check (d) reproduces its first permutation from this run's generator.</p>'''
 
 
 def sec_scoring():

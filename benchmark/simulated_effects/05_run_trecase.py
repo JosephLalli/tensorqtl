@@ -40,7 +40,7 @@ import pandas as pd
 
 import common as C
 
-OUT, WORK = C.JOINT['trecase'], C.ROOT / 'trecase_work'
+OUT, WORK = C.JOINT_OUT['trecase'], C.ROOT / 'trecase_work'
 R_RUNNER = Path(__file__).resolve().with_name('run_trecase.R')
 R_ENV = {'R_LD_LIBRARY_PATH': '/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu',
          'LD_LIBRARY_PATH': '/usr/local/cuda/lib64'}   # CLAUDE.md, "R's BLAS crash is an environment clash"

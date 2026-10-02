@@ -114,3 +114,11 @@ def test_mapping_matches_manual_benchmark_arm(tmp_path):
     # Full frames include effects, SEs, p-values, df, admission and permutation fits.
     pd.testing.assert_frame_equal(nominal[0], nominal[1], check_exact=True)
     pd.testing.assert_frame_equal(permuted[0], permuted[1], check_exact=True)
+
+
+def test_half_read_total_gibbs_variance_known_answer():
+    """Two draws 8 and 12 around a point estimate of 10 reads: the library cancels from the across-draw variance."""
+    pT, L, yT = np.array([[10.0]]), np.array([2.0e6]), np.array([[[8.0, 12.0]]])
+    draw_var = ((np.log2(12.5) - np.log2(8.5)) / 2) ** 2
+    assert hm.half_read_total_gibbs_variance(pT, L, yT, count_noise=False)[0, 0] == pytest.approx(draw_var, rel=1e-12)
+    assert hm.half_read_total_gibbs_variance(pT, L, yT)[0, 0] == pytest.approx(draw_var + 1 / (10.5 * np.log(2) ** 2), rel=1e-12)

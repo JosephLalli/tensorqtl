@@ -1,32 +1,33 @@
-"""The stored 200-permutation null of the four hapmixQTL weightings on the current configuration: the half-read
-expression PCs (compare_mixqtl_replication.COV, a2f4314) and Meier's correction of the combined standard error
-(a1b2ef4), on the permutations and genes of the stored runs and of their re-run under 8a06803.
+"""The stored 200-permutation null of the simulated-effects benchmark's three hapmixQTL weightings on the half-read
+pipeline, on the permutations and genes of the stored runs and of their re-run under 8a06803.
 
-QUESTION (2026-10-01). The simulated-effects benchmark compares its anchor and null-gene rates with the stored runs and
-with their re-run under 8a06803 (allelic_df_fix_20260927), both made on the log2(CPM + 1) build's expression PCs and
-before Meier's correction, so only the allelic channel was like for like. This run is the same null on the current
-configuration, so that the total and combined channels are like for like as well.
+QUESTION (2026-10-01). The benchmark now runs every hapmixQTL arm on the half-read total (user decision 2026-10-01:
+half-read split for everything): A and Va as before, T the half-read log2 CPM, the half-read expression PCs
+(compare_mixqtl_replication.COV, a2f4314) and Meier's correction of the combined standard error (a1b2ef4). Its anchor
+and null-gene rates need a stored null on that same pipeline; the earlier stored runs were made on log2(CPM + 1).
 
-RUN: allelic_df_null_check.py's four configurations (gibbs, split, unit, plus_one) on the same 100 genes and the same
-permutation stream (protein_coding_null_store_20260925/permutations.npz), 200 permutations, on this checkout's
-hapmixqtl and the loader's current covariates.
+RUN: three configurations on the same 100 genes and the same permutation stream
+(protein_coding_null_store_20260925/permutations.npz), 200 permutations, on this checkout's hapmixqtl:
+  split  the shipped default (prepare_default_inputs): allelic 1/Va, total unit working variance
+  unit   the same values, unit weights in both channels (allelic channel over the same admitted pairs)
+  gibbs  allelic 1/Va, total 1/Vt with Vt = hapmixqtl.half_read_total_gibbs_variance
+A, T and Va come from prepare_default_inputs, whose allelic admission (Va > 1e-12, pL + pR > 0, not exactly one
+haplotype below 0.5 reads) is the benchmark's.
 
-PASS RULE, stated before the run (as allelic_df_null_check.py's): the combined rate at 0.001 for split, unit and
-plus_one lies within its gene-clustered 95% interval of 0.001, RPL41 included; gibbs is reported, not judged.
+PASS RULE, stated before the run: the combined rate at 0.001 for split and unit lies within its gene-clustered 95%
+interval of 0.001, RPL41 included; gibbs is reported, not judged.
 
 GATES on draw 0, per config, before any draw is stored:
   1. map_nominal's channel slopes equal null_permutation_instrument.fit_channels on the same permuted inputs (1e-3 se);
-  2. ALLELIC PAIRING: slope_a, slope_a_se and pval_a equal the 8a06803 re-run's draw 0 of the same config, since no
-     covariates enter the allelic channel and its reference has not changed since that commit;
+  2. ALLELIC PAIRING: slope_a, slope_a_se and pval_a equal the 8a06803 re-run's draw 0 of the same config: A, Va,
+     the admission and the allelic reference are unchanged, and no covariates enter the allelic channel;
   3. FLOOR and below-floor identity: as allelic_df_null_check.py.
-The total channel and the admitted combined statistic are expected to differ from the re-run's and are not gated.
 
-INTERVALS: as allelic_df_null_check.py (genes resampled with replacement, 2,000 times; after - before on the same
-resampled genes). In summary.json 'before' is the 8a06803 re-run and 'after' this run, so after - before is the
-change from the expression-PC build and Meier's correction together.
+INTERVALS: as allelic_df_null_check.py. In summary.json 'before' is the 8a06803 re-run (log2(CPM + 1) total, earlier
+expression PCs, no Meier's correction) and 'after' this run: after - before is those three changes together.
 
 Output OUT: draws/<config>_NNN.parquet, gates.json, covariates.txt, summary.json (allelic_df_null_check.summarize's
-layout). Usage: current_config_null.py [n_draw=200] [--summarize-only]
+layout). Usage: half_read_stored_null.py [n_draw=200] [--summarize-only]
 """
 import contextlib
 import io
@@ -44,11 +45,13 @@ import compare_mixqtl_replication as CM
 import corrected_null_store as CNS
 import tensorqtl.hapmixqtl as HM
 from null_permutation_instrument import fit_channels
-from tensorqtl.hapmixqtl import MIN_ALLELIC_DONORS, map_nominal, summaries_from_point_estimates
+from tensorqtl.hapmixqtl import (MIN_ALLELIC_DONORS, half_read_total_gibbs_variance, map_nominal,
+                                 prepare_default_inputs)
 
-OUT = CNS.D / 'stored_null_current_config_20261001'
+OUT = CNS.D / 'stored_null_half_read_20261001'
 BEFORE = ADF.OUT                      # the 8a06803 re-run: same permutations, genes and references, the earlier covariates
-CONFIGS, COLS, NEW_COLS, FLOOR = ADF.CONFIGS, ADF.COLS, ADF.NEW_COLS, ADF.FLOOR
+CONFIGS, JUDGED = ('gibbs', 'split', 'unit'), ('split', 'unit')
+COLS, NEW_COLS, FLOOR = ADF.COLS, ADF.NEW_COLS, ADF.FLOOR
 ALLELIC = ('slope_a', 'slope_a_se', 'pval_a')
 
 
@@ -66,11 +69,11 @@ def run_draws(n_draw):
         I = CM.load_point_estimate_inputs(gene_list=str(CNS.OUT / 'genes.txt'), regions=str(CNS.OUT / 'regions.bed'))
     order, keep = I['order'], I['keep']
     N = len(order)
-    A, T, Va, Vt, _ = summaries_from_point_estimates(I['pL'], I['pR'], I['pT'], I['eff_lib'], I['YL'], I['YR'], I['YT'])
+    A, T, Va, _ = prepare_default_inputs(I['pL'], I['pR'], I['pT'], I['eff_lib'], I['YL'], I['YR'])
+    Vt = half_read_total_gibbs_variance(I['pT'], I['eff_lib'], I['YT'])
     A, T, Va, Vt = A[:, keep], T[:, keep], Va[:, keep], Vt[:, keep]
-    pL, pR = I['pL'][:, keep], I['pR'][:, keep]
-    Va = np.where((pL < 0.5) ^ (pR < 0.5), 0.0, Va)
-    V = {c: ADF.variances(c, Va, Vt) for c in CONFIGS}
+    one = np.ones_like(T)
+    V = dict(gibbs=(Va, Vt), split=(Va, one), unit=(np.where(Va > ADF.EPS, 1.0, 0.0), one))
     genes = list(I['genes'])
     design = pd.read_csv(CNS.OUT / 'gene_design.tsv', sep='\t').set_index('gene')
     n_a = (Va > ADF.EPS).sum(1)
@@ -194,7 +197,7 @@ def summarize():
         nb = n[B].sum(1)
         return K[B].sum(1) / np.where(nb > 0, nb, np.nan), int((nb == 0).sum())
 
-    res = dict(pass_rule='the combined rate at 0.001 for split, unit and plus_one lies within its gene-clustered 95% interval '
+    res = dict(pass_rule='the combined rate at 0.001 for split and unit lies within its gene-clustered 95% interval '
                          'of 0.001, RPL41 included; gibbs reported, not judged',
                before_run=str(BEFORE), covariates=(OUT / 'covariates.txt').read_text().strip(),
                n_draw=n_draw, n_genes=len(genes), floor=FLOOR, n_boot=ADF.N_BOOT,
@@ -225,7 +228,7 @@ def summarize():
                 res['below_floor_genes'].setdefault(g, {'n_a': int(n_a[k])}).setdefault(c, {})[ch] = {
                     tag: {'n_tests': int(n[k]), **{str(al): float(K[al][k] / n[k]) if n[k] else None for al in ADF.ALPHAS}}
                     for tag, K, n in (('before', Kb, nb), ('after', Ka, na))}
-        if c in ADF.JUDGED:
+        if c in JUDGED:
             r = res['rates'][c]['combined']['all']['after']['0.001']
             res['verdict'][c] = dict(lo=r['lo'], hi=r['hi'], rate=r['rate'], contains_0_001=r['lo'] <= 0.001 <= r['hi'])
     res['passed'] = all(v['contains_0_001'] for v in res['verdict'].values())

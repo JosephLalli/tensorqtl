@@ -47,6 +47,7 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
         before_df_fix='plasmode_20260926/summary_before_df_fix.json',      # the arms scored before commit 8a06803 (08 BEFORE; a record, not regenerable)
         after_df_fix='plasmode_20260926/summary.json',                     # the same run scored after 8a06803: same datasets and covariates, no Meier's correction (08 AFTER)
         df_fix='allelic_df_fix_20260927/summary.json',                     # the stored null re-run under 8a06803 (08 DF_FIX; scripts/allelic_df_null_check.py)
+        stored_null='stored_null_half_read_20261001',                      # the 200-permutation null of the hapmixQTL arms on this pipeline: half-read total, half-read PCs, Meier's correction (06 ANCHOR, 01 check d, 08; scripts/half_read_stored_null.py)
         trecase_smoke='plasmode_20260926/results_trecase_asseq/smoke/summary.json',    # the 2026-09-26 TReCASE smoke run (08: its largest theta gradient)
         ladder='ladder'),                                                  # 07's output directory under root (08 section 3.8)
     'stratum30_100': dict(   # 100 genes at 30-100 median haplotype-informative reads over admitted allelic donors (select_stratum_genes.py)
@@ -54,17 +55,18 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
         root='plasmode_lowcov_meier_20260927',
         acceptance_root='plasmode2_stratum_acceptance_20260927',
         committed='plasmode_stratum30_100_20260927',                       # the previous code, commits 15aac90 to d3247e0
-        hybrid_null=None, before_df_fix=None, after_df_fix=None, df_fix=None, trecase_smoke=None, ladder=None)}
+        hybrid_null=None, before_df_fix=None, after_df_fix=None, df_fix=None, stored_null=None, trecase_smoke=None, ladder=None)}
 GS = GENE_SETS[GENE_SET]
 GENE_DIR = D / GS['gene_dir']
 GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', GENE_DIR / 'gene_design.tsv'
-ROOT, HYBRID_NULL, BEFORE_DF_FIX, AFTER_DF_FIX, DF_FIX, TRECASE_SMOKE, COMMITTED = (
+ROOT, HYBRID_NULL, BEFORE_DF_FIX, AFTER_DF_FIX, DF_FIX, STORED_NULL, TRECASE_SMOKE, COMMITTED = (
     D / GS[k] if GS[k] else None for k in ('acceptance_root' if ACCEPTANCE else 'root', 'hybrid_null', 'before_df_fix',
-                                           'after_df_fix', 'df_fix', 'trecase_smoke', 'committed'))
+                                           'after_df_fix', 'df_fix', 'stored_null', 'trecase_smoke', 'committed'))
 if os.environ.get('SIMULATED_EFFECTS_ROOT') and not ACCEPTANCE:   # a fresh output root instead of the gene set's delivered one
     ROOT = Path(os.environ['SIMULATED_EFFECTS_ROOT'])
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
-JOINT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}
+JOINT_OUT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}   # where 04, 05 and stage_joint_results write
+JOINT = {m: JOINT_OUT[m] for m in ('trecase',)}   # the joint models scored: RASQUAL dropped for now (user, 2026-10-01)
 NATIVE_COUNTS = D / 'native_counts_wasp_20260928'   # featureCounts totals and WASP-filtered strand-split exonic phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)
 NATIVE = ROOT / 'native'                       # 05b_native_arms.py: edger/, datasets/, results/, results_trecase/, trecase_work/, facts.json
 NATIVE_DATASETS = NATIVE / 'datasets'
@@ -80,8 +82,8 @@ EXPRESSIBLE_MIN = 0.5          # reads; the zero-haplotype rule (docs/pipeline_r
 EPS = 1e-12                    # allelic admission Va > EPS: hapmixqtl._zero_degenerate_ase_weights
 ROUNDING_TOL = 1e-6            # Salmon sums: pT - pL - pR measured down to -1.8e-12 (point estimates), -1.0e-11 (draws), 2026-09-26
 PACKAGES = ('numpy', 'scipy', 'pandas', 'pyarrow', 'torch', 'matplotlib', 'threadpoolctl')   # requirements.txt
-HAPMIX_ARMS = ('gibbs', 'split', 'unit', 'plus_one')
-CONFIG = {'split': 'hybrid', 'unit': 'unit', 'plus_one': 'plus_one'}   # config_variances names
+HAPMIX_ARMS = ('gibbs', 'split', 'unit')   # on the half-read total (user decision 2026-10-01; plus_one retired)
+CONFIG = {'split': 'hybrid', 'unit': 'unit'}   # config_variances names
 MIXQTL_ARMS = {'mixqtl': MX.PUBLISHED_CUTOFFS, 'mixqtl_permissive': MX.PACKAGE_DEFAULT_CUTOFFS}   # mixqtl_replication.py:167-170
 TENSORQTL = 'tensorqtl'        # tensorqtl.cis on the total phenotype T alone, unweighted (user request 2026-09-27)
 ARMS = HAPMIX_ARMS + tuple(MIXQTL_ARMS) + (TENSORQTL,)
@@ -293,8 +295,6 @@ def config_variances(config, Va, Vt):
     """(allelic, total) working variances; Va is 0 where a pair is excluded."""
     if config == 'hybrid':
         return Va, np.ones_like(Vt)
-    if config == 'plus_one':
-        return np.where(Va > EPS, Va + 1.0, 0.0), Vt + 1.0
     if config == 'unit':
         return np.where(Va > EPS, 1.0, 0.0), np.ones_like(Vt)
     raise SystemExit(f'unknown config {config}')
@@ -568,12 +568,12 @@ def stage_joint_results():
     the argument staged in place of 04 and 05 (hours each)."""
     for arm, src in COMMITTED_JOINT.items():
         for f in sorted(src.glob(f'beta*/{arm}/nominal_rep*.parquet')):
-            dst = JOINT[arm] / f.parent.parent.name / arm / f.name
+            dst = JOINT_OUT[arm] / f.parent.parent.name / arm / f.name
             if not dst.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 write_atomic(dst, lambda fh, f=f: fh.write(f.read_bytes()))
     src = COMMITTED_JOINT['trecase'] / 'summary.json'
-    write_atomic(JOINT['trecase'] / 'summary.json', lambda fh: fh.write(src.read_bytes()))
+    write_atomic(JOINT_OUT['trecase'] / 'summary.json', lambda fh: fh.write(src.read_bytes()))
     log = (COMMITTED_JOINT['rasqual'] / 'run_rasqual.log').read_text()
     per = {}
     for k, *m in re.findall(r'(?m)^(beta\S+ rep \d+): ([\d,]+) rows written; excluded non-converged (\d+), pseudo-fSNP '
@@ -591,6 +591,6 @@ def stage_joint_results():
         raise SystemExit(f'{COMMITTED_JOINT["rasqual"]}/run_rasqual.log: {len(per)} dataset lines parsed')
     pooled = {k: sum(v[k] for v in per.values()) for k in ('rows', 'tests', 'nonconv', 'absent', 'chisq_le0', 'no_fsnp',
                                                              'causal_nonconv', 'causal_absent', 'causal_nonnull')}
-    write_json(JOINT['rasqual'] / 'summary.json', dict(per_dataset=per, pooled=pooled,
+    write_json(JOINT_OUT['rasqual'] / 'summary.json', dict(per_dataset=per, pooled=pooled,
                                                        source=str(COMMITTED_JOINT['rasqual'] / 'run_rasqual.log')))
     print(f'staged the committed joint results of {COMMITTED} into {ROOT}; RASQUAL pooled {pooled}', flush=True)

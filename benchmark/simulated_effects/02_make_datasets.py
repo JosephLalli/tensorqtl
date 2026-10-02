@@ -5,8 +5,12 @@ genotype association broken (donor records permuted against fixed genotypes, eac
 L/R labels swapped with probability one half) and a known cis effect injected by binomial thinning
 (Gerard 2020, BMC Bioinformatics) of the haplotype carrying the lower-expressed allele, by
 f = 2^-|beta|; the collapsed remainder U = pT - pL - pR by (fL + fR) / 2. Null genes are thinned by
-their mean factor (depth matching). Total Gibbs draws are thinned like the point estimates; the
-allelic Gibbs variance of a thinned record is Va' = dv q(pL', pR') / q(pL, pR) + q(pL', pR') / ln2^2
+their mean factor (depth matching). Total Gibbs draws are thinned like the point estimates. The total T is the
+half-read log2 CPM, log2((pT + 0.5) / (eff_lib + 1) x 1e6) (hapmixqtl.half_read_log_cpm, the shipped default's
+total since 2026-09-29; user decision 2026-10-01 for every arm), and Vt the Gibbs variance of that transform over
+the thinned total draws plus its counting term (hapmixqtl.half_read_total_gibbs_variance), which only the gibbs
+arm weights by. A and Va are unchanged: log2((pL + 0.5)/(pR + 0.5)) is the difference of the two haplotypes'
+half-read log2 CPM, the library cancelling. The allelic Gibbs variance of a thinned record is Va' = dv q(pL', pR') / q(pL, pR) + q(pL', pR') / ln2^2
 with dv the real across-draw variance of log2((YL + 0.5)/(YR + 0.5)) and q(x, y) = 1/(x + 0.5) +
 1/(y + 0.5), read from Salmon's Gibbs sampler (01_check_inputs.py verifies the premise); 0 where
 pL' + pR' = 0. Truth per non-null gene: beta on the count scale (total: the least-squares slope of
@@ -22,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 import common as C
-from tensorqtl.hapmixqtl import LN2, summaries_from_point_estimates
+from tensorqtl.hapmixqtl import LN2, half_read_log_cpm, half_read_total_gibbs_variance
 
 BETAS = (0.0, 0.2, 0.4, 0.8)   # user decision 2026-09-26; 0.0 is the null anchor
 N_DATASETS = {0.0: 1, 0.2: 3, 0.4: 3, 0.8: 3}   # user decisions 2026-09-26 and, for the 30-100-read set, 2026-09-27
@@ -59,7 +63,8 @@ def thin_haplotypes(L, R, T, fl, fr, rng):
 
 
 def allelic_variance(pL, pR, pL2, pR2, YL, YR):
-    """Va' in the operation order of summaries_from_point_estimates, so that at f = 1 it equals that function's Va."""
+    """Va' in the operation order of summaries_from_point_estimates (and prepare_default_inputs), so that at f = 1 it
+    equals their Va."""
     dv = np.log2((YL + C.KAPPA) / (YR + C.KAPPA)).var(axis=2, ddof=0)
     q = 1.0 / (pL + C.KAPPA) + 1.0 / (pR + C.KAPPA)
     q2 = 1.0 / (pL2 + C.KAPPA) + 1.0 / (pR2 + C.KAPPA)
@@ -72,8 +77,9 @@ def generate(R, perm, swap, fL, fR, rng):
     out = dict(expressible=np.minimum(M['pL'], M['pR']) >= C.EXPRESSIBLE_MIN, eff_lib=M['eff_lib'])
     out['pL'], out['pR'], out['pT'] = thin_haplotypes(M['pL'], M['pR'], M['pT'], fL, fR, rng)
     _, _, out['YT'] = thin_haplotypes(M['YL'], M['YR'], M['YT'], fL[..., None], fR[..., None], rng)
-    out['A'], out['T'], _, out['Vt'], _ = summaries_from_point_estimates(
-        out['pL'], out['pR'], out['pT'], M['eff_lib'], M['YL'], M['YR'], out['YT'])
+    out['A'] = np.log2((out['pL'] + C.KAPPA) / (out['pR'] + C.KAPPA))
+    out['T'] = half_read_log_cpm(out['pT'], M['eff_lib'])
+    out['Vt'] = half_read_total_gibbs_variance(out['pT'], M['eff_lib'], out['YT'])
     out['Va'] = allelic_variance(M['pL'], M['pR'], out['pL'], out['pR'], M['YL'], M['YR'])
     out['removed'] = (M['pT'] - out['pT']).sum(0)
     out['moved'] = M
@@ -99,9 +105,8 @@ def pipeline_truth(M, fL, fR, s, g, kept):
     pL, pR, pT = M['pL'], M['pR'], M['pT']
     a_star = np.log2((fL * pL + C.KAPPA) / (fR * pR + C.KAPPA)) - np.log2((pL + C.KAPPA) / (pR + C.KAPPA))
     U = remainder(pL, pR, pT)
-    k = 1e6 / M['eff_lib'][None, :]
     pT_exp = pT - (1 - fL) * pL - (1 - fR) * pR - (1 - (fL + fR) / 2) * U
-    t_star = np.log2(k * pT_exp + 1.0) - np.log2(k * pT + 1.0)
+    t_star = np.log2((pT_exp + 0.5) / (pT + 0.5))   # the half-read total's shift; the library cancels
     sk = s * kept
     ss = (sk ** 2).sum(1)
     ba = np.full(len(s), np.nan)
