@@ -1596,7 +1596,7 @@ def sec_contrast():
                     f'{lst(R, al, "above")} in the {REF_SET}, and below it for {lst(S, al, "below")} in the {THIS_SET} '
                     f'and {lst(R, al, "below")} in the {REF_SET}' for al in ALPHAS)
     P = lambda X, sc, a, ch, part, k: X['precision'][sc][a][ch][part][k]['all']   # noqa: E731
-    rows = [(a, ch) for a in ('gibbs', 'split', 'plus_one') for ch in CHANNELS if (a, ch) != ('split', 'total')]
+    rows = [(a, ch) for a in ('gibbs', 'split') for ch in CHANNELS if (a, ch) != ('split', 'total')]
     rows += [(a, 'combined') for a in ('mixqtl', 'mixqtl_permissive', TQ) + JOINT]
     t_prec = table(['arm', 'channel'] + [f'{n}, {c}' for n, _ in runs for c in (
         'causal variant, |beta| 0.4', 'null genes, beta 0 anchor')],
@@ -1617,7 +1617,7 @@ def sec_contrast():
     efd = lambda X, a: X['gene_level_eigenmt']['beta0.4'][a]   # noqa: E731
     fdp_e = lambda X, a: efd(X, a)['false_discoveries'] / efd(X, a)['discoveries']   # noqa: E731  realized FDP of the eigenMT calls
     fdp_txt = lambda X, a: f'{f(fdp_e(X, a), 2)} ({efd(X, a)["false_discoveries"]} of {efd(X, a)["discoveries"]})'   # noqa: E731
-    high = ('gibbs', 'mixqtl', 'mixqtl_permissive', 'rasqual', 'trecase')   # the arms whose eigenMT calls carry a high null share (review 2026-09-27)
+    high = ('gibbs', 'mixqtl', 'mixqtl_permissive', 'trecase')   # the arms whose eigenMT calls carry a high null share (review 2026-09-27)
     other = lambda X: max((a for a in ALL if a not in high), key=lambda a: fdp_e(X, a))   # noqa: E731
     fdp_sentence = (' Benjamini-Hochberg at 5% bounds the expected false-discovery proportion by 5% only when the gene-level '
                     'p is not anticonservative: at |beta| 0.4 the realized false-discovery proportion of the eigenMT calls '
@@ -1723,7 +1723,7 @@ gene-to-gene spread. Every statistic is defined at its first use below; section 
 band.</p>
 <p><b>Calibration of the nominal p on the beta = 0 anchor.</b> The <i>nominal p</i> is each arm's per-variant p under
 its own reference distribution (section 2: t references for hapmixQTL's channels and their combination, a normal
-reference for mixQTL's meta statistic, a chi-squared likelihood-ratio reference for RASQUAL and TReCASE). The
+reference for mixQTL's meta statistic, a chi-squared likelihood-ratio reference for TReCASE). The
 null-gene rate is the share of the null genes' tested variants whose combined nominal p falls below the threshold; on
 null genes it should equal the threshold. The anchor is one dataset, that is ONE record
 permutation with no thinning, so its interval is gene-clustered only (genes resampled with replacement) and carries no
@@ -1751,7 +1751,7 @@ in the {REF_SET}. The other effect sizes are in section 3.4.</p>
                  f"the causal variant (|beta| 0.4; hapmixQTL and tensorQTL rows on their pipeline-scale truth, every other row on the "
                  f"count-scale truth for arm and unit alike) and on the anchor's null genes (truth 0); bars are gene-clustered "
                  f"95% intervals. Across methods the anchor ratio still carries each method's slope scale (text below the "
-                 f"RASQUAL and TReCASE paragraphs). mixQTL with published cutoffs is left out of the figure: its anchor ratio "
+                 f"TReCASE paragraphs). mixQTL with published cutoffs is left out of the figure: its anchor ratio "
                  f"is {P(S, 'beta0.0', 'mixqtl', 'combined', 'null', 'ratio_vs_unit')['value']:.0f}x in the {THIS_SET} and "
                  f"{P(R, 'beta0.0', 'mixqtl', 'combined', 'null', 'ratio_vs_unit')['value']:.0f}x in the {REF_SET} (table above), "
                  f"which would compress every other arm onto one line.")}
@@ -1766,7 +1766,7 @@ so it has no interval. The lead nominal p is not corrected for the number of var
 instruments, not calls. The <b>gene-level p</b> is the call a scan makes, and each arm has up to two. The first is its
 own permutation p for the whole cis window: pval_beta, the Beta-approximated permutation p of the lead, for the
 hapmixQTL arms (map_cis) and total-only tensorQTL (tensorQTL's map_cis); for mixQTL the empirical p of its own
-permutation scan, which has no Beta approximation; RASQUAL and TReCASE have none here. The second, for every arm, is
+permutation scan, which has no Beta approximation; TReCASE has none here. The second, for every arm, is
 the <b>eigenMT</b> p (Davis et al. 2016), which needs no permutation: a gene's effective number of independent tests,
 M<sub>eff</sub>, is the number of eigenvalues of its tested variants' genotype correlation matrix (Ledoit-Wolf shrunk:
 the sample correlation pulled toward the identity by a weight estimated from the data; in windows of 200 consecutive
@@ -1786,7 +1786,7 @@ permutation-p column and an eigenMT column per effect size.{fdp_sentence}</p>
                  f'the {n_rep[THIS_SET]} per-dataset values, not a 95% interval; dotted line: chance). Second row: power at 5% '
                  f'realized false-discovery proportion over the pooled datasets (no interval). Third row: gene-level power, the share '
                  f"of non-null gene units discovered by Benjamini-Hochberg at 5% on each arm's "
-                 f'permutation p (every arm but RASQUAL and TReCASE; gene-clustered 95% intervals). Fourth row: the eigenMT p '
+                 f'permutation p (every arm but TReCASE; gene-clustered 95% intervals). Fourth row: the eigenMT p '
                  f'of every arm held to a common error rate, power at 5% realized false-discovery proportion as in the second '
                  f"row (no interval). Bottom: the realized false-discovery proportion of each arm's Benjamini-Hochberg calls at "
                  f'5% on the eigenMT p (dashed line: 0.05); an arm above the line calls null genes beyond the 5% the procedure '
