@@ -58,7 +58,7 @@ has 200 Gibbs draws and no `--numBootstraps`).
 | What is implemented, validated, proposed, on hold, open, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What rules govern values, units, gene filter and permutation, and what was decided when? | `docs/pipeline_rules.md` |
 | What is tested, and how do I run the self-test? | `tests/README.md` |
-| How are benchmark datasets with known effects made and scored? | `benchmark/simulated_effects/README.md` (run order `run_all.sh`; `SIMULATED_EFFECTS_ROOT` for a fresh output root; `99_acceptance.py`). Delivered pages `brainvar_hapmix_deploy/plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/` (records made with log2(CPM+1) expression PCs before a2f4314, not of the half-read default); the current code's deep-set page `release_closure_20261001/plasmode_after_split/report/plasmode_report.html` (README header) |
+| How are benchmark datasets with known effects made and scored? | `benchmark/simulated_effects/README.md` (run order `run_all.sh`; `SIMULATED_EFFECTS_ROOT` for a fresh output root). The run on the shipped configuration (every arm on the half-read total, 2026-10-01) is `brainvar_hapmix_deploy/simulated_effects_half_read_20261001/` (page `report/plasmode_report.html`, stored null `stored_null_half_read_20261001/`); the 2026-09-27 pages `plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/` are records of the log2(CPM+1) total |
 | The whole benchmark on one page; hapmixQTL against TReCASE? | `brainvar_hapmix_deploy/benchmark_summary_20260929/summary.html`, `hapmix_vs_trecase.html` beside it |
 | Whose top genes replicate in held-out BrainVar donors? | `brainvar_hapmix_deploy/referee_replication_20260928/report.html` |
 | How does default mode do on data drawn from TReCASE's own model? | `brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html` |
@@ -164,10 +164,10 @@ experiment.
   decision 2026-09-28): `brainvar_hapmix_deploy/phased_vcf_inventory_20260928/README.md`.
   They are 1,188 of the 1,208 filtered genes the runner reports but cannot
   test for lack of Gibbs draws.
-- **No transcriptome-wide run of the shipped default exists yet**, and the
-  comparative evidence (simulated-effects pages, referee, external benchmark) was made
-  on the predecessor configuration; `docs/CURRENT_SCIENTIFIC_STATE.md` says
-  which result was measured on which.
+- **No transcriptome-wide run of the shipped default exists yet.** The deep set of the
+  simulated-effects benchmark runs on the shipped configuration since 2026-10-01; its
+  low-coverage set, the referee and the external benchmark were made on the predecessor
+  configuration; `docs/CURRENT_SCIENTIFIC_STATE.md` says which result was measured on which.
 - **The nominal p is anticonservative** through weight-residual coupling
   (mechanism identified on the pre-correction pipeline, source not); the
   detection call is unaffected. `docs/pipeline_rules.md`,
@@ -177,10 +177,9 @@ experiment.
 - **No per-donor allelic read floor by default** (mixQTL's published driver
   required at least 50 reads on each haplotype; `--asc-cutoff` supplies one
   for a matched comparison).
-- **The stored nulls have not been rerun under Meier's correction or on the half-read expression PCs**
-  (made with `cov/log2cpm1_point_calibration_20260925`), nor the benchmark's RASQUAL and TReCASE (reused
-  from the committed run), so the benchmark's comparisons with them are like for like in the allelic
-  channel at most; what would rerun each: `benchmark/simulated_effects/README.md`, the report's section 6.
+- **The benchmark's low-coverage set, native-input arms and RASQUAL are not yet on the shipped
+  configuration** (RASQUAL is out of the scored arms; the deep set, its stored null and TReCASE are
+  on it since 2026-10-01); what would rerun each: `benchmark/simulated_effects/README.md`.
 - **`tests/ase_gtex_real_data.py` fabricates the total channel's inferential
   variance** and keeps an allelic intercept (historical harness).
 - **Cross-donor correlation** (relatedness, structure, batch beyond the 17

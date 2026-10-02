@@ -1,43 +1,38 @@
 # Simulated-effects cis-eQTL benchmark (benchmark/simulated_effects)
 
-> **Historical benchmark labels.** `split` is this pipeline's dated
-> `log2(CPM+1)` arm and `gibbs (shipped)` means shipped at that record's date.
-> Neither is the 2026-09-29 half-read default. Do not relabel stored results
-> or use these arms to claim uniform superiority.
->
-> **The delivered pages and this code read different expression PCs.** The two
-> delivered roots (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`)
-> predate commit a2f4314 (2026-09-30) and used the covariates of
-> `cov/log2cpm1_point_calibration_20260925`; this code reads
-> `cov/half_read_point_calibration_20260930` (`common.COV`); the two builds
-> differ only in the ten expression PCs. The staged RASQUAL and TReCASE
-> results keep the earlier build, and the page says so in section 2. On this
-> code three of the page's fixed sentences (sections 3.4, 3.5 and 5) stopped
-> holding and were reworded on 2026-10-01; its run of the deep set, with the
-> committed joint results staged and 05b not run, is
-> `brainvar_hapmix_deploy/release_closure_20261001/plasmode_after_split/report/plasmode_report.html`.
+> **Every arm on half-read split's inputs (user decision 2026-10-01).** The hapmixQTL arms and
+> total-only tensorQTL use the half-read total; the arms are split (the shipped default), gibbs
+> (the total weighted by its half-read Gibbs variance) and unit; `plus_one` is retired; mixQTL mode
+> keeps its published natural-log response; RASQUAL is out of the scored arms (`common.JOINT`).
+> The deep set's run is `brainvar_hapmix_deploy/simulated_effects_half_read_20261001/` (page
+> `report/plasmode_report.html`), its stored null `stored_null_half_read_20261001/`. The 2026-09-27
+> roots (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`) and the run of earlier on
+> 2026-10-01 (`release_closure_20261001/plasmode_after_split`) are records of the log2(CPM+1) total.
+> Not yet on this configuration: the low-coverage set, the native-input arms (`05b_native_arms.py`
+> still builds its native split's total as log2(CPM + 1)) and RASQUAL.
 
 ## Purpose
 
 Datasets with known cis effects built from the BrainVar cohort's own Salmon quantification, and
-the recovery of those effects by four hapmixQTL weightings (gibbs, split, unit, plus_one), mixQTL
-mode at two cutoff settings, total-only tensorQTL (tensorqtl.cis on the total phenotype, unweighted),
-RASQUAL and TReCASE (asSeq), and two native-input arms on alignment counts from the same STAR BAMs (TReCASE, and split
+the recovery of those effects by three hapmixQTL weightings on the half-read total (split, the shipped
+default; gibbs; unit), mixQTL mode at two cutoff settings, total-only tensorQTL (tensorqtl.cis on the half-read
+total, unweighted), TReCASE (asSeq) and, where `ROOT/native/` exists, two native-input arms on alignment counts from the same STAR BAMs (TReCASE, and split
 weighting as the control; section Native-input arms). The question it answers: on data with the real cohort's depth, noise and
 donor structure, how well does each arm rank non-null genes, discover them at a controlled
 false-discovery rate (on its own permutation p where it has one, and on eigenMT's p for every arm),
 estimate the injected slope, state its standard error, and place the lead variant on the causal one.
-The hapmixQTL arms carry Meier's correction of the combined standard error (commit a1b2ef4). It was part of the evidence for
-the weighting decision (`docs/pipeline_rules.md`, "Decision, 2026-09-29: half-read split is the default weighting
-configuration").
+The hapmixQTL arms carry Meier's correction of the combined standard error (commit a1b2ef4). Its 2026-09-27 run on the
+log2(CPM + 1) total was part of the evidence for the weighting decision (`docs/pipeline_rules.md`, "Decision, 2026-09-29:
+half-read split is the default weighting configuration"); since 2026-10-01 it measures that configuration
+(`docs/pipeline_rules.md`, "Decision, 2026-10-01").
 
 This directory is the analysis-tier rewrite (2026-09-27) of the previous benchmark code, the twelve scripts that lived in `scripts/plasmode` until commit fc238df: the same design,
 about 2,600 lines of pipeline code (common.py and scripts 01-07, run_trecase.R) plus a report script of
 about 2,400 lines and the acceptance test, one check script, no per-dataset re-validation, no
 command-line options; `select_stratum_genes.py` made the 30-100-read gene set once.
 `99_acceptance.py` checks it against the committed run of each gene set (2026-09-26 and 2026-09-27); those runs
-predate Meier's correction and the tensorqtl arm, so it is a refactoring check that needs references made by the
-same statistics.
+predate Meier's correction, the tensorqtl arm and the half-read total, so on the current code it does not pass: it is
+a refactoring check that needs references made by the same statistics, and none exists yet for this configuration.
 
 The benchmark is standalone (2026-10-01): it moved from `scripts/plasmode` to `benchmark/simulated_effects` (commit e68865d),
 and `common.py` carries its own copies of the loader and helpers it used to import from `scripts/` (commit 938d28c;
@@ -57,44 +52,35 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   holds, per gene set, the directory under `D` (`genes.txt`, 100 genes; `regions.bed`;
   `gene_design.tsv` with median allele-resolved reads and admitted allelic donors; that set's stored
   200-permutation gibbs null run, `summary.json` and `draws/`), the output directory (`ROOT`), and the
-  stored runs of that gene set the scripts read: `hybrid_weights_null_20260926` (the split, unit and
-  plus_one null runs; 06's anchors and 01's check d), `allelic_df_fix_20260927` (the stored null re-run
-  under commit 8a06803; 08's anchor and tail comparison), `plasmode_20260926/summary_before_df_fix.json`
-  and `plasmode_20260926/summary.json` (the committed run's arms scored before and after that commit, on the
-  same datasets and covariates; 08's before and after of section 3.1, a record, not regenerable) and
-  `plasmode_20260926/results_trecase_asseq/smoke/summary.json` (the TReCASE smoke run whose largest theta
-  gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
+  stored runs of that gene set the scripts read: `stored_null_half_read_20261001` (the 200-permutation null of the
+  three hapmixQTL arms on this configuration, `scripts/half_read_stored_null.py`; 06's anchors, 01's check d and
+  08). `hybrid_weights_null_20260926`, `allelic_df_fix_20260927`, `plasmode_20260926/summary_before_df_fix.json`
+  and the TReCASE smoke run are earlier configurations' records the code still names but no step reads for the
+  default set. A new gene set  gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
   stops every script at import. `SIMULATED_EFFECTS_GENE_SET` in the environment selects the entry.
 - `stratum30_100`: the 30-100-read gene set, 100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100) with at least 15 admitted allelic donors, drawn once by
   `select_stratum_genes.py` into `plasmode_stratum30_100_20260927/gene_set` (with its log and
-  `pool_stratum.tsv`). Its entry names that directory, its root and its committed run; it has no stored null runs, before- and after-fix records, TReCASE smoke run or ladder
+  `pool_stratum.tsv`). Its entry names that directory, its root and its committed run; it has no stored null run, before- and after-fix records, TReCASE smoke run or ladder
   (`None`), so check (d), the anchor, 07 and the parts of 08 that read them print a skip. 06 scores it in
   the read bands <30 / 30-50 / 50-100, and 01's check (c) over every gene. Its report leaves out the
   interpretation paragraphs of section 3, section 3.8 and sections 4-5 (they were written for the
   default set), closes with a limits section (the native arms' limits and the comparisons with earlier runs),
-  and adds a section setting it, the low-coverage set, against the deep set's delivered run
-  (`plasmode_meier_20260927/summary.json`), with three contrast figures, from its selection log,
+  and adds a section setting it, the low-coverage set, against the deep set's run in its `GENE_SETS` root
+  (`simulated_effects_half_read_20261001/summary.json`), with three contrast figures, from its selection log,
   `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json` and the committed
   stratum run's `run_arms.log` (its dataset blocks).
 - `cohort/salmon.tsv`, `annot/tx2gene.tsv` and donor 100_D1's dumped equivalence classes (the Salmon
-  premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, `common.OLD`).
-  Check d reproduces those stored nulls with the covariates they were made with,
-  `cov/log2cpm1_point_calibration_20260925` (`01_check_inputs.REPRO_COV`), not `common.COV`.
+  premise check); `protein_coding_null_store_20260925/permutations.npz` (check d, `common.OLD`, the
+  permutation stream of every stored null). Check d reproduces the stored null's first permutation in every column
+  from this pipeline's generator.
 - Which covariate build a run's arms used: `03_run_arms.py` records it in `run_arms_facts.json`
-  (`covariates`); for an output directory made before that record, 08 infers it from when 03 wrote that file
-  (commit a2f4314, 2026-09-30, moved the expression PCs to the half-read build) and says so. The stored
-  null runs, their re-run under 8a06803, the committed run (the joint models included) and the delivered
-  runs `plasmode_meier_20260927` and `plasmode_lowcov_meier_20260927` were made with `cov/log2cpm1_point_calibration_20260925` and, except the
-  delivered runs, before Meier's correction. The allelic channel takes no covariates, so a comparison across
-  builds is like for like in the allelic channel only; 08 says so at each such comparison and lists in its
-  limits section what would have to run to make each like for like. The chain the report relies on (identical
-  datasets; the committed run's channel statistics the same before and after 8a06803; the Meier run's channel
-  statistics equal the committed run's, and this code's allelic statistics the Meier run's) is checked in
-  `release_closure_20261001/earlier_runs_chain.log`.
+  (`covariates`), and `05_run_trecase.py` in its `summary.json`; for an output directory made before that record,
+  08 infers it from when 03 wrote that file (commit a2f4314, 2026-09-30, moved the expression PCs to the half-read
+  build) and says so.
 
-Outputs go to `common.ROOT` only (`plasmode_meier_20260927` for the default gene set,
-`plasmode_lowcov_meier_20260927` for `stratum30_100`). `99_acceptance.py` sets `SIMULATED_EFFECTS_ACCEPTANCE=1` before
+Outputs go to `common.ROOT` only (`simulated_effects_half_read_20261001` for the default gene set,
+`simulated_effects_lowcov_half_read_20261001` for `stratum30_100`). `99_acceptance.py` sets `SIMULATED_EFFECTS_ACCEPTANCE=1` before
 importing `common`, which makes `common.ROOT` the gene set's `acceptance_root` (`plasmode2_acceptance_20260927`,
 `plasmode2_stratum_acceptance_20260927`) for it and every step it runs, so the acceptance never writes into those two.
 Outside the acceptance, `SIMULATED_EFFECTS_ROOT` in the environment sends every output to that directory instead (a fresh run to
@@ -172,7 +158,10 @@ each prints a skip line and scores or reports the Salmon-input arms alone, with 
 `run_all.sh` prints the versions (`common.versions`, also written to `ROOT/versions.log`) and runs the
 numbered scripts in order into `common.ROOT`; each step logs to `ROOT/<step>.log` and stops the run on
 failure. With the argument `staged` (`run_all.sh staged`) the gene set's committed RASQUAL and TReCASE results
-(`common.stage_joint_results`, also used by `99_acceptance.py`; logged to `ROOT/stage_joint_results.log`) replace steps 4 and 5. Measured 2026-09-27 on the shared 256-core host at load 120-220, one NVIDIA L4, at most 16
+(`common.stage_joint_results`, also used by `99_acceptance.py`; logged to `ROOT/stage_joint_results.log`) replace steps 4 and 5.
+On the half-read configuration staging does not serve: the committed results carry fingerprints of datasets made on the
+log2(CPM + 1) total, which 06 refuses, so TReCASE is run (05, 64 genes at a time; 2026-10-01: about two hours for the deep
+set, every gene's own fit kept in `ROOT/trecase_work` so that a rerun on regenerated datasets reassembles in minutes). Measured 2026-09-27 on the shared 256-core host at load 120-220, one NVIDIA L4, at most 16
 processes (~100 s of each Python step is loading the cache):
 
 | step | script | what it writes | runtime |

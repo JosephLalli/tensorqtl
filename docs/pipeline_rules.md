@@ -171,6 +171,24 @@ All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
 
 ## Dated decision records
 
+### Decision, 2026-10-01: the simulated-effects benchmark runs every arm on half-read split's inputs
+
+The user decided that everything uses half-read split and that anything that did not is rerun.
+In the simulated-effects benchmark every hapmixQTL arm and total-only tensorQTL now use the
+half-read total (rule 2); A and Va are unchanged, A being the difference of the two haplotypes'
+half-read log2 CPM. The hapmixQTL arms are split (the shipped default), unit (unit weights in both
+channels) and gibbs, whose total weight is 1/Vt with Vt the Gibbs variance of the half-read total
+over the draws plus its counting term 1/((pT + 0.5) ln^2 2)
+(`hapmixqtl.half_read_total_gibbs_variance`; user definition 2026-10-01); `plus_one` is retired.
+mixQTL mode keeps its published natural-log total over twice the library size (user decision).
+RASQUAL is out of the scored arms for now (user decision; `04_run_rasqual.py` is kept). The stored
+null of this configuration is `stored_null_half_read_20261001`
+(`scripts/half_read_stored_null.py`); its pass rule, stated before the run (combined rate at 0.001
+within its gene-clustered interval of 0.001, RPL41 included), holds for split (0.00107
+[0.00092, 0.00128]) and fails narrowly for unit (0.00115 [0.00110, 0.00121]); gibbs's total
+channel rejects at 0.00758 at 0.001. The benchmark run is `simulated_effects_half_read_20261001`;
+its page is that directory's `report/plasmode_report.html`.
+
 ### Decision, 2026-09-29: half-read split is the default weighting configuration
 
 The user adopted half-read split: original admitted Gibbs allelic weighting
