@@ -45,11 +45,14 @@ COMPARATORS (implemented here directly, no R or C dependency)
               allelic channel, per-channel t references, the 15-donor
               allelic admission floor, Meier's correction of the combined
               SE, and the Welch-Satterthwaite reference of the combined p),
-              at three weightings: gibbs (1/v both channels), split (1/v
-              allelic, unit total) and plus_one (1/(v+1) both).
+              on the shipped default's inputs (prepare_default_inputs: the
+              half-read log CPM total, the zero-haplotype admission rule), at
+              the simulated-effects benchmark's three weightings (2026-10-01):
+              split (the shipped default: 1/Va allelic, unit total), gibbs
+              (1/Va allelic, 1/Vt total, Vt from half_read_total_gibbs_variance)
+              and unit (weight 1 in both channels, no Gibbs draws).
               Values are the simulated counts (the point estimates) and
-              variances come from emulated draws, both in log2 through
-              summaries_from_point_estimates, the runner's phenotype.
+              variances come from emulated draws, both in log2.
               Emulated draws: allelic yL ~ Binomial(n_as, frac) with
               yR = n_as - yL; total yT ~ Poisson(T), because gene-level Gibbs
               variance of a total is Poisson (docs/measurement_record.md, the RTA entry). With
@@ -84,11 +87,11 @@ from scipy.special import betaln, gammaln
 
 try:
     from tensorqtl.hapmixqtl import (
-        _prepare_channels, calculate_hapmixqtl_nominal, summaries_from_point_estimates)
+        _prepare_channels, calculate_hapmixqtl_nominal, half_read_total_gibbs_variance, prepare_default_inputs)
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / 'tensorqtl'))
     from hapmixqtl import (
-        _prepare_channels, calculate_hapmixqtl_nominal, summaries_from_point_estimates)
+        _prepare_channels, calculate_hapmixqtl_nominal, half_read_total_gibbs_variance, prepare_default_inputs)
 
 import torch
 DTYPE = torch.float64
@@ -298,9 +301,10 @@ def trecase_lrt(d):
 # ---------------------------------------------------------------------------
 
 def emulated_summaries(d, rng, n_draws=80, kappa_pseudo=0.5):
-    """Simulated counts as point estimates, emulated draws for their variance:
-    (a, t, Va, Vt) in log2 from summaries_from_point_estimates. eff_lib = lib x 1e6
-    makes t = log2(T / lib + 1), the harness's library-normalized expression."""
+    """Simulated counts as point estimates, emulated draws for their variance: (a, t, Va, Vt)
+    in log2, a, t and Va from prepare_default_inputs (the shipped default; t the half-read log
+    CPM) and Vt, which only the gibbs weighting uses, from half_read_total_gibbs_variance.
+    eff_lib = lib x 1e6 reads."""
     N = len(d['g'])
     tot_as = d['yL'] + d['yR']
     frac = (d['yL'] + kappa_pseudo) / (tot_as + 2 * kappa_pseudo)
@@ -313,20 +317,20 @@ def emulated_summaries(d, rng, n_draws=80, kappa_pseudo=0.5):
         yR[0, i, :] = max(n_i, 0) - draw
     # drawn after the allelic draws, so those are the ones the harness always drew
     yT = rng.poisson(d['T'][:, None], size=(N, n_draws)).astype(float)[None]
-    A, T_, Va, Vt, _ = summaries_from_point_estimates(
-        d['yL'][None], d['yR'][None], d['T'][None], d['lib'] * 1e6, yL, yR, yT)
+    A, T_, Va, _ = prepare_default_inputs(d['yL'][None], d['yR'][None], d['T'][None], d['lib'] * 1e6, yL, yR)
+    Vt = half_read_total_gibbs_variance(d['T'][None], d['lib'] * 1e6, yT)
     return A[0], T_[0], Va[0], Vt[0]
 
 
 def weighted_variances(weighting, va, vt, eps=1e-12):
-    """(allelic, total) working variances; hybrid_weights_null.config_variances
-    (split = its 'hybrid'). No-coverage donors (Va = 0) stay at 0, so they stay excluded."""
+    """(allelic, total) working variances; benchmark/simulated_effects/common.config_variances
+    (split = its 'hybrid', unit = its 'unit'). Excluded donors (Va = 0) stay at 0, so they stay excluded."""
     if weighting == 'gibbs':
         return va, vt
     if weighting == 'split':
         return va, np.ones_like(vt)
-    if weighting == 'plus_one':
-        return np.where(va > eps, va + 1.0, 0.0), vt + 1.0
+    if weighting == 'unit':
+        return np.where(va > eps, 1.0, 0.0), np.ones_like(vt)
     raise ValueError(weighting)
 
 
@@ -360,11 +364,11 @@ METHODS = {
     'TReC-only': lambda d, rng: trec_lrt(d),
     'ASE-only': lambda d, rng: ase_lrt(d),
     'TReCASE (joint)': lambda d, rng: trecase_lrt(d),
-    # default mode (tau_mode='zero' + se_mode='fitted') at the three weightings
-    # under decision (docs/pipeline_rules.md, "which weighting configuration ships")
+    # default mode (tau_mode='zero' + se_mode='fitted') at the simulated-effects benchmark's
+    # three weightings (docs/pipeline_rules.md, "Decision, 2026-10-01")
     'hapmixQTL gibbs': lambda d, rng: hapmix_pval(d, rng, 'gibbs'),
     'hapmixQTL split': lambda d, rng: hapmix_pval(d, rng, 'split'),
-    'hapmixQTL plus_one': lambda d, rng: hapmix_pval(d, rng, 'plus_one'),
+    'hapmixQTL unit': lambda d, rng: hapmix_pval(d, rng, 'unit'),
 }
 
 

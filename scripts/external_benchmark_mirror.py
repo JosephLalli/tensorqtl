@@ -1,5 +1,7 @@
-"""Mirror benchmark: tests/ase_external_benchmark.py at N = 200 and N = 92, hapmixQTL in current default
-mode, and the real asSeq::trecase on the same simulated data.
+"""Mirror benchmark: tests/ase_external_benchmark.py at N = 200 and N = 92, hapmixQTL in default mode on the
+shipped default's inputs (half-read total; arms split, gibbs and unit, as in the simulated-effects benchmark since
+2026-10-01), and the real asSeq::trecase on the same simulated data. The 2026-09-28 run on the log2(CPM + 1) total,
+with arms gibbs, split and plus_one, is the record external_benchmark_current_20260928.
 
 The harness simulates from the RASQUAL / TReCASE generative model (negative-binomial totals,
 beta-binomial allelic counts; its docstring). Design of the 2026-09-23 record
@@ -32,7 +34,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'tests'))
 import ase_external_benchmark as B  # noqa: E402
 
-OUT = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy/external_benchmark_current_20260928')
+OUT = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy/external_benchmark_half_read_20261002')
 PRIOR = Path('/mnt/ssd/lalli/brainvar_hapmix_deploy/external_benchmark_fitted_defaults_20260923/'
              'null_and_power_500reps.json')                        # the 2026-09-23 record
 REPS = 500                                                           # task; the 2026-09-23 design
@@ -49,7 +51,7 @@ CHUNK = 10                                                           # replicate
 R_ENV = {'R_LD_LIBRARY_PATH': '/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu',
          'LD_LIBRARY_PATH': '/usr/local/cuda/lib64'}                 # CLAUDE.md, R's BLAS entry
 R_SCRIPT = Path(__file__).resolve().with_name('external_benchmark_mirror_trecase.R')
-HAPMIX = {'hapmixQTL gibbs': 'gibbs', 'hapmixQTL split': 'split', 'hapmixQTL plus_one': 'plus_one'}
+HAPMIX = {'hapmixQTL gibbs': 'gibbs', 'hapmixQTL split': 'split', 'hapmixQTL unit': 'unit'}
 COMPARATORS = ('TReC-only', 'ASE-only', 'TReCASE (joint)')
 # asSeq's two p-values: final_Pvalue is what asSeq reports (trecase.c:1311-1323: the joint p unless the
 # cis-trans test rejects or is NA, then the TReC p; the simulated-effects benchmark's TReCASE arm's pval_nominal); Joint_Pvalue
@@ -102,7 +104,7 @@ def one_rep(args):
     row['n_a'] = info['n_a']
     row['n_het'] = int(d['het'].sum())
     _, _, va, vt = B.emulated_summaries(d, arm_rng())
-    row['vt_over_delta'] = float(np.median(vt / (d['T'] / (d['T'] + d['lib']) ** 2 / np.log(2) ** 2)))
+    row['vt_over_delta'] = float(np.median(vt / (d['T'] / (d['T'] + 0.5) ** 2 / np.log(2) ** 2)))   # delta-method variance of the half-read total
     row['median_T'] = float(np.median(d['T']))
     row['median_n_as'] = float(np.median(d['n_as']))
     return row

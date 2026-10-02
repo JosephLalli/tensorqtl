@@ -238,9 +238,13 @@ Tier 0b conclusion on realistically generated summaries.
 
 > **2026-09-28:** the harness was fixed (a total channel built from the simulated totals, a
 > through-origin allelic channel) and now runs default-mode weightings (gibbs / split /
-> plus_one); it no longer writes `docs/ase_external_benchmark.json`. The current record is
-> `brainvar_hapmix_deploy/external_benchmark_current_20260928/` (scripts
-> `scripts/external_benchmark_mirror*`). The numbers below are the earlier record.
+> plus_one); it no longer writes `docs/ase_external_benchmark.json`.
+> **2026-10-02:** its hapmixQTL arms take the shipped default's inputs (`prepare_default_inputs`,
+> the half-read total) at the simulated-effects benchmark's weightings (split / unit / gibbs). The
+> current record is `brainvar_hapmix_deploy/external_benchmark_half_read_20261002/` (page
+> `comparator_checks_20261002/index.html`; script `scripts/external_benchmark_mirror.py`); the
+> 2026-09-28 run on the earlier total is `external_benchmark_current_20260928/`. The numbers below
+> are the earlier record.
 
 Every tier above simulates from hapmixQTL's *own* assumed model. That is circular: the
 simulator and the estimator share a worldview, so it can show internal inconsistency but

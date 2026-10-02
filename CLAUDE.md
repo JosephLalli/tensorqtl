@@ -61,7 +61,7 @@ has 200 Gibbs draws and no `--numBootstraps`).
 | How are benchmark datasets with known effects made and scored? | `benchmark/simulated_effects/README.md` (run order `run_all.sh`; `SIMULATED_EFFECTS_ROOT` for a fresh output root). The one report over both gene sets on the shipped configuration (every arm on the half-read total) is `brainvar_hapmix_deploy/simulated_effects_integrated_20261002/index.html`; the runs it reads are `simulated_effects_half_read_20261001/` (deep set) and `simulated_effects_lowcov_half_read_20261001/` (low-coverage set), each with its page `report/plasmode_report.html` and gene-level null `gene_level_null/`, and their stored nulls `stored_null_half_read_20261001/` and `stored_null_lowcov_half_read_20261002/`; the 2026-09-27 pages `plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/` are records of the log2(CPM+1) total |
 | The whole benchmark on one page; hapmixQTL against TReCASE? | `brainvar_hapmix_deploy/benchmark_summary_20260929/summary.html`, `hapmix_vs_trecase.html` beside it (2026-09-29, predecessor configuration; the simulated-effects benchmark on the shipped one is the integrated report in the row above) |
 | Whose top genes replicate in held-out BrainVar donors? | `brainvar_hapmix_deploy/referee_replication_20260928/report.html` |
-| How does default mode do on data drawn from TReCASE's own model? | `brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html` |
+| How does default mode do on data drawn from TReCASE's own model? Does dropping RASQUAL's non-converged fits matter? | `brainvar_hapmix_deploy/comparator_checks_20261002/index.html` (both checks on the shipped default, 2026-10-02; runs `external_benchmark_half_read_20261002/` and `rasqual_nonconverged_20261002/`); `external_benchmark_current_20260928/report.html` is the record on the earlier total |
 | Why do effect sizes in the simulated-effects benchmark fall short of the simulated effect? | `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html` |
 | Why half-read split ships (trials, comparisons, adoption)? | `brainvar_hapmix_deploy/half_read_trial_20260929/CONCLUSION.md`, `half_read_unit_power_pr_20260929/index.html`, `half_read_default_adoption_20260929/`; the analysis driver `docs/half_read_analysis.md` |
 | What Gibbs prior do Salmon's draws carry, how calibrated is `Va`, and what is `--gibbsPriorAggregation`? | `brainvar_hapmix_deploy/salmon_informative_reads_20260930/README.md`; prepared (on hold) re-quantification `salmon_gibbspriorgroups_20261001/`; the C++ 1.10.3 fork `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior` and the Rust 2.8.0 clone `salmon-rust-gibbs-prior` beside it (change uncommitted in both as of 2026-10-01; commit and push commands for the fork `github.com/JosephLalli/salmon` in `brainvar_hapmix_deploy/release_closure_20261001/README.md`); the patches `/mnt/ssd/lalli/usr/local/src/salmon-gibbs-prior-aggregation.patch` (C++) and `salmon-rust-gibbs-prior-aggregation.patch` (Rust), and the Rust pull-request drafts `salmon-rust-gibbs-prior-aggregation.{PR.md,fork-PR.md}` (upstream `develop`; the fork's `master`); the `*-groups.*` files beside them are the earlier file-based form |
@@ -170,8 +170,9 @@ experiment.
   personalized RNA-seq alignment (user decision 2026-10-02,
   `brainvar_hapmix_deploy/paper_figure_plan_20261002/`). Both gene sets of the
   simulated-effects benchmark run on the shipped configuration (deep set 2026-10-01,
-  low-coverage set 2026-10-02); the referee and the external benchmark were made on the
-  predecessor configuration; `docs/CURRENT_SCIENTIFIC_STATE.md` says which result was measured on which.
+  low-coverage set 2026-10-02), and so does the external benchmark on TReCASE's own model
+  (2026-10-02); the referee was made on the predecessor configuration;
+  `docs/CURRENT_SCIENTIFIC_STATE.md` says which result was measured on which.
 - **The nominal p is anticonservative** through weight-residual coupling
   (mechanism identified on the pre-correction pipeline, source not); the
   detection call is unaffected. `docs/pipeline_rules.md`,

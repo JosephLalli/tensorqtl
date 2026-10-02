@@ -39,9 +39,11 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   2026-10-01/02; one report covers both sets
   (`simulated_effects_integrated_20261002/index.html`).
 - **The real-data comparative evidence predates the shipped default.** The
-  held-out replication referee and the external mirror benchmark were measured
-  on the predecessor configuration (split weighting on a `log2(CPM + 1)` total
-  with `log2(CPM + 1)` expression PCs) and are labelled so below.
+  held-out replication referee was measured on the predecessor configuration
+  (split weighting on a `log2(CPM + 1)` total with `log2(CPM + 1)` expression
+  PCs) and is labelled so below. The external benchmark on TReCASE's own model
+  was rerun on the shipped default on 2026-10-02
+  (`comparator_checks_20261002/index.html`).
 - **On hold.** Re-quantifying the 92 donors with the `--gibbsPriorAggregation`
   Salmon fork, until there is more and better phasing and quicker personalized
   alignment (user decisions 2026-10-01 and 2026-10-02); every current result
@@ -51,9 +53,9 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   under Gibbs weighting (mechanism identified, source not); single-donor
   influence (now visible, not prevented); the Beta approximation's tail
   conservatism; no per-sample allelic read floor; 1,208 calibration genes
-  untested; the referee and the external benchmark not re-run under the
-  shipped default, and no transcriptome-wide run under it (it waits on a rerun
-  of the personalized RNA-seq alignment, user decision 2026-10-02).
+  untested; the referee not re-run under the shipped default, and no
+  transcriptome-wide run under it (it waits on a rerun of the personalized
+  RNA-seq alignment, user decision 2026-10-02).
 - **Run state.** Nothing of this project was running at the end of 2026-10-02.
 
 ## What ships
@@ -287,6 +289,34 @@ haplotype-informative reads over admitted allelic donors lie in [30, 100)
   covariate-residualized phenotype, not donor records. These nulls are made by
   the operation the permutation test uses, so they check its machinery, not
   calibration on real data.
+- **RASQUAL's non-converged rows** (`rasqual_nonconverged_20261002/`,
+  `benchmark/simulated_effects/rasqual_nonconverged.py`, page
+  `comparator_checks_20261002/index.html`, 2026-10-02). The benchmark drops the
+  1.5% (deep) and 1.1% (low-coverage) of RASQUAL's tests whose fit did not
+  converge. Rebuilt with 04's own code (converged rows reproduce the delivered
+  files in every column) and scored by 06 unchanged with those rows kept, at
+  their reported statistic or at p = 1, RASQUAL's power at 5% realized FDP is
+  unchanged at every |beta| on both sets (0.027 / 0.293 / 0.640 deep, 0.007 /
+  0.007 / 0.267 low), its null-gene rates move by at most 0.0007, and every
+  number of every other arm is identical. Its gap to split at |beta| 0.8 (0.213
+  deep, 0.307 low) is not produced by the dropping.
+- **External benchmark on TReCASE's own model** (`external_benchmark_half_read_20261002/`,
+  page `comparator_checks_20261002/index.html`, 2026-10-02): the 2026-09-28
+  harness, design and seeds with the hapmixQTL arms on `prepare_default_inputs`
+  (split, unit weights, gibbs; plus_one retired); asSeq's outputs were reused
+  after its regenerated inputs proved byte-identical. Split's share of null
+  replicates with p below 0.05 / 0.01 is 0.052 / 0.014 at 200 donors and
+  0.058 / 0.012 at 92, the same as on the earlier total. Its power at allelic
+  folds 1.05 / 1.10 / 1.20 is 0.272 / 0.756 / 0.998 at 200 donors against
+  TReCASE's own likelihood's 0.274 / 0.760 / 0.998, and 0.138 / 0.392 / 0.924
+  against 0.148 / 0.436 / 0.942 at 92. Every split-minus-TReCASE difference is
+  within two standard errors when each method's null threshold is resampled
+  too (largest -0.044, standard error 0.029, at fold 1.10 with 92 donors); the
+  paired standard errors quoted for the 2026-09-28 run below hold the thresholds
+  fixed and are about half as large. Unit weights stay within two such standard
+  errors of split at every fold. asSeq's final p, as users run it, gives
+  p < 0.05 in 0.078 and 0.074 of null replicates and trails TReCASE's own
+  likelihood at fold 1.20 by 0.060 and 0.080.
 - **The combined reference under the exact model**
   (`scripts/combined_reference_exact_model.py`,
   `combined_reference_exact_model_20260927/`). Phenotypes replaced by normal
@@ -367,7 +397,8 @@ power and mean squared error were not re-measured with the half-read PCs.
   genes split replicates more, +0.077 [+0.056, +0.095].
 - **External mirror benchmark on TReCASE's own generative model**
   (`external_benchmark_current_20260928/report.html`, `summary.json`; 500
-  replicates). The split arm's total phenotype is
+  replicates; rerun on the shipped default on 2026-10-02, in the section on the
+  shipped default above). The split arm's total phenotype is
   `summaries_from_point_estimates`'s `log2(T/lib + 1)`. At N = 200 split
   rejects at 0.052 / 0.014 at 0.05 / 0.01 against TReCASE's 0.054 / 0.012, with
   matched power 0.274 / 0.758 / 0.998 against 0.274 / 0.760 / 0.998 at allelic
@@ -656,9 +687,9 @@ half-depth check as its limit at that depth.
 - **Low-information `Va` under stock draws** (previous section); the excess at
   10-30 informative reads that every prior configuration keeps has no
   identified source.
-- **Evidence lag.** The held-out referee and the external benchmark have not
-  been re-run under the shipped default (the simulated-effects benchmark has,
-  every method on both gene sets, 2026-10-01/02), and no transcriptome-wide
+- **Evidence lag.** The held-out referee has not been re-run under the shipped
+  default (the simulated-effects benchmark has, every method on both gene sets,
+  2026-10-01/02, and so has the external benchmark, 2026-10-02), and no transcriptome-wide
   association run under it exists; that run waits on a rerun of the
   personalized RNA-seq alignment (user decision 2026-10-02). Nothing below
   nominal 0.001 has been tested on real genes.
@@ -713,7 +744,9 @@ nulls `stored_null_half_read_20261001/` and
 `simulated_effects_integrated_20261002/`; benchmark pages
 `plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/`
 (predecessor configuration); referee `referee_replication_20260928/`; external
-benchmark `external_benchmark_current_20260928/`. Earlier benchmark runs kept as
+benchmark on the shipped default `external_benchmark_half_read_20261002/` (on the
+earlier total `external_benchmark_current_20260928/`); RASQUAL's non-converged rows
+`rasqual_nonconverged_20261002/`; both checks' page `comparator_checks_20261002/`. Earlier benchmark runs kept as
 records: `plasmode_20260926/` and `plasmode_stratum30_100_20260927/` (before
 Meier's correction); `plasmode2_acceptance_20260927/` and
 `plasmode2_stratum_acceptance_20260927/` are acceptance roots, not results.

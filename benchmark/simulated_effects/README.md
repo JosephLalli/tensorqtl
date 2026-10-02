@@ -218,9 +218,9 @@ as `stage_stranded_nowasp_20260928/` (`brainvar_hapmix_deploy/wasp_20260928/READ
 | `report/fragments.json`: the page's sections one by one, for `integrated_report.py` | `main` | the page as rendered |
 | Stratum page: head, section 1 and "The low-coverage set against the deep set" with contrast figures A-C | `stratum_facts`, `sec_head`, `sec_why`, `sec_contrast`, `fig_contrast_calibration`, `fig_contrast_precision`, `fig_contrast_ranking` | `summary.json`, `plasmode_20260926/summary.json`, the gene directory's `select_stratum_genes.log` and `pool_stratum.tsv`, `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json`, `plasmode_stratum30_100_20260927/run_arms.log` |
 
-## Stored null, gene-level null and the integrated report
+## Stored null, gene-level null, RASQUAL's non-converged rows and the integrated report
 
-Three scripts outside the numbered steps; each reads `SIMULATED_EFFECTS_GENE_SET` like every step, and each states
+Four scripts outside the numbered steps; each reads `SIMULATED_EFFECTS_GENE_SET` like every step, and each states
 its design, known answer and output in its docstring.
 
 - `stored_null.py NAME [n=200]` makes a gene set's stored null when it has none: n record permutations with label
@@ -241,6 +241,12 @@ its design, known answer and output in its docstring.
   it shows), then each set's full record from its `report/fragments.json` with methods, run facts, limits and tables
   folded. It reads each set's `summary.json` and `gene_level_null/summary.json`, and stops if a set's RASQUAL is not
   scored. Run 06 and 08 for both sets first.
+- `rasqual_nonconverged.py` rebuilds RASQUAL's results from the raw rows 04 checkpoints with 04's own `assemble`, once
+  with converged rows only (it must equal the delivered files in every column) and twice with the non-converged rows
+  kept (at their reported statistic, and at p = 1), and scores the two variants with 06 unchanged in roots under
+  `D/rasqual_nonconverged_20261002/<gene set>/` whose other inputs are links to the delivered run (every other arm must
+  come out identical). Run 2026-10-02 on both sets; the page beside the external benchmark rerun is
+  `D/comparator_checks_20261002/index.html` (`scripts/comparator_checks_report.py`).
 
 06 also stores, per ranking, `fdp_curve`: the null gene units among the top k at every cut the walk down the pooled
 ranking can stop at (`called`, `false`, `non_null`); the integrated report draws it as realized false-discovery
