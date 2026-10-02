@@ -19,8 +19,8 @@ Steps, every output recomputed except TReCASE's finished genes:
     the record), a thinned by the dataset's fL, b by fR and the remainder U = total - a - b by (fL + fR) / 2 with 02's
     thin_haplotypes, exact binomial thinning on integers, stream SeedSequence(SEED, (NATIVE_THIN_KEY, r, round(1000 |beta|)));
     then summaries_from_point_estimates with the thinned counts as the one draw, so the across-draw variance is 0 and
-    Va is the counting variance (1/(a + 0.5) + 1/(b + 0.5)) / ln2^2 (0 where a + b = 0), T = log2(CPM + 1) on the native
-    effective library size. Stored with the Salmon dataset's perm, swap, is_null and causal_variant; the truths stay in the
+    Va is the counting variance (1/(a + 0.5) + 1/(b + 0.5)) / ln2^2 (0 where a + b = 0), T the half-read log CPM
+    (hapmixqtl.half_read_log_cpm, as 02) on the native effective library size. Stored with the Salmon dataset's perm, swap, is_null and causal_variant; the truths stay in the
     Salmon dataset (count scale: allelic beta; total, the least-squares slope on g / 2 of log2 of the donor's mean thinning
     factor, a function of the causal genotypes and beta only, so shared by both inputs).
 (3) split_native: map_nominal and map_cis as 03 runs the split arm (1/Va allelic, unit total, same covariates, seed
@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 
 import common as C
-from tensorqtl.hapmixqtl import MIN_ALLELIC_DONORS, summaries_from_point_estimates
+from tensorqtl.hapmixqtl import MIN_ALLELIC_DONORS, half_read_log_cpm, half_read_total_gibbs_variance, summaries_from_point_estimates
 
 MD, RA, TR = C.module('02_make_datasets'), C.module('03_run_arms'), C.module('05_run_trecase')
 PE = C.D / 'cache' / 'gibbs_56b63c3b37ed5df8' / 'point_estimates'   # compare_mixqtl_replication.PE
@@ -106,7 +106,9 @@ def build_datasets(S, R, a, b, t, lib, meta):
         a2, b2, t2 = MD.thin_haplotypes(M['pL'], M['pR'], M['pT'], ds['fL'], ds['fR'], rng)
         if not all(np.array_equal(x, np.rint(x)) for x in (a2, b2, t2)) or (a2 + b2 > t2).any():
             raise SystemExit(f'{sc} rep {r}: thinned native counts are not integers or a + b exceeds the total')
-        A, T, Va, Vt, _ = summaries_from_point_estimates(a2, b2, t2, M['eff_lib'], a2[..., None], b2[..., None], t2[..., None])
+        A, _, Va, _, _ = summaries_from_point_estimates(a2, b2, t2, M['eff_lib'], a2[..., None], b2[..., None], t2[..., None])
+        T = half_read_log_cpm(t2, M['eff_lib'])   # the half-read total, as 02 builds the Salmon datasets' (user decision 2026-10-01)
+        Vt = half_read_total_gibbs_variance(t2, M['eff_lib'], t2[..., None].astype(float))   # its counting variance; split_native's total is unweighted
         out = dict(A=A, T=T, Va=Va, Vt=Vt, pL=a2, pR=b2, pT=t2, eff_lib=M['eff_lib'],
                    **{k: ds[k] for k in ('perm', 'swap', 'is_null', 'causal_variant')})
         (C.NATIVE_DATASETS / sc).mkdir(parents=True, exist_ok=True)

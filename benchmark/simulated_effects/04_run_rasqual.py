@@ -39,7 +39,7 @@ import common as C
 RASQUAL = '/mnt/ssd/lalli/usr/local/rasqual/bin/rasqual'   # the build the 2026-09-26 run used (copied 2026-10-01 from its worktree); run() checks its sha256
 RASQUAL_SHA256 = 'ac3bd0563862fb9e3c3fdc355f6c588ed42247736eb0e3cde55e94e2820cb363'
 OUT = C.JOINT_OUT['rasqual']
-JOBS = 15                      # genes in parallel, one RASQUAL process each: 15 plus this driver = the shared host's cap of 16 live processes (2026-09-27)
+JOBS = int(os.environ.get('SIMULATED_EFFECTS_RASQUAL_JOBS', 15))   # genes in parallel, one RASQUAL process each: 15 plus this driver = the shared host's cap of 16 live processes (2026-09-27); 32 granted for the half-read rerun (user, 2026-10-02)
 MAF = C.MAF                 # 0.05, the tested set's MAF floor, passed as -a
 MIN_COVERAGE = 0.05            # -d, RASQUAL's default (usage.c:46)
 HWE_P = 0.0                    # -h; 0 turns the rSNP HWE filter off (default 1e-8, main.c:387/498), see the docstring

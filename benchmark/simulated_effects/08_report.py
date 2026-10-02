@@ -2004,7 +2004,7 @@ autosomal genes; TMM, the trimmed mean of log expression ratios against a refere
 zero-haplotype rule; asSeq's own floor of five allele-specific reads applies), with the log native effective library size
 as offset and the same 17 covariates. <b>{SHORT['split_native']}</b> is split weighting on the same counts, the control
 that separates the model from the quantifier: the allelic log2((a + 0.5)/(b + 0.5)) weighted by one over its counting
-variance (1/(a + 0.5) + 1/(b + 0.5))/ln2<sup>2</sup>, the total log2(CPM + 1) unweighted. TReCASE's component tests are
+variance (1/(a + 0.5) + 1/(b + 0.5))/ln2<sup>2</sup>, the total on the half-read log CPM, log2((total + 0.5)/(L + 1) x 10<sup>6</sup>) on the native effective library size L, unweighted. TReCASE's component tests are
 scored on both inputs: the share of tests whose joint fit is missing (asSeq's final p is then its total-count test), the
 same at each gene unit's reported lead, the power at 5% realized FDP when genes are ranked by the lead p of one component
 test alone (06_score.py, trecase_parts), and each component's null-gene rate on the anchor over the tests where its p is
