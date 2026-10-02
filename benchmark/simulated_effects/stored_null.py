@@ -81,7 +81,8 @@ def summarize(out, S, n, n_a):
                          'gibbs reported, not judged',
                permutations=str(C.OLD / 'permutations.npz'), covariates=str(C.COV), gene_set=C.GENE_SET, n_draw=n,
                n_genes=len(genes), floor=MIN_ALLELIC_DONORS, n_boot=N_BOOT,
-               genes_per_subset={s: int(len(ix)) for s, ix in subsets.items()}, rates={}, per_gene={}, verdict={})
+               genes_per_subset={s: int(len(ix)) for s, ix in subsets.items()}, rates={}, per_gene={}, verdict={},
+               below_floor_genes={g: dict(n_a=int(n_a[k])) for k, g in enumerate(genes) if n_a[k] < MIN_ALLELIC_DONORS})
     for arm in ARMS:
         files = [out / 'draws' / f'{arm}_{p:03d}.parquet' for p in range(n)]
         res['rates'][arm], res['per_gene'][arm] = {}, {}

@@ -1101,18 +1101,21 @@ of the number of genes, as 01_check_inputs.py computes it, not the resampling in
 
 def earlier_runs_method():
     """Section 2's account of the stored runs the page reads besides this run: design only, no outcome."""
+    script = 'scripts/half_read_stored_null.py' if NULL and NULL.name == 'stored_null_half_read_20261001' else 'benchmark/simulated_effects/stored_null.py'
+    stored = '' if not NULL else f'''
+<p><b>The stored null.</b> The anchor dataset is one permutation; to place it, and for the null rates of 200
+permutations, the page reads a stored null run on this pipeline ({NULL.name}, {script}):
+the three hapmixQTL weightings on the real records of these 100 genes, with no effect injected and no thinning, under
+200 permutations of donor records against genotypes with haplotype-label swaps (the stream {C.OLD.name}/permutations.npz,
+which both gene sets share; the anchor's own permutation is not among them), on the same code, phenotypes, covariates
+({ARMS_COV.name}) and Meier's correction as this run. Its comparisons with this run are like for like in every channel.
+Check (d) reproduces its first permutation from this run's generator.</p>'''
     if not INTERPRETED:
         return f'''
 <p><b>Other runs this page reads.</b> The contrast section reads the {REF_SET}\'s run ({REF_RUN.parent.name}), whose arms
 used {REF_COV.name} ({REF_COV_HOW}); this run\'s arms used {ARMS_COV.name} ({ARMS_COV_HOW}). Where the two differ, the
-contrast section says so and {LIMITS} says what would have to run to make the comparison like for like.</p>'''
-    return f'''
-<p><b>The stored null.</b> The anchor dataset is one permutation; to place it, and for the null rates of 200
-permutations, the page reads a stored null run on this pipeline ({C.STORED_NULL.name}, scripts/half_read_stored_null.py):
-the three hapmixQTL weightings on the real records of these 100 genes, with no effect injected and no thinning, under
-200 permutations of donor records against genotypes with haplotype-label swaps, on the same code, phenotypes, covariates
-({ARMS_COV.name}) and Meier's correction as this run. Its comparisons with this run are like for like in every channel.
-Check (d) reproduces its first permutation from this run's generator.</p>'''
+contrast section says so and {LIMITS} says what would have to run to make the comparison like for like.</p>''' + stored
+    return stored
 
 
 def sec_scoring():
@@ -1125,15 +1128,17 @@ per dataset and averaged over the 3 datasets. Its interval is the range of the t
 three datasets, the 2.5% and 97.5% quantiles of the mean over datasets resampled with replacement are the smallest
 and largest dataset values. It is not a 95% interval, and it carries no gene-to-gene variation, because the three
 datasets hold the same 100 genes.'''
+    else:
+        auc_txt = (f'It is computed per dataset and averaged over the {n_rep} datasets. Its interval is the 2.5% and 97.5% '
+                   f'quantiles of the mean over datasets resampled with replacement ({n_rep} datasets); it carries no '
+                   f'gene-to-gene variation, because every dataset holds the same {genes} genes.')
+    if NULL:
         anchor_txt = f'''For the
 three hapmixQTL arms its rate is compared with the stored null on this pipeline (section 2): the percentile of this
 dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their central 99%. The stored null
 holds the same records under 200 other permutations (the anchor's own permutation is not among them), so this is
 descriptive: it says where one further permutation fell, and check (d), not this comparison, tests the plumbing.'''
     else:
-        auc_txt = (f'It is computed per dataset and averaged over the {n_rep} datasets. Its interval is the 2.5% and 97.5% '
-                   f'quantiles of the mean over datasets resampled with replacement ({n_rep} datasets); it carries no '
-                   f'gene-to-gene variation, because every dataset holds the same {genes} genes.')
         anchor_txt = (f'No stored 200-permutation null run exists for this gene set, so where its one permutation falls '
                       f'among permutations is not known here; it is the same permutation as the {REF_SET}\'s anchor, and '
                       f'the contrast section places it against that set\'s stored null.')
@@ -1672,6 +1677,16 @@ def sec_contrast():
                          f'(table {ci(P(X, "beta0.0", a, "combined", "null", "ratio_vs_unit"), "value", 2)}; recovered share '
                          f'{f(rec(X, a), 2)} against unit weights\' {f(rec(X, "unit"), 2)})' for a in JOINT)
     pct = ' / '.join(f'{R["anchor"][a]["total"]["0.05"]["percentile"]:g}' for a in HAPMIX) + f' ({" / ".join(SHORT[a] for a in HAPMIX)})'
+    if NULL:
+        own = ' / '.join(f'{S["anchor"][a]["total"]["0.05"]["percentile"]:g}' for a in HAPMIX)
+        own_null = (f'On the {REF_SET}\'s genes this same permutation\'s total-channel rate at 0.05 sat at percentile {pct} of '
+                    f'that set\'s 200 stored permutations, and on this set\'s own stored null (section 2) at percentile {own}; over '
+                    f'those 200 permutations this set\'s combined rate at 0.05 is {ci(nul("split", "combined", "0.05"), "rate", 4)} for '
+                    f'split and {ci(nul("unit", "combined", "0.05"), "rate", 4)} for unit weights.')
+    else:
+        own_null = (f'On the 100 genes, where 200 stored permutations exist, this same permutation\'s total-channel rate at 0.05 '
+                    f'sat at percentile {pct} of theirs, so a low draw there may be a low draw here, and this set\'s rates that '
+                    f'include nominal may be low by a margin only a stored null for this gene set can measure.')
     joint = ''.join(f'<p><b>{LABEL[a]} against split.</b> In the {THIS_SET}: {h2h(a, S)}. In the {REF_SET}: {h2h(a, R)}.</p>'
                     for a in JOINT) + (
         f'<p>On the count-scale truth unit weights\' squared error contains their own attenuation of the total slope '
@@ -1710,8 +1725,13 @@ def sec_contrast():
     settled = (f'<p><b>What the {THIS_SET} settles, and what it cannot.</b> Under the one shared permutation the combined nominal '
                f'p has an interval that includes nominal for {lst(S, "0.05", "includes")} at 0.05, {lst(S, "0.01", "includes")} at '
                f'0.01 and {lst(S, "0.001", "includes")} at 0.001, and one above nominal for {lst(S, "0.05", "above")} at 0.05, '
-               f'{lst(S, "0.01", "above")} at 0.01 and {lst(S, "0.001", "above")} at 0.001; a stored null for this gene set is '
-               f'needed before "nominal" means more than "nominal on this permutation". split\'s squared error over unit weights\' '
+               f'{lst(S, "0.01", "above")} at 0.01 and {lst(S, "0.001", "above")} at 0.001; '
+               + (f'over this set\'s 200 stored permutations the combined rate at 0.001 is {ci(nul("split", "combined", "0.001"), "rate", 5)} '
+                  f'for split and {ci(nul("unit", "combined", "0.001"), "rate", 5)} for unit weights, so the rule stated before that run '
+                  f'(the rate within its gene-clustered interval of 0.001) {"holds" if SN["verdict"]["split"]["contains_0_001"] else "fails"} '
+                  f'for split and {"holds" if SN["verdict"]["unit"]["contains_0_001"] else "fails"} for unit weights. '
+                  if NULL else 'a stored null for this gene set is needed before "nominal" means more than "nominal on this permutation". ')
+               + f'split\'s squared error over unit weights\' '
                f'on the anchor is {ci(anc(S, "split", "combined"), "value", 2)} here against '
                f'{ci(anc(R, "split", "combined"), "value", 2)} in the {REF_SET} ({apart(anc(S, "split", "combined"), anc(R, "split", "combined"))} '
                f'intervals), its allelic channel alone {ci(anc(S, "split", "allelic"), "value", 2)} against '
@@ -1720,8 +1740,8 @@ def sec_contrast():
                f'Against TReCASE, {cal_vs} (the paragraphs above); its AUC ranges overlap TReCASE\'s at '
                f'{at_betas(ov(S, "trecase", "split"))} with a mean '
                f'difference (split minus TReCASE) of {gap} at |beta| {" / ".join(BETAS)}, and the precision comparison rests on '
-               f'the scale correction above. More |beta| replicates would sharpen the ranking comparison only; they cannot '
-               f'replace the stored null. The AUC intervals are the range of {n_rep[THIS_SET]} datasets.</p>')
+               f'the scale correction above. More |beta| replicates would sharpen the ranking comparison only'
+               + ('' if NULL else '; they cannot replace the stored null') + f'. The AUC intervals are the range of {n_rep[THIS_SET]} datasets.</p>')
     fc = dict(cal=fig_contrast_calibration(runs), prec=fig_contrast_precision(runs, [r for r in rows if r[0] != 'mixqtl']),
               rank=fig_contrast_ranking(runs))   # published cutoffs: in the table only (user decision 2026-09-28)
     return f'''
@@ -1746,10 +1766,7 @@ reference for mixQTL's meta statistic, a chi-squared likelihood-ratio reference 
 null-gene rate is the share of the null genes' tested variants whose combined nominal p falls below the threshold; on
 null genes it should equal the threshold. The anchor is one dataset, that is ONE record
 permutation with no thinning, so its interval is gene-clustered only (genes resampled with replacement) and carries no
-permutation-to-permutation spread; the thinned null genes of the |beta| &gt; 0 datasets are in section 3.7. On the 100
-genes, where 200 stored permutations exist, this same permutation's total-channel rate at 0.05 sat at percentile
-{pct} of theirs, so a low draw there may be a low draw here, and this set's rates that include nominal may be low by a
-margin only a stored null for this gene set can measure. By the intervals: {cal}.</p>
+permutation-to-permutation spread; the thinned null genes of the |beta| &gt; 0 datasets are in section 3.7. {own_null} By the intervals: {cal}.</p>
 {t_null}
 {img(fc['cal'], f'Contrast figure A. Null-gene rate of the combined nominal p on the beta = 0 anchor divided by its threshold '
                 f'(1 = nominal; log scale), every arm at 0.05 / 0.01 / 0.001, {THIS_SET} left and {REF_SET} right; bars are '
@@ -1936,13 +1953,12 @@ def sec_results(figs):
 donor), has no allelic p, so its {n_all - n_al:,} tests on the anchor leave the allelic null rates ({n_al:,} of
 {n_all:,} tests); the stored null treats it the same way.'''
         fig1_bar = 'range of the three per-dataset AUCs, not a 95% interval'
-        anchor_tab = f'''<p>The anchor against the stored null on this pipeline (hapmixQTL arms only; like for like in every
-channel, section 2):</p>
-{tab_anchor()}'''
     else:
         exc_txt = ''
         fig1_bar = 'interval of the mean over datasets resampled with replacement'
-        anchor_tab = ''
+    anchor_tab = '' if not NULL else f'''<p>The anchor against the stored null on this pipeline (hapmixQTL arms only; like for like in every
+channel, section 2):</p>
+{tab_anchor()}'''
     units_a = S['precision']['beta0.4']['gibbs']['allelic']['nonnull']['sd_z']['all']['units']
     units_c = S['recovery']['beta0.4']['gibbs']['allelic']['bias_count']['all']['units']
     ladder = sec_ladder() if LD is not None else ''   # the ladder was run for the interpreted set only
