@@ -58,8 +58,8 @@ has 200 Gibbs draws and no `--numBootstraps`).
 | What is implemented, validated, proposed, on hold, open, running? | `docs/CURRENT_SCIENTIFIC_STATE.md` |
 | What rules govern values, units, gene filter and permutation, and what was decided when? | `docs/pipeline_rules.md` |
 | What is tested, and how do I run the self-test? | `tests/README.md` |
-| How are benchmark datasets with known effects made and scored? | `benchmark/simulated_effects/README.md` (run order `run_all.sh`; `SIMULATED_EFFECTS_ROOT` for a fresh output root). The run on the shipped configuration (every arm on the half-read total, 2026-10-01) is `brainvar_hapmix_deploy/simulated_effects_half_read_20261001/` (page `report/plasmode_report.html`, stored null `stored_null_half_read_20261001/`), the low-coverage set's `simulated_effects_lowcov_half_read_20261001/` (2026-10-02, no stored null); the 2026-09-27 pages `plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/` are records of the log2(CPM+1) total |
-| The whole benchmark on one page; hapmixQTL against TReCASE? | `brainvar_hapmix_deploy/benchmark_summary_20260929/summary.html`, `hapmix_vs_trecase.html` beside it |
+| How are benchmark datasets with known effects made and scored? | `benchmark/simulated_effects/README.md` (run order `run_all.sh`; `SIMULATED_EFFECTS_ROOT` for a fresh output root). The one report over both gene sets on the shipped configuration (every arm on the half-read total) is `brainvar_hapmix_deploy/simulated_effects_integrated_20261002/index.html`; the runs it reads are `simulated_effects_half_read_20261001/` (deep set) and `simulated_effects_lowcov_half_read_20261001/` (low-coverage set), each with its page `report/plasmode_report.html` and gene-level null `gene_level_null/`, and their stored nulls `stored_null_half_read_20261001/` and `stored_null_lowcov_half_read_20261002/`; the 2026-09-27 pages `plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/` are records of the log2(CPM+1) total |
+| The whole benchmark on one page; hapmixQTL against TReCASE? | `brainvar_hapmix_deploy/benchmark_summary_20260929/summary.html`, `hapmix_vs_trecase.html` beside it (2026-09-29, predecessor configuration; the simulated-effects benchmark on the shipped one is the integrated report in the row above) |
 | Whose top genes replicate in held-out BrainVar donors? | `brainvar_hapmix_deploy/referee_replication_20260928/report.html` |
 | How does default mode do on data drawn from TReCASE's own model? | `brainvar_hapmix_deploy/external_benchmark_current_20260928/report.html` |
 | Why do effect sizes in the simulated-effects benchmark fall short of the simulated effect? | `brainvar_hapmix_deploy/beta_shortfall_20260929/beta_shortfall.html` |
@@ -159,12 +159,16 @@ experiment.
 
 - **Low-information allelic `Va` is shaped by Salmon's Gibbs prior** (stock
   draws, prior 1 per active transcript); kept as a caveat, re-quantification
-  with `--gibbsPriorAggregation` prepared and on hold (user decision 2026-10-01).
+  with `--gibbsPriorAggregation` prepared and on hold until there is more and better
+  phasing and quicker personalized alignment (user decisions 2026-10-01 and 2026-10-02;
+  `brainvar_hapmix_deploy/paper_figure_plan_20261002/`).
 - **chr14, chr15 and chr22 are excluded** (phased genotypes truncated; user
   decision 2026-09-28): `brainvar_hapmix_deploy/phased_vcf_inventory_20260928/README.md`.
   They are 1,188 of the 1,208 filtered genes the runner reports but cannot
   test for lack of Gibbs draws.
-- **No transcriptome-wide run of the shipped default exists yet.** Both gene sets of the
+- **No transcriptome-wide run of the shipped default exists yet**; it waits on a rerun of the
+  personalized RNA-seq alignment (user decision 2026-10-02,
+  `brainvar_hapmix_deploy/paper_figure_plan_20261002/`). Both gene sets of the
   simulated-effects benchmark run on the shipped configuration (deep set 2026-10-01,
   low-coverage set 2026-10-02); the referee and the external benchmark were made on the
   predecessor configuration; `docs/CURRENT_SCIENTIFIC_STATE.md` says which result was measured on which.
@@ -177,9 +181,8 @@ experiment.
 - **No per-donor allelic read floor by default** (mixQTL's published driver
   required at least 50 reads on each haplotype; `--asc-cutoff` supplies one
   for a matched comparison).
-- **The benchmark's native-input arms and RASQUAL are not yet on the shipped configuration**
-  (RASQUAL is out of the scored arms; both gene sets, the deep set's stored null and TReCASE are
-  on it since 2026-10-01/02; the low-coverage set has no stored null); what would rerun each:
+- **`99_acceptance.py` has no reference run on the shipped configuration** (its committed
+  references predate Meier's correction and the half-read total):
   `benchmark/simulated_effects/README.md`.
 - **`tests/ase_gtex_real_data.py` fabricates the total channel's inferential
   variance** and keeps an allelic intercept (historical harness).

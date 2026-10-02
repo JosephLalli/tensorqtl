@@ -15,6 +15,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from scipy.stats import binom
 
 import common as C
 
@@ -67,7 +68,7 @@ def nice_ticks(lo, hi, n=5):
         if (hi - lo) / (step * m) <= n:
             step *= m
             break
-    return [round(v, 10) for v in np.arange(np.ceil(lo / step) * step, hi + step / 2, step)]
+    return [round(v, 10) + 0.0 for v in np.arange(np.ceil(lo / step) * step, hi + step / 2, step)]   # + 0.0: no "-0" label
 
 
 def dot_ci_columns(cats, series, ref, ylab, label, w=600, h=270):
@@ -148,9 +149,11 @@ def fig_precision():
         words.append(f'{n.lower()} {" / ".join(f2(d["value"]) for d in ds)}'
                      + (' (every interval below 1)' if below else ' (intervals include 1)'))
     g = {k: [S[k]['precision'][f'beta{b}']['gibbs']['combined']['nonnull']['ratio_vs_unit']['all'] for b in BETAS] for k, *_ in SETS}
+    above = lambda ds: [b for b, d in zip(BETAS, ds) if where(d, 1.0) == 'above']   # noqa: E731
     gw = '; '.join(f'{NAME[k].lower()} {" / ".join(f2(d["value"]) for d in ds)}'
-                   + (' (every interval above 1)' if all(where(d, 1.0) == 'above' for d in ds) else
-                      ' (intervals above 1 at ' + (', '.join(f'|beta| {b}' for b, d in zip(BETAS, ds) if where(d, 1.0) == 'above') or 'no |beta|') + ')')
+                   + (' (every interval above 1)' if len(above(ds)) == len(ds) else
+                      ' (intervals above 1 at ' + ', '.join(f'|beta| {b}' for b in above(ds)) + ')' if above(ds) else
+                      ' (no interval above 1)')
                    for k, ds in g.items())
     finding = ('split, the shipped weighting, against its control without the Gibbs draws (unit weights): combined squared error '
                + '; '.join(words) + '. gibbs, which also weights the total channel by its Gibbs variance: ' + gw + '.')
@@ -301,26 +304,35 @@ def fig_gene_level():
         b += ''.join(text(x0 + (v + 0.5) * bw, bot + 16, f'{v}{"+" if v == nb - 1 else ""}', anchor='middle') for v in (0, 5, 10, 13))
     b += text(16, H - 6, 'split: null genes below 0.05 per all-null dataset (5 expected)', 'axis')
     right = svg(W, H, b, 'Null genes below 0.05 per all-null dataset')
-    bh = {(a, k): GL[k]['arms'][a]['bh_any_call_share'] for a in GLA for k, *_ in SETS}
-    sh = {(a, k): GL[k]['arms'][a]['rates']['0.05']['share'] for a in GLA for k, *_ in SETS}
-    pos = {k: GL[k]['arms']['split']['rates']['0.05']['anchor_share_of_replicates_at_or_above'] for k, *_ in SETS}
-    draw = lambda q: 'a low draw' if q >= 0.9 else 'a high draw' if q <= 0.1 else 'a typical draw'   # noqa: E731
     keys = [k for k, *_ in SETS]
-    holds = [a for a in GLA if all(bh[(a, k)] <= 0.05 for k in keys)]
+    n = GL[keys[0]]['n_replicates']
+    # with valid p, Benjamini-Hochberg at 5% on all-null data calls any gene with probability at most 0.05, so the number
+    # of datasets with a call is at most Binomial(n, 0.05); k_hi is the smallest count that has probability below 0.05
+    k_hi = int(binom.isf(0.05, n, 0.05)) + 1
+    calls = {(a, k): round(GL[k]['arms'][a]['bh_any_call_share'] * n) for a in GLA for k in keys}
+    sh = {(a, k): GL[k]['arms'][a]['rates']['0.05']['share'] for a in GLA for k in keys}
+    anc = {k: GL[k]['arms']['split']['rates']['0.05'] for k in keys}
+    draw = lambda q: 'a low draw' if q >= 0.9 else 'a high draw' if q <= 0.1 else 'a typical draw'   # noqa: E731
+    holds = [a for a in GLA if all(calls[(a, k)] < k_hi for k in keys)]
     over = [a for a in GLA if a not in holds]
     short = dict(split='split', unit='unit weights', tensorqtl='total-only tensorQTL')
-    per = lambda a: ' and '.join(f'{bh[(a, k)] * 100:.0f}' for k in keys)   # noqa: E731
-    finding = ('Over 100 fresh all-null datasets per set, '
+    per = lambda a: ' and '.join(f'{calls[(a, k)]}' for k in keys)   # noqa: E731
+    finding = (f'Over {n} fresh all-null datasets per set, '
                + (f'{" and ".join(short[a] for a in holds)} hold the gene-level error rate: Benjamini-Hochberg at 5% calls any gene in '
-                  + '; '.join(f'{per(a)} of 100 datasets for {short[a]}' for a in holds) + ' on the deep and low-coverage sets (at most 5 '
-                  'expected), and the share of genes below 0.05 is ' + '; '.join(f'{sh[(a, keys[0])]:.3f} and {sh[(a, keys[1])]:.3f} for {short[a]}' for a in holds)
+                  + '; '.join(f'{per(a)} of {n} datasets for {short[a]}' for a in holds) + ' on the deep and low-coverage sets (with '
+                  f'valid p at most {0.05 * n:g} expected, and {k_hi} or more with probability {binom.sf(k_hi - 1, n, 0.05):.3f}), '
+                  'and the share of genes below 0.05 is ' + '; '.join(f'{sh[(a, keys[0])]:.3f} and {sh[(a, keys[1])]:.3f} for {short[a]}' for a in holds)
                   + '. ' if holds else '')
-               + ''.join(f'{short[a][0].upper() + short[a][1:]} calls a gene in {per(a)} of 100, with {sh[(a, keys[0])]:.3f} and '
-                         f'{sh[(a, keys[1])]:.3f} of genes below 0.05: its own permutation shuffles the covariate-adjusted '
+               + ''.join(f'{short[a][0].upper() + short[a][1:]} calls a gene in {per(a)} of {n} (at least {k_hi} on the '
+                         + ' and '.join(NAME[k].lower() for k in keys if calls[(a, k)] >= k_hi) + f'), with {sh[(a, keys[0])]:.3f} and '
+                         f'{sh[(a, keys[1])]:.3f} of genes below 0.05; its own permutation shuffles the covariate-adjusted '
                          f'phenotype, while these null datasets permute whole donor records, the scheme hapmixQTL\'s test uses. '
                          for a in over)
-               + (f'The benchmark\'s own anchor was {draw(pos[keys[0]])} for split on both sets.' if draw(pos[keys[0]]) == draw(pos[keys[1]])
-                  else ' '.join(f'The benchmark\'s own anchor was {draw(pos[k])} for split on the {NAME[k].lower()}.' for k in keys)))
+               + 'For split the benchmark\'s own anchor was '
+               + ' and '.join(f'{draw(anc[k]["anchor_share_of_replicates_at_or_above"])} on the {NAME[k].lower()} '
+                              f'({anc[k]["anchor_genes_below"]} null genes below 0.05; '
+                              f'{anc[k]["anchor_share_of_replicates_at_or_above"]:.0%} of the null datasets have as many or more)'
+                              for k in keys) + '.')
     return finding, legend([(lab_of[a], cls_of[a], False) for a in GLA] + [('deep set: filled', 'c0', False),
                                                                            ('low-coverage set: open', 'c0', True)]) + f'<div class="pair">{left}{right}</div>', (
         'pval_beta: the gene-level p from 1,000 permutations of donor records with haplotype-label swaps, smoothed by a fitted '
@@ -472,7 +484,7 @@ def main():
     limits = '''<section class="limits"><p class="eyebrow">What this cannot show</p><ul>
 <li>Null genes are made by permuting donor records against genotypes, the same operation the permutation test uses, so the gene-level error rate is checked on the test's own null; calibration on real data, where relatedness or batch could matter, is untested.</li>
 <li>Each effect size rests on 3 datasets of 100 genes with 50 non-null, and each set has one all-null anchor dataset; power at a realized false-discovery proportion carries no interval.</li>
-<li>Effects are made by thinning reads, which leaves the low-coverage set's allelic Gibbs variance and zero-haplotype counts more favourable than Salmon would give at the same depth; every arm's allelic figures there are optimistic by an amount this run does not measure.</li>
+<li>Effects are made by thinning reads. On the low-coverage set's genes, thinning leaves more allelic Gibbs variance, fewer zero-haplotype records and less attenuated allelic ratios than Salmon gives at the same depth (the Salmon half-depth test in that set's record), so every arm's allelic figures there are optimistic by an amount this run does not measure.</li>
 <li>RASQUAL and TReCASE see Salmon's haplotype estimates rounded to integers, not reads at heterozygous SNPs; the native-input arms in the full record are the step toward their own inputs.</li>
 </ul></section>'''
     nav = ('<nav class="bar"><a href="#summary">Summary</a>' + ''.join(f'<a href="#{k}">{esc(n)}: full record</a>' for k, n, *_ in SETS)
@@ -483,7 +495,8 @@ def main():
             'wght@400;600&family=Source+Serif+4:opsz,wght@8..60,600&display=swap">\n'
             f'<style>{CSS}</style>\n<main>{nav}<header class="top"><h1>Simulated-effects eQTL benchmark</h1>'
             '<p class="dek">Known cis effects injected into the BrainVar cohort\'s own Salmon output, 92 donors, scored for every '
-            'method on two gene sets: 100 deeper genes and 100 genes with 30 to 100 haplotype-informative reads. Every hapmixQTL '
+            'method on two gene sets: 100 deeper genes and 100 genes with a median of 30 to 100 haplotype-informative reads over '
+            'the donors admitted to the allelic channel. Every hapmixQTL '
             'arm runs on the half-read total; split is the shipped default.</p></header>'
             f'<section id="summary"><h2>Summary</h2><div class="cards">{cards}</div>{limits}</section>'
             + ''.join(f'<section id="{k}" class="record"><p class="eyebrow">Full record</p><h2>{esc(n)}</h2>{record(k)}</section>'

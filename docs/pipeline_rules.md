@@ -188,6 +188,12 @@ within its gene-clustered interval of 0.001, RPL41 included), holds for split (0
 [0.00092, 0.00128]) and fails narrowly for unit (0.00115 [0.00110, 0.00121]); gibbs's total
 channel rejects at 0.00758 at 0.001. The benchmark run is `simulated_effects_half_read_20261001`;
 its page is that directory's `report/plasmode_report.html`.
+On 2026-10-02 the user asked for RASQUAL to be rerun on these datasets and scored again (it is
+back in `common.JOINT` since commit b5471d4), for the native-input arms to follow on the half-read
+total, and for a stored null of the low-coverage set (`stored_null_lowcov_half_read_20261002`,
+`benchmark/simulated_effects/stored_null.py`; under the same pass rule split holds, 0.00102
+[0.00093, 0.00112], and unit fails narrowly, 0.00108 [0.00103, 0.00112]). One report covers both
+gene sets: `simulated_effects_integrated_20261002/index.html`.
 
 ### Decision, 2026-09-29: half-read split is the default weighting configuration
 
@@ -547,8 +553,10 @@ afterwards against the stored runs (channel slopes, standard errors and
 `pval_t` identical; `pval_a` and `pval_nominal` equal to
 `2 t.sf(|t|, dof)` within 6e-8; the dof, admission and
 Welch-Satterthwaite rules hold), so no result is affected. Meier's
-correction acts on the first of the two reasons and not the second; the
-stored nulls have not been re-run under it (deferred).
+correction acts on the first of the two reasons and not the second; these
+stored nulls were not re-run under it, and the shipped configuration's stored
+nulls (`stored_null_half_read_20261001`, `stored_null_lowcov_half_read_20261002`)
+include it.
 
 **1/(v+1) in both channels** (`hybrid_weights_null.py --config=plus_one`,
 `summary_plus_one.json`), same genes and permutations. The combined statistic

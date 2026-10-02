@@ -3,15 +3,17 @@
 > **Every arm on half-read split's inputs (user decision 2026-10-01).** The hapmixQTL arms and
 > total-only tensorQTL use the half-read total; the arms are split (the shipped default), gibbs
 > (the total weighted by its half-read Gibbs variance) and unit; `plus_one` is retired; mixQTL mode
-> keeps its published natural-log response; RASQUAL is out of the scored arms (`common.JOINT`).
-> The deep set's run is `brainvar_hapmix_deploy/simulated_effects_half_read_20261001/` (page
-> `report/plasmode_report.html`), its stored null `stored_null_half_read_20261001/`. The 2026-09-27
-> roots (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`) and the run of earlier on
-> 2026-10-01 (`release_closure_20261001/plasmode_after_split`) are records of the log2(CPM+1) total.
-> The low-coverage set's run is `brainvar_hapmix_deploy/simulated_effects_lowcov_half_read_20261001/`
-> (2026-10-02; TReCASE run there, 8 genes at a time; no stored null exists for this set).
-> Not yet on this configuration: the native-input arms (`05b_native_arms.py` still builds its native
-> split's total as log2(CPM + 1)) and RASQUAL.
+> keeps its published natural-log response; RASQUAL and TReCASE were run on these datasets and
+> are scored (`common.JOINT`; RASQUAL back since commit b5471d4, 2026-10-02), and the native-input
+> arms run on the half-read total (commit 388ef6d). The deep set's run is
+> `brainvar_hapmix_deploy/simulated_effects_half_read_20261001/`, its stored null
+> `stored_null_half_read_20261001/`; the low-coverage set's run is
+> `simulated_effects_lowcov_half_read_20261001/`, its stored null `stored_null_lowcov_half_read_20261002/`
+> (`stored_null.py`). Each run root holds its page (`report/plasmode_report.html`) and its gene-level
+> null (`gene_level_null/`); the one report over both sets is
+> `simulated_effects_integrated_20261002/index.html` (`integrated_report.py`). The 2026-09-27 roots
+> (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`) and the run of earlier on 2026-10-01
+> (`release_closure_20261001/plasmode_after_split`) are records of the log2(CPM+1) total.
 
 ## Purpose
 
@@ -56,15 +58,17 @@ Every input is read, never written, from `/mnt/ssd/lalli/brainvar_hapmix_deploy`
   200-permutation gibbs null run, `summary.json` and `draws/`), the output directory (`ROOT`), and the
   stored runs of that gene set the scripts read: `stored_null_half_read_20261001` (the 200-permutation null of the
   three hapmixQTL arms on this configuration, `scripts/half_read_stored_null.py`; 06's anchors, 01's check d and
-  08). `hybrid_weights_null_20260926`, `allelic_df_fix_20260927`, `plasmode_20260926/summary_before_df_fix.json`
+  08; `stratum30_100` reads `stored_null_lowcov_half_read_20261002`, below). `hybrid_weights_null_20260926`, `allelic_df_fix_20260927`, `plasmode_20260926/summary_before_df_fix.json`
   and the TReCASE smoke run are earlier configurations' records the code still names but no step reads for the
-  default set. A new gene set  gradient section 6 of the report quotes). A new gene set is a new `GENE_SETS` entry; a missing entry
+  default set. A new gene set is a new `GENE_SETS` entry; a missing entry
   stops every script at import. `SIMULATED_EFFECTS_GENE_SET` in the environment selects the entry.
 - `stratum30_100`: the 30-100-read gene set, 100 genes whose median haplotype-informative reads over
   admitted allelic donors lie in [30, 100) with at least 15 admitted allelic donors, drawn once by
   `select_stratum_genes.py` into `plasmode_stratum30_100_20260927/gene_set` (with its log and
-  `pool_stratum.tsv`). Its entry names that directory, its root and its committed run; it has no stored null run, before- and after-fix records, TReCASE smoke run or ladder
-  (`None`), so check (d), the anchor, 07 and the parts of 08 that read them print a skip. 06 scores it in
+  `pool_stratum.tsv`). Its entry names that directory, its root, its committed run and its stored null
+  `stored_null_lowcov_half_read_20261002` (`stored_null.py`, 2026-10-02: 200 permutations of the deep null's stream,
+  on which check (d) and the anchor run); it has no before- and after-fix records, TReCASE smoke run or ladder
+  (`None`), so 07 and the parts of 08 that read them print a skip. 06 scores it in
   the read bands <30 / 30-50 / 50-100, and 01's check (c) over every gene. Its report leaves out the
   interpretation paragraphs of section 3, section 3.8 and sections 4-5 (they were written for the
   default set), closes with a limits section (the native arms' limits and the comparisons with earlier runs),
@@ -171,12 +175,12 @@ processes (~100 s of each Python step is loading the cache):
 | 1 | `01_check_inputs.py` | `checks/salmon_premise.json`, `checks/check_generator.json` (premise, generator checks a-d, plumbing gates e; check d pins the combined se at the stored se times sqrt(M), M Meier's factor recomputed from the stored channel se and dof, for the library at commit a1b2ef4; the gate disposition of the earlier pipeline's per-dataset checks is in its docstring) | 2.5-10 min |
 | 2 | `02_make_datasets.py` | `datasets/beta*/rep*.npz`, `meta.json`, `truth.tsv` | 1.5 min |
 | 3 | `03_run_arms.py` | `results/<scenario>/<arm>/nominal_*.parquet`, `cis_*.parquet` (every arm of 03), `mixqtl_permutation.json`, `run_arms_facts.json`, `eigenmt_m_eff.tsv` | 15-16 min (GPU 1 and 10 CPU worker processes; set by mixQTL's permutation scan, 240-520 s per dataset per arm; 2026-09-27, load 25-100) |
-| 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver) |
+| 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver; `SIMULATED_EFFECTS_RASQUAL_JOBS` sets it: 32 for the half-read rerun of 2026-10-02, deep set 05:24-10:46, low-coverage set 10:46-16:24) |
 | 5 | `05_run_trecase.py` + `run_trecase.R` | `results_trecase/.../nominal_*.parquet`, `summary.json`; inputs, asSeq files and trace logs under `trecase_work/` | ~15 process-h per dataset; 64 genes at once (`SIMULATED_EFFECTS_TRECASE_JOBS` lowers it when the host is shared; `Rscript` execs into `R`, so one process is live per gene) |
 | 5b | `05b_native_arms.py` | `native/`: native datasets, `split_native` and `trecase_native` results, `facts.json` | loading, datasets and split_native about 6 min (GPU 0, 18-20 s per dataset); asSeq on `SIMULATED_EFFECTS_NATIVE_JOBS` processes (default 15), measured on 44: 46.1 min (deep set, 27.5 process-h against 134.4 for the Salmon inputs) and 42.4 min (low-coverage set, 25.1 against 33.3); 2026-09-28, load 50-70 |
 | 6 | `06_score.py` | `summary.json` | 4 min |
 | 7 | `07_mixqtl_ladder.py` | `ladder/ladder.json`, `total_channel_units.tsv`, rung files (a printed skip for a gene set without a ladder) | 3-4 min |
-| 8 | `08_report.py` | `report/plasmode_report.html` and four PNG figures; stops if any of its 26 fixed comparative sentences (`check_claims`) no longer holds on the summary | 0.3 min |
+| 8 | `08_report.py` | `report/plasmode_report.html`, `report/fragments.json` (its sections, for `integrated_report.py`) and four PNG figures; stops if any of its 26 fixed comparative sentences (`check_claims`) no longer holds on the summary | 0.3 min |
 
 Steps 4 and 5 checkpoint per gene (a gene whose raw file or `_status.tsv` exists is not rerun; every
 skip is printed).
@@ -210,8 +214,37 @@ as `stage_stranded_nowasp_20260928/` (`brainvar_hapmix_deploy/wasp_20260928/READ
 | Tables 3.7 null rates and the anchor | `tab_null`, `tab_anchor` | `summary.json` `null`, `anchor` (06 `null_calibration`, `anchor`); `allelic_df_fix_20260927` draws |
 | Tables 3.8 mixQTL ladder (its design in section 2) | `sec_ladder`, `ladder_method` | `ladder/ladder.json` (07) |
 | Section 3.9 (deep set) / 3.8 (low-coverage set), native-input arms: inputs, admitted donors, ranking, calibration, recovered share, TReCASE's component tests (their design in section 2, their limits in section 6) | `sec_native`, `native_method`, `native_limits` | `ROOT/native/facts.json`, `ROOT/native/results_trecase/summary.json`, the native counts' `facts.json`, `summary.json` `native_arms`, `trecase_parts`, `trecase_components`, `trecase_native_components` |
-| Section 6, the smoke run's largest theta gradient | `sec_limits` | `plasmode_20260926/results_trecase_asseq/smoke/summary.json` |
+| Section 6, the largest theta gradient at an abnormal TReCASE stop | `sec_limits` (through `joint_facts`) | `results_trecase/summary.json` (`joint_na_by_trace`, this run's own trace) |
+| `report/fragments.json`: the page's sections one by one, for `integrated_report.py` | `main` | the page as rendered |
 | Stratum page: head, section 1 and "The low-coverage set against the deep set" with contrast figures A-C | `stratum_facts`, `sec_head`, `sec_why`, `sec_contrast`, `fig_contrast_calibration`, `fig_contrast_precision`, `fig_contrast_ranking` | `summary.json`, `plasmode_20260926/summary.json`, the gene directory's `select_stratum_genes.log` and `pool_stratum.tsv`, `coupling_reach_20260925/b_strata.tsv`, `salmon_half_depth_20260927/summary.json`, `plasmode_stratum30_100_20260927/run_arms.log` |
+
+## Stored null, gene-level null and the integrated report
+
+Three scripts outside the numbered steps; each reads `SIMULATED_EFFECTS_GENE_SET` like every step, and each states
+its design, known answer and output in its docstring.
+
+- `stored_null.py NAME [n=200]` makes a gene set's stored null when it has none: n record permutations with label
+  swaps of `common.OLD/permutations.npz` (the deep null's stream; both sets list the same 92 donors in the same order),
+  no effect and no thinning, each hapmixQTL arm through `common.run_nominal`. Pass rule, stated before the run:
+  split's and unit's combined rate at 0.001 within its gene-clustered interval of 0.001. `--check` must reproduce the
+  deep set's stored draw 0 for every arm. The output, `D/NAME`, is wired in as the set's `stored_null` in
+  `common.GENE_SETS`, which 01's check (d), 06's anchor and 08 then read. Run once, for the low-coverage set
+  (`stored_null_lowcov_half_read_20261002`, 2026-10-02).
+- `gene_level_null.py [n=100]` scans n all-null anchor datasets (02 at beta = 0 under replicate r's record permutation
+  and label swaps, r from 1000, indices no benchmark dataset uses) for split, unit and total-only tensorQTL as 03 scans
+  them, and reports per arm the share of gene-replicate units with `pval_beta` below 0.05 / 0.01 / 0.001, the count per
+  replicate, where the benchmark's own anchor falls among them, and the share of replicates with any
+  Benjamini-Hochberg call at 5%. It first checks that r = 0 reproduces the stored anchor scan of every arm. Output
+  `ROOT/gene_level_null/`.
+- `integrated_report.py` writes the one page over both gene sets,
+  `D/simulated_effects_integrated_20261002/index.html`: summary figures (inline SVG, each finding worded from the numbers
+  it shows), then each set's full record from its `report/fragments.json` with methods, run facts, limits and tables
+  folded. It reads each set's `summary.json` and `gene_level_null/summary.json`, and stops if a set's RASQUAL is not
+  scored. Run 06 and 08 for both sets first.
+
+06 also stores, per ranking, `fdp_curve`: the null gene units among the top k at every cut the walk down the pooled
+ranking can stop at (`called`, `false`, `non_null`); the integrated report draws it as realized false-discovery
+proportion against genes called.
 
 ## Acceptance test (99_acceptance.py)
 

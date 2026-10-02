@@ -1,6 +1,7 @@
 # Current scientific state: hapmixQTL
 
-State at the release documentation pass of 2026-10-01. This document says what
+State at the release documentation pass of 2026-10-01, with the simulated-effects
+benchmark brought up to its completion on the shipped default (2026-10-02). This document says what
 ships, what has been validated and on which configuration, what is proposed or
 on hold, what is open, and what was running. Superseded ideas appear only in the
 last section, as pointers; evidence measured on an earlier configuration appears
@@ -32,24 +33,28 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   0.0486 / 0.0095 / 0.0015 on the low-coverage set; the combined slope recovers
   0.983 [0.937, 1.033] and 0.986 [0.960, 1.013] of the simulated effect at
   beta 0.4 and 0.8 on the deep set, 0.925 [0.849, 0.997] and 0.943 [0.907,
-  0.981] on the low-coverage set.
-- **Most comparative evidence predates the shipped default.** Power against
-  competitors, the held-out replication referee, the TReCASE and RASQUAL
-  head-to-heads and the external mirror benchmark were measured on the
-  predecessor configuration (split weighting on a `log2(CPM + 1)` total with
-  `log2(CPM + 1)` expression PCs) and are labelled so below.
-- **On hold or deferred.** Re-quantifying the 92 donors with the
-  `--gibbsPriorAggregation` Salmon fork (user decision 2026-10-01); every current
-  result uses stock Salmon draws, whose `Va` is too small for donor-gene pairs
-  with few haplotype-informative reads. Re-running the stored nulls under
-  Meier's correction.
+  0.981] on the low-coverage set. Every comparator of that benchmark (mixQTL
+  mode, total-only tensorQTL, RASQUAL, TReCASE and the native-input arms) and
+  both gene sets' stored nulls were run on the same configuration on
+  2026-10-01/02; one report covers both sets
+  (`simulated_effects_integrated_20261002/index.html`).
+- **The real-data comparative evidence predates the shipped default.** The
+  held-out replication referee and the external mirror benchmark were measured
+  on the predecessor configuration (split weighting on a `log2(CPM + 1)` total
+  with `log2(CPM + 1)` expression PCs) and are labelled so below.
+- **On hold.** Re-quantifying the 92 donors with the `--gibbsPriorAggregation`
+  Salmon fork, until there is more and better phasing and quicker personalized
+  alignment (user decisions 2026-10-01 and 2026-10-02); every current result
+  uses stock Salmon draws, whose `Va` is too small for donor-gene pairs with
+  few haplotype-informative reads.
 - **Open.** chr14, chr15 and chr22 excluded; the nominal p's anticonservatism
   under Gibbs weighting (mechanism identified, source not); single-donor
   influence (now visible, not prevented); the Beta approximation's tail
   conservatism; no per-sample allelic read floor; 1,208 calibration genes
-  untested; the comparative evidence not re-run under the shipped default and
-  no transcriptome-wide run under it.
-- **Run state.** Nothing of this project was running on 2026-10-01.
+  untested; the referee and the external benchmark not re-run under the
+  shipped default, and no transcriptome-wide run under it (it waits on a rerun
+  of the personalized RNA-seq alignment, user decision 2026-10-02).
+- **Run state.** Nothing of this project was running at the end of 2026-10-02.
 
 ## What ships
 
@@ -239,6 +244,49 @@ haplotype-informative reads over admitted allelic donors lie in [30, 100)
   almost all allelic (allelic slope 0.751 / 0.806 of the simulated effect;
   total channel 0.980 / 0.988). No paired hapmixQTL-TReCASE interval was
   computed and beta 0.2 was not measured.
+- **The simulated-effects benchmark, every method** (2026-10-01/02; one report
+  over both sets `simulated_effects_integrated_20261002/index.html`, set pages
+  `simulated_effects_half_read_20261001/report/plasmode_report.html` and
+  `simulated_effects_lowcov_half_read_20261001/report/plasmode_report.html`).
+  Oracle power (the share of non-null gene-dataset units called at the deepest
+  point of the ranking by lead p where at most 5% of the calls are null genes)
+  at |beta| 0.2 / 0.4 / 0.8, pooled over 3 datasets per |beta|, no interval: deep split 0.227 / 0.580 / 0.853, unit weights 0.147 / 0.553 /
+  0.827, total-only tensorQTL 0.027 / 0.453 / 0.753, TReCASE 0.067 / 0.393 /
+  0.760, RASQUAL 0.027 / 0.293 / 0.640, mixQTL mode with published cutoffs
+  0.007 / 0.420 / 0.693; low coverage split 0.000 / 0.040 / 0.573, unit 0.000 /
+  0.040 / 0.493, tensorQTL 0.000 / 0.033 / 0.280, TReCASE 0.000 / 0.027 /
+  0.420, RASQUAL 0.007 / 0.007 / 0.267, mixQTL published 0.007 / 0.000 /
+  0.067. The combined nominal p's rate at 0.05 on the one no-effect dataset
+  (gene-clustered interval) is 0.0444 [0.0400, 0.0494] deep and 0.0486
+  [0.0443, 0.0533] low for split, 0.0570 [0.0505, 0.0634] and 0.0645 [0.0592,
+  0.0698] for RASQUAL, 0.0869 [0.0800, 0.0944] and 0.0963 [0.0893, 0.1034] for
+  TReCASE. split's combined squared error over unit weights' is 0.86 [0.75,
+  0.98] deep and 0.99 [0.93, 1.05] low at the causal variant (|beta| 0.4,
+  pipeline-scale truth), 0.84 [0.79, 0.89] and 0.90 [0.87, 0.93] on the
+  no-effect dataset's null genes. The native-input arms (TReCASE and split on
+  alignment counts from the same BAMs) are in each set page.
+- **Stored nulls on the shipped pipeline, Meier's correction included**
+  (`stored_null_half_read_20261001/`, 2026-10-01,
+  `scripts/half_read_stored_null.py`; `stored_null_lowcov_half_read_20261002/`,
+  2026-10-02, `benchmark/simulated_effects/stored_null.py`): the real records of
+  each set's 100 genes under 200 permutations of donor records with
+  haplotype-label swaps, one permutation stream for both sets. split's combined
+  rate at 0.001 is 0.00107 [0.00092, 0.00128] deep and 0.00102 [0.00093,
+  0.00112] low, inside the pass rule stated before the runs (the gene-clustered
+  interval contains 0.001); unit weights fail it narrowly, 0.00115 [0.00110,
+  0.00121] and 0.00108 [0.00103, 0.00112].
+- **Gene-level null** (`gene_level_null/` in each set's run root,
+  `benchmark/simulated_effects/gene_level_null.py`): 100 all-null datasets per
+  set, made by the benchmark's record permutation. The share of gene-dataset
+  units with `pval_beta` below 0.05 is 0.0498 / 0.0472 (deep / low) for split,
+  0.0493 / 0.0493 for unit weights and 0.0612 / 0.0495 for total-only
+  tensorQTL. Benjamini-Hochberg at 5% (the step-up procedure that bounds the
+  expected share of null genes among the genes called) calls any gene in 2 / 2,
+  4 / 2 and 12 / 6 of the 100 datasets; with valid p at most 5 are expected,
+  and 10 or more has probability 0.028. tensorQTL's own null permutes its
+  covariate-residualized phenotype, not donor records. These nulls are made by
+  the operation the permutation test uses, so they check its machinery, not
+  calibration on real data.
 - **The combined reference under the exact model**
   (`scripts/combined_reference_exact_model.py`,
   `combined_reference_exact_model_20260927/`). Phenotypes replaced by normal
@@ -306,7 +354,8 @@ power and mean squared error were not re-measured with the half-read PCs.
   (deep) and `plasmode_lowcov_meier_20260927/report/plasmode_report.html` (low
   coverage), made with the `log2(CPM + 1)` PCs and the four-arm configuration
   of 2026-09-27, native arms rescored on WASP-filtered counts on 2026-09-29.
-  They are records, not a run of the shipped default. One-page summaries:
+  They are records, not a run of the shipped default (that run is in the
+  section above). One-page summaries:
   `benchmark_summary_20260929/summary.html` and `hapmix_vs_trecase.html` beside
   it.
 - **Held-out replication on real data**
@@ -546,16 +595,14 @@ half-depth check as its limit at that depth.
 ## Proposed or on hold
 
 - **Cohort re-quantification with `--gibbsPriorAggregation`: prepared, on hold
-  (user decision 2026-10-01).** Manifest and driver in
+  until there is more and better phasing and quicker personalized alignment
+  (user decisions 2026-10-01 and 2026-10-02).** Manifest and driver in
   `salmon_gibbspriorgroups_20261001/` (README there): per donor, rebuild the
   personalized index with production's recipe, write the gene x haplotype
   group file, run Salmon in mapping mode with production flags, and accept
   only if index hashes and fragment counts reproduce production; about 19
   hours at 5 donors and 24 threads each. No association, benchmark or
   calibration result exists under the new draws.
-- **Stored nulls under Meier's correction: deferred.** Every stored-null rate,
-  including the bands in section 3.7 of the deep-set benchmark page, was
-  measured without it.
 - **A depth-independent variance term, explored as measurement only** (user
   authorization 2026-09-25; nothing ships and no third mode appears without a
   further decision). Candidates must pin the technical coefficient (`Var = v +
@@ -609,10 +656,12 @@ half-depth check as its limit at that depth.
 - **Low-information `Va` under stock draws** (previous section); the excess at
   10-30 informative reads that every prior configuration keeps has no
   identified source.
-- **Evidence lag.** Power against competitors, the held-out referee and the
-  TReCASE and external benchmarks have not been re-run under the shipped
-  default, and no transcriptome-wide association run under it exists. Nothing
-  below nominal 0.001 has been tested on real genes.
+- **Evidence lag.** The held-out referee and the external benchmark have not
+  been re-run under the shipped default (the simulated-effects benchmark has,
+  every method on both gene sets, 2026-10-01/02), and no transcriptome-wide
+  association run under it exists; that run waits on a rerun of the
+  personalized RNA-seq alignment (user decision 2026-10-02). Nothing below
+  nominal 0.001 has been tested on real genes.
 - **1,208 of the 12,955 calibration genes are reported and not tested** by the
   Salmon runner: they have no haplotype-paired transcript in any donor and so
   no Gibbs draws. Under the default their total channel would need no draws;
@@ -645,18 +694,24 @@ half-depth check as its limit at that depth.
   rank check on the design): closed by `_validate_inputs` and the rank checks
   on 2026-10-01.
 
-## Run state, 2026-10-01
+## Run state, 2026-10-02
 
 No hapmixQTL, Salmon, RASQUAL or TReCASE computation of this project was
-running (process list checked on 2026-10-01). The prepared re-quantification
-in `salmon_gibbspriorgroups_20261001/` was not started. The last commit before
-this documentation pass is `8e347fd` on branch `simulation-benchmark`, which
-tracks `origin/simulation-benchmark` and is not merged into `master`; verify
-the current Git state before acting.
+running at 16:45 on 2026-10-02 (process list checked; the last benchmark run,
+RASQUAL on the low-coverage set, ended at 16:23). The prepared
+re-quantification in `salmon_gibbspriorgroups_20261001/` was not started.
+Branch `simulation-benchmark` tracks `origin/simulation-benchmark` and is not
+merged into `master`; verify the current Git state before acting.
 
 Current result roots: covariates `cov/half_read_point_calibration_20260930/`;
-shipped-default effect recovery `beta_recovery_current_20260930/`; benchmark
-pages `plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/`
+shipped-default effect recovery `beta_recovery_current_20260930/`; the
+simulated-effects benchmark on the shipped default
+`simulated_effects_half_read_20261001/` (deep) and
+`simulated_effects_lowcov_half_read_20261001/` (low coverage), their stored
+nulls `stored_null_half_read_20261001/` and
+`stored_null_lowcov_half_read_20261002/`, and one report over both
+`simulated_effects_integrated_20261002/`; benchmark pages
+`plasmode_meier_20260927/` and `plasmode_lowcov_meier_20260927/`
 (predecessor configuration); referee `referee_replication_20260928/`; external
 benchmark `external_benchmark_current_20260928/`. Earlier benchmark runs kept as
 records: `plasmode_20260926/` and `plasmode_stratum30_100_20260927/` (before
