@@ -30,9 +30,7 @@ import common as C                # noqa: E402
 from tensorqtl.hapmixqtl import MIN_ALLELIC_DONORS   # noqa: E402
 
 SC = C.module('06_score')
-BEFORE = C.BEFORE_DF_FIX     # the arms scored before commit 8a06803 (not regenerable; a record)
-DF_FIX = C.DF_FIX            # the stored null re-run under 8a06803 (scripts/allelic_df_null_check.py)
-SMOKE = C.TRECASE_SMOKE      # the 2026-09-26 TReCASE smoke run: the largest theta gradient at an abnormal stop (section 6)
+NULL = C.STORED_NULL         # the stored 200-permutation null of the hapmixQTL arms on this pipeline (scripts/half_read_stored_null.py)
 OUT, PAGE = C.REPORT, C.REPORT / 'plasmode_report.html'
 INTERPRETED_SET = 'corrected_null_store_20260925'   # the gene set the interpretation prose (section 3 paragraphs, 3.8, 4-6, check_claims) was written for
 INTERPRETED = C.GENE_SET == INTERPRETED_SET
@@ -50,7 +48,6 @@ HM = HAPMIX + tuple(C.MIXQTL_ARMS)   # the hapmixQTL and mixQTL arms, the arms B
 ALL = ARMS + JOINT                   # the Salmon-input arms: the prose and check_claims are about these
 JOINT_COV = C.D / 'cov' / 'log2cpm1_point_calibration_20260925'   # the covariates of the committed runs whose RASQUAL and TReCASE results are reused (3aac315), of the stored null runs and of their re-run under 8a06803 (01_check_inputs.REPRO_COV); all predate a2f4314
 HALF_READ_SINCE = datetime.datetime(2026, 9, 30, 15, 36, 9, tzinfo=datetime.timezone.utc)   # commit a2f4314: the expression PCs move to the half-read build
-AFTER = C.AFTER_DF_FIX       # the committed run scored after commit 8a06803: BEFORE's datasets and covariates, no Meier's correction
 LIMITS = 'section 6' if INTERPRETED else 'the limits section'   # where the page lists what would run to make a comparison like for like
 
 
@@ -114,12 +111,12 @@ JOINT_COV_NOTE = '' if not JOINT_OFF else (
     + ('(sections 2 and 6).' if INTERPRETED else '(section 2 and the limits section).'))
 NATIVE = SC.NATIVE_ARMS              # 05b_native_arms.py: split weighting and TReCASE on native alignment counts; () where C.NATIVE does not exist
 SHOWN = ALL + NATIVE                 # every arm in the section 3 tables and Figures 1-4
-LABEL = {'gibbs': 'gibbs (1/v both channels, shipped)', 'split': 'split (1/v allelic, unit total)',
-         'unit': 'unit (weight 1 both channels)', 'plus_one': 'plus_one (1/(v+1) both channels)',
+LABEL = {'split': 'split (shipped: 1/Va allelic, unit total)', 'gibbs': 'gibbs (1/Va allelic, 1/Vt total)',
+         'unit': 'unit (weight 1 both channels)',
          'mixqtl': 'mixQTL, published cutoffs', 'mixqtl_permissive': 'mixQTL, permissive cutoffs',
          TQ: 'tensorQTL, total only, unweighted', 'rasqual': 'RASQUAL (joint model)', 'trecase': 'TReCASE, asSeq (joint model)',
          'split_native': 'split on native counts (control)', 'trecase_native': 'TReCASE, asSeq, on native counts'}
-SHORT = {'gibbs': 'gibbs', 'split': 'split', 'unit': 'unit', 'plus_one': 'plus_one', 'mixqtl': 'mixQTL pub.',
+SHORT = {'gibbs': 'gibbs', 'split': 'split', 'unit': 'unit', 'mixqtl': 'mixQTL pub.',
          'mixqtl_permissive': 'mixQTL perm.', TQ: 'tensorQTL', 'rasqual': 'RASQUAL', 'trecase': 'TReCASE',
          'split_native': 'split native', 'trecase_native': 'TReCASE native'}
 COLOR = dict(zip(ALL + C.NATIVE_ARMS, ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#8a5a2b', '#4a3aa7',
@@ -136,19 +133,8 @@ ALPHAS = ('0.05', '0.01', '0.001')
 DETECT = ('0.05', '0.001', '1e-05')
 INK, MUTED, GRID = '#0b0b0b', '#52514e', '#e1e0d9'
 LOG_TICKS = (0.25, 0.35, 0.5, 0.7, 1, 1.4, 2, 4, 8, 16, 32)
-S = SB = SA = SR = FX = FA = CG = CP = LF = JF = LD = SM = SF = NF = None   # the inputs, set once by load()
+S = SN = CG = CP = LF = JF = LD = SF = NF = None   # the inputs, set once by load()
 
-
-def same_datasets(root):
-    """Whether another run's simulated datasets are this run's, every file and array."""
-    mine = sorted(p.relative_to(C.DATASETS) for p in C.DATASETS.rglob('rep*.npz'))
-    if mine != sorted(p.relative_to(root / 'datasets') for p in (root / 'datasets').rglob('rep*.npz')):
-        return False
-    for p in mine:
-        a, b = np.load(C.DATASETS / p), np.load(root / 'datasets' / p)
-        if set(a.files) != set(b.files) or not all(np.array_equal(a[k], b[k], equal_nan=a[k].dtype.kind == 'f') for k in a.files):
-            return False
-    return True
 
 
 def skipped(what, key):
@@ -156,7 +142,7 @@ def skipped(what, key):
 
 
 def load():
-    global S, SB, SA, SR, FX, FA, CG, CP, LF, JF, LD, SM, SF, NF
+    global S, SN, CG, CP, LF, JF, LD, SF, NF
     S = json.loads(C.SUMMARY.read_text())
     if tuple(S['native_arms']) != NATIVE:
         raise SystemExit(f'{C.SUMMARY}: native arms {S["native_arms"]} differ from this script\'s {NATIVE}')
@@ -167,36 +153,18 @@ def load():
     else:
         print(f'native-input arms {list(C.NATIVE_ARMS)} skipped (tables, figures, their subsection and the sentences that cite '
               f'it): {C.NATIVE} does not exist', flush=True)
-    SB = json.loads(BEFORE.read_text()) if BEFORE else skipped('the before/after comparison of commit 8a06803', 'before_df_fix')
-    SA = json.loads(AFTER.read_text()) if AFTER else skipped('the committed run scored after commit 8a06803', 'after_df_fix')
-    if SA is not None and not (same_datasets(C.COMMITTED) and same_datasets(REF_RUN.parent)):
-        raise SystemExit(f'{C.DATASETS} differs from {C.COMMITTED / "datasets"} or {REF_RUN.parent / "datasets"}; section 3.1 compares '
-                         'their scorings as runs on one set of datasets')
-    FX = json.loads(DF_FIX.read_text()) if DF_FIX else skipped('the stored null re-run under 8a06803 (anchor percentiles, tail rates)', 'df_fix')
-    SR = json.loads(REF_RUN.read_text())
-    for path, X, arms in ((C.SUMMARY, S, ARMS), (BEFORE, SB, HM), (AFTER, SA, HM)):
-        if X is not None and (tuple(X['arms']) != arms or tuple(X['joint_arms']) != JOINT or tuple(X['bands']) != BANDS):
-            raise SystemExit(f'{path}: arms {X["arms"]} + {X["joint_arms"]} / bands {X["bands"]} differ from this script\'s')
-    if INTERPRETED and (S['one_df_genes'] != SB['one_df_genes'] or len(S['one_df_genes']) != 1):
-        raise SystemExit(f'one-df genes {S["one_df_genes"]} (this run) vs {SB["one_df_genes"]} (BEFORE); the text assumes one')
-    if FX is not None and (FX['floor'] != MIN_ALLELIC_DONORS or set(HAPMIX) - set(FX['rates'])):
-        raise SystemExit(f'{DF_FIX}: floor {FX["floor"]} or configurations {list(FX["rates"])} differ from this script\'s')
+    SN = json.loads((NULL / 'summary.json').read_text()) if NULL else skipped('the stored null (anchor, null rates)', 'stored_null')
+    if tuple(S['arms']) != ARMS or tuple(S['joint_arms']) != JOINT or tuple(S['bands']) != BANDS:
+        raise SystemExit(f'{C.SUMMARY}: arms {S["arms"]} + {S["joint_arms"]} / bands {S["bands"]} differ from this script\'s')
+    if SN is not None and (SN['floor'] != MIN_ALLELIC_DONORS or set(HAPMIX) - set(SN['rates']) or SN['n_draw'] != SC.ANCHOR_N_PERM):
+        raise SystemExit(f'{NULL}: floor {SN["floor"]}, configurations {list(SN["rates"])} or {SN["n_draw"]} draws differ from this script\'s')
     CG, CP = (json.loads((C.CHECKS / f).read_text()) for f in ('check_generator.json', 'salmon_premise.json'))
     LD = json.loads((C.LADDER / 'ladder.json').read_text()) if C.LADDER else skipped('the mixQTL ladder (section 3.8)', 'ladder')
     LF = run_facts(json.loads((C.DATASETS / 'meta.json').read_text())['facts'],
                    json.loads((C.RESULTS / 'run_arms_facts.json').read_text()))
-    JF = joint_facts(json.loads((C.JOINT['rasqual'] / 'summary.json').read_text()),
-                     json.loads((C.JOINT['trecase'] / 'summary.json').read_text()))
-    if FX is not None and LF['floor'][1] != sorted(FX['below_floor_genes']):
-        raise SystemExit(f'below-floor genes {LF["floor"][1]} differ from {DF_FIX} {sorted(FX["below_floor_genes"])}')
-    if SMOKE:
-        SM = json.loads(SMOKE.read_text())
-        if not SM['smoke']:
-            raise SystemExit(f'{SMOKE} is not a smoke run')
-        SM = max(d['joint_na_by_trace']['theta_fail_abs_gradient_max'] for d in SM['per_dataset'].values())
-    else:
-        skipped('the TReCASE smoke run (section 6)', 'trecase_smoke')
-    FA = fixed_anchor() if FX is not None else None
+    JF = joint_facts(json.loads((C.JOINT['trecase'] / 'summary.json').read_text()))
+    if SN is not None and LF['floor'][1] != sorted(SN['below_floor_genes']):
+        raise SystemExit(f'below-floor genes {LF["floor"][1]} differ from {NULL} {sorted(SN["below_floor_genes"])}')
     SF = stratum_facts()
     if INTERPRETED:
         check_claims()
@@ -223,40 +191,31 @@ def run_facts(mf, RF):
                 floor=sets[0] if len(sets) == 1 else None, floor_sets=sets)
 
 
-def joint_facts(RS, TS):
-    """Run counts of the joint arms, pooled over datasets, from their summary.json files."""
+def joint_facts(TS):
+    """TReCASE's run counts, pooled over datasets, from its summary.json; the allelic records the hapmixQTL arms admit
+    (common.allelic_kept on each dataset), which asSeq receives."""
     n_ds = sum(S['n_datasets'].values())
-    rq = RS['per_dataset']
-    if len(rq) != n_ds or set(TS['per_dataset']) != set(rq):
-        raise SystemExit(f'joint summaries cover {len(rq)} / {len(TS["per_dataset"])} datasets, want {n_ds}')
-    rasqual = dict(RS['pooled'], nonconv_range=(min(v['nonconv'] for v in rq.values()), max(v['nonconv'] for v in rq.values())),
-                   het=(min(v['het'] for v in rq.values()), max(v['het'] for v in rq.values())),
-                   as00=(min(v['as00'] for v in rq.values()), max(v['as00'] for v in rq.values())),
-                   chisq_le0_anchor=rq['beta0.0 rep 000']['chisq_le0'])
+    if len(TS['per_dataset']) != n_ds:
+        raise SystemExit(f'TReCASE summary covers {len(TS["per_dataset"])} datasets, want {n_ds}')
     per = TS['per_dataset'].values()
-    drop = [rq[k]['het'] - c['as_records_admitted'] for k, c in TS['per_dataset'].items()]   # admitted records asSeq's min.AS.reads drops
+    admitted = {}
+    for k in TS['per_dataset']:
+        sc, r = k.split(' rep ')
+        ds = np.load(C.DATASETS / sc / f'rep{r}.npz')
+        admitted[k] = int(C.allelic_kept(ds['pL'], ds['pR'], ds['Va']).sum())
+    drop = [admitted[k] - c['as_records_admitted'] for k, c in TS['per_dataset'].items()]   # admitted records asSeq's min.AS.reads drops
     trace = lambda k: sum(c['joint_na_by_trace'][k] for c in per)   # noqa: E731
-    trecase = dict(TS['pooled'], linear_dosage=trace('trec_linear_dosage'), ase_fail=trace('ase'),
-                   few_het=sum(c['ase_na_few_het'] for c in per), df_not_1=sum(c['final_df_not_1'] for c in per),
-                   constant=sorted({c['tested_constant_dosage'] for c in per}),
-                   theta_gradient_max=max(c['joint_na_by_trace']['theta_fail_abs_gradient_max'] for c in per),
-                   zeroed=(min(c['informative_zeroed_not_allelic_kept'] for c in per), max(c['informative_zeroed_not_allelic_kept'] for c in per)),
-                   asseq_dropped=(min(drop), max(drop)), df_not_1_anchor=TS['per_dataset']['beta0.0 rep 000']['final_df_not_1'],
-                   trec_na=sum(c['trec_na'] for c in per))
-    return dict(rasqual=rasqual, trecase=trecase)
+    return dict(trecase=dict(TS['pooled'], linear_dosage=trace('trec_linear_dosage'), ase_fail=trace('ase'),
+                             few_het=sum(c['ase_na_few_het'] for c in per), df_not_1=sum(c['final_df_not_1'] for c in per),
+                             constant=sorted({c['tested_constant_dosage'] for c in per}),
+                             theta_gradient_max=max(c['joint_na_by_trace']['theta_fail_abs_gradient_max'] for c in per),
+                             zeroed=(min(c['informative_zeroed_not_allelic_kept'] for c in per),
+                                     max(c['informative_zeroed_not_allelic_kept'] for c in per)),
+                             admitted=(min(admitted.values()), max(admitted.values())),
+                             asseq_dropped=(min(drop), max(drop)),
+                             df_not_1_anchor=TS['per_dataset']['beta0.0 rep 000']['final_df_not_1'],
+                             trec_na=sum(c['trec_na'] for c in per)))
 
-
-def fixed_anchor():
-    """The anchor's rate at 0.05 against the per-permutation rates of DF_FIX's draws, per arm and channel."""
-    q_lo, q_hi = (1 - SC.ANCHOR_CENTRAL) / 2, (1 + SC.ANCHOR_CENTRAL) / 2
-    out = {}
-    for a in HAPMIX:
-        per_perm = SC.stored_rates(DF_FIX, a)
-        for ch in CHANNELS:
-            r, m = per_perm[ch], S['null']['beta0.0'][a][ch]['all'][str(SC.ANCHOR_ALPHA)]['rate']
-            lo, hi = float(np.quantile(r, q_lo)), float(np.quantile(r, q_hi))
-            out[a, ch] = dict(perm_lo=lo, perm_hi=hi, percentile=float(100 * np.mean(r <= m)), passed=lo <= m <= hi)
-    return out
 
 
 def f(x, d=3):
@@ -317,10 +276,9 @@ def per_scen(fn, n=3):
     return ' / '.join(f(fn(sc), n) for sc in ('beta0.0',) + tuple(f'beta{b}' for b in BETAS))
 
 
-def fx(a, ch, when, al, subset='all'):
-    """A rate of the stored null re-run (DF_FIX): when is 'before' (the shared 73-df reference), 'after' or
-    'after_minus_before'; a dict with rate (diff) and its gene-clustered lo, hi."""
-    return FX['rates'][a][ch][subset][when][al]
+def nul(a, ch, al, subset='all'):
+    """A rate of the stored null on this pipeline: a dict with rate and its gene-clustered lo, hi."""
+    return SN['rates'][a][ch][subset]['after'][al]
 
 
 def rkey(a):
@@ -875,17 +833,11 @@ def tab_anchor():
     rows = []
     for a in HAPMIX:
         for ch in CHANNELS:
-            r, r3, n = S['anchor'][a][ch]['0.05'], S['anchor'][a][ch]['0.001'], FA[a, ch]
+            r, r3 = S['anchor'][a][ch]['0.05'], S['anchor'][a][ch]['0.001']
             rows.append([LABEL[a], ch, f(r['rate'], 6), f(r['stored'], 4), f'{f(r["perm_lo"], 6)} to {f(r["perm_hi"], 6)}',
-                         f'{r["percentile"]:.1f}', 'yes' if r['passed'] else 'no',
-                         f(fx(a, ch, 'after', '0.05')['rate'], 4), f'{f(n["perm_lo"], 6)} to {f(n["perm_hi"], 6)}',
-                         f'{n["percentile"]:.1f}', 'yes' if n['passed'] else 'no',
-                         f'{f(r3["rate"], 4)} ({f(r3["stored"], 4)} / {f(fx(a, ch, "after", "0.001")["rate"], 4)})'])
-    return table(['arm', 'channel', 'this dataset, 0.05', 'stored mean, 200 permutations, before 8a06803',
-                  'central 99% of stored permutations, before', 'percentile among stored, before', 'inside, before',
-                  'stored mean, re-run under 8a06803', 'central 99%, re-run', 'percentile, re-run', 'inside, re-run',
-                  '0.001: this dataset (stored mean before / re-run)'], rows)
-
+                         f'{r["percentile"]:.1f}', 'yes' if r['passed'] else 'no', f'{f(r3["rate"], 4)} ({f(r3["stored"], 4)})'])
+    return table(['arm', 'channel', 'this dataset, 0.05', 'stored mean, 200 permutations', 'central 99% of stored permutations',
+                  'percentile among stored', 'inside', '0.001: this dataset (stored mean)'], rows)
 
 CSS = '''
 :root { --ink: #0b0b0b; --ink2: #52514e; --rule: #e1e0d9; --bg: #fcfcfb; --tint: #f3f2ee; }
@@ -953,10 +905,9 @@ def stratum_facts():
 
 def sec_head():
     run_date = datetime.date.fromtimestamp((C.RESULTS / 'run_arms_facts.json').stat().st_mtime).isoformat()   # when 03 wrote this root's arms
-    dated = (f'<p class="sub"><b>Dated text.</b> The arm labels{", the interpretation paragraphs and sections 4 and 5" if INTERPRETED else ""} '
-             'keep the reasoning of 2026-09-27: "shipped" means the default of that date (gibbs), and the weighting decision '
-             'they discuss was made on 2026-09-29, adopting half-read split, which is none of these arms (their split uses the '
-             'log2(CPM + 1) total; benchmark/simulated_effects/README.md).</p>')
+    dated = ('<p class="sub"><b>Configuration.</b> Every hapmixQTL arm, and total-only tensorQTL, runs on the '
+             'half-read total (user decision 2026-10-01); "shipped" means half-read split, the default since '
+             '2026-09-29. mixQTL mode keeps its published natural-log response.</p>')
     if not INTERPRETED:
         n_genes = S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z']['all']['genes']
         n_ds = S['n_datasets']
@@ -997,25 +948,20 @@ def sec_head():
                 f'carries this set\'s comparisons, its limit and what it settles'
                 + (', and the limits section what the run cannot establish' if sec_closing_limits() else '') + '.</p>')
     return ('<h1>Simulated-effects eQTL benchmark: recovering known cis effects</h1>' + dated +
-            '<p class="sub">hapmixQTL weightings, mixQTL mode, total-only tensorQTL, RASQUAL and TReCASE on the BrainVar '
-            'cohort\'s own Salmon output with injected effects'
+            '<p class="sub">Three hapmixQTL weightings on the half-read total (split, the shipped default; gibbs; unit), mixQTL '
+            'mode, total-only tensorQTL and TReCASE on the BrainVar cohort\'s own Salmon output with injected effects'
             + (', and TReCASE and split weighting also on alignment counts from '
-               f'the same BAMs (section {native_sec()}, run 2026-09-28 into {C.NATIVE})' if NATIVE else '')
-            + '; 100 genes x 92 donors; datasets of 2026-09-26, regenerated '
-            f'unchanged; hapmixQTL, mixQTL and tensorQTL arms and the mixQTL ladder run {run_date} into '
-            f'{C.ROOT}, the hapmixQTL arms on commit 8a06803 (per-channel t references and a 15-donor allelic '
-            'admission floor) and with Meier\'s correction of the combined standard error for estimated channel weights '
-            f'(commit a1b2ef4; section 2); {JOINT_HEAD}; units log2 aFC '
-            f'(beta = 1 is a twofold effect). Made by benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {BEFORE} and {AFTER} '
-            f'(the committed run\'s arms before and after commit 8a06803)'
-            + ('' if REF_RUN == C.SUMMARY else f', {REF_RUN} (the deep set\'s delivered run, with Meier\'s correction)')
-            + f', {DF_FIX} and its draws (the stored null re-run under that commit), the check files that '
-            f'01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, the joint models\' summaries in {C.JOINT["rasqual"]} '
-            f'and {C.JOINT["trecase"]}, '
+               f'the same BAMs (section {native_sec()}, run into {C.NATIVE})' if NATIVE else '')
+            + '; 100 genes x 92 donors; datasets of 2026-09-26, regenerated with the half-read total; hapmixQTL, mixQTL and '
+            f'tensorQTL arms and the mixQTL ladder run {run_date} into {C.ROOT}, with per-channel t references, a 15-donor '
+            'allelic admission floor and Meier\'s correction of the combined standard error for estimated channel weights '
+            f'(section 2); {JOINT_HEAD}; units log2 aFC (beta = 1 is a twofold effect). Made by '
+            f'benchmark/simulated_effects/08_report.py from {C.SUMMARY}, the stored null {NULL} and its draws, the check files '
+            f'that 01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of '
+            f'{C.DATASETS} and {C.RESULTS}, TReCASE\'s summary in {C.JOINT["trecase"]}, '
             + (f'{C.LADDER}, and the native-input arms\' {C.NATIVE / "facts.json"} and '
                f'{C.NATIVE_RESULTS["trecase_native"] / "summary.json"}' if NATIVE else f'and {C.LADDER}')
             + f'; figures also written as PNG in {OUT}.</p>')
-
 
 def sec_why():
     first = '''
@@ -1240,12 +1186,10 @@ three datasets, the 2.5% and 97.5% quantiles of the mean over datasets resampled
 and largest dataset values. It is not a 95% interval, and it carries no gene-to-gene variation, because the three
 datasets hold the same 100 genes.'''
         anchor_txt = f'''For the
-four hapmixQTL arms its rate is compared with the stored 100-gene, 200-permutation null runs of the same arms, as
-made before commit 8a06803 (06_score.py's reference) and as re-run under it: the
-percentile of this dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their
-central 99%. Against the re-run the comparison is like for like in the allelic channel only; in the combined channel the
-stored runs predate Meier's correction{STORED_PCS.replace('its total channel was', 'their total channel was')}. This is
-descriptive: one permutation cannot test the plumbing.'''
+three hapmixQTL arms its rate is compared with the stored null on this pipeline (section 2): the percentile of this
+dataset's rate among the 200 stored per-permutation rates, and whether it lies inside their central 99%. The stored null
+holds the same records under 200 permutations, the first of them this one, so this is descriptive: it says where one
+permutation fell, and check (d), not this comparison, tests the plumbing.'''
     else:
         auc_txt = (f'It is computed per dataset and averaged over the {n_rep} datasets. Its interval is the 2.5% and 97.5% '
                    f'quantiles of the mean over datasets resampled with replacement ({n_rep} datasets); it carries no '

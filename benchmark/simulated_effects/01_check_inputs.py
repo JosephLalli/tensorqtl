@@ -35,8 +35,9 @@ non-zero if any check fails; nothing downstream re-checks what passes here.
     scripts/half_read_stored_null.py): given its permutation 0 and swap signs, the beta = 0 path
     through map_nominal reproduces its draw 0 for every hapmixQTL arm, every column: channel and
     combined slopes within REPRO_SLOPE_TOL of their se and se within REPRO_SLOPE_TOL relative, the
-    three p within REPRO_P_RTOL relative with no call differing at REPRO_ALPHAS, and dof_a, dof_t,
-    dof_nominal and allelic_admitted equal. Skipped with a printed line for a gene set without a
+    three p within REPRO_P_RTOL relative with no call differing at REPRO_ALPHAS, dof_a, dof_t and
+    allelic_admitted equal, and dof_nominal (the Welch-Satterthwaite dof, computed from the se) within
+    DOF_RTOL relative. Skipped with a printed line for a gene set without a
     stored null run (common.STORED_NULL None); the check file's reproduction is then null.
 (e) PLUMBING GATES, once, on dataset 0 of check (c) (the earlier pipeline's per-dataset gates):
     mixqtl_scan's lead (largest |meta stat|), beta and se equal compare_mixqtl_replication.
@@ -344,15 +345,21 @@ def check_reproduction(I, R, S, scratch):
         pin = dict(allelic=pinned(m, every, 'slope_a', 'slope_a_se'), total=pinned(m, every, 'slope_t', 'slope_t_se'),
                    combined=pinned(m, every, 'slope', 'slope_se'))
         pv = {c: p_agree(col(c), col(f'{c}_stored'), REPRO_P_RTOL) for c in ('pval_a', 'pval_t', 'pval_nominal')}
-        same = {c: bool(np.array_equal(col(c), col(f'{c}_stored'), equal_nan=True))
-                for c in ('dof_a', 'dof_t', 'dof_nominal', 'allelic_admitted')}
-        passed = bool(all(x['passed'] for x in pin.values()) and all(x['passed'] for x in pv.values()) and all(same.values()))
+        same = {c: bool(np.array_equal(col(c), col(f'{c}_stored'), equal_nan=True)) for c in ('dof_a', 'dof_t', 'allelic_admitted')}
+        dn, dn0 = col('dof_nominal'), col('dof_nominal_stored')
+        fin = np.isfinite(dn0)
+        dof_rel = float(np.max(np.abs(dn[fin] - dn0[fin]) / dn0[fin])) if fin.any() else 0.0
+        dof_ok = bool(np.array_equal(np.isfinite(dn), fin) and dof_rel <= DOF_RTOL)
+        passed = bool(all(x['passed'] for x in pin.values()) and all(x['passed'] for x in pv.values()) and all(same.values())
+                      and dof_ok)
         ok &= passed
-        res[arm] = dict(stored=str(path), tests=len(m), pinned=pin, pvalues=pv, equal=same, passed=passed)
+        res[arm] = dict(stored=str(path), tests=len(m), pinned=pin, pvalues=pv, equal=same,
+                        dof_nominal=dict(max_rel=dof_rel, passed=dof_ok), passed=passed)
         print(f'(d) {arm} vs {path.parent.parent.name}/{path.name}: {len(m):,} tests; slopes within '
               f'{max(x["max_slope_diff_se"] for x in pin.values()):.1e} se, se within {max(x["max_se_rel"] for x in pin.values()):.1e} '
               f'relative; p within {max(x["max_rel"] for x in pv.values()):.1e} relative, calls differing '
-              f'{ {c: sum(x["calls_differ"].values()) for c, x in pv.items()} }; equal {same}  {status(passed)}', flush=True)
+              f'{ {c: sum(x["calls_differ"].values()) for c, x in pv.items()} }; equal {same}; dof_nominal within {dof_rel:.1e} '
+              f'relative  {status(passed)}', flush=True)
     return ok, res
 
 def ivw_dev(df, mixqtl):

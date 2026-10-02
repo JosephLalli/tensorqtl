@@ -40,7 +40,7 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
                 # gene set the scripts read (None: the set has none, and each reader prints a skip); a new gene set adds an entry
     'corrected_null_store_20260925': dict(
         gene_dir='corrected_null_store_20260925',
-        root='plasmode_meier_20260927',                                    # every output: the one directory this pipeline may write outside 99_acceptance.py (task of 2026-09-27, Meier's correction)
+        root='simulated_effects_half_read_20261001',                       # every output: the one directory this pipeline may write outside 99_acceptance.py (half-read split for every arm, user decision 2026-10-01; the 2026-09-27 run on log2(CPM + 1) is plasmode_meier_20260927)
         acceptance_root='plasmode2_acceptance_20260927',                   # ROOT under 99_acceptance.py, so the acceptance never writes into a delivered run
         committed='plasmode_20260926',                                     # the previous code at commit 3aac315
         hybrid_null='hybrid_weights_null_20260926',                        # the stored split / unit / plus_one null runs, with the gibbs run in gene_dir (06 ANCHOR, 01 REPRO_DRAWS)
@@ -52,7 +52,7 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
         ladder='ladder'),                                                  # 07's output directory under root (08 section 3.8)
     'stratum30_100': dict(   # 100 genes at 30-100 median haplotype-informative reads over admitted allelic donors (select_stratum_genes.py)
         gene_dir='plasmode_stratum30_100_20260927/gene_set',
-        root='plasmode_lowcov_meier_20260927',
+        root='simulated_effects_lowcov_half_read_20261001',                # half-read split (2026-10-01); the 2026-09-27 run is plasmode_lowcov_meier_20260927
         acceptance_root='plasmode2_stratum_acceptance_20260927',
         committed='plasmode_stratum30_100_20260927',                       # the previous code, commits 15aac90 to d3247e0
         hybrid_null=None, before_df_fix=None, after_df_fix=None, df_fix=None, stored_null=None, trecase_smoke=None, ladder=None)}
