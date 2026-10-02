@@ -853,8 +853,10 @@ def sec_head():
                 f'section "The {THIS_SET} against the {REF_SET}", after section 3, sets it against the {REF_SET}\'s delivered '
                 f'run ({REF_RUN}), each set with its own intervals. The read bands of sections 2 and 3 use each gene\'s median '
                 f'over all donors, on which {SF["below"]} of these genes fall below {SF["lo"]} reads; the set\'s own measure is '
-                f'the median over admitted donors. In {C.COMMITTED.name}, the committed run whose joint-model results '
-                f'{"are" if STAGED else "were"} reused here, {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
+                f'the median over admitted donors. In {C.COMMITTED.name}, '
+                + ('the committed run whose joint-model results are reused here' if STAGED else
+                   'the earlier committed run on this gene set (this run reuses none of its results)')
+                + f', {COMMITTED_RUN_LOG.name} holds {SF["lines"][0]} dataset blocks from {ran} '
                 f'datasets: its hapmixQTL and mixQTL arms first ran on {(ran - n_ds["0.0"]) // (len(n_ds) - 1)} replicates '
                 f'per |beta|, the datasets were then regenerated at {n_ds["0.4"]} (user decision 2026-09-27; every generator '
                 f'stream is keyed on the replicate index, so the kept replicates are unchanged), and its joint arms and '
@@ -1623,8 +1625,9 @@ def sec_contrast():
                     'p is not anticonservative: at |beta| 0.4 the realized false-discovery proportion of the eigenMT calls '
                     '(null gene units among the gene units called, over the datasets) is '
                     + ', '.join(f'{SHORT[a]} {fdp_txt(S, a)}' for a in high) + f' in the {THIS_SET} and '
-                    + ', '.join(f'{SHORT[a]} {fdp_txt(R, a)}' for a in high) + f' in the {REF_SET}, against at most '
-                    f'{fdp_txt(S, other(S))} and {fdp_txt(R, other(R))} for the other arms; the eigenMT entries of the '
+                    + ', '.join(f'{SHORT[a]} {fdp_txt(R, a)}' for a in high) + f' in the {REF_SET}; among the other arms '
+                    f'the highest is {SHORT[other(S)]} {fdp_txt(S, other(S))} in the {THIS_SET} and {SHORT[other(R)]} '
+                    f'{fdp_txt(R, other(R))} in the {REF_SET}; the eigenMT entries of the '
                     f'second table give the calls and null gene units at every |beta|, and on a second line the power when '
                     f'every arm is held to the same 5% realized false-discovery proportion on its eigenMT p, which is the '
                     f'comparison across arms.')
@@ -1693,12 +1696,13 @@ def sec_contrast():
                f'p has an interval that includes nominal for {lst(S, "0.05", "includes")} at 0.05, {lst(S, "0.01", "includes")} at '
                f'0.01 and {lst(S, "0.001", "includes")} at 0.001, and one above nominal for {lst(S, "0.05", "above")} at 0.05, '
                f'{lst(S, "0.01", "above")} at 0.01 and {lst(S, "0.001", "above")} at 0.001; a stored null for this gene set is '
-               f'needed before "nominal" means more than "nominal on this permutation". split\'s gain over unit weights is smaller '
-               f'here than in the {REF_SET}: {ci(anc(S, "split", "combined"), "value", 2)} against '
-               f'{ci(anc(R, "split", "combined"), "value", 2)} on the anchor ({apart(anc(S, "split", "combined"), anc(R, "split", "combined"))} '
+               f'needed before "nominal" means more than "nominal on this permutation". split\'s squared error over unit weights\' '
+               f'on the anchor is {ci(anc(S, "split", "combined"), "value", 2)} here against '
+               f'{ci(anc(R, "split", "combined"), "value", 2)} in the {REF_SET} ({apart(anc(S, "split", "combined"), anc(R, "split", "combined"))} '
                f'intervals), its allelic channel alone {ci(anc(S, "split", "allelic"), "value", 2)} against '
-               f'{ci(anc(R, "split", "allelic"), "value", 2)}, because at these depths the total channel carries most of the '
-               f'combined slope. Against TReCASE, {cal_vs} (the paragraphs above); its AUC ranges overlap TReCASE\'s at '
+               f'{ci(anc(R, "split", "allelic"), "value", 2)} ({apart(anc(S, "split", "allelic"), anc(R, "split", "allelic"))} '
+               f'intervals){"; the gain differs between the sets" if apart(anc(S, "split", "combined"), anc(R, "split", "combined")) == "separated" else "; these intervals do not show that the gain differs between the sets"}. '
+               f'Against TReCASE, {cal_vs} (the paragraphs above); its AUC ranges overlap TReCASE\'s at '
                f'{at_betas(ov(S, "trecase", "split"))} with a mean '
                f'difference (split minus TReCASE) of {gap} at |beta| {" / ".join(BETAS)}, and the precision comparison rests on '
                f'the scale correction above. More |beta| replicates would sharpen the ranking comparison only; they cannot '
@@ -1708,7 +1712,7 @@ def sec_contrast():
     return f'''
 <h2>The {THIS_SET} against the {REF_SET}</h2>
 <p>Every gene of each set, each value with its own set's interval; no interval of the difference is computed. The
-{REF_SET} is its delivered run ({REF_RUN}) on the datasets of the first simulated-effects run ({FIRST_RUN.name}), with Meier's
+{REF_SET} is its delivered run ({REF_RUN}), on the genes of the first simulated-effects run ({FIRST_RUN.name}) with its datasets made again by this generator in its own directory, with Meier's
 correction as here{'' if REF_COV == ARMS_COV else f', but with its arms on {REF_COV.name} ({REF_COV_HOW}) where this run' + "'" + f's used {ARMS_COV.name}: the two sets' + "'" + ' total and combined channels are compared across covariate builds, so those comparisons are not like for like (' + LIMITS + ')'}: the same benchmark on the {INTERPRETED_SET} genes, {SF["ref_above"]} of
 which lie above this set's read range, scored by the same 06_score.py with {n_rep[REF_SET]} datasets per |beta|; the
 {THIS_SET} has {n_rep[THIS_SET]}. The two runs are not independent: the generator's streams are keyed on the replicate
