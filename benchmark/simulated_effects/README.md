@@ -8,8 +8,10 @@
 > `report/plasmode_report.html`), its stored null `stored_null_half_read_20261001/`. The 2026-09-27
 > roots (`plasmode_meier_20260927`, `plasmode_lowcov_meier_20260927`) and the run of earlier on
 > 2026-10-01 (`release_closure_20261001/plasmode_after_split`) are records of the log2(CPM+1) total.
-> Not yet on this configuration: the low-coverage set, the native-input arms (`05b_native_arms.py`
-> still builds its native split's total as log2(CPM + 1)) and RASQUAL.
+> The low-coverage set's run is `brainvar_hapmix_deploy/simulated_effects_lowcov_half_read_20261001/`
+> (2026-10-02; TReCASE run there, 8 genes at a time; no stored null exists for this set).
+> Not yet on this configuration: the native-input arms (`05b_native_arms.py` still builds its native
+> split's total as log2(CPM + 1)) and RASQUAL.
 
 ## Purpose
 
