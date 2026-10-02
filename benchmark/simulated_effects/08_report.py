@@ -2544,7 +2544,10 @@ def main():
     figs = dict(ranking=fig_ranking(), bias=fig_bias(), lead=fig_lead(), efficiency=fig_efficiency())
     contrast = () if SF is None else (sec_contrast(),)   # a results section: after section 3
     tail = (sec_critique(), sec_meaning(), sec_limits()) if INTERPRETED else (sec_closing_limits(),)
-    body = '\n'.join((sec_head(), sec_why(), sec_run(), sec_results(figs)) + contrast + tail)
+    parts = dict(head=sec_head(), why=sec_why(), run=sec_run(), results=sec_results(figs),
+                 contrast=contrast[0] if contrast else '', **dict(zip(('critique', 'meaning', 'limits') if INTERPRETED else ('limits',), tail)))
+    C.write_json(OUT / 'fragments.json', parts)   # the sections one by one, for integrated_report.py
+    body = '\n'.join((parts['head'], parts['why'], parts['run'], parts['results']) + contrast + tail)
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             f'content="width=device-width, initial-scale=1"><title>Simulated-effects eQTL benchmark</title><style>{CSS}</style>'
             f'</head><body><main>{body}</main></body></html>')
