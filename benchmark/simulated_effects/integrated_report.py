@@ -302,16 +302,25 @@ def fig_gene_level():
     b += text(16, H - 6, 'split: null genes below 0.05 per all-null dataset (5 expected)', 'axis')
     right = svg(W, H, b, 'Null genes below 0.05 per all-null dataset')
     bh = {(a, k): GL[k]['arms'][a]['bh_any_call_share'] for a in GLA for k, *_ in SETS}
-    sh = [GL[k]['arms'][a]['rates']['0.05']['share'] for a in GLA for k, *_ in SETS]
+    sh = {(a, k): GL[k]['arms'][a]['rates']['0.05']['share'] for a in GLA for k, *_ in SETS}
     pos = {k: GL[k]['arms']['split']['rates']['0.05']['anchor_share_of_replicates_at_or_above'] for k, *_ in SETS}
     draw = lambda q: 'a low draw' if q >= 0.9 else 'a high draw' if q <= 0.1 else 'a typical draw'   # noqa: E731
-    ok = all(v <= 0.05 for v in bh.values())
-    finding = (('Gene discovery holds its error rate' if ok else 'Gene discovery exceeds its error rate in at least one arm and set')
-               + f': over 100 fresh all-null datasets per set, the gene-level p of split, unit weights and tensorQTL falls below 0.05 '
-               f'for {min(sh):.3f} to {max(sh):.3f} of genes, and Benjamini-Hochberg at 5% calls any gene in '
-               f'{min(bh.values()) * 100:.0f} to {max(bh.values()) * 100:.0f} of 100 datasets (at most 5 expected). '
-               + ' '.join(f'The benchmark\'s own anchor was {draw(pos[k])} for split on the {NAME[k].lower()} '
-                          f'({pos[k] * 100:.0f}% of datasets have as many null genes below 0.05).' for k, *_ in SETS))
+    keys = [k for k, *_ in SETS]
+    holds = [a for a in GLA if all(bh[(a, k)] <= 0.05 for k in keys)]
+    over = [a for a in GLA if a not in holds]
+    short = dict(split='split', unit='unit weights', tensorqtl='total-only tensorQTL')
+    per = lambda a: ' and '.join(f'{bh[(a, k)] * 100:.0f}' for k in keys)   # noqa: E731
+    finding = ('Over 100 fresh all-null datasets per set, '
+               + (f'{" and ".join(short[a] for a in holds)} hold the gene-level error rate: Benjamini-Hochberg at 5% calls any gene in '
+                  + '; '.join(f'{per(a)} of 100 datasets for {short[a]}' for a in holds) + ' on the deep and low-coverage sets (at most 5 '
+                  'expected), and the share of genes below 0.05 is ' + '; '.join(f'{sh[(a, keys[0])]:.3f} and {sh[(a, keys[1])]:.3f} for {short[a]}' for a in holds)
+                  + '. ' if holds else '')
+               + ''.join(f'{short[a][0].upper() + short[a][1:]} calls a gene in {per(a)} of 100, with {sh[(a, keys[0])]:.3f} and '
+                         f'{sh[(a, keys[1])]:.3f} of genes below 0.05: its own permutation shuffles the covariate-adjusted '
+                         f'phenotype, while these null datasets permute whole donor records, the scheme hapmixQTL\'s test uses. '
+                         for a in over)
+               + (f'The benchmark\'s own anchor was {draw(pos[keys[0]])} for split on both sets.' if draw(pos[keys[0]]) == draw(pos[keys[1]])
+                  else ' '.join(f'The benchmark\'s own anchor was {draw(pos[k])} for split on the {NAME[k].lower()}.' for k in keys)))
     return finding, legend([(lab_of[a], cls_of[a], False) for a in GLA] + [('deep set: filled', 'c0', False),
                                                                            ('low-coverage set: open', 'c0', True)]) + f'<div class="pair">{left}{right}</div>', (
         'pval_beta: the gene-level p from 1,000 permutations of donor records with haplotype-label swaps, smoothed by a fitted '
