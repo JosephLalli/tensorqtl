@@ -175,7 +175,8 @@ def run(S, datasets, out, run_list, jobs):
     tot = lambda k: sum(c[k] for c in summary.values())   # noqa: E731
     pooled = {k: tot(k) for k in ('rows', 'tests', 'nonconv', 'absent', 'chisq_le0', 'no_fsnp', 'causal_nonconv',
                                   'causal_absent', 'causal_nonnull')}
-    C.write_json(out / 'summary.json', dict(per_dataset=summary, pooled=pooled, jobs=jobs, rasqual=RASQUAL, rasqual_sha256=RASQUAL_SHA256))
+    C.write_json(out / 'summary.json', dict(per_dataset=summary, pooled=pooled, jobs=jobs, rasqual=RASQUAL, rasqual_sha256=RASQUAL_SHA256,
+                                             covariates=str(C.COV)))   # the build 08 reads (as 05 records it)
     s = np.array([x for x in secs if x > 0])
     print(f'pooled: {json.dumps(pooled)}; seconds per gene run median {np.median(s) if len(s) else 0:.1f}, '
           f'{len(secs) - len(s)} genes taken from raw files; wrote {out}', flush=True)

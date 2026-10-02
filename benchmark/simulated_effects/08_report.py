@@ -720,6 +720,10 @@ def tab_conversion():
         ['mixQTL, two cutoff settings', 'the same three slopes on natural-log responses (asc log(L/R), trc '
          'log(total / 2 library size)); meta = inverse-variance combination', 'slope and se / ln 2',
          'stated by mixQTL\'s least-squares fits', truth],
+        ['RASQUAL', '&pi;, the ALT allele\'s expected share of expression: RASQUAL scales expression by 2(1 &minus; &pi;), '
+         '1, 2&pi; at ALT dosage 0, 1, 2 (nbem.c:1058)', 'log2(&pi; / (1 &minus; &pi;))',
+         '<b>derived</b>: |slope| / &radic;&chi;<sup>2</sup>, &chi;<sup>2</sup> its likelihood-ratio statistic '
+         '(RASQUAL reports none)', 'beta'],
         ['TReCASE (asSeq)', 'b = ln &kappa;, &kappa; the ALT over REF expression ratio, from the joint model, or from the '
          'total-count (TReC) model when asSeq\'s final p used it; the TReC mean is 1, (1 + &kappa;)/2, &kappa; at ALT '
          'dosage 0, 1, 2 (glmNBlog, glm.c:1577; the joint model, trecase.c:1049; genotypes recoded 3 &rarr; 1, '
@@ -845,7 +849,7 @@ def sec_head():
                 f'holds {n_ds["0.0"]} beta = 0 anchor dataset and {n_ds["0.2"]} / {n_ds["0.4"]} / {n_ds["0.8"]} replicate '
                 f'datasets at |beta| = 0.2 / 0.4 / 0.8, each with half the genes non-null, so every effect-size '
                 f'comparison rests on {n_ds["0.4"]} replicates. hapmixQTL weightings, mixQTL mode, total-only tensorQTL '
-                f'and TReCASE on the BrainVar cohort\'s own Salmon output with injected effects, {n_genes} genes x 92 donors '
+                f'and the joint models RASQUAL and TReCASE on the BrainVar cohort\'s own Salmon output with injected effects, {n_genes} genes x 92 donors '
                 f'({C.GENES}); hapmixQTL arms with commit 8a06803\'s per-channel t references and {MIN_ALLELIC_DONORS}-donor '
                 f'allelic floor and with Meier\'s correction of the combined standard error for estimated channel weights '
                 f'(commit a1b2ef4, section 2); this run\'s directory {C.ROOT}, with the hapmixQTL, mixQTL and tensorQTL arms '
@@ -865,7 +869,7 @@ def sec_head():
                 f'benchmark/simulated_effects/08_report.py from {C.SUMMARY}, {REF_RUN}, {SELECT_LOG}, {POOL}, {STRATA}, {HALF_DEPTH}, '
                 f'{COMMITTED_RUN_LOG}, the check files that 01_check_inputs.py wrote into {C.CHECKS} on this run '
                 f'({C.ROOT / "01_check_inputs.log"}), the run facts of {C.DATASETS} and {C.RESULTS}, and the '
-                f'TReCASE\'s summary in {C.JOINT["trecase"]}'
+                f'RASQUAL\'s and TReCASE\'s summaries in {C.JOINT["rasqual"]} and {C.JOINT["trecase"]}'
                 + (f', and the native-input arms\' {C.NATIVE / "facts.json"} and {C.NATIVE_RESULTS["trecase_native"] / "summary.json"} '
                    f'(TReCASE and split weighting on alignment counts from the same BAMs, section {native_sec()})' if NATIVE else '')
                 + '; figures also written as PNG in '
@@ -875,7 +879,7 @@ def sec_head():
                 + (', and the limits section what the run cannot establish' if sec_closing_limits() else '') + '.</p>')
     return ('<h1>Simulated-effects eQTL benchmark: recovering known cis effects</h1>' + dated +
             '<p class="sub">Three hapmixQTL weightings on the half-read total (split, the shipped default; gibbs; unit), mixQTL '
-            'mode, total-only tensorQTL and TReCASE on the BrainVar cohort\'s own Salmon output with injected effects'
+            'mode, total-only tensorQTL, RASQUAL and TReCASE on the BrainVar cohort\'s own Salmon output with injected effects'
             + (', and TReCASE and split weighting also on alignment counts from '
                f'the same BAMs (section {native_sec()}, run into {C.NATIVE})' if NATIVE else '')
             + '; 100 genes x 92 donors; datasets of 2026-09-26, regenerated with the half-read total; hapmixQTL, mixQTL and '
@@ -884,7 +888,7 @@ def sec_head():
             f'(section 2); {JOINT_HEAD}; units log2 aFC (beta = 1 is a twofold effect). Made by '
             f'benchmark/simulated_effects/08_report.py from {C.SUMMARY}, the stored null {NULL} and its draws, the check files '
             f'that 01_check_inputs.py wrote into {C.CHECKS} on this run ({C.ROOT / "01_check_inputs.log"}), the run facts of '
-            f'{C.DATASETS} and {C.RESULTS}, TReCASE\'s summary in {C.JOINT["trecase"]}, '
+            f'{C.DATASETS} and {C.RESULTS}, RASQUAL\'s and TReCASE\'s summaries in {C.JOINT["rasqual"]} and {C.JOINT["trecase"]}, '
             + (f'{C.LADDER}, and the native-input arms\' {C.NATIVE / "facts.json"} and '
                f'{C.NATIVE_RESULTS["trecase_native"] / "summary.json"}' if NATIVE else f'and {C.LADDER}')
             + f'; figures also written as PNG in {OUT}.</p>')
@@ -896,7 +900,7 @@ half-read split is the default weighting configuration"; the evidence is recorde
 brainvar_hapmix_deploy/half_read_default_adoption_20260929/): the allelic contrast weighted by its Gibbs variance, the
 total on the half-read log CPM with a unit working variance. Until today this benchmark ran on the earlier log2(CPM + 1)
 total, so its arms did not include the configuration that shipped. On 2026-10-01 every hapmixQTL arm,
-and total-only tensorQTL, moved onto the half-read total, and RASQUAL was set aside (user decisions). A null says whether
+and total-only tensorQTL, moved onto the half-read total, and RASQUAL was set aside; it was restored on 2026-10-02 after its rerun on these datasets (user decisions). A null says whether
 an arm's p values can be trusted; it cannot say how well the shipped default finds a real effect, how close its slope
 comes to the truth or what the Gibbs draws buy, because real data carry no known effect. The datasets are built from the
 cohort's own Salmon output, keeping its depth, noise and donor structure and adding a known effect.</p>''' if SF is None else f'''
@@ -921,8 +925,8 @@ reads against this set's {SF["adm"][1]}. The choice of weighting therefore reste
 genes above null ones, discover them at a controlled false-discovery rate, estimate the injected slope without bias,
 state its standard error correctly and place the lead variant on the causal one better than its control without the
 Gibbs draws (unit weights), than weighting the total by its Gibbs variance as well (gibbs), than mixQTL mode (the
-published estimator, which never sees the draws), than a total-only tensorQTL scan, and than TReCASE, a published model
-that fits total and allele-specific counts in one likelihood?</p>'''
+published estimator, which never sees the draws), than a total-only tensorQTL scan, and than RASQUAL and TReCASE, published models
+that fit total and allele-specific counts in one likelihood?</p>'''
 
 
 def sec_run():
@@ -948,7 +952,7 @@ and the library size) and the RNA-tied covariates move with the donor record, th
 the covariate offset is refitted on each permuted dataset, and no haplotype labels are swapped. Its gene-level p is the
 empirical permutation p of the gene's largest |meta statistic|, (1 + the number of permuted maxima at least as
 large) / (1 + the number of finite permuted maxima), without a Beta approximation, which mixQTL's port does not have.
-<b>eigenMT</b> (Davis et al. 2016) gives every arm, TReCASE included, a second gene-level p that needs no
+<b>eigenMT</b> (Davis et al. 2016) gives every arm, the joint models included, a second gene-level p that needs no
 permutation: a gene's effective number of independent tests, M<sub>eff</sub>, is the number of eigenvalues of its
 tested variants' genotype correlation matrix (Ledoit-Wolf shrunk: the sample correlation pulled toward the identity by
 a weight estimated from the data; in windows of 200 consecutive variants) needed to
@@ -1026,11 +1030,22 @@ It is the standard total-expression eQTL scan, and its least-squares fit is unit
 as a one-test arm: its one slope is the combined row, held to the total truth (pipeline scale at the causal variant, as
 for the hapmixQTL arms; count scale across methods), and its squared error is compared with unit weights' combined
 slope, so that ratio measures what the allelic channel adds to a total-only scan.</p>
-<p><b>Joint model.</b> TReCASE, a published method that fits the total and allele-specific counts in one likelihood,
-was run on every dataset as a further comparator, nominal only (no permutation p; eigenMT gives it a gene-level p). It
-gives one test per variant, scored here as its combined channel; its allelic and total rows read n/a. RASQUAL, the
-other joint model of earlier versions of this page, is left out for now (user decision 2026-10-01; 04_run_rasqual.py is
-kept). <b>TReCASE</b> (asSeq 0.99.501) models total counts as negative binomial (TReC), a count model that allows
+<p><b>Joint models.</b> Two published methods that fit the total and allele-specific counts in one likelihood were
+run on every dataset as further comparators, nominal only (no permutation p; eigenMT gives them a gene-level p). Each
+gives one test per variant, scored here as its combined channel; their allelic and total rows read n/a.
+<b>RASQUAL</b> models total counts as negative binomial and
+allele-specific counts as beta-binomial (the two count models that allow <i>overdispersion</i>, variance of the
+counts beyond that of a Poisson or binomial count), sharing one allelic parameter, and adds a reference-mapping bias,
+a sequencing error rate and genotype uncertainty; it reports a <i>likelihood-ratio statistic</i> &chi;<sup>2</sup>,
+twice the gain in log-likelihood when the variant's effect is added to the model. With no
+reads to give it, each gene gets one pseudo feature SNP in its gene body, at which every donor-gene pair the hapmixQTL
+arms admit to the allelic channel is heterozygous with allele counts equal to its thinned haplotype point estimates
+rounded to integers; the tested variants carry the real phased
+genotypes, the total counts are the thinned Salmon totals as they are (fractional), the size factor is the effective
+library size, and the 17 covariates are {COV_OF['rasqual']}. RASQUAL's defaults are kept except its
+Hardy-Weinberg filter on tested variants (a test that a variant's genotype counts match those expected from its allele
+frequency), turned off (-h 0) because these genotypes are the truth and no other arm filters on it (04_run_rasqual.py).
+It was left out of this page on 2026-10-01 and restored on 2026-10-02 after its rerun on these datasets (user decisions). <b>TReCASE</b> (asSeq 0.99.501) models total counts as negative binomial (TReC), a count model that allows
 <i>overdispersion</i>, variance beyond that of a Poisson count, and allele-specific counts as beta-binomial (ASE), its
 binomial counterpart; it fits both jointly and runs a cis/trans test of whether the total and
 allelic effects agree; asSeq's final p is the joint p when that test does not reject at 0.05 and the total-count p
@@ -1043,26 +1058,26 @@ library size as offset, and the 17 covariates, {COV_OF['trecase']}; asSeq's defa
 {native_method()}
 <p><b>One scale for every method.</b> Every slope on this page is a log2 allelic fold change (aFC), ALT over REF,
 where beta = 1 is a twofold effect. The table gives each arm's published effect, its conversion, and where its
-standard error comes from. TReCASE reports no standard error: it is derived as |slope| / &radic;&chi;<sup>2</sup>
+standard error comes from. RASQUAL and TReCASE report no standard error: it is derived as |slope| / &radic;&chi;<sup>2</sup>
 (the Wald inversion of &chi;<sup>2</sup>: the standard error at which (slope / se)<sup>2</sup> equals
 &chi;<sup>2</sup>), so under truth 0 (null genes) z = slope / se is &plusmn;&radic;&chi;<sup>2</sup>
-by construction, and its realized-over-stated standard error on null genes (section 3.4) measures the calibration of
-its likelihood-ratio test, not a reported standard error. At the causal variant z = (slope &minus; beta) / se instead
+by construction, and their realized-over-stated standard error on null genes (section 3.4) measures the calibration of
+their likelihood-ratio test, not a reported standard error. At the causal variant z = (slope &minus; beta) / se instead
 measures how well the derived se describes the slope's spread around beta, and absorbs bias. For
 comparisons across methods every arm is held to the count-scale truth (defined below); the pipeline-scale
-truth is a hapmixQTL-only diagnostic and never ranks methods. In TReCASE the total mean at ALT dosage
+truth is a hapmixQTL-only diagnostic and never ranks methods. In both joint models the total mean at ALT dosage
 0, 1, 2 is proportional to 1, (1 + &kappa;)/2, &kappa; for an ALT over REF ratio &kappa;. That is the expected form,
 averaged over donors, of the total fold the generator injects: thinning one haplotype's reads and the shared reads by
 different factors gives exactly this form only for a donor whose haplotype-specific reads are balanced, and on average
-over the random direction of real imbalance. Its estimand is therefore log2 &kappa; = beta, also when asSeq falls back
+over the random direction of real imbalance. Their estimand is therefore log2 &kappa; = beta, also when asSeq falls back
 to its total-count test, whose model has the same dosage form (glm.c:1577); the per-gene total truth, a straight-line fit
 of that fold on g/2, is the estimand of the linear total channels of hapmixQTL and mixQTL. One asSeq fallback cannot be
 identified per test: where its total-count dosage model fails it refits the dosage as a linear covariate, whose slope
 is a log fold per ALT allele, about half of ln &kappa;, so about half of beta after the conversion. Such a row at a
 causal variant lowers TReCASE's bias ratio and raises its squared error; the rows are not flagged.</p>
 {tab_conversion()}
-<p><b>Missing rows.</b> TReCASE's rows with &chi;<sup>2</sup> &le; 0 (p = 1), whose derived standard error is undefined,
-are left out of the standard-error statistics only, and stay in the ranking, the null rates and squared error. TReCASE has no row for a tested pair whose ALT dosage is the same in every
+<p><b>Missing rows.</b> RASQUAL's rows where its fit did not converge are left out. Rows with &chi;<sup>2</sup> &le; 0
+(p = 1), whose derived standard error is undefined, are left out of the standard-error statistics only, and stay in the ranking, the null rates and squared error. TReCASE has no row for a tested pair whose ALT dosage is the same in every
 donor. A causal unit without a row is left out of that arm's causal-variant detection share, and in bias and precision
 it is non-finite and so excluded and counted like any other non-finite unit.</p>
 {ladder_method() if LD is not None else ''}
@@ -1133,7 +1148,7 @@ difference between two arms: a gap between arms is read against each arm's own i
 are then good evidence of a difference; overlapping ones do not show that two arms are equal.</p>
 <p><b>Gene ranking (section 3.1).</b> Within each dataset the {genes} genes are ordered by the nominal p of their
 <i>lead variant</i> (the tested variant with the smallest p; the combined statistic for hapmixQTL, the meta statistic for
-mixQTL, TReCASE's one joint test). The
+mixQTL, each joint model's one test). The
 <b>AUC</b> (area under the receiver operating characteristic curve) is the probability that a randomly chosen
 non-null gene ranks above a randomly chosen null gene: 0.5 is chance, 1 is perfect separation. {auc_txt} <b>Power at 5% realized
 false-discovery proportion</b>: the gene units of the {n_rep} datasets are pooled and walked down the ranking; the
@@ -1151,7 +1166,7 @@ referred to its own permutation null, pval_beta absorbs whatever miscalibration 
 permutation reproduces. Total-only tensorQTL's pval_beta is the same construction on its own null (its
 covariate-residualized phenotype permuted), and mixQTL's gene-level p is the empirical p of its own permutation
 scan, without the Beta smoothing. The eigenMT p is a second gene-level p for every arm,
-TReCASE included; it needs no permutation. The <b>Benjamini-Hochberg</b> procedure at 5% then calls genes within each dataset:
+the joint models included; it needs no permutation. The <b>Benjamini-Hochberg</b> procedure at 5% then calls genes within each dataset:
 the {genes} gene-level p are sorted and the k smallest are called, k being the largest rank with
 p<sub>(k)</sub> &le; 0.05 k / {genes}; with valid p values the expected share of null genes among the calls is at
 most 5%. Power is the share of non-null gene units called. The table's last four columns count null gene units with
@@ -1178,7 +1193,7 @@ arm against the count-scale truth; the table's grey line carries the pipeline-sc
 stated se, and sd(z) is its standard deviation over units. It is 1 when the stated se equals the realized spread of the
 slope, 1.2 when the realized spread is 20% larger than the se says (se too small, p too small), and below 1 when the se
 is too large. This is the reciprocal of a stated-over-true ratio; it is reported as 06_score.py computes it.
-Non-null units use the causal variant and the pipeline-scale truth (mixQTL: count scale; TReCASE: beta;
+Non-null units use the causal variant and the pipeline-scale truth (mixQTL: count scale; RASQUAL and TReCASE: beta;
 combined: the same inverse-variance combination of the two channel truths); in the allelic channel only the causal
 units that have allelic data. Null units use every tested variant of the null genes, with truth 0. In the allelic
 channel these include variants of null genes with no admitted heterozygous donor, whose output is p = 1 and
@@ -1192,7 +1207,7 @@ precise than unit weights. split and unit share the total channel's weights, so 
 against the best possible weights. For mixQTL the ratio is a comparison of methods as run: mixQTL admits a
 different donor set (its count cutoffs; under the published allelic cap of 1,000 reads admission even depends
 on the injected effect, because thinning pulls records down into the band), so its ratio mixes weighting with
-admission. For mixQTL and TReCASE the ratio at the causal variant holds the arm and unit weights both to the
+admission. For mixQTL and the joint models the ratio at the causal variant holds the arm and unit weights both to the
 count-scale truth, so no method is ranked on the pipeline scale.</p>
 <p><b>Lead-variant recovery (section 3.5).</b> For each non-null gene unit the lead variant is compared with the causal
 one. <b>LD r<sup>2</sup></b> is the squared Pearson correlation (the ordinary correlation coefficient) of ALT allele
@@ -1329,7 +1344,7 @@ donor (median {LF["expr"][1]:.1e}).</p>
 <p><b>Admission.</b> The zero-haplotype rule excluded {LF["zeroed"][0]}-{LF["zeroed"][1]} donor-gene pairs per dataset.
 {floor_txt} Under the published mixQTL cutoffs {rng("mixqtl", 0)} of {n_genes} genes had at least 15 allelic
 donors per dataset (median allelic donors per gene {rng("mixqtl", 2)}); under the permissive cutoffs
-{rng("mixqtl_permissive", 0)} (median {rng("mixqtl_permissive", 2)}). TReCASE received the {tr["admitted"][0]:,} to
+{rng("mixqtl_permissive", 0)} (median {rng("mixqtl_permissive", 2)}). RASQUAL and TReCASE received the {tr["admitted"][0]:,} to
 {tr["admitted"][1]:,} allele-specific records per dataset that the hapmixQTL arms admit. mixQTL's permutation scan took a median
 {' and '.join(f'{v:.0f}' for v in mp["seconds_per_dataset"].values())} s per dataset with the published and permissive
 cutoffs.</p>
@@ -1727,7 +1742,7 @@ gene-to-gene spread. Every statistic is defined at its first use below; section 
 band.</p>
 <p><b>Calibration of the nominal p on the beta = 0 anchor.</b> The <i>nominal p</i> is each arm's per-variant p under
 its own reference distribution (section 2: t references for hapmixQTL's channels and their combination, a normal
-reference for mixQTL's meta statistic, a chi-squared likelihood-ratio reference for TReCASE). The
+reference for mixQTL's meta statistic, a chi-squared likelihood-ratio reference for RASQUAL and TReCASE). The
 null-gene rate is the share of the null genes' tested variants whose combined nominal p falls below the threshold; on
 null genes it should equal the threshold. The anchor is one dataset, that is ONE record
 permutation with no thinning, so its interval is gene-clustered only (genes resampled with replacement) and carries no
@@ -1770,7 +1785,7 @@ so it has no interval. The lead nominal p is not corrected for the number of var
 instruments, not calls. The <b>gene-level p</b> is the call a scan makes, and each arm has up to two. The first is its
 own permutation p for the whole cis window: pval_beta, the Beta-approximated permutation p of the lead, for the
 hapmixQTL arms (map_cis) and total-only tensorQTL (tensorQTL's map_cis); for mixQTL the empirical p of its own
-permutation scan, which has no Beta approximation; TReCASE has none here. The second, for every arm, is
+permutation scan, which has no Beta approximation; RASQUAL and TReCASE have none here. The second, for every arm, is
 the <b>eigenMT</b> p (Davis et al. 2016), which needs no permutation: a gene's effective number of independent tests,
 M<sub>eff</sub>, is the number of eigenvalues of its tested variants' genotype correlation matrix (Ledoit-Wolf shrunk:
 the sample correlation pulled toward the identity by a weight estimated from the data; in windows of 200 consecutive
@@ -1790,7 +1805,7 @@ permutation-p column and an eigenMT column per effect size.{fdp_sentence}</p>
                  f'the {n_rep[THIS_SET]} per-dataset values, not a 95% interval; dotted line: chance). Second row: power at 5% '
                  f'realized false-discovery proportion over the pooled datasets (no interval). Third row: gene-level power, the share '
                  f"of non-null gene units discovered by Benjamini-Hochberg at 5% on each arm's "
-                 f'permutation p (every arm but TReCASE; gene-clustered 95% intervals). Fourth row: the eigenMT p '
+                 f'permutation p (every arm but RASQUAL and TReCASE; gene-clustered 95% intervals). Fourth row: the eigenMT p '
                  f'of every arm held to a common error rate, power at 5% realized false-discovery proportion as in the second '
                  f"row (no interval). Bottom: the realized false-discovery proportion of each arm's Benjamini-Hochberg calls at "
                  f'5% on the eigenMT p (dashed line: 0.05); an arm above the line calls null genes beyond the 5% the procedure '
@@ -1859,9 +1874,59 @@ component is above nominal on its own and the per-test choice between them adds 
     raise SystemExit(f'interp_joint: unknown part {part}')
 
 
+def interp_rasqual(part):
+    """RASQUAL's paragraph of one results section (restored to the scored arms 2026-10-02); each relation to 1 or to a
+    threshold is read from its interval, and the comparisons with split are checked by need."""
+    if 'rasqual' not in JOINT:
+        return ''
+    rel = lambda d, x, what: {'above': f'above {what}', 'below': f'below {what}', 'includes': f'including {what}'}[where(d, x)]   # noqa: E731
+    n0 = lambda al: S['null']['beta0.0']['rasqual']['combined']['all'][al]   # noqa: E731
+    if part == 'ranking':
+        need(all(auc(b, 'rasqual')['mean'] < auc(b, 'split')['mean'] and fdp(b, 'rasqual')['all']['power'] < fdp(b, 'split')['all']['power']
+                 for b in BETAS), 'RASQUAL below split on AUC and power at 5% FDP at every |beta|')
+        return f"""
+<p><b>RASQUAL.</b> Its AUC is {A_('rasqual')} and its power at 5% realized FDP {P_('rasqual')}, against {A_('split')} and
+{P_('split')} for split: below split in point estimate on both at every |beta|; the per-dataset AUC ranges
+{range_overlap_text('rasqual', 'split')}.</p>"""
+    if part == 'bias':
+        tb = [bias(b, 'rasqual', 'combined', 'bias_count') for b in BETAS]
+        below = [b for b, d in zip(BETAS, tb) if where(d, 1.0) == 'below']
+        return f"""
+<p><b>RASQUAL.</b> Its one slope, log2(&pi; / (1 &minus; &pi;)), has estimand beta (section 2): it recovers
+{B_('rasqual', 'combined', n=3)} of beta, intervals {', '.join(ci(d, 'mean', 3) for d in tb)}{
+(', below 1 at ' + at_betas(below)) if below else ', each including 1'}. Where that shortfall comes from in RASQUAL's model was not
+examined.</p>"""
+    if part == 'precision':
+        tz = prec('beta0.0', 'rasqual', 'combined', 'null', 'sd_z')
+        ex = [prec(f'beta{b}', 'rasqual', 'combined', 'nonnull', 'ratio_vs_unit_count') for b in BETAS]
+        up = [b for b, d in zip(BETAS, ex) if where(d, 1.0) == 'above']
+        return f"""
+<p><b>RASQUAL.</b> Its standard error is derived the same way, so on the anchor's null genes sd(z), {ci(tz, 'value', 3)}, is
+about the square root of its mean &chi;<sup>2</sup>, an interval {rel(tz, 1.0, '1')}. At the causal variant its sd(z) is
+{Z_('rasqual', 'combined')}, a measure that absorbs bias. Its squared error, against unit weights on the count-scale truth,
+is {' / '.join(ci(d, 'value', 2) for d in ex)} at |beta| = 0.2 / 0.4 / 0.8{(', above 1 at ' + at_betas(up)) if up else ''}, and
+{En_('rasqual', 'combined')} on the anchor's null genes, against {Ex_('split')} and {En_('split', 'combined')} for split.</p>"""
+    if part == 'lead':
+        return f"""
+<p>RASQUAL's share of leads within r<sup>2</sup> &ge; 0.8 of the causal variant is {R_('rasqual')}, with no interval.</p>"""
+    if part == 'detection':
+        d3 = n0('0.001')
+        return f"""
+<p>RASQUAL detects the causal variant at p &lt; 1e-3 in {D_('rasqual')} of non-null gene units; a causal unit without a
+row is left out of its share (section 2). Its test rejects at 1e-3 in {ci(d3, 'rate', 4)} of the anchor's null-gene tests,
+an interval {rel(d3, 0.001, '0.001')}{', so its detections are not comparable at face value' if where(d3, 0.001) == 'above' else ''}.</p>"""
+    if part == 'null':
+        return f"""
+<p><b>RASQUAL.</b> Its likelihood-ratio p, referred to &chi;<sup>2</sup> with one degree of freedom, rejects at 0.05 on
+null genes in {N_('rasqual', 'combined', 4)} of tests (anchor, then |beta| = 0.2 / 0.4 / 0.8); on the anchor the
+gene-clustered intervals are {ci(n0('0.05'), 'rate', 4)} at 0.05, {rel(n0('0.05'), 0.05, '0.05')}, and
+{ci(n0('0.001'), 'rate', 5)} at 0.001, {rel(n0('0.001'), 0.001, '0.001')}. No stored null run exists for it.</p>"""
+    raise SystemExit(f'interp_rasqual: unknown part {part}')
+
+
 def sec_results(figs):
     interp = lambda fn: fn() if INTERPRETED else ''   # noqa: E731
-    joint = lambda part: interp_joint(part) if INTERPRETED else ''   # noqa: E731
+    joint = lambda part: (interp_joint(part) + interp_rasqual(part)) if INTERPRETED else ''   # noqa: E731
     if INTERPRETED:
         off = [g for g, v in SN['below_floor_genes'].items() if v['n_a'] < 2]
         n_all, n_al = (S['null']['beta0.0']['gibbs'][ch]['all']['0.05']['tests'] for ch in ('combined', 'allelic'))
@@ -1897,7 +1962,7 @@ channel, section 2):</p>
      "Benjamini-Hochberg at 5% on each arm's permutation p (map_cis pval_beta for the hapmixQTL arms"
      + (', split on native counts' if NATIVE else '')
      + " and tensorQTL, mixQTL's own pval_perm; "
-     + ('the two TReCASE arms have' if NATIVE else 'TReCASE has')
+     + ('RASQUAL and the two TReCASE arms have' if NATIVE else 'RASQUAL and TReCASE have')
      + " none; gene-clustered intervals). D: the eigenMT p of every "
      'arm held to a common error rate, the share of non-null gene units called at the deepest point of the pooled '
      'ranking by that p where at most 5% of calls are null genes (as B; no interval). E: the realized '
@@ -1917,7 +1982,7 @@ channel, section 2):</p>
 {img(figs['bias'], 'Figure 2. Bias ratio (mean slope / truth at the causal variant, gene-clustered interval) by '
      'arm and read band, every arm against the count-scale truth. Top two rows: the allelic and total channels of the '
      "arms that have them (hapmixQTL, mixQTL; tensorQTL's one slope is drawn in the total row). Bottom row: every "
-     "arm's one combined slope, the row where TReCASE appears, fitting one joint effect for both kinds "
+     "arm's one combined slope, the row where RASQUAL and TReCASE appear, each fitting one joint effect for both kinds "
      "of count, beside hapmixQTL's combined slope (section 3.3). " 'The hapmixQTL allelic points keep as zeros the units with no allelic data, which '
      'the mixQTL points drop (section 3.3). mixQTL channels: allelic = asc, total = trc. Colour shade = |beta|. The '
      'y axes differ between panels.')}
@@ -1936,14 +2001,14 @@ holds both to the count-scale truth. The null-gene column has truth 0 for every 
 {tab_precision('ratio_vs_unit')}
 <p>The cross-method comparison: combined channel, every arm and unit weights both against the count-scale truth at
 the causal variant (for the hapmixQTL and mixQTL arms and for unit weights, the inverse-variance combination of beta
-and the per-gene total truth; for tensorQTL, the per-gene total truth; for TReCASE, beta).</p>
+and the per-gene total truth; for tensorQTL, the per-gene total truth; for RASQUAL and TReCASE, beta).</p>
 {tab_cross()}
 {cross_note()}
 {img(figs['efficiency'], 'Figure 3. Mean squared error ratio against unit weights (log scale; below 1 = more '
      'precise than unit weights), gene-clustered interval. Top: causal variant of non-null genes. Bottom: every '
      'tested variant of null genes ("anchor" is the beta = 0 dataset). Allelic and total panels: hapmixQTL arms '
      '(top, pipeline-scale truth for arm and unit alike) and mixQTL (bottom only). Combined panels: every arm, '
-     'TReCASE included, and at the causal variant the count-scale truth for arm and unit alike, so the '
+     'the joint models included, and at the causal variant the count-scale truth for arm and unit alike, so the '
      'top combined panel is the cross-method comparison and its hapmixQTL points differ from the pipeline-scale '
      'values in the text. unit is 1 by definition and not drawn; the total channel of split is 1 by construction. '
      'mixQTL with published cutoffs is left out of the figure (its ratios are in the tables above; on the anchor '
@@ -2249,6 +2314,8 @@ which on bias favours mixQTL.</p>'''
 
 def sec_critique():
     an = S['anchor']['gibbs']['total']['0.05']
+    need(all(S['null']['beta0.0'][m]['combined']['all']['0.05']['lo'] > 0.05 for m in ('rasqual', 'trecase')),
+         'RASQUAL\'s and TReCASE\'s anchor rates at 0.05 above 0.05')
     gl = lambda a: per_beta(lambda b: bh(b, a)['power_bh']['all']['rate'])   # noqa: E731
     lowest = {ch: [a for a in HAPMIX if S['anchor'][a][ch]['0.05']['percentile'] == 0] for ch in CHANNELS}
     return f"""
@@ -2257,15 +2324,15 @@ def sec_critique():
 FDP is set by where the null genes land, and an arm whose null genes get too-small p pushes them up its ranking. gibbs's
 total channel does this: its null-gene rate at 0.05 is {f(an['rate'], 4)} on the anchor and {f(an['stored'], 4)} over the
 stored 200 permutations, and in section 3.1 it {'made no call' if fdp('0.2', 'gibbs')['p_threshold'] is None else f'called {f(fdp("0.2", "gibbs")["all"]["power"])} of non-null units'}
-at |beta| 0.2. TReCASE, whose null rate at 0.05 is above 0.05 too, is open to the same objection. If those null p values
+at |beta| 0.2. RASQUAL and TReCASE, whose null rates at 0.05 are above 0.05 too, are open to the same objection. If those null p values
 are too small, part of each one's ranking deficit is calibration, not a lack of signal.</p>
 <p><b>What addressing it changed.</b> Gene-level Benjamini-Hochberg on each arm's own permutation p (section 3.2) refers
 each arm to its own null: there gibbs reads {gl('gibbs')} against split's {gl('split')}, with overlapping intervals, so
 gibbs's ranking deficit is not resolved at gene level. What survives the critique is the signal-side cost, which needs
 no reference distribution: gibbs's total-channel squared error is {E_('gibbs', 'total')} of unit weights' at the causal
 variant and {En_('gibbs', 'total')} on the anchor's null genes, and its combined squared error {E_('gibbs', 'combined')}.
-For TReCASE no permutation p exists here, so the critique stands for it: its ranking is measured, its calibration is not
-corrected.</p>
+For RASQUAL and TReCASE no permutation p exists here, so the critique stands for them: their ranking is measured, their
+calibration is not corrected.</p>
 <p><b>A second objection: the allelic gain could be made by the generator.</b> The allelic Gibbs variance of a thinned
 record follows its thinned counts by the generator's own rule, so 1/Va weights might track the true error on thinned
 records by construction. The anchor answers this: nothing is thinned there and Va is Salmon's own, and the gibbs and
@@ -2284,6 +2351,9 @@ weights show the same point excess, it does not bear on the choice among weighti
 
 def sec_meaning():
     pr = CG['recovery']['primary']
+    need(S['null']['beta0.0']['rasqual']['combined']['all']['0.05']['lo'] > 0.05
+         and all(where(bias(b, 'rasqual', 'combined', 'bias_count'), 1.0) == 'below' for b in BETAS),
+         'RASQUAL\'s anchor rate at 0.05 above 0.05 and its bias interval below 1 at every |beta|')
     genes = {bn: S['precision']['beta0.0']['split']['combined']['null']['sd_z'][bn]['genes'] for bn in BANDS}
     E0 = json.loads(EARLIER.read_text())
     eb = lambda a: per_beta(lambda b: E0['recovery'][f'beta{b}'][a]['total']['bias_count']['all']['mean'])   # noqa: E731
@@ -2312,12 +2382,16 @@ help in the allelic channel and hurt in the total channel, which is the split th
 point estimate at every |beta| on AUC, ranking power and combined squared error. Most of mixQTL's total attenuation is its
 two-step covariate adjustment and its choice of covariates on the outcome (section 3.8); its total slopes should not be
 used as a reference for effect size.</p>
-<p><b>TReCASE and a total-only scan as comparators.</b> TReCASE ranks below split in point estimate on AUC and power at 5%
+<p><b>The joint models and a total-only scan as comparators.</b> TReCASE ranks below split in point estimate on AUC and power at 5%
 realized FDP at every |beta| and rejects too often on null genes ({ci(S['null']['beta0.0']['trecase']['combined']['all']['0.05'], 'rate', 4)}
 at 0.05 on the anchor); its slope recovers beta within its intervals ({B_('trecase', 'combined', n=3)}) but has
 {Ex_('trecase')} of unit weights' squared error. Total-only tensorQTL is within its intervals of unit weights' combined
 squared error at the causal variant ({E_(TQ, 'combined')}) but not on the anchor's null genes ({En_(TQ, 'combined')}).
-TReCASE was run on Salmon point estimates rather than on reads (section 6), so this measures it as run here.</p>
+RASQUAL ranks below split in point estimate on AUC and power at 5% realized FDP at every |beta| as well
+(section 3.1), rejects too often on null genes ({ci(S['null']['beta0.0']['rasqual']['combined']['all']['0.05'], 'rate', 4)} at 0.05 on the
+anchor), recovers {B_('rasqual', 'combined', n=3)} of beta with every interval below 1, and has {Ex_('rasqual')} of unit
+weights' squared error. Both joint models were run on Salmon point estimates rather than on reads (section 6), so this
+measures them as run here.</p>
 <p><b>Where it narrows earlier results.</b> The run of earlier on 2026-10-01 on the same datasets' counts, the same
 expression PCs, code and Meier's correction, but with the log2(CPM + 1) total ({EARLIER.parent.name}), is like for like
 except the total's transform; its arms differed too (it also had plus_one, and its gibbs weighted the log2(CPM + 1)
@@ -2352,6 +2426,7 @@ counts.'''
 def sec_limits():
     genes = {bn: S['precision']['beta0.0']['gibbs']['combined']['null']['sd_z'][bn]['genes'] for bn in BANDS}
     tr = JF['trecase']
+    RQ = json.loads((C.JOINT['rasqual'] / 'summary.json').read_text())['pooled']
     pct = lambda x: f'{100 * x:.1f}%'   # noqa: E731
     if tr['df_not_1'] + tr['trec_na'] != tr['final_na']:
         raise SystemExit(f'TReCASE: final p missing in {tr["final_na"]} tests, not the {tr["df_not_1"]} with df != 1 plus '
@@ -2388,9 +2463,13 @@ premise check is at native depth, on one donor, and its pass thresholds were set
 <p><b>mixQTL is compared as run.</b> Its gene-level p comes from its own published permutation null (no
 haplotype-label swap, no Beta approximation), not hapmixQTL's, and its efficiency against unit weights compares methods
 as run, on a different admitted donor set.</p>
-<p><b>TReCASE is run away from its design.</b> It sees Salmon's haplotype point estimates, rounded to integers, as
-allele-specific counts and Salmon's fractional totals, not counts of reads at heterozygous SNPs; this benchmark says
-nothing about it on its own read pipeline (the native-input arms of the delivered pages were the step toward that).</p>
+<p><b>RASQUAL and TReCASE are run away from their design.</b> Each sees Salmon's haplotype point estimates, rounded to
+integers, as allele-specific counts and Salmon's fractional totals, not counts of reads at heterozygous SNPs; this
+benchmark says nothing about either on its own read pipeline (the native-input arms of section 3.9 are the step toward
+that for TReCASE). RASQUAL gets those counts at one pseudo feature SNP per gene (section 2), so the terms it adds for
+reference-mapping bias, sequencing error and genotype uncertainty are fitted to haplotype estimates, not to reads at a
+SNP; its fit did not converge in {RQ["nonconv"]:,} of its {RQ["tests"]:,} tests ({pct(RQ["nonconv"] / RQ["tests"])}) and at
+{RQ["causal_nonconv"]} of its {RQ["causal_nonnull"]} causal-variant tests, and those rows are left out (section 2).</p>
 <p>asSeq's joint TReCASE fit is missing in {pct(tr["joint_na_share"])} of the run's {tr["tests"]:,} tests and in
 {pct(tr["causal_joint_na_share"])} of its {tr["causal_nonnull"]} causal-variant tests. asSeq's trace logs attribute
 {tr["joint_fail_theta"]:,} of the missing fits ({pct(tr["joint_fail_theta"] / tr["tests"])} of all tests) to the
@@ -2432,11 +2511,6 @@ def earlier_runs_limits():
     it like for like; '' when there are none."""
     rows = []
     if INTERPRETED:
-        rows.append(['RASQUAL, left out of the scored arms (sections 2 and 3)', C.COMMITTED.name,
-                     'its staged results were made on the earlier datasets\' log2(CPM + 1) total, expression PCs and fingerprints',
-                     '04_run_rasqual.py into this run\'s directory, then 06_score.py and 08_report.py, with RASQUAL back in '
-                     'common.JOINT; on the committed run it took about 126 CPU-hours (93 ms per tested variant over 4.87 '
-                     'million tests, on 64 jobs); the core budget is a user decision'])
         rows.append(['section 5\'s run of earlier on 2026-10-01', EARLIER.parent.name, 'the total\'s transform '
                      '(log2(CPM + 1) there) and the arms (plus_one there, gibbs\'s Vt on log2(CPM + 1)); counts, expression '
                      'PCs, code and Meier\'s correction the same', 'nothing: it is the comparison of one change'])

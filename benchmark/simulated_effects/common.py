@@ -66,7 +66,7 @@ if os.environ.get('SIMULATED_EFFECTS_ROOT') and not ACCEPTANCE:   # a fresh outp
     ROOT = Path(os.environ['SIMULATED_EFFECTS_ROOT'])
 DATASETS, RESULTS = ROOT / 'datasets', ROOT / 'results'
 JOINT_OUT = {'rasqual': ROOT / 'results_rasqual', 'trecase': ROOT / 'results_trecase'}   # where 04, 05 and stage_joint_results write
-JOINT = {m: JOINT_OUT[m] for m in ('trecase',)}   # the joint models scored: RASQUAL dropped for now (user, 2026-10-01)
+JOINT = {m: JOINT_OUT[m] for m in ('rasqual', 'trecase')}   # the joint models scored: RASQUAL dropped on 2026-10-01 and restored after its rerun on the half-read datasets (user, 2026-10-02)
 NATIVE_COUNTS = D / 'native_counts_wasp_20260928'   # featureCounts totals and WASP-filtered strand-split exonic phASER haplotype counts from the STAR BAMs (scripts/native_counts.py)
 NATIVE = ROOT / 'native'                       # 05b_native_arms.py: edger/, datasets/, results/, results_trecase/, trecase_work/, facts.json
 NATIVE_DATASETS = NATIVE / 'datasets'

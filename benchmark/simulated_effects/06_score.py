@@ -3,7 +3,7 @@ precision and stated standard error of its slopes, the nominal-p rate on null ge
 recovery, gene ranking, and gene-level results: the permutation p of every arm that has one and
 eigenMT for all nine.
 
-Arms: the six of 03_run_arms.py plus the joint models scored (common.JOINT: TReCASE; RASQUAL dropped for now), each one test
+Arms: the six of 03_run_arms.py plus the joint models scored (common.JOINT: RASQUAL and TReCASE), each one test
 per variant scored as its combined channel with truth beta (both put the total mean at 1,
 (1 + kappa)/2, kappa, the generator's expected total fold); their slope_se is DERIVED (|slope| /
 sqrt(chisq)), so their null sd(z) is the calibration of the likelihood-ratio statistic. The
