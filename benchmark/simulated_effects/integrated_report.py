@@ -195,6 +195,46 @@ def fig_power():
         'above that point. Three datasets per effect size; no interval. Hover a line for its values.')
 
 
+def fig_fdp_curves(beta='0.4'):
+    """Realized false-discovery proportion against genes called at one |beta|, every method, one panel per set (06's
+    fdp_curve: null gene units among the top k at every cut of the pooled ranking)."""
+    W, H, L, R, T, B = 620, 280, 46, 150, 24, 40
+    out = []
+    for k, n, _, _ in SETS:
+        curves = {a: S[k]['ranking'][f'beta{beta}'][a]['fdp_curve'] for a, _ in ARMS}
+        kmax = max(max(c['called']) for c in curves.values())
+        X = lambda v: L + (W - L - R) * v / kmax   # noqa: E731
+        Y = lambda v: T + (H - T - B) * (1 - v / 0.5)   # noqa: E731  realized FDP from 0 to 0.5
+        b = ''.join(hline(L, W - R, Y(v), 'ref' if v == 0.05 else 'grid') + text(L - 8, Y(v) + 4, f'{v:g}', anchor='end')
+                    for v in (0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5))
+        b += ''.join(vline(X(v), H - B, H - B + 4, 'grid') + text(X(v), H - B + 16, f'{v}', anchor='middle')
+                     for v in range(0, kmax + 1, 50))
+        ends = []
+        for (a, lab), cls in zip(ARMS, CAT):
+            c = curves[a]
+            pts = [(x, f / x) for x, f in zip(c['called'], c['false']) if f / x <= 0.5]
+            if not pts:
+                continue
+            path = ' '.join(f'{X(x):.1f},{Y(y):.1f}' for x, y in pts)
+            b += f'<g class="{cls}"><title>{esc(lab)}: realized FDP by genes called</title><polyline points="{path}" class="line thin"/></g>'
+            ends.append([Y(pts[-1][1]), lab, cls])
+        ends.sort()
+        for i in range(1, len(ends)):
+            ends[i][0] = max(ends[i][0], ends[i - 1][0] + 13)
+        b += ''.join(text(W - R + 10, y + 4, esc(lab), f'lab {cls}') for y, lab, cls in ends)
+        b += text(L, 14, esc(n), 'ptitle') + text(L + (W - L - R) / 2, H - 6, f'genes called, pooled over the 3 datasets at |beta| {beta}', 'axis', 'middle')
+        out.append(svg(W, H, b, f'Realized false-discovery proportion by genes called, {n}'))
+    sp = {k: S[k]['ranking'][f'beta{beta}']['split']['fdp_matched'] for k, *_ in SETS}
+    finding = (f'Walking down each method\'s ranking at |beta| {beta}, the share of null genes among those called stays at or below 5% '
+               f'for split down to {sp["deep"]["discoveries"]} genes on the deep set and {sp["lowcov"]["discoveries"]} on the '
+               f'low-coverage set (of {S["deep"]["ranking"][f"beta{beta}"]["split"]["fdp_curve"]["non_null"]} and '
+               f'{S["lowcov"]["ranking"][f"beta{beta}"]["split"]["fdp_curve"]["non_null"]} non-null gene units).')
+    return finding, '<div class="pair">' + ''.join(out) + '</div>', (
+        'Realized false-discovery proportion: among the genes called so far, the share that are truly null, as the ranking by '
+        'lead p is walked down; the dashed line is 5%. Curves above 0.5 are cut. The power figures above read each curve '
+        'at its deepest point under the dashed line.')
+
+
 def fig_calibration():
     """Null-gene rate at 0.05 on the anchor, every method, both sets."""
     series = []
@@ -380,7 +420,7 @@ svg { width: 100%; height: auto; display: block; font-family: var(--body); }
 .ptitle { fill: var(--ink); font-size: 12.5px; font-weight: 600; } .anno { fill: var(--ink); font-size: 11.5px; } .lab { font-size: 11.5px; fill: var(--ink); }
 .grid { stroke: var(--rule); stroke-width: 1; } .ref { stroke: var(--ink2); stroke-width: 1.2; stroke-dasharray: 4 3; }
 .anchor { stroke: var(--ink); stroke-width: 1.5; }
-.ci { stroke-width: 2; stroke-linecap: round; } .line { fill: none; stroke-width: 2; } .pt { stroke: var(--panel); stroke-width: 1.5; }
+.ci { stroke-width: 2; stroke-linecap: round; } .line { fill: none; stroke-width: 2; } .line.thin { stroke-width: 1.6; } .pt { stroke: var(--panel); stroke-width: 1.5; }
 .hollow { fill: var(--panel); stroke-width: 2; } .dot { stroke: var(--panel); stroke-width: 1.5; }
 .c1 { --k: var(--c1); } .c2 { --k: var(--c2); } .c3 { --k: var(--c3); } .c4 { --k: var(--c4); } .c5 { --k: var(--c5); }
 .c6 { --k: var(--c6); } .c7 { --k: var(--c7); } .c0 { --k: var(--c0); } .s1 { --k: var(--s1); } .s2 { --k: var(--s2); }
@@ -413,10 +453,11 @@ def main():
             raise SystemExit(f'{ROOT[k]}/summary.json: RASQUAL not scored; run 06 with RASQUAL in common.JOINT first')
     figs = [('Precision', 'Combined slope against unit weights', fig_precision()),
             ('Discovery', 'Real effects found at 5% false discoveries', fig_power()),
+            ('False discoveries', 'False discoveries as genes are called', fig_fdp_curves()),
             ('Gene-level error rate', 'Gene calls on all-null data', fig_gene_level()),
             ('Calibration', 'Null-gene rejections by method', fig_calibration()),
             ('Bias', 'Share of the injected effect recovered', fig_bias())]
-    cards = ''.join(f'<article class="card{" wide" if i in (1, 2) else ""}"><p class="eyebrow">{esc(e)}</p><h3>{esc(t)}</h3>'
+    cards = ''.join(f'<article class="card{" wide" if i in (1, 2, 3) else ""}"><p class="eyebrow">{esc(e)}</p><h3>{esc(t)}</h3>'
                     f'<p class="finding">{esc(fd)}</p>{fig}<p class="cap">{esc(cap)}</p></article>'
                     for i, (e, t, (fd, fig, cap)) in enumerate(figs))
     limits = '''<section class="limits"><p class="eyebrow">What this cannot show</p><ul>

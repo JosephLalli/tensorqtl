@@ -55,7 +55,9 @@ GENE_SETS = {   # per gene set: its directory under D (genes.txt, regions.bed, g
         root='simulated_effects_lowcov_half_read_20261001',                # half-read split (2026-10-01); the 2026-09-27 run is plasmode_lowcov_meier_20260927
         acceptance_root='plasmode2_stratum_acceptance_20260927',
         committed='plasmode_stratum30_100_20260927',                       # the previous code, commits 15aac90 to d3247e0
-        hybrid_null=None, before_df_fix=None, after_df_fix=None, df_fix=None, stored_null=None, trecase_smoke=None, ladder=None)}
+        hybrid_null=None, before_df_fix=None, after_df_fix=None, df_fix=None,
+        stored_null='stored_null_lowcov_half_read_20261002',                # stored_null.py, on the deep null's permutation stream (2026-10-02)
+        trecase_smoke=None, ladder=None)}
 GS = GENE_SETS[GENE_SET]
 GENE_DIR = D / GS['gene_dir']
 GENES, REGIONS, GENE_DESIGN = GENE_DIR / 'genes.txt', GENE_DIR / 'regions.bed', GENE_DIR / 'gene_design.tsv'
