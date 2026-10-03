@@ -446,13 +446,15 @@ power and mean squared error were not re-measured with the half-read PCs.
   construction's excess of p < 0.05 at random variants of null genes persists
   under records permutation with and without the haplotype swap, so it is an
   offset of its statistic, not association.
-- **RASQUAL's native inputs for the simulated-effects benchmark: prepared, not
-  run** (user decision 2026-10-02; `benchmark/simulated_effects/04b_rasqual_native_inputs.py`,
-  `<root>/native/rasqual_inputs/README.md` in both benchmark roots). Per-SNP
+- **RASQUAL on native per-SNP inputs in the simulated-effects benchmark: running**
+  (inputs `benchmark/simulated_effects/04b_rasqual_native_inputs.py`,
+  `<root>/native/rasqual_inputs/README.md` in both benchmark roots; run
+  `04c_run_rasqual_native.py`, user request 2026-10-02, at most 16 CPUs). Per-SNP
   phASER counts at exonic heterozygous sites, moved, swapped and thinned with
   each native dataset; 3,061 (deep) and 2,031 (low-coverage) feature-SNP lines.
-  As written, a run costs 134-1,177 and 72-627 CPU hours per dataset (10 per
-  set), so it would need a subset rule; the offset above would apply to it.
+  Smoke on DHX15: 0.116 s per feature-SNP x rSNP, 7.2% of fits non-converged,
+  so about 6,000 CPU hours in all (range 2,000-18,000), roughly 17 days on
+  15 processes. The offset above may carry over. Not yet scored by 06.
 
 ### The Gibbs variance itself (stock Salmon 1.10.3 draws)
 
@@ -745,9 +747,14 @@ half-depth check as its limit at that depth.
 
 ## Run state, 2026-10-02
 
-No hapmixQTL, Salmon, RASQUAL or TReCASE computation of this project was
-running at 16:45 on 2026-10-02 (process list checked; the last benchmark run,
-RASQUAL on the low-coverage set, ended at 16:23). The prepared
+Running since about 20:30 on 2026-10-02: RASQUAL on its native per-SNP inputs,
+systemd user services `rasqual-native-deep` (10 processes) and
+`rasqual-native-lowcov` (5), wrapper
+`brainvar_hapmix_deploy/rasqual_native_run_20261002/run.sh` (exit lines in
+`run.exit` there), logs `<root>/04c_run_rasqual_native.log`, per-gene
+checkpoints `<root>/native/rasqual_inputs/<scenario>/repNNN/raw/` (a stopped
+run resumes from them); stop with `systemctl --user stop rasqual-native-deep
+rasqual-native-lowcov`. Nothing else of this project was running. The prepared
 re-quantification in `salmon_gibbspriorgroups_20261001/` was not started.
 Branch `simulation-benchmark` tracks `origin/simulation-benchmark` and is not
 merged into `master`; verify the current Git state before acting.

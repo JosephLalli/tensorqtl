@@ -159,10 +159,10 @@ under `ROOT/native/` (`edger/`, `datasets/`, `results/`, `results_trecase/`, `tr
 Both do so only where `ROOT/native/` exists: in a root without it, such as `99_acceptance.py`'s (which does not run 05b),
 each prints a skip line and scores or reports the Salmon-input arms alone, with `native_arms` empty.
 
-### RASQUAL's native inputs (04b_rasqual_native_inputs.py): prepared, not run
+### RASQUAL's native inputs (04b_rasqual_native_inputs.py) and their run (04c_run_rasqual_native.py)
 
-User decision 2026-10-02 (`docs/pipeline_rules.md`): the inputs are written and RASQUAL is not run; the script never calls
-it, and `run_all.sh` does not include it. Per native dataset: Y, K, X by 04's `write_bins` on 05b's native dataset (Y is
+User decisions 2026-10-02 (`docs/pipeline_rules.md`): the inputs were built first, then run at most 16 CPUs at a time;
+`run_all.sh` includes neither script. 04b never calls RASQUAL. Per native dataset: Y, K, X by 04's `write_bins` on 05b's native dataset (Y is
 `trecase_native`'s total), 04's rSNP lines unchanged, and feature-SNP lines at every exonic biallelic SNP of the gene with
 a heterozygous donor, AS = phASER's per-SNP ref,alt counts from the donor's own-strand WASP run, moved with the record,
 GT reversed where swapped, the first haplotype's count thinned by `fL` and the second by `fR` (stream
@@ -190,6 +190,7 @@ processes (~100 s of each Python step is loading the cache):
 | 3 | `03_run_arms.py` | `results/<scenario>/<arm>/nominal_*.parquet`, `cis_*.parquet` (every arm of 03), `mixqtl_permutation.json`, `run_arms_facts.json`, `eigenmt_m_eff.tsv` | 15-16 min (GPU 1 and 10 CPU worker processes; set by mixQTL's permutation scan, 240-520 s per dataset per arm; 2026-09-27, load 25-100) |
 | 4 | `04_run_rasqual.py` | `results_rasqual/.../nominal_*.parquet`, `summary.json`, per-gene raw checkpoints; the RASQUAL binary's sha256 is pinned (`RASQUAL_SHA256`) and checked at the start of every run | ~13 CPU-h per dataset; 15 jobs (15 processes plus the driver; `SIMULATED_EFFECTS_RASQUAL_JOBS` sets it: 32 for the half-read rerun of 2026-10-02, deep set 05:24-10:46, low-coverage set 10:46-16:24) |
 | 4b | `04b_rasqual_native_inputs.py` (after 5b; not in `run_all.sh`) | `native/rasqual_inputs/`: RASQUAL's native per-SNP inputs and command lines, not run | 1-2 min |
+| 4c | `04c_run_rasqual_native.py` (after 4b; not in `run_all.sh`) | `native/results_rasqual/<scenario>/rasqual_native/nominal_*.parquet`, `summary.json`; per-gene raw checkpoints in `native/rasqual_inputs/.../raw/`, `timing.tsv` | about 6,000 CPU-h for both sets (smoke 0.116 s per feature-SNP x rSNP; range 2,000-18,000); `SIMULATED_EFFECTS_RASQUAL_NATIVE_JOBS` processes (default 15; 10 deep + 5 low-coverage on 2026-10-02) |
 | 5 | `05_run_trecase.py` + `run_trecase.R` | `results_trecase/.../nominal_*.parquet`, `summary.json`; inputs, asSeq files and trace logs under `trecase_work/` | ~15 process-h per dataset; 64 genes at once (`SIMULATED_EFFECTS_TRECASE_JOBS` lowers it when the host is shared; `Rscript` execs into `R`, so one process is live per gene) |
 | 5b | `05b_native_arms.py` | `native/`: native datasets, `split_native` and `trecase_native` results, `facts.json` | loading, datasets and split_native about 6 min (GPU 0, 18-20 s per dataset); asSeq on `SIMULATED_EFFECTS_NATIVE_JOBS` processes (default 15), measured on 44: 46.1 min (deep set, 27.5 process-h against 134.4 for the Salmon inputs) and 42.4 min (low-coverage set, 25.1 against 33.3); 2026-09-28, load 50-70 |
 | 6 | `06_score.py` | `summary.json` | 4 min |

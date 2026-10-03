@@ -1,5 +1,5 @@
-"""RASQUAL's native per-SNP inputs on the native-input datasets of 05b_native_arms.py: written, never run (user decision
-2026-10-02, docs/pipeline_rules.md). This script does not call RASQUAL.
+"""RASQUAL's native per-SNP inputs on the native-input datasets of 05b_native_arms.py (docs/pipeline_rules.md, decision
+2026-10-02). This script does not call RASQUAL; 04c_run_rasqual_native.py runs the commands it writes.
 
 Why: 04 gives RASQUAL one pseudo feature SNP per gene carrying the Salmon haplotype counts, so its read-level model
 (per-SNP allelic counts at real exonic heterozygous sites, reference-mapping bias phi, read allele error rate delta,
