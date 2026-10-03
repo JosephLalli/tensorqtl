@@ -300,6 +300,17 @@ haplotype-informative reads over admitted allelic donors lie in [30, 100)
   0.007 / 0.267 low), its null-gene rates move by at most 0.0007, and every
   number of every other arm is identical. Its gap to split at |beta| 0.8 (0.213
   deep, 0.307 low) is not produced by the dropping.
+- **Why TReCASE's total-count test rejects null genes above nominal** (`trec_null_diagnosis_20261002/index.html`,
+  `scripts/trec_null_diagnosis.R`, 2026-10-02). asSeq's own unmodified `trec`
+  (it reproduces the benchmark's TReC p exactly) on 300 variants per gene of
+  the all-null dataset gives p < 0.05 / 0.01 / 0.001 to 0.079 / 0.024 / 0.0060
+  (deep) and 0.087 / 0.026 / 0.0046 (low coverage) of null tests on the real
+  totals, and 0.082 / 0.023 / 0.0036 on totals simulated from its own null fit,
+  where its model holds; every real-data interval contains the simulated rate.
+  The excess is the likelihood-ratio test's small-sample behaviour with 19
+  mean parameters on 92 donors (n/(n - p) heuristic: 0.081 / 0.022 / 0.0034),
+  not a misfit of its negative-binomial model detectable here; per gene, the
+  excess rises modestly with how far asSeq's scale exceeds its model-true value.
 - **External benchmark on TReCASE's own model** (`external_benchmark_half_read_20261002/`,
   page `comparator_checks_20261002/index.html`, 2026-10-02): the 2026-09-28
   harness, design and seeds with the hapmixQTL arms on `prepare_default_inputs`
