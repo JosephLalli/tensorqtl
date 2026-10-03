@@ -177,7 +177,9 @@ Published comparator software is not patched (user decision): asSeq's TReCASE st
 overdispersion optimizer, so no "repaired TReCASE" arm. Why TReCASE's total-count test rejects null genes above nominal
 is diagnosed with asSeq's own unmodified functions. The inputs for RASQUAL on its own per-SNP read counts are built for
 the simulated-effects benchmark, but RASQUAL is not run on them without a further decision. That decision came the same
-evening: run them, at most 16 CPUs at a time (`benchmark/simulated_effects/04c_run_rasqual_native.py`, 15 processes).
+evening: run them, at most 16 CPUs at a time (`benchmark/simulated_effects/04c_run_rasqual_native.py`, 15 processes),
+and, to fit about 8 hours, on each gene's designated variants plus 49 random tested variants, with every arm rescored
+on the same genes and variants (`rasqual_subset_score.py`).
 
 ### Decision, 2026-10-01: the simulated-effects benchmark runs every arm on half-read split's inputs
 

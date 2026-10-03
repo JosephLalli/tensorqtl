@@ -446,15 +446,16 @@ power and mean squared error were not re-measured with the half-read PCs.
   construction's excess of p < 0.05 at random variants of null genes persists
   under records permutation with and without the haplotype swap, so it is an
   offset of its statistic, not association.
-- **RASQUAL on native per-SNP inputs in the simulated-effects benchmark: running**
-  (inputs `benchmark/simulated_effects/04b_rasqual_native_inputs.py`,
+- **RASQUAL on native per-SNP inputs in the simulated-effects benchmark: running
+  on a variant subset** (inputs `benchmark/simulated_effects/04b_rasqual_native_inputs.py`,
   `<root>/native/rasqual_inputs/README.md` in both benchmark roots; run
-  `04c_run_rasqual_native.py`, user request 2026-10-02, at most 16 CPUs). Per-SNP
-  phASER counts at exonic heterozygous sites, moved, swapped and thinned with
-  each native dataset; 3,061 (deep) and 2,031 (low-coverage) feature-SNP lines.
-  Smoke on DHX15: 0.116 s per feature-SNP x rSNP, 7.2% of fits non-converged,
-  so about 6,000 CPU hours in all (range 2,000-18,000), roughly 17 days on
-  15 processes. The offset above may carry over. Not yet scored by 06.
+  `04c_run_rasqual_native.py`, scoring `rasqual_subset_score.py`; user decisions
+  2026-10-02: at most 16 CPUs, about 8 hours). A full scan would cost about
+  6,000 CPU hours (smoke on DHX15: 0.116 s per feature-SNP x rSNP, 7.2% of fits
+  non-converged), so each gene is tested at its three designated variants and
+  49 random tested variants, genes in a depth-stratified random order, no job
+  started after 8 hours; every arm is rescored on the same genes and variants.
+  The offset above may carry over.
 
 ### The Gibbs variance itself (stock Salmon 1.10.3 draws)
 
@@ -747,14 +748,13 @@ half-depth check as its limit at that depth.
 
 ## Run state, 2026-10-02
 
-Running since about 20:30 on 2026-10-02: RASQUAL on its native per-SNP inputs,
-systemd user services `rasqual-native-deep` (10 processes) and
-`rasqual-native-lowcov` (5), wrapper
+Running since about 21:30 on 2026-10-02: RASQUAL on its native per-SNP inputs
+over the variant subset, systemd user services `rasqual-native-subset-deep` (10
+processes) and `rasqual-native-subset-lowcov` (5), wrapper
 `brainvar_hapmix_deploy/rasqual_native_run_20261002/run.sh` (exit lines in
-`run.exit` there), logs `<root>/04c_run_rasqual_native.log`, per-gene
-checkpoints `<root>/native/rasqual_inputs/<scenario>/repNNN/raw/` (a stopped
-run resumes from them); stop with `systemctl --user stop rasqual-native-deep
-rasqual-native-lowcov`. Nothing else of this project was running. The prepared
+`run.exit` there), logs `<root>/04c_run_rasqual_native.log`, per-job
+checkpoints `<root>/native/rasqual_inputs/<scenario>/repNNN/raw_subset/`; the
+full-scan run started at 20:30 was stopped before any gene finished. Nothing else of this project was running. The prepared
 re-quantification in `salmon_gibbspriorgroups_20261001/` was not started.
 Branch `simulation-benchmark` tracks `origin/simulation-benchmark` and is not
 merged into `master`; verify the current Git state before acting.
