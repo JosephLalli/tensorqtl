@@ -1,7 +1,8 @@
 # Current scientific state: hapmixQTL
 
 State at the release documentation pass of 2026-10-01, with the simulated-effects
-benchmark brought up to its completion on the shipped default (2026-10-02). This document says what
+benchmark brought up to its completion on the shipped default (2026-10-02) and
+the native RASQUAL subset comparison completed and scored (2026-10-03). This document says what
 ships, what has been validated and on which configuration, what is proposed or
 on hold, what is open, and what was running. Superseded ideas appear only in the
 last section, as pointers; evidence measured on an earlier configuration appears
@@ -56,7 +57,11 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   untested; the referee not re-run under the shipped default, and no
   transcriptome-wide run under it (it waits on a rerun of the personalized
   RNA-seq alignment, user decision 2026-10-02).
-- **Run state.** Nothing of this project was running at the end of 2026-10-02.
+- **Run state and gate.** Nothing of this project is running. The two native
+  RASQUAL subset runs finished successfully on 2026-10-03 and both sets are
+  scored on their identical completed genes and 52-variant subsets. Report
+  `rasqual_native_subset_20261003/index.html`. That authorized task is complete;
+  no additional comparator runs or scientific changes are queued.
 
 ## What ships
 
@@ -300,6 +305,34 @@ haplotype-informative reads over admitted allelic donors lie in [30, 100)
   0.007 / 0.267 low), its null-gene rates move by at most 0.0007, and every
   number of every other arm is identical. Its gap to split at |beta| 0.8 (0.213
   deep, 0.307 low) is not produced by the dropping.
+- **RASQUAL native subset comparison, completed 2026-10-03**
+  (`rasqual_native_subset_20261003/index.html`, source
+  `scripts/rasqual_native_subset_report.py`; scores
+  `<root>/native/results_rasqual_subset/score.json` in both benchmark roots).
+  Each 100-gene set has ten datasets. Per gene, the union of the three
+  replicate-designated variants and 49 random tested variants is 52 variants;
+  every arm is scored on the identical gene and variant subset. The scorer
+  uses known truth to choose the largest tied-rank cutoff with at most 5%
+  realized false discoveries, then reports the share of the 150 non-null
+  gene–dataset pairs found per effect size. At beta 0.2 / 0.4 / 0.8, deep native
+  RASQUAL finds 32 / 97 / 128 of 150, synthetic-SNP RASQUAL 11 / 66 / 124,
+  and default split 44 / 100 / 137. Low-coverage native RASQUAL finds
+  0 / 19 / 87, synthetic-SNP RASQUAL 1 / 14 / 78, default split 1 / 38 / 110.
+  No power confidence intervals were computed. This truth-informed subset
+  comparison measures retrospective ranking performance, not a calibrated
+  discovery procedure or a full-window scan.
+  On the one all-null anchor per set, native RASQUAL has p < 0.05 in
+  249 of 4,910 returned tests (0.0507 deep) and 194 of 4,933 (0.0393 low).
+  The intended denominator is 5,200: deep excludes 238 non-converged fits
+  plus 52 RAB4B tests with no native reads; low excludes 267 non-converged
+  fits. Skipped genes retain their ranking units with no finite lead p.
+  These null shares condition on returned tests and do not establish
+  gene-level calibration. Native non-convergence sensitivity was not run.
+  All twenty native result fingerprints match their dataset arrays; subset
+  manifests, unique output rows, p-value domains and assembly row counts were
+  checked. Inputs still use independent SNP thinning, omit homozygous-donor
+  allele counts, carry statistical phase and use Salmon-derived expression
+  PCs, so the comparison is not an end-to-end native RASQUAL pipeline.
 - **Why TReCASE's total-count test rejects null genes above nominal** (`trec_null_diagnosis_20261002/index.html`,
   `scripts/trec_null_diagnosis.R`, 2026-10-02). asSeq's own unmodified `trec`
   (it reproduces the benchmark's TReC p exactly) on 300 variants per gene of
@@ -446,16 +479,9 @@ power and mean squared error were not re-measured with the half-read PCs.
   construction's excess of p < 0.05 at random variants of null genes persists
   under records permutation with and without the haplotype swap, so it is an
   offset of its statistic, not association.
-- **RASQUAL on native per-SNP inputs in the simulated-effects benchmark: running
-  on a variant subset** (inputs `benchmark/simulated_effects/04b_rasqual_native_inputs.py`,
-  `<root>/native/rasqual_inputs/README.md` in both benchmark roots; run
-  `04c_run_rasqual_native.py`, scoring `rasqual_subset_score.py`; user decisions
-  2026-10-02: at most 16 CPUs, about 8 hours). A full scan would cost about
-  6,000 CPU hours (smoke on DHX15: 0.116 s per feature-SNP x rSNP, 7.2% of fits
-  non-converged), so each gene is tested at its three designated variants and
-  49 random tested variants, genes in a depth-stratified random order, no job
-  started after 8 hours; every arm is rescored on the same genes and variants.
-  The offset above may carry over.
+- **The later native RASQUAL subset benchmark** uses the shipped configuration;
+  its completed comparison and limitations are recorded under "On the shipped
+  default" above. It is separate from this observed-data predecessor study.
 
 ### The Gibbs variance itself (stock Salmon 1.10.3 draws)
 
@@ -746,16 +772,22 @@ half-depth check as its limit at that depth.
   rank check on the design): closed by `_validate_inputs` and the rank checks
   on 2026-10-01.
 
-## Run state, 2026-10-02
+## Run state, 2026-10-03
 
-Running since about 21:30 on 2026-10-02: RASQUAL on its native per-SNP inputs
-over the variant subset, systemd user services `rasqual-native-subset-deep` (10
-processes) and `rasqual-native-subset-lowcov` (5), wrapper
-`brainvar_hapmix_deploy/rasqual_native_run_20261002/run.sh` (exit lines in
-`run.exit` there), logs `<root>/04c_run_rasqual_native.log`, per-job
-checkpoints `<root>/native/rasqual_inputs/<scenario>/repNNN/raw_subset/`; the
-full-scan run started at 20:30 was stopped before any gene finished. Nothing else of this project was running. The prepared
-re-quantification in `salmon_gibbspriorgroups_20261001/` was not started.
+The native RASQUAL variant-subset services are inactive. Low coverage finished
+successfully at 00:08:41; deep's first attempt failed on RAB4B and its restart
+(`rasqual-native-subset-deep2`, 15 processes) finished successfully at 00:25:12
+(Chicago time), recorded in
+`brainvar_hapmix_deploy/rasqual_native_run_20261002/run.exit`. The logs are
+`<root>/04c_run_rasqual_native.log`; saved inputs, checkpoints and results are
+under `<root>/native/rasqual_inputs/` and `<root>/native/results_rasqual_subset/`.
+Both sets have `score.json`; deep scoring was completed from its saved results
+on 2026-10-03 without rerunning RASQUAL. The figure-led report and source/output
+hashes are in `rasqual_native_subset_20261003/`. The authorized subset task is
+complete. The
+full-scan run started at 20:30 on 2026-10-02 was stopped before any gene
+finished. Nothing else of this project is running. The prepared re-quantification
+in `salmon_gibbspriorgroups_20261001/` was not started.
 Branch `simulation-benchmark` tracks `origin/simulation-benchmark` and is not
 merged into `master`; verify the current Git state before acting.
 

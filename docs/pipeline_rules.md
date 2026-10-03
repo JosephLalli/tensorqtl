@@ -171,7 +171,7 @@ All under `/mnt/ssd/lalli/brainvar_hapmix_deploy/`.
 
 ## Dated decision records
 
-### Decision, 2026-10-02: comparators run as published; RASQUAL's native-input arm prepared, not run
+### Decision, 2026-10-02: comparators run as published; RASQUAL's native-input subset
 
 Published comparator software is not patched (user decision): asSeq's TReCASE stays as released, including its
 overdispersion optimizer, so no "repaired TReCASE" arm. Why TReCASE's total-count test rejects null genes above nominal
@@ -179,7 +179,19 @@ is diagnosed with asSeq's own unmodified functions. The inputs for RASQUAL on it
 the simulated-effects benchmark, but RASQUAL is not run on them without a further decision. That decision came the same
 evening: run them, at most 16 CPUs at a time (`benchmark/simulated_effects/04c_run_rasqual_native.py`, 15 processes),
 and, to fit about 8 hours, on each gene's designated variants plus 49 random tested variants, with every arm rescored
-on the same genes and variants (`rasqual_subset_score.py`).
+on the same genes and variants (`rasqual_subset_score.py`). The two 04c subset
+runs subsequently finished successfully on 2026-10-03, and both sets are now
+scored from saved results without a refit. Report
+`rasqual_native_subset_20261003/index.html`; source
+`scripts/rasqual_native_subset_report.py`. Each set has 100 genes and ten datasets; per
+gene the comparison subset is the union of its three designated variants and
+49 random tested variants (52 variants). Every arm must be rescored on the
+identical completed genes and variants. Power is the share of 150 non-null
+gene–dataset pairs found at each effect size by a cutoff selected using the known
+truth to allow at most 5% realized false discoveries; it is not a calibrated
+discovery procedure. Returned-test null shares and denominators are reported
+separately. No power confidence intervals or native failed-fit sensitivity were
+computed, and the scores are not comparable with the full-window scan.
 
 ### Decision, 2026-10-01: the simulated-effects benchmark runs every arm on half-read split's inputs
 

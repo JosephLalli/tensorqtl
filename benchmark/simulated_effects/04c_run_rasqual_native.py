@@ -16,7 +16,8 @@ present file is not rerun) and its wall seconds appended to IN/timing_subset.tsv
 
 Output for the genes finished in every dataset: OUT/<scenario>/rasqual_native/nominal_repNNN.parquet (04.assemble on the
 subset; fingerprint of the native dataset and 'rasqual_native', unit log2), OUT/summary.json with the excluded counts and
-the finished genes. A feature-SNP line reported as an rSNP row stops the run.
+the finished genes. A feature-SNP line reported as an rSNP row stops the run; a gene RASQUAL skips (one SKIPPED row; RAB4B,
+which has no native reads in any donor) has no rows, as in 05b's arms, and is counted.
 """
 import concurrent.futures as cf
 import hashlib
@@ -91,7 +92,10 @@ def run_job(row, text, raw, deadline):
 
 
 def parse(g, out, fsnp_ids):
+    """RASQUAL's rows as a frame; None where it skipped the gene (one SKIPPED row: RAB4B has no native reads in any donor)."""
     rows = [ln.split('\t') for ln in out.splitlines()]
+    if len(rows) == 1 and len(rows[0]) == len(C.RASQUAL_FIELDS) and rows[0][:2] == [g, 'SKIPPED']:
+        return None
     bad = [r for r in rows if len(r) != len(C.RASQUAL_FIELDS) or r[0] != g or r[1] == 'SKIPPED']
     if bad or not rows:
         raise SystemExit(f'{g}: {len(rows)} RASQUAL rows, {len(bad)} malformed or SKIPPED, e.g. {bad[:1]}')
@@ -156,6 +160,9 @@ def main():
         parts, cnt = [], {}
         for k, g in enumerate(S['genes']):
             if g not in done:
+                continue
+            if results[(sc, r, g)] is None:
+                cnt['skipped_by_rasqual'] = cnt.get('skipped_by_rasqual', 0) + 1
                 continue
             df, c = RR.assemble(g, results[(sc, r, g)], keep[g], None if nd['is_null'][k] else str(nd['causal_variant'][k]))
             parts.append(df)
