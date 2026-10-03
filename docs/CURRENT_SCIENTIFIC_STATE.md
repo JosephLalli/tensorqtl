@@ -446,6 +446,13 @@ power and mean squared error were not re-measured with the half-read PCs.
   construction's excess of p < 0.05 at random variants of null genes persists
   under records permutation with and without the haplotype swap, so it is an
   offset of its statistic, not association.
+- **RASQUAL's native inputs for the simulated-effects benchmark: prepared, not
+  run** (user decision 2026-10-02; `benchmark/simulated_effects/04b_rasqual_native_inputs.py`,
+  `<root>/native/rasqual_inputs/README.md` in both benchmark roots). Per-SNP
+  phASER counts at exonic heterozygous sites, moved, swapped and thinned with
+  each native dataset; 3,061 (deep) and 2,031 (low-coverage) feature-SNP lines.
+  As written, a run costs 134-1,177 and 72-627 CPU hours per dataset (10 per
+  set), so it would need a subset rule; the offset above would apply to it.
 
 ### The Gibbs variance itself (stock Salmon 1.10.3 draws)
 

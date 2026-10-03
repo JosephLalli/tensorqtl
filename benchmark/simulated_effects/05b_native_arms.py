@@ -48,7 +48,7 @@ MD, RA, TR = C.module('02_make_datasets'), C.module('03_run_arms'), C.module('05
 PE = C.D / 'cache' / 'gibbs_56b63c3b37ed5df8' / 'point_estimates'   # compare_mixqtl_replication.PE
 RESTRICT = PE / 'restrict_calibration.txt'   # protein-coding autosomal genes: the Salmon edgeR run's restriction (build_point_estimate_cache.py)
 EDGER_R = C.HERE / 'edger_library_normalization.R'   # byte-identical copy of scripts/edger_library_normalization.R (2026-10-01), the pipeline's own normalization
-NATIVE_THIN_KEY = 7            # spawn key used by no other script here (02: 1-3; 03: 4, 5; select: 6; 01: 10-13; 06: 30, 33)
+NATIVE_THIN_KEY = 7            # spawn key used by no other script here (02: 1-3; 03: 4, 5; select: 6; 04b: 8; 01: 10-13; 06: 30, 33)
 JOBS = int(os.environ.get('SIMULATED_EFFECTS_NATIVE_JOBS', 15))   # asSeq genes at once: Rscript execs into R, one process per job (README), so 15 plus this driver is run_all.sh's cap of 16; the 2026-09-28 runs set 44 under a one-off allowance of 48
 THREADS = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}   # one BLAS thread per R process on the shared host
 
