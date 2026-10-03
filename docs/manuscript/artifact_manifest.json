@@ -1,0 +1,63 @@
+{
+  "draft_date": "2026-10-03",
+  "generated_utc": "2026-10-03T07:00:55.867200+00:00",
+  "status": "First methods-pilot draft; final-configuration observed-data discovery and held-out replication pending",
+  "evaluated_analysis_commit": "874e10a47ed0f62f70f901937f632dfaf7edb513",
+  "development_branch": "simulation-benchmark",
+  "renderer": "pandoc 3.8.3",
+  "figure_source": {
+    "path": "/mnt/ssd/lalli/brainvar_hapmix_deploy/rasqual_native_subset_20261003/comparison.png",
+    "bytes": 237336,
+    "sha256": "afab33b3a27f417b8d4064046a6ea20ebd8a0b6b19615fedf21e02dda986eafe"
+  },
+  "artifacts": {
+    "hapmixqtl_draft.md": {
+      "bytes": 47357,
+      "sha256": "8f5d2c29481347bc907ac15dc604c6c3969c019834f63de88d8256ce9bb45dd4"
+    },
+    "hapmixqtl_draft.html": {
+      "bytes": 387514,
+      "sha256": "a14df024bce5939d482e344c94cd40baff4dcd0f3b88fbb79dfb5b4e9663a145"
+    },
+    "hapmixqtl_draft.docx": {
+      "bytes": 242239,
+      "sha256": "3f1bb3a1c096ab5b772b7ec22b7c34f8de94ded1cabd32998b1ddccc2aa855fc"
+    },
+    "references.bib": {
+      "bytes": 5477,
+      "sha256": "5846650de27a3c67323d4a82e8318945cd2c9346432928cf49e5d30dc87da2cf"
+    },
+    "evidence.tsv": {
+      "bytes": 11198,
+      "sha256": "6a143465d858c62fb2b567d0814dbc0ac930285f7cdbf664efbce4ceade30b93"
+    },
+    "evidence_notes.md": {
+      "bytes": 3154,
+      "sha256": "8438530d26836bfa0a5e88de0fe83c7e3be96a6121e14f40cb7c10bdf0b3cd3d"
+    },
+    "manuscript.css": {
+      "bytes": 1589,
+      "sha256": "dbf03b529813364211ccc3f118799b2046706a6fb45bae8ad0a8b41049b8fe30"
+    },
+    "README.md": {
+      "bytes": 1622,
+      "sha256": "2d3c21048e13f52087d266598a7133894e7e307e7c172251253d2615befaa304"
+    },
+    "figures/native_rasqual_comparison.png": {
+      "bytes": 237336,
+      "sha256": "afab33b3a27f417b8d4064046a6ea20ebd8a0b6b19615fedf21e02dda986eafe"
+    }
+  },
+  "checks": {
+    "HTML_tables": 4,
+    "HTML_equations": 37,
+    "Word_equations": 37,
+    "embedded_figures": 1,
+    "bibliography_entries": 18,
+    "evidence_records": 17,
+    "local_source_paths": "all present",
+    "source_figure_copy": "byte-identical",
+    "render_validation": "passed"
+  },
+  "scientific_review": "Bounded review against saved results and scoring code; identified corrections applied. No experiments rerun."
+}

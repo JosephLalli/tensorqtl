@@ -62,6 +62,20 @@ under `/mnt/ssd/lalli/brainvar_hapmix_deploy/` unless a full path is given.
   scored on their identical completed genes and 52-variant subsets. Report
   `rasqual_native_subset_20261003/index.html`. That authorized task is complete;
   no additional comparator runs or scientific changes are queued.
+- **Manuscript draft, 2026-10-03.** The completed first draft is at
+  `docs/manuscript/hapmixqtl_draft.md`, with a reading HTML version,
+  `docs/manuscript/hapmixqtl_draft.html`, an evidence ledger,
+  `docs/manuscript/evidence.tsv`, and references,
+  `docs/manuscript/references.bib`; a Word copy is
+  `docs/manuscript/hapmixqtl_draft.docx`. The draft includes completed pilot
+  results, the native RASQUAL subset figure, methods and an author figure plan.
+  Real-data placeholders remain pending: final-default BrainVar
+  discovery and 135-donor held-out replication, the independent fixed-procedure
+  FDR study, and multi-donor Gibbs validation (the one-donor split-half
+  diagnostic is complete); alignment re-quantification remains on hold.
+  Drafting authorizes no runs or scientific decision. The manuscript evidence
+  notes clarify that non-null composite precision targets are arm-specific;
+  the all-null error comparison has the common target zero.
 
 ## What ships
 
@@ -269,8 +283,10 @@ haplotype-informative reads over admitted allelic donors lie in [30, 100)
   0.0698] for RASQUAL, 0.0869 [0.0800, 0.0944] and 0.0963 [0.0893, 0.1034] for
   TReCASE. split's combined squared error over unit weights' is 0.86 [0.75,
   0.98] deep and 0.99 [0.93, 1.05] low at the causal variant (|beta| 0.4,
-  pipeline-scale truth), 0.84 [0.79, 0.89] and 0.90 [0.87, 0.93] on the
-  no-effect dataset's null genes. The native-input arms (TReCASE and split on
+  arm-specific pipeline-scale composite truth: each arm's channel truths
+  are combined using its own fitted channel weights, rather than one common
+  non-null target), 0.84 [0.79, 0.89] and 0.90 [0.87, 0.93] on the
+  no-effect dataset's null genes, where both targets are zero. The native-input arms (TReCASE and split on
   alignment counts from the same BAMs) are in each set page.
 - **Stored nulls on the shipped pipeline, Meier's correction included**
   (`stored_null_half_read_20261001/`, 2026-10-01,
