@@ -1,4 +1,146 @@
-## tensorQTL
+# tensorQTL with hapmixQTL
+
+This fork adds **hapmixQTL**, a cis-eQTL mapper that combines total expression
+and haplotype-resolved expression. It uses Salmon point estimates for expression
+and Salmon Gibbs draws for the allelic channel's measurement variance.
+The [upstream tensorQTL modes](#upstream-tensorqtl) remain available.
+
+## Quick start
+
+Install this fork, then prepare normalization and covariates before mapping:
+
+```bash
+git clone --branch main https://github.com/JosephLalli/tensorqtl.git
+cd tensorqtl
+python -m pip install -e '.[test]'
+```
+
+Use Python 3.11 or newer and a PyTorch installation appropriate for your CPU or
+GPU. Mapping uses a GPU when one is visible to PyTorch and otherwise uses the
+CPU. The Salmon workflow also needs **Rscript with Bioconductor edgeR**:
+
+```r
+# Run in R, once, in the environment where Rscript will run.
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("edgeR", ask = FALSE, update = FALSE)
+```
+
+The PyPI `tensorqtl` package is upstream tensorQTL and does not include this
+hapmixQTL implementation. Check the installation and exercise the mapper on
+fabricated data:
+
+```bash
+python -c "from tensorqtl import hapmixqtl; print(hapmixqtl.__file__)"
+python scripts/run_hapmixqtl_from_salmon.py --selftest
+```
+
+### A complete example with fabricated inputs
+
+This example creates artificial samples, transcripts, counts, Gibbs draws and
+genotypes. It uses no human cohort data. Run all commands from the checkout root:
+
+```bash
+python example/hapmixqtl/create_toy_inputs.py --out toy
+python scripts/prepare_hapmixqtl_inputs.py \
+    --manifest toy/manifest.tsv --tx2gene toy/tx2gene.tsv \
+    --vcf toy/phased.vcf --sample-covariates toy/sample_covariates.tsv \
+    --out toy/prepared
+python scripts/run_hapmixqtl_from_salmon.py \
+    --manifest toy/manifest.tsv --tx2gene toy/tx2gene.tsv \
+    --vcf toy/phased.vcf --gene-pos toy/gene_pos.tsv \
+    --covariates toy/prepared/covariates.tsv \
+    --edger-dir toy/prepared/point_estimates/edger --out toy/results
+```
+
+The preparation command aggregates `quant.sf` counts, runs edgeR filtering and
+TMM normalization, computes genotype PCs and expression PCs, and writes the
+provenance required by the mapper. Expression PCs use the same half-read
+log-CPM transform, filtered genes and effective library sizes as the mapping
+run. Their gene filter and library sizes must agree; reuse the generated
+`--edger-dir` as shown above. Keep the preparation directory and run from the
+same working directory when reusing its provenance.
+
+The final command reads the Gibbs draws, applies the reference-mapping-bias
+gate, and performs cis mapping with 10,000 permutations per gene. The toy run
+checks that the workflow works; it does not establish calibration or power.
+
+### Use your own inputs
+
+Replace the toy files with your own files in the same formats. The
+[input guide](docs/hapmixqtl_inputs.md) gives small table examples, column order,
+coordinate conventions, suffix and phase requirements, annotation conversion,
+and a full preparation/mapping recipe.
+
+You need:
+
+- A phased VCF whose sample IDs match the Salmon manifest, and whose haplotype
+  order matches the personalized transcriptome.
+- Salmon output from each sample's personalized diploid transcriptome, with
+  Gibbs draws (`--numGibbsSamples 200` is an example). Standard reference
+  transcriptomes do not provide the required haplotype-resolved expression.
+- A headerless transcript-to-gene map and a headerless gene-position table.
+- Optional numeric sample covariates. Encode categorical variables before
+  passing them, and omit an intercept; the mapper supplies it.
+
+`prepare_hapmixqtl_inputs.py --help` lists the PC counts and optional explicit
+`--gene-restrict` list. Match `--hap-suffix` in both commands when using suffixes
+other than the default `_hapA,_hapB`. The preparation command requires finite,
+aligned covariates and rejects a rank-deficient design.
+
+### Results
+
+The Salmon mapper writes `hapmixqtl_cis.tsv.gz` and `eval_bundle.json` in
+`--out`. The association table has one row per tested gene. Use `pval_perm` or
+its Beta approximation `pval_beta` for gene-level detection; `pval_nominal`
+describes the selected lead variant. Apply multiple-testing correction across
+the tested gene family separately: the Salmon runner does not add q-values.
+A slope of 1 is a twofold allelic effect (`2**slope`). The `loo_donor` and
+`loo_pval_nominal` columns describe sensitivity to one sample at the fixed lead.
+See the [output reference](docs/outputs.md) for all columns.
+
+Keep real-data inputs and outputs out of Git. Association tables and logs can
+include sample identifiers, and preparation files contain individual-level
+counts and covariates. Aggregate output is not automatic permission to release
+it; follow the data source's sharing terms. Only fabricated fixtures are used
+in this walkthrough.
+
+## Method and other interfaces
+
+The default combines an allelic log2 ratio, weighted by Gibbs variance plus a
+counting term, with unweighted half-read total expression. Both channels fit
+their own residual scale. The combination uses inverse-variance weights,
+Meier's standard-error correction and Welch-Satterthwaite degrees of freedom.
+The allelic channel enters the combined statistic with at least 15 informative
+samples; otherwise the gene uses the total channel. The permutation scheme
+moves RNA records and RNA covariates together against fixed genotypes, with
+random haplotype-label swaps; genotype PCs remain tied to genotypes.
+
+[hapmixQTL methods](docs/hapmixqtl_methods.md) defines the statistic, API,
+permutations and limitations. [Pipeline rules](docs/pipeline_rules.md) defines
+the input contract. The Python API exposes `prepare_default_inputs`,
+`map_nominal` and `map_cis`; the CLI exposes `hapmixqtl_nominal` and `hapmixqtl`
+for prepared BED matrices. Use the Salmon workflow above for count preparation
+and covariate provenance checks.
+
+The other supported mode, `tensorqtl.mixqtl_replication`, implements the
+published [mixQTL estimator](https://github.com/hakyimlab/mixqtl) on point
+estimates without Gibbs draws. Its response uses natural logs; convert slopes
+to log2 before comparing them with default hapmixQTL. Deprecated fitted
+variance models are kept in `tensorqtl/fitted_variance.py` for reproducibility.
+Fine-mapping and the STR/multi-allelic second pass are not supported by default
+hapmixQTL. Low-information Gibbs variance can depend strongly on the quantifier's
+prior; phase errors and reference mapping bias also affect the allelic channel.
+
+## Development
+
+The [test guide](tests/README.md) lists the fabricated-input checks. Current
+implementation boundaries are in [current state](docs/CURRENT_SCIENTIFIC_STATE.md).
+
+---
+
+### Upstream tensorQTL
+
+Everything below is upstream tensorQTL documentation. These modes are present in this fork and run upstream's code, apart from a fix in `susie.py` that affects only calls without centering or scaling. The command line also lists `nbqtl-score`, a negative-binomial score-test mode added to this fork before hapmixQTL; it is not part of hapmixQTL and is not documented here.
 
 tensorQTL is a GPU-enabled QTL mapper, achieving ~200-300 fold faster *cis*- and *trans*-QTL mapping compared to CPU-based implementations.
 
@@ -6,41 +148,11 @@ If you use tensorQTL in your research, please cite the following paper:
 [Taylor-Weiner, Aguet, et al., *Genome Biol.*, 2019](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1836-7).</br>
 Empirical beta-approximated p-values are computed as described in [Ongen et al., *Bioinformatics*, 2016](https://academic.oup.com/bioinformatics/article/32/10/1479/1742545).
 
-### Install
-You can install tensorQTL using pip:
-```
-pip3 install tensorqtl
-```
-or directly from this repository:
-```
-$ git clone git@github.com:broadinstitute/tensorqtl.git
-$ cd tensorqtl
-# install into a new virtual environment and load
-$ mamba env create -f install/tensorqtl_env.yml
-$ conda activate tensorqtl
-```
-To install the latest version from this repository, run
-```
-pip install pip@git+https://github.com/broadinstitute/tensorqtl.git
-```
-
-To use PLINK 2 binary files ([pgen/pvar/psam](https://www.cog-genomics.org/plink/2.0/input#pgen)), [pgenlib](https://github.com/chrchang/plink-ng/tree/master/2.0/Python) must be installed using either
-```
-pip install Pgenlib
-```
-(this is included in `tensorqtl_env.yml` above), or from the source :
-```
-git clone git@github.com:chrchang/plink-ng.git
-cd plink-ng/2.0/Python/
-python3 setup.py build_ext
-python3 setup.py install
-```
-
-### Requirements
+#### Requirements
 
 tensorQTL requires an environment configured with a GPU for optimal performance, but can also be run on a CPU. Instructions for setting up a virtual machine on Google Cloud Platform are provided [here](install/INSTALL.md).
 
-### Input formats
+#### Input formats
 Three inputs are required for QTL analyses with tensorQTL: genotypes, phenotypes, and covariates. 
 * Phenotypes must be provided in BED format, with a single header line starting with `#` and the first four columns corresponding to: `chr`, `start`, `end`, `phenotype_id`, with the remaining columns corresponding to samples (the identifiers must match those in the genotype input). In addition to .bed/.bed.gz, BED input in .parquet is also supported. The BED file can specify the center of the *cis*-window (usually the TSS), with `start == end-1`, or alternatively, start and end positions, in which case the *cis*-window is [start-window, end+window]. A function for generating a BED template from a gene annotation in GTF format is available in [pyqtl](https://github.com/broadinstitute/pyqtl) (`io.gtf_to_tss_bed`).
 * Covariates can be provided as a tab-delimited text file (covariates x samples) or dataframe (samples x covariates), with row and column headers.
@@ -58,17 +170,17 @@ Three inputs are required for QTL analyses with tensorQTL: genotypes, phenotypes
 
 The [examples notebook](example/tensorqtl_examples.ipynb) below contains examples of all input files. The input formats for phenotypes and covariates are identical to those used by [FastQTL](https://github.com/francois-a/fastqtl).
 
-### Examples
+#### Examples
 For examples illustrating *cis*- and *trans*-QTL mapping, please see [tensorqtl_examples.ipynb](example/tensorqtl_examples.ipynb).
 
-### Running tensorQTL
+#### Running tensorQTL
 This section describes how to run the different modes of tensorQTL, both from the command line and within Python.
 For a full list of options, run
 ```
 python3 -m tensorqtl --help
 ```
 
-#### Loading input files
+##### Loading input files
 This section is only relevant when running tensorQTL in Python.
 The following imports are required:
 ```
@@ -93,7 +205,7 @@ To save memory when using genotypes for a subset of samples, a subset of samples
 pr = genotypeio.PlinkReader(plink_prefix_path, select_samples=phenotype_df.columns)
 ```
 
-#### *cis*-QTL mapping: permutations
+##### *cis*-QTL mapping: permutations
 This is the main mode for *cis*-QTL mapping. It generates phenotype-level summary statistics with empirical p-values, enabling calculation of genome-wide FDR.
 In Python:
 ```
@@ -108,7 +220,7 @@ python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
 ```
 `${prefix}` specifies the output file name.
 
-#### *cis*-QTL mapping: summary statistics for all variant-phenotype pairs
+##### *cis*-QTL mapping: summary statistics for all variant-phenotype pairs
 In Python:
 ```
 cis.map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df,
@@ -124,7 +236,7 @@ The results are written to a [parquet](https://parquet.apache.org/) file for eac
 ```
 df = pd.read_parquet(file_name)
 ```
-#### *cis*-QTL mapping: conditionally independent QTLs
+##### *cis*-QTL mapping: conditionally independent QTLs
 This mode maps conditionally independent *cis*-QTLs using the stepwise regression procedure described in [GTEx Consortium, 2017](https://www.nature.com/articles/nature24277). The output from the permutation step (see `map_cis` above) is required.
 In Python:
 ```
@@ -139,7 +251,7 @@ python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --mode cis_independent
 ```
 
-#### *cis*-QTL mapping: interactions
+##### *cis*-QTL mapping: interactions
 Instead of mapping the standard linear model (p ~ g), this mode includes an interaction term (p ~ g + i + gi) and returns full summary statistics for the model. The interaction term is a tab-delimited text file or dataframe mapping sample ID to interaction value(s) (if multiple interactions are used, the file must include a header with variable names). With the `run_eigenmt=True` option, [eigenMT](https://www.cell.com/ajhg/fulltext/S0002-9297(15)00492-9)-adjusted p-values are computed.
 In Python:
 ```
@@ -162,7 +274,7 @@ The option `--best_only` disables output of full summary statistics.
 
 Full summary statistics are saved as [parquet](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_parquet.html) files for each chromosome, in `${output_dir}/${prefix}.cis_qtl_pairs.${chr}.parquet`, and the top association for each phenotype is saved to `${output_dir}/${prefix}.cis_qtl_top_assoc.txt.gz`. In these files, the columns `b_g`, `b_g_se`, `pval_g` are the effect size, standard error, and p-value of *g* in the model, with matching columns for *i* and *gi*. In the `*.cis_qtl_top_assoc.txt.gz` file, `tests_emt` is the effective number of independent variants in the cis-window estimated with eigenMT, i.e., based on the eigenvalue decomposition of the regularized genotype correlation matrix ([Davis et al., AJHG, 2016](https://www.cell.com/ajhg/fulltext/S0002-9297(15)00492-9)). `pval_emt = pval_gi * tests_emt`, and `pval_adj_bh` are the Benjamini-Hochberg adjusted p-values corresponding to `pval_emt`. 
 
-#### *trans*-QTL mapping
+##### *trans*-QTL mapping
 This mode computes nominal associations between all phenotypes and genotypes. tensorQTL generates sparse output by default (associations with p-value < 1e-5). *cis*-associations are filtered out. The output is in parquet format, with four columns: phenotype_id, variant_id, pval, maf.
 In Python:
 ```
@@ -178,87 +290,3 @@ python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
     --covariates ${covariates_file} \
     --mode trans
 ```
-
-#### hapmixQTL: *cis*-QTL mapping with haplotype-resolved expression and inferential uncertainty
-hapmixQTL is a generalization of [mixQTL](https://www.nature.com/articles/s41467-022-29123-9) that maps *cis*-QTLs using haplotype-resolved expression posteriors — e.g. [Salmon](https://combine-lab.github.io/salmon/) Gibbs draws obtained by quantifying reads against a personalized diploid transcriptome. The inferential (measurement) uncertainty captured by the Gibbs draws is propagated directly into the effect size and its standard error.
-
-For each sample *i* and feature *f*, two information channels are combined:
-
-1. **Allelic contrast (ASE)** channel, using the posterior-mean expression of each haplotype (`L`, `R`) with pseudocount `κ`:
-   `a_i = log(yL_i + κ) − log(yR_i + κ)`, regressed on the **signed heterozygote indicator** `s_i = xL_i − xR_i ∈ {−1, 0, +1}` (from phased genotypes; `s_i = 0` if unphased/homozygous).
-2. **Total expression** channel:
-   `t_i = log((yL_i + yR_i)/2 + κ)`, regressed on the **half dosage** `g_i/2` so that both channels estimate the same quantity — the log allelic fold change (log aFC).
-
-Per-sample inferential variances are computed across the `B` Gibbs draws:
-`v_a_i = Var_b(a_i^(b))`, `v_t_i = Var_b(t_i^(b))`. These are treated as **known** measurement variances and enter each channel's weighted regression as absolute precisions `w = 1/(v_inf + τ)` (default `τ = 0`). Weighting is implemented via the sqrt-weight transform (`y* = √w · y`, `x* = √w · x`), which turns weighted least squares into ordinary dot products that vectorize across all *cis* variants on the GPU. Because the variances are known, the standard error is the known-variance GLS SE (`se = √(1/xx)`), so inflating a channel's inferential variance genuinely widens its SE and down-weights it in the combination — an ordinary estimated-dispersion WLS would instead absorb that scale and ignore it.
-
-The two channel estimates are merged by inverse-variance meta-analysis:
-```
-beta = (beta_a/se_a² + beta_t/se_t²) / (1/se_a² + 1/se_t²)
-se   = sqrt(1 / (1/se_a² + 1/se_t²))
-```
-`beta` is interpretable as the log allelic fold change per ALT allele. When phase is unavailable (`s_i = 0` for all samples) the ASE channel is uninformative and the result reduces to the total-expression channel alone.
-
-**Inputs.** hapmixQTL consumes five phenotype-like matrices (phenotypes × samples, in the same BED format as `read_phenotype_bed`), plus phased haplotype genotypes:
-
-| Argument | Description |
-| --- | --- |
-| `--hap_A` | Allelic contrast `a_i` (BED) |
-| `--hap_T` | Log total expression `t_i` (BED) |
-| `--hap_Va` | Inferential variance of `a_i` (BED) |
-| `--hap_Vt` | Inferential variance of `t_i` (BED) |
-| `--hap_Cat` | Inferential covariance of `a_i,t_i` (optional; unused by the default method) |
-| `--phase_xL` | ALT allele on haplotype L (0/1), variants × samples, tab-delimited (optional) |
-| `--phase_xR` | ALT allele on haplotype R (0/1), variants × samples, tab-delimited (optional) |
-| `--tau_mode` | `zero` (default) or `estimate` (per-phenotype moment estimator of overdispersion) |
-| `--se_mode` | `model` (default, known-variance GLS) or `robust` (HC1 sandwich) |
-
-The summary matrices can be precomputed from Gibbs draws with `hapmixqtl.compute_summaries_from_gibbs(yL, yR, kappa=0.5)`, where `yL`/`yR` are `[features, samples, draws]` arrays. The positional `${expression_bed}` argument is still required by the CLI but ignored in hapmixQTL modes (all phenotype inputs come from the `--hap_*` flags).
-
-**Nominal mapping** (all *cis* variant–phenotype pairs) writes one parquet per chromosome, `${output_dir}/${prefix}.hapmixqtl_pairs.${chr}.parquet`, with the combined `slope`/`slope_se`/`pval_nominal` plus the per-channel `slope_a`/`slope_a_se`/`pval_a` and `slope_t`/`slope_t_se`/`pval_t`:
-```
-python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
-    --mode hapmixqtl_nominal \
-    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
-    --phase_xL ${xL_file} --phase_xR ${xR_file} \
-    --covariates ${covariates_file}
-```
-In Python:
-```
-from tensorqtl import hapmixqtl
-hapmixqtl.map_nominal(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
-                      phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-                      prefix=prefix, covariates_df=covariates_df, output_dir='.')
-```
-
-**Permutation mapping** (top association per phenotype with empirical/beta-approximated p-values), analogous to `cis`, writes `${output_dir}/${prefix}.hapmixqtl.txt.gz`:
-```
-python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
-    --mode hapmixqtl \
-    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
-    --phase_xL ${xL_file} --phase_xR ${xR_file} \
-    --covariates ${covariates_file}
-```
-In Python:
-```
-res_df = hapmixqtl.map_cis(genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
-                           phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-                           covariates_df=covariates_df)
-```
-
-**SuSiE fine-mapping** identifies credible sets of candidate causal variants from the combined ASE + total evidence. Because both channels estimate the same shared effect (log aFC), the two sqrt-weighted, covariate-residualized channels are stacked into a single whitened design and passed to tensorQTL's existing [SuSiE](https://rss.onlinelibrary.wiley.com/doi/full/10.1111/rssb.12388) implementation (`tensorqtl.susie.susie`) unchanged, so any improvements to the core SuSiE code are inherited automatically. The sqrt-weight transform whitens each channel to unit-variance noise using the known Gibbs inferential variances, so `estimate_residual_variance` defaults to `False` (consistent with the known-variance standard errors used elsewhere in hapmixQTL); set it to `True` to instead let SuSiE re-estimate a scalar dispersion. Outputs mirror `cis_susie`: a credible-set summary parquet (`${prefix}.hapmixqtl_SuSiE_summary.parquet`) and a pickle of the full per-phenotype SuSiE results.
-```
-python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
-    --mode hapmixqtl_susie \
-    --hap_A ${A_bed} --hap_T ${T_bed} --hap_Va ${Va_bed} --hap_Vt ${Vt_bed} \
-    --phase_xL ${xL_file} --phase_xR ${xR_file} \
-    --covariates ${covariates_file} --max_effects 10
-```
-In Python:
-```
-summary_df, susie_res = hapmixqtl.map_susie(
-    genotype_df, variant_df, A_df, T_df, Va_df, Vt_df,
-    phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-    covariates_df=covariates_df, L=10, summary_only=False)
-```
-

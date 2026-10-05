@@ -16,13 +16,23 @@ from core import *
 from post import *
 import genotypeio, cis, trans, susie, nbqtl, hapmixqtl
 
+# hapmixQTL association default: admitted Gibbs ASE weights and unit total
+# working weights on half-read expression; --se_mode supplies fitted residual
+# scales with tau_mode='zero'. Fixed rather than exposed, because the
+# alternatives are deprecated: fitting a variance function from a gene's own
+# residuals, or asserting the draws are the whole error variance, both live in
+# tensorqtl/fitted_variance.py now. hapmixQTL fine-mapping (map_susie) has no
+# fitted scale and is not offered here (2026-10-01).
+HAPMIX_TAU_MODE = 'zero'
 
-def main():
+
+def build_parser():
+    """The command-line interface, separated from main() so its defaults can be tested."""
     parser = argparse.ArgumentParser(description='tensorQTL: GPU-based QTL mapper')
     parser.add_argument('genotype_path', help='Genotypes in PLINK format')
     parser.add_argument('phenotypes', help="Phenotypes in BED format (.bed, .bed.gz, .bed.parquet), or optionally for 'trans' mode, parquet or tab-delimited.")
     parser.add_argument('prefix', help='Prefix for output file names')
-    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl', 'hapmixqtl_susie'],
+    parser.add_argument('--mode', type=str, default='cis', choices=['cis', 'cis_nominal', 'cis_independent', 'cis_susie', 'trans', 'trans_susie', 'nbqtl-score', 'hapmixqtl_nominal', 'hapmixqtl'],
                         help='Mapping mode. Default: cis')
     parser.add_argument('--covariates', default=None, help='Covariates file, tab-delimited (covariates x samples)')
     parser.add_argument('--paired_covariate', default=None, help='Single phenotype-specific covariate, tab-delimited (phenotypes x samples)')
@@ -59,16 +69,33 @@ def main():
     parser.add_argument('--batch-size-snps', default=16000, type=int, help='Number of SNPs per block for nbqtl-score mode')
     # hapmixQTL-specific arguments
     parser.add_argument('--hap_A', default=None, type=str, help='Allelic contrast BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_T', default=None, type=str, help='Log total expression BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_Va', default=None, type=str, help='Inferential variance for allelic contrast BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_Vt', default=None, type=str, help='Inferential variance for total expression BED file (hapmixqtl modes)')
-    parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional)')
+    parser.add_argument('--hap_T', default=None, type=str,
+                        help='Precomputed half-read total BED: log2((total+0.5)/(effective_library_size+1)*1e6) (hapmixqtl modes)')
+    parser.add_argument('--hap_Va', default=None, type=str,
+                        help='ASE variance BED with excluded donor-gene pairs set to zero by prepare_default_inputs; BED mode cannot verify raw-count admission (hapmixqtl modes)')
+    parser.add_argument('--hap_Vt', default=None, type=str,
+                        help='Optional explicit total working-variance BED override (hapmixqtl modes; omitted uses unit total variance)')
+    parser.add_argument('--hap_Cat', default=None, type=str, help='Inferential covariance BED file (hapmixqtl modes, optional; loaded for inspection only -- intentionally unused by the method, see the hapmixqtl module docstring)')
     parser.add_argument('--phase_xL', default=None, type=str, help='Haplotype L ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
     parser.add_argument('--phase_xR', default=None, type=str, help='Haplotype R ALT allele genotypes (0/1), BED-like or tab-delimited (hapmixqtl modes)')
-    parser.add_argument('--tau_mode', default='zero', type=str, choices=['zero', 'estimate'], help='Overdispersion handling: zero (default) or estimate per phenotype')
-    parser.add_argument('--se_mode', default='model', type=str, choices=['model', 'robust'], help='SE mode: model-based (default) or robust/sandwich')
+    parser.add_argument('--tau_refit', action='store_true', help="Legacy compatibility flag; no tau refit occurs in the current hapmixqtl CLI, which fixes tau_mode='zero'")
+    parser.add_argument('--perm_scheme', default='records_signflip', type=str, choices=['records_signflip', 'records', 'residuals'], help="hapmixqtl modes: the permutation null of map_cis. 'records_signflip' (default) permutes each donor's phenotype value, weight and covariate row together with the genotypes fixed, and swaps each permuted record's haplotype labels L/R at random, which negates its allelic log ratio (L/R is arbitrary phase order, so this is a symmetry of the allelic null; the total channel is unaffected); 'records' is the same without the swap, the FastQTL/tensorQTL null with per-donor weights; 'residuals' permutes leverage-standardized whitened residuals at fixed weights (the scheme before 2026-09-17, conservative where weights vary)")
+    parser.add_argument('--ase_covariates', default='none', type=str, choices=['shared', 'none'], help="hapmixqtl modes: what --covariates are projected out of the allelic channel. 'none' (default) fits ASE through the origin; 'shared' applies the supplied covariates to both channels. No ASE intercept is added; the total channel retains its intercept. Allelic nuisance predictors must have a meaningful orientation under H1/H2 relabeling")
+    parser.add_argument('--se_mode', default='fitted', type=str,
+                        choices=['fitted', 'robust'],
+                        help="hapmixqtl DEFAULT MODE: 'fitted' (default) is the "
+                             'estimated-dispersion standard error sigma_hat/sqrt(xx); ASE Gibbs '
+                             'variances act as a SHAPE while the half-read total has unit variance; '
+                             'together with the fixed tau_mode=\'zero\' weighting this is '
+                             'Var(eps_i) = sigma^2 v_i. \'robust\' is the HC1 sandwich, for '
+                             'map_nominal only. The known-variance form is DEPRECATED and no '
+                             'longer selectable here (tensorqtl/fitted_variance.py).')
     parser.add_argument('-o', '--output_dir', default='.', help='Output directory')
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     # check inputs
     if args.mode == 'cis_independent' and (args.cis_output is None or not os.path.exists(args.cis_output)):
@@ -107,9 +134,9 @@ def main():
                 phenotype_df = pd.read_csv(args.phenotypes, sep='\t', index_col=0)
             phenotype_pos_df = None
     elif args.mode.startswith('hapmixqtl'):
-        for f in [args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt]:
+        for f in [args.hap_A, args.hap_T, args.hap_Va]:
             if f is None:
-                raise ValueError("hapmixqtl modes require --hap_A, --hap_T, --hap_Va, --hap_Vt")
+                raise ValueError("hapmixqtl modes require --hap_A, --hap_T, --hap_Va")
         logger.write('  * reading hapmixQTL inputs')
         hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df, hap_Cat_df, phenotype_pos_df = \
             hapmixqtl.read_hapmixqtl_inputs(args.hap_A, args.hap_T, args.hap_Va, args.hap_Vt, args.hap_Cat)
@@ -120,6 +147,11 @@ def main():
             logger.write(f"  * cis-window detected as [start - {args.window:,}, end + {args.window:,}]")
 
     if args.mode.startswith('hapmixqtl'):
+        ase_covariates = hapmixqtl.SAME_COVARIATES if args.ase_covariates == 'shared' else None
+        total_weight = ('explicit --hap_Vt override' if args.hap_Vt is not None
+                        else 'unit total working variance (half-read split default)')
+        logger.write(f'  * hapmixQTL DEFAULT MODE: ASE Gibbs-variance weighting with {total_weight} '
+                     f'(tau_mode={HAPMIX_TAU_MODE!r}, se_mode={args.se_mode!r})')
         covariates_df = None
         if args.covariates is not None:
             logger.write(f'  * reading covariates ({args.covariates})')
@@ -439,8 +471,9 @@ def main():
             genotype_df, variant_df, hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df,
             phenotype_pos_df, xL_df=xL_df, xR_df=xR_df, prefix=args.prefix,
             covariates_df=covariates_df, maf_threshold=maf_threshold,
-            window=args.window, tau_mode=args.tau_mode, se_mode=args.se_mode,
+            window=args.window, tau_mode=HAPMIX_TAU_MODE, se_mode=args.se_mode,
             output_dir=args.output_dir, logger=logger, verbose=True,
+            ase_covariates_df=ase_covariates,
         )
 
     elif args.mode == 'hapmixqtl':
@@ -455,35 +488,16 @@ def main():
             phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
             covariates_df=covariates_df, maf_threshold=maf_threshold,
             nperm=args.permutations, window=args.window,
-            tau_mode=args.tau_mode, se_mode=args.se_mode,
+            tau_mode=HAPMIX_TAU_MODE, se_mode=args.se_mode,
             beta_approx=not args.disable_beta_approx,
             logger=logger, seed=args.seed, verbose=True,
+            ase_covariates_df=ase_covariates, tau_refit=args.tau_refit, perm_scheme=args.perm_scheme,
         )
         logger.write('  * writing output')
         if has_rpy2:
             calculate_qvalues(res_df, fdr=args.fdr, qvalue_lambda=args.qvalue_lambda, logger=logger)
         out_file = os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl.txt.gz')
         res_df.to_csv(out_file, sep='\t', float_format='%.6g')
-
-    elif args.mode == 'hapmixqtl_susie':
-        xL_df, xR_df = None, None
-        if args.phase_xL is not None and args.phase_xR is not None:
-            logger.write(f'  * reading phase genotypes')
-            xL_df = pd.read_csv(args.phase_xL, sep='\t', index_col=0)
-            xR_df = pd.read_csv(args.phase_xR, sep='\t', index_col=0)
-
-        summary_df, res = hapmixqtl.map_susie(
-            genotype_df, variant_df, hap_A_df, hap_T_df, hap_Va_df, hap_Vt_df,
-            phenotype_pos_df, xL_df=xL_df, xR_df=xR_df,
-            covariates_df=covariates_df, maf_threshold=maf_threshold,
-            L=args.max_effects, tau_mode=args.tau_mode,
-            max_iter=500, window=args.window, summary_only=False,
-            logger=logger, verbose=True,
-        )
-        logger.write('  * writing output')
-        summary_df.to_parquet(os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl_SuSiE_summary.parquet'))
-        with open(os.path.join(args.output_dir, f'{args.prefix}.hapmixqtl_SuSiE.pickle'), 'wb') as f:
-            pickle.dump(res, f)
 
     logger.write(f'[{datetime.now().strftime("%b %d %H:%M:%S")}] Finished mapping')
 

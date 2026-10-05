@@ -1,16 +1,22 @@
 __pycache__/
 *.egg-info/
 *.ipynb_checkpoints/
-/.claude/worktrees/
+/.claude/
 build/
 dist/
-*.md
-!README.md
-
-dummy_output*
-output_prefix*
-
-# remote-fetch caches (pysam tabix index, genetic maps)
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
 *.tbi
 *.gmap.gz
 gmaps.tar.gz
+dummy_output*
+output_prefix*
+# User inputs, quantifications, and results stay outside version control.
+/inputs/
+/prepared/
+/results/
+/toy/
+site/
+rasqual_src/

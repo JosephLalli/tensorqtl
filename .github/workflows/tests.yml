@@ -1,154 +1,53 @@
-name: Tests
+name: hapmixQTL tests
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
 
 jobs:
-  test:
+  synthetic-checks:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.8, 3.9, '3.10', 3.11]
-
+        python-version: ['3.11', '3.12']
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        pip install -e .[test]
-
-    - name: Prepare test data
-      run: |
-        cd tests
-        python prepare_test_data.py
-      continue-on-error: true  # Test data preparation might fail if example data not available
-
-    - name: Run tests
-      run: |
-        pytest tests/ -v --tb=short
-      env:
-        PYTHONPATH: ${{ github.workspace }}
-
-    - name: Run fast tests only (if full test suite fails)
-      if: failure()
-      run: |
-        pytest tests/ -v --tb=short -m "not slow and not integration"
-      env:
-        PYTHONPATH: ${{ github.workspace }}
-
-  test-with-coverage:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies with coverage tools
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        pip install -e .[test]
-        pip install coverage pytest-cov
-
-    - name: Prepare test data
-      run: |
-        cd tests
-        python prepare_test_data.py
-      continue-on-error: true
-
-    - name: Run tests with coverage
-      run: |
-        pytest tests/ --cov=tensorqtl --cov-report=xml --cov-report=html
-      env:
-        PYTHONPATH: ${{ github.workspace }}
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
-
-  test-gpu:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install CPU-only PyTorch for CI (no GPU available)
-        pip install torch --index-url https://download.pytorch.org/whl/cpu
-        pip install -e .
-        pip install -e .[test]
-
-    - name: Prepare test data
-      run: |
-        cd tests
-        python prepare_test_data.py
-      continue-on-error: true
-
-    - name: Run GPU-related tests (CPU fallback)
-      run: |
-        pytest tests/ -v -m "not gpu_required" --tb=short
-      env:
-        PYTHONPATH: ${{ github.workspace }}
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Install linting tools
-      run: |
-        python -m pip install --upgrade pip
-        pip install flake8 black isort
-
-    - name: Lint with flake8
-      run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 tensorqtl --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings
-        flake8 tensorqtl --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
-
-    - name: Check code formatting with black
-      run: |
-        black --check --diff tensorqtl tests
-      continue-on-error: true
-
-    - name: Check import sorting with isort
-      run: |
-        isort --check-only --diff tensorqtl tests
-      continue-on-error: true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Python dependencies
+        run: python -m pip install -e '.[test]'
+      - name: Install R and edgeR
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends r-base r-bioc-edger
+      - name: Test hapmixQTL and mixQTL
+        env:
+          OMP_NUM_THREADS: '1'
+          OPENBLAS_NUM_THREADS: '1'
+        run: |
+          python -m pytest -q \
+            tests/test_hapmixqtl.py tests/test_hapmixqtl_calibration.py \
+            tests/test_hapmixqtl_perm_scheme.py tests/test_hapmixqtl_point_estimates.py \
+            tests/test_hapmixqtl_allelic_df.py tests/test_hapmixqtl_meier.py \
+            tests/test_half_read_default.py tests/test_half_read_runner.py \
+            tests/test_fitted_variance_quarantine.py tests/fitted_variance/ \
+            tests/test_cli.py tests/test_mixqtl_replication.py \
+            tests/test_prepare_hapmixqtl_inputs.py
+      - name: Run documented fabricated-input walkthrough
+        env:
+          OMP_NUM_THREADS: '1'
+          OPENBLAS_NUM_THREADS: '1'
+        run: |
+          python example/hapmixqtl/create_toy_inputs.py --out toy
+          python scripts/prepare_hapmixqtl_inputs.py \
+            --manifest toy/manifest.tsv --tx2gene toy/tx2gene.tsv \
+            --vcf toy/phased.vcf --sample-covariates toy/sample_covariates.tsv \
+            --out toy/prepared
+          python scripts/run_hapmixqtl_from_salmon.py \
+            --manifest toy/manifest.tsv --tx2gene toy/tx2gene.tsv \
+            --vcf toy/phased.vcf --gene-pos toy/gene_pos.tsv \
+            --covariates toy/prepared/covariates.tsv \
+            --edger-dir toy/prepared/point_estimates/edger --out toy/results

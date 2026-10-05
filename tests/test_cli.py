@@ -141,3 +141,57 @@ class TestCLIErrorHandling:
 
             # Should fail due to file format issues
             assert result.returncode != 0
+
+class TestHapmixQTLDefaults:
+    """The hapmixQTL CLI defaults are the validated ones."""
+
+    def test_the_cli_offers_only_the_shipped_default_mode(self):
+        """Until 2026-09-23 this CLI defaulted to --tau_mode estimate and
+        --se_mode model -- the DEPRECATED fitted-variance model plus the
+        known-variance standard error -- and 'fitted' was not even among the
+        --se_mode choices, so the shipped mode was unreachable from here. Both
+        deprecated knobs are gone: tau_mode is fixed at 'zero' and the fitted
+        residual scale is the default, i.e. Var(eps_i) = sigma^2 v_i."""
+        from tensorqtl.tensorqtl import build_parser, HAPMIX_TAU_MODE
+        args = build_parser().parse_args(['geno', 'pheno.bed', 'out'])
+        assert HAPMIX_TAU_MODE == 'zero'
+        assert args.se_mode == 'fitted'
+        assert not hasattr(args, 'tau_mode'), 'tau_mode is no longer selectable'
+        for gone in ('variance_model', 'variance_prior', 'variance_prior_method',
+                     'library_factor'):
+            assert not hasattr(args, gone), f'{gone} should be deprecated and gone'
+        # the known-variance form is not selectable any more
+        assert 'model' not in build_parser()._option_string_actions['--se_mode'].choices
+        # the allelic channel is fitted through the origin by default: the
+        # 17-covariate set explains 24% of its whitened residual variance
+        # against 22% expected by chance, while each column costs a sample
+        assert args.ase_covariates == 'none'
+        assert args.tau_refit is False
+        assert build_parser().parse_args(['g', 'p', 'o', '--tau_refit']).tau_refit is True
+        assert build_parser().parse_args(['g', 'p', 'o', '--ase_covariates', 'shared']).ase_covariates == 'shared'
+
+    def test_help_documents_the_hapmixqtl_options(self):
+        result = subprocess.run([
+            sys.executable, '-m', 'tensorqtl', '--help'
+        ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+        assert result.returncode == 0
+        assert '--se_mode' in result.stdout and '--ase_covariates' in result.stdout
+        assert '--tau_mode' not in result.stdout
+        assert '--variance_model' not in result.stdout
+
+    def test_half_read_total_defaults_and_explicit_override_are_wired(self):
+        """All hapmixQTL modes may omit Vt for the unit-variance default,
+        while a supplied Vt remains available for compatibility."""
+        from tensorqtl.tensorqtl import build_parser
+        parser = build_parser()
+        with pytest.raises(SystemExit):     # fine-mapping removed 2026-10-01: no fitted scale
+            parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', 'hapmixqtl_susie'])
+        for mode in ('hapmixqtl_nominal', 'hapmixqtl'):
+            args = parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', mode,
+                                      '--hap_A', 'a.bed', '--hap_T', 't.bed',
+                                      '--hap_Va', 'va.bed'])
+            assert args.hap_Vt is None
+            override = parser.parse_args(['geno', 'pheno.bed', 'out', '--mode', mode,
+                                          '--hap_A', 'a.bed', '--hap_T', 't.bed',
+                                          '--hap_Va', 'va.bed', '--hap_Vt', 'vt.bed'])
+            assert override.hap_Vt == 'vt.bed'

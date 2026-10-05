@@ -15,6 +15,7 @@ These tests validate the core mathematical properties of Method A:
   - Sample-ordering, dtype and device consistency
 """
 
+import warnings
 import pytest
 import numpy as np
 import pandas as pd
@@ -37,6 +38,17 @@ from tensorqtl.hapmixqtl import (
     map_nominal,
     map_cis,
     map_susie,
+    fine_mapping_provenance,
+    cis_trans_diagnostic,
+    _prepare_channels,
+    _estimate_tau_informative,
+    _permute_within_informative,
+    _leverage_standardized,
+    SAME_COVARIATES,
+    orient_haplotypes,
+    reference_bias_diagnostic,
+    count_cutoff_masks,
+    _assert_keep_frames,
 )
 
 
@@ -100,6 +112,18 @@ class TestWeightedResidualizer:
         dotp = (M_res * sqrt_w.unsqueeze(0)).sum(1)
         assert torch.allclose(dotp, torch.zeros_like(dotp), atol=1e-4)
 
+    def test_through_origin_without_covariates_is_identity(self, device):
+        """An ASE through-origin design has no automatic projection column."""
+        N = 23
+        rng = _make_gaussian_seed(101)
+        sqrt_w = torch.tensor(rng.uniform(0.2, 2.0, N), dtype=torch.float64,
+                              device=device)
+        M = torch.tensor(rng.normal(size=(4, N)), dtype=torch.float64, device=device)
+        res = WeightedResidualizer(None, sqrt_w, intercept=False)
+        assert res.Q_t.shape == (N, 0)
+        assert res.dof == N - 1
+        assert torch.equal(res.transform(M), M)
+
     def test_covariate_projection(self, device):
         """Transform removes both weighted intercept and weighted covariates."""
         N = 60
@@ -125,6 +149,24 @@ class TestWeightedResidualizer:
 # ---------------------------------------------------------------------------
 
 class TestWLSRegression:
+
+    def test_through_origin_matches_raw_weighted_formula(self, device):
+        """The ASE no-covariate path is exactly sum(w*s*a)/sum(w*s^2)."""
+        rng = _make_gaussian_seed(102)
+        N = 41
+        s = rng.choice([-1.0, 0.0, 1.0], N)
+        a = 0.8 + 1.4 * s + rng.normal(0, 0.2, N)
+        w = rng.uniform(0.2, 3.0, N)
+        sw = np.sqrt(w)
+        res = WeightedResidualizer(None,
+                                   torch.tensor(sw, dtype=torch.float64, device=device),
+                                   intercept=False)
+        slope, slope_se = _wls_regression(
+            torch.tensor((a * sw)[None, :], dtype=torch.float64, device=device),
+            torch.tensor((s * sw)[None, :], dtype=torch.float64, device=device), res)
+        xx = np.sum(w * s * s)
+        assert np.isclose(slope.item(), np.sum(w * s * a) / xx, atol=1e-10)
+        assert np.isclose(slope_se.item(), 1 / np.sqrt(xx), atol=1e-10)
 
     def test_matches_reference_no_cov(self, device):
         """Single-predictor WLS matches numpy normal-equation reference."""
@@ -229,7 +271,10 @@ class TestGibbsSummaries:
         yR = rng.gamma(2.0, 2.0, (F, S, D))
         kappa = 0.5
 
-        A, T, Va, Vt, Cat = compute_summaries_from_gibbs(yL, yR, kappa=kappa)
+        # count_noise defaults True; this test checks the raw draw summaries,
+        # so it asks for them explicitly. The counting term is covered below.
+        A, T, Va, Vt, Cat = compute_summaries_from_gibbs(yL, yR, kappa=kappa,
+                                                         count_noise=False)
 
         assert A.shape == (F, S)
         assert T.shape == (F, S)
@@ -246,6 +291,27 @@ class TestGibbsSummaries:
         assert np.isclose(Vt[0, 0], t_draws.var())
         cov = np.mean((a_draws - a_draws.mean()) * (t_draws - t_draws.mean()))
         assert np.isclose(Cat[0, 0], cov)
+
+    def test_counting_noise_is_on_by_default(self):
+        """The default gained the Poisson counting term on 2026-09-13: without
+        it a sample whose draws are unanimous has zero variance and the largest
+        weight in the gene, which is what drove the total channel's type-I error
+        to 52% at alpha = 0.05."""
+        yL = np.full((1, 3, 5), 8.0)            # unanimous draws: raw v_inf == 0
+        yR = np.full((1, 3, 5), 8.0)
+        yT = np.full((1, 3, 5), 40.0)
+        _, _, Va_d, Vt_d, _ = compute_summaries_from_gibbs(yL, yR, yT=yT)
+        _, _, Va_raw, Vt_raw, _ = compute_summaries_from_gibbs(yL, yR, yT=yT,
+                                                               count_noise=False)
+        assert (Va_raw == 0).all() and (Vt_raw == 0).all()
+        assert (Va_d > 0).all() and (Vt_d > 0).all()
+        assert np.allclose(Va_d, 2 / (8 + 0.5))
+        assert np.allclose(Vt_d, 1 / (40 + 1.0))
+        # a sample with NO allele-specific reads still gets Va = 0, so the
+        # degenerate-ASE guard keeps excluding it
+        z = np.zeros((1, 1, 5))
+        _, _, Va_z, _, _ = compute_summaries_from_gibbs(z, z, yT=np.full((1, 1, 5), 12.0))
+        assert (Va_z == 0).all()
 
     def test_variance_nonnegative(self):
         """Inferential variances are always non-negative."""
@@ -271,7 +337,7 @@ def _build_channel_inputs(genotypes, sign, a, t, va, vt, device, dtype=torch.flo
     vt_t = torch.tensor(vt, dtype=dtype, device=device).clamp(min=1e-8)
     sqrt_wa_t = torch.sqrt(1.0 / va_t)
     sqrt_wt_t = torch.sqrt(1.0 / vt_t)
-    res_a = WeightedResidualizer(None, sqrt_wa_t)
+    res_a = WeightedResidualizer(None, sqrt_wa_t, intercept=False)
     res_t = WeightedResidualizer(None, sqrt_wt_t)
     return (genotypes_t, sign_t, a_t, t_t, sqrt_wa_t, sqrt_wt_t, res_a, res_t)
 
@@ -481,37 +547,6 @@ class TestNominalAssociation:
         # Slopes identical; SEs differ under heteroskedasticity
         assert np.isclose(slope_t_m.item(), slope_t_r.item(), atol=1e-8)
         assert not np.isclose(se_t_model.item(), se_t_robust.item(), atol=1e-4)
-
-
-# ---------------------------------------------------------------------------
-#  tau estimation
-# ---------------------------------------------------------------------------
-
-class TestTauEstimation:
-
-    def test_tau_nonnegative(self, device):
-        """Estimated tau is clamped to be non-negative."""
-        N = 100
-        rng = _make_gaussian_seed(20)
-        # Small inferential variance, extra biological dispersion present
-        v_inf = np.full(N, 0.1)
-        y = rng.normal(0, 1.0, N)  # variance >> v_inf -> positive tau
-        y_t = torch.tensor(y, dtype=torch.float64, device=device)
-        v_t = torch.tensor(v_inf, dtype=torch.float64, device=device)
-        tau = _estimate_tau(y_t, v_t, None, device)
-        assert tau.item() >= 0.0
-
-    def test_tau_zero_when_overweighted(self, device):
-        """If residual variance is below the weighting scale, tau clamps to 0."""
-        N = 100
-        rng = _make_gaussian_seed(21)
-        # Huge v_inf -> weighted residual variance tiny -> tau=0
-        v_inf = np.full(N, 100.0)
-        y = rng.normal(0, 0.01, N)
-        y_t = torch.tensor(y, dtype=torch.float64, device=device)
-        v_t = torch.tensor(v_inf, dtype=torch.float64, device=device)
-        tau = _estimate_tau(y_t, v_t, None, device)
-        assert tau.item() == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -863,6 +898,107 @@ class TestMapSusie:
         assert d['causal_variant'] in set(sub['variant_id'])
 
 
+    def test_map_susie_records_tau_mode_provenance(self):
+        """Fine-mapping output records the tau_mode it was produced under, and
+        fine_mapping_provenance flags results from the old default (sec 7g)."""
+        d = _make_dataset(seed=123, n_samples=100, n_variants=15)
+        summary_df, res = map_susie(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            L=5, window=1000000, max_iter=200,
+            summary_only=False, verbose=False,
+        )
+        assert 'tau_mode' in summary_df.columns
+        assert (summary_df['tau_mode'] == 'estimate').all()
+        assert all(v['tau_mode'] == 'estimate' for v in res.values())
+        assert fine_mapping_provenance(summary_df)['status'] == 'ok'
+        assert fine_mapping_provenance(summary_df.drop(columns='tau_mode'))['status'] == 'unknown'
+        stale = summary_df.copy()
+        stale['tau_mode'] = 'zero'
+        assert fine_mapping_provenance(stale)['status'] == 'stale'
+
+    def test_known_variance_paths_refuse_default_mode(self):
+        """map_susie and the second pass have no fitted residual scale, so
+        tau_mode='zero' would be the withdrawn known-variance pairing."""
+        d = _make_dataset(seed=123, n_samples=100, n_variants=15)
+        with pytest.raises(ValueError, match='not supported in default mode'):
+            map_susie(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                      d['Va_df'], d['Vt_df'], d['pos_df'], tau_mode='zero')
+        sites = pd.DataFrame({'chrom': ['chr1'], 'pos': [10000]}, index=['site'])
+        with pytest.raises(ValueError, match='not supported in default mode'):
+            hapmixqtl.map_multiallelic(np.zeros((1, 100, 2), int), sites, d['A_df'].columns,
+                                       d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'], d['pos_df'])
+
+
+# ---------------------------------------------------------------------------
+#  cis/trans diagnostic (sec 7c)
+# ---------------------------------------------------------------------------
+
+class TestCisTransDiagnostic:
+
+    def test_wald_formula_and_nan_rules(self):
+        a, p = cis_trans_diagnostic([1.0, 1.0, 1.0], [0.1, np.inf, 0.1],
+                                    [1.0, 1.0, 0.0], [0.1, 0.1, 0.1], dof=100)
+        assert np.isclose(a[0], 1.0) and np.isclose(p[0], 1.0)      # identical channels
+        assert np.isnan(a[1]) and np.isnan(p[1])                      # no ASE channel
+        assert np.isnan(a[2]) and p[2] < 1e-8                         # slope_t = 0: alpha undefined, test fires
+
+    def test_pure_cis_passes_and_trans_only_is_flagged(self):
+        """A planted cis effect gives alpha ~ 1 and no flag; a planted effect on
+        total expression only (a trans-like effect) gives alpha ~ 0 and a flag,
+        with the combined slope attenuated exactly as sec 7c predicts."""
+        n = 150
+        d = _make_dataset(seed=140, n_samples=n, n_variants=20)
+        rng = np.random.RandomState(7)
+        trans_pheno, trans_var = d['A_df'].index[1], d['genotype_df'].index[5]
+        g5 = d['genotype_df'].loc[trans_var].values
+        d['T_df'].loc[trans_pheno] = (2.0 + 1.0 * (g5 / 2) + rng.normal(0, 0.1, n)).astype(np.float32)
+        d['A_df'].loc[trans_pheno] = rng.normal(0, 0.1, n).astype(np.float32)
+        res = map_cis(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            window=1000000, nperm=100, verbose=False,
+        )
+        for col in ('slope_a', 'slope_a_se', 'slope_t', 'slope_t_se', 'alpha_cis', 'pval_cis_trans'):
+            assert col in res.columns
+        cis = res.loc[d['causal_pheno']]
+        assert cis['variant_id'] == d['causal_variant']
+        assert abs(cis['alpha_cis'] - 1.0) < 0.25, cis['alpha_cis']
+        assert cis['pval_cis_trans'] > 0.01, cis['pval_cis_trans']
+        tr = res.loc[trans_pheno]
+        assert tr['variant_id'] == trans_var
+        assert abs(tr['alpha_cis']) < 0.25, tr['alpha_cis']
+        assert tr['pval_cis_trans'] < 1e-4, tr['pval_cis_trans']
+        # the combined slope is attenuated relative to the true total effect of 1.0
+        assert tr['slope'] < 0.5 * tr['slope_t']
+
+    def test_no_phase_gives_nan_diagnostic(self):
+        d = _make_dataset(seed=141, n_samples=100, n_variants=15)
+        res = map_cis(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=None, xR_df=None,
+            window=1000000, nperm=50, verbose=False,
+        )
+        assert res['pval_cis_trans'].isna().all() and res['alpha_cis'].isna().all()
+
+    def test_map_nominal_carries_pval_cis_trans(self, temp_dir):
+        d = _make_dataset(seed=142, n_samples=100, n_variants=15)
+        map_nominal(
+            d['genotype_df'], d['variant_df'],
+            d['A_df'], d['T_df'], d['Va_df'], d['Vt_df'],
+            d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'],
+            prefix='ct', output_dir=temp_dir, verbose=False,
+        )
+        df = pd.read_parquet(Path(temp_dir) / 'ct.hapmixqtl_pairs.chr1.parquet')
+        assert 'pval_cis_trans' in df.columns
+        row = df[(df['phenotype_id'] == d['causal_pheno']) & (df['variant_id'] == d['causal_variant'])].iloc[0]
+        assert row['pval_cis_trans'] > 0.01
+        assert df['pval_cis_trans'].between(0, 1).all()
+
+
 # ---------------------------------------------------------------------------
 #  I/O round-trip
 # ---------------------------------------------------------------------------
@@ -902,3 +1038,884 @@ class TestIO:
 
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))
+
+
+# ---------------------------------------------------------------------------
+#  Per-channel covariates and the sparse-channel rule
+# ---------------------------------------------------------------------------
+
+def _gene_with_covariates(seed, N=60, V=8, n_cov=5, n_off=0, sigma_bio=0.5):
+    """One null gene: heteroskedastic v, covariates that act on both haplotypes
+    alike (they enter t, not the within-sample contrast a), and n_off samples
+    with no allele-specific coverage (a = 0, va = 0 exactly)."""
+    rng = np.random.RandomState(seed)
+    g = rng.binomial(2, 0.4, size=(V, N)).astype(float)
+    sign = np.zeros((V, N))
+    het = g == 1
+    sign[het] = rng.choice([-1.0, 1.0], size=int(het.sum()))
+    va = rng.uniform(0.05, 0.3, N)
+    vt = rng.uniform(0.05, 0.3, N)
+    C = rng.normal(size=(N, n_cov))
+    a = np.sqrt(va) * rng.normal(size=N) + rng.normal(0, sigma_bio, N)
+    t = (2.0 + C @ rng.normal(size=n_cov) + np.sqrt(vt) * rng.normal(size=N)
+         + rng.normal(0, sigma_bio, N))
+    if n_off:
+        k = rng.choice(N, n_off, replace=False)
+        a[k] = 0.0
+        va[k] = 0.0
+    return g, sign, a, t, va, vt, C
+
+
+def _nominal(g, s, a, t, va, vt, C, device, ase='same', tau_mode='estimate'):
+    T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+    C_t = None if C is None else T(C)
+    ase_t = ase if isinstance(ase, str) else (None if ase is None else T(ase))
+    wa, wt, ra, rt = _prepare_channels(T(a), T(t), T(va), T(vt), C_t, tau_mode,
+                                       device, ase_covariates_t=ase_t)
+    res = calculate_hapmixqtl_nominal(T(g), T(s), T(a), T(t), wa, wt, ra, rt)
+    return dict(zip(['tstat', 'slope', 'se', 'slope_a', 'se_a', 'slope_t', 'se_t'], res),
+                wa=wa, wt=wt, ra=ra, rt=rt)
+
+
+class TestPerChannelCovariates:
+
+    def test_total_channel_retains_automatic_intercept(self, device):
+        """Changing ASE to through-origin does not change the total WLS fit."""
+        rng = _make_gaussian_seed(103)
+        N = 47
+        g = rng.choice([0.0, 1.0, 2.0], N)
+        t = 1.3 + 0.7 * (g / 2) + rng.normal(0, 0.15, N)
+        a = rng.normal(0, 0.2, N)
+        s = rng.choice([-1.0, 0.0, 1.0], N)
+        va = rng.uniform(0.1, 0.3, N)
+        vt = rng.uniform(0.1, 0.3, N)
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        wa, wt, ra, rt = _prepare_channels(T(a), T(t), T(va), T(vt), None,
+                                           'zero', device, ase_covariates_t=None)
+        out = calculate_hapmixqtl_nominal(T(g[None, :]), T(s[None, :]), T(a), T(t),
+                                           wa, wt, ra, rt)
+        beta, se = _wls_reference(t, np.column_stack([np.ones(N), g / 2]), 1 / vt)
+        assert rt.Q_t.shape[1] == 1
+        assert np.isclose(float(out[5][0]), beta[1], atol=1e-10)
+        assert np.isclose(float(out[6][0]), se[1], atol=1e-10)
+
+    def test_donor_label_swaps_preserve_ase_tau_and_observed_fits(self, device):
+        """Swapping an arbitrary donor subset leaves through-origin ASE fits invariant.
+
+        This checks observed null and lead-refit tau plus the ASE, total, and
+        combined nominal fits. It intentionally makes no assertion about a
+        finite-seed permutation p-value.
+        """
+        rng = _make_gaussian_seed(104)
+        N = 37
+        g = rng.choice([0.0, 1.0, 2.0], N).astype(float)
+        s = np.zeros(N)
+        het = g == 1.0
+        s[het] = rng.choice([-1.0, 1.0], int(het.sum()))
+        a = 0.9 * s + rng.normal(0, 0.25, N)
+        t = 1.1 + 0.9 * (g / 2) + rng.normal(0, 0.2, N)
+        va = rng.uniform(0.05, 0.25, N)
+        vt = rng.uniform(0.05, 0.25, N)
+        flip = rng.rand(N) < 0.45
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+
+        def fit(a0, s0, lead):
+            args = dict(ase_covariates_t=None, return_info=True)
+            if lead:
+                args.update(tau_extra_a_t=T(s0[:, None]),
+                            tau_extra_t_t=T((g / 2)[:, None]))
+            wa, wt, ra, rt, info = _prepare_channels(T(a0), T(t), T(va), T(vt),
+                                                      None, 'estimate', device, **args)
+            nominal = calculate_hapmixqtl_nominal(
+                T(g[None, :]), T(s0[None, :]), T(a0), T(t), wa, wt, ra, rt)
+            return info, nominal
+
+        a_swap, s_swap = a.copy(), s.copy()
+        a_swap[flip] *= -1
+        s_swap[flip] *= -1
+        for lead in (False, True):
+            info, nominal = fit(a, s, lead)
+            info_swap, nominal_swap = fit(a_swap, s_swap, lead)
+            assert np.isclose(info['tau_a'], info_swap['tau_a'], rtol=1e-10, atol=1e-12)
+            assert np.isclose(info['tau_t'], info_swap['tau_t'], rtol=1e-10, atol=1e-12)
+            for got, expected in zip(nominal, nominal_swap):
+                assert torch.allclose(got, expected, rtol=1e-10, atol=1e-10)
+
+    def test_through_origin_allelic_channel_ignores_total_covariates(self, device):
+        """ase_covariates_t=None: the allelic slope and SE are those of the
+        no-covariate fit, the total channel's are those of the covariate fit,
+        and the allelic residualizer is through-origin."""
+        g, s, a, t, va, vt, C = _gene_with_covariates(1)
+        split = _nominal(g, s, a, t, va, vt, C, device, ase=None)
+        none = _nominal(g, s, a, t, va, vt, None, device)
+        shared = _nominal(g, s, a, t, va, vt, C, device)
+        assert torch.allclose(split['slope_a'], none['slope_a'])
+        assert torch.allclose(split['se_a'], none['se_a'])
+        assert torch.allclose(split['slope_t'], shared['slope_t'])
+        assert torch.allclose(split['se_t'], shared['se_t'])
+        assert split['ra'].Q_t.shape[1] == 0
+        assert split['rt'].Q_t.shape[1] == 1 + C.shape[1]
+        assert split['ra'].dof == len(a) - 1
+        assert split['rt'].dof == len(a) - 2 - C.shape[1]
+        # Explicit shared covariates retain the same ASE design in both calls.
+        default = _nominal(g, s, a, t, va, vt, C, device, ase=SAME_COVARIATES)
+        assert torch.allclose(default['se_a'], shared['se_a'])
+
+    def test_projecting_covariates_out_of_the_allelic_channel_only_loses_precision(self, device):
+        """At fixed weights the through-origin design is nested in the shared
+        one, so residualizing the covariates as well can only shrink the
+        predictor's residual norm: the known-variance SE of the allelic slope
+        is never smaller with them than without (CCNI: 17 -> 9 with 17
+        covariates on ~50 informative samples)."""
+        g, s, a, t, va, vt, C = _gene_with_covariates(2, N=50, n_cov=12, n_off=5)
+        split = _nominal(g, s, a, t, va, vt, C, device, ase=None)
+        wa = split['wa']
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        a_star = (T(a) * wa).unsqueeze(0)
+        s_star = T(s) * wa.unsqueeze(0)
+        _, se_int = _wls_regression(a_star, s_star, WeightedResidualizer(None, wa, intercept=False))
+        _, se_cov = _wls_regression(a_star, s_star,
+                                    WeightedResidualizer(T(C), wa, intercept=False))
+        ok = torch.isfinite(se_int) & torch.isfinite(se_cov)
+        assert ok.any()
+        assert (se_cov[ok] >= se_int[ok] * (1 - 1e-9)).all()
+        assert (se_cov[ok] > se_int[ok]).any()
+
+    def test_map_cis_and_map_nominal_share_the_dof_rule(self, tmp_path):
+        """With a through-origin allelic channel the two residualizers have
+        different dof; the nominal p-value must use one rule in both mapping
+        functions (in default mode the pair's Welch-Satterthwaite dof_nominal,
+        since 2026-09-27; tests/test_hapmixqtl_allelic_df.py), so map_cis's
+        pval_nominal at the lead equals map_nominal's for that pair."""
+        d = _make_dataset(seed=105, n_samples=60)
+        rng = np.random.RandomState(9)
+        cov_df = pd.DataFrame(rng.normal(size=(60, 4)), index=d['A_df'].columns,
+                              columns=[f'c{i}' for i in range(4)])
+        common = dict(covariates_df=cov_df, ase_covariates_df=None,
+                      window=1000000, verbose=False)
+        cis = map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                      d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                      xR_df=d['xR_df'], nperm=200, seed=1, **common)
+        map_nominal(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                    d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                    xR_df=d['xR_df'], prefix='t', output_dir=str(tmp_path), **common)
+        pairs = pd.read_parquet(tmp_path / 't.hapmixqtl_pairs.chr1.parquet')
+        for pid, row in cis.iterrows():
+            pair = pairs[(pairs['phenotype_id'] == pid) & (pairs['variant_id'] == row['variant_id'])]
+            assert len(pair) == 1
+            pn, pc = float(pair['pval_nominal'].iloc[0]), float(row['pval_nominal'])
+            # the planted gene sits at p ~ 1e-69, where the scan's float32
+            # correlation-scale round trip (a few 1e-6 in t) is ~1e-4 in p;
+            # the statistic itself agrees to 1e-5
+            tn = float(pair['slope'].iloc[0]) / float(pair['slope_se'].iloc[0])
+            tc = float(row['slope']) / float(row['slope_se'])
+            assert np.isclose(tn, tc, rtol=1e-5, atol=0), (pid, tn, tc)
+            assert np.isclose(pn, pc, rtol=1e-3, atol=0), (pid, pn, pc)
+            assert np.isclose(float(pair['slope'].iloc[0]), float(row['slope']), rtol=1e-4, atol=0)
+
+
+class TestSparseChannel:
+
+    def test_tau_estimator_refuses_too_few_informative_samples(self, device):
+        """Zero-variance rows never reach the estimator, and there is no
+        fallback that re-admits them: below design columns + 2 informative
+        samples it raises."""
+        N, n_cov = 40, 5
+        g, s, a, t, va, vt, C = _gene_with_covariates(3, N=N, n_cov=n_cov)
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        for n_inf, ok in ((7, False), (8, True)):
+            v = va.copy(); v[n_inf:] = 0.0
+            if ok:
+                tau = _estimate_tau_informative(T(a), T(v), T(C), device)
+                assert torch.isfinite(tau) and tau >= 0
+            else:
+                with pytest.raises(ValueError, match='informative samples'):
+                    _estimate_tau_informative(T(a), T(v), T(C), device)
+
+    def test_switched_off_channel_yields_total_only(self, device):
+        """4 informative allelic samples against 5 covariates: the allelic
+        channel is off (every weight zero, nothing projected, SE infinite)
+        and the combined statistic is the total channel's. Through-origin,
+        the same 4 samples keep the channel on."""
+        N = 60
+        g, s, a, t, va, vt, C = _gene_with_covariates(4, N=N, n_cov=5, n_off=N - 4)
+        off = _nominal(g, s, a, t, va, vt, C, device)
+        assert (off['wa'] == 0).all()
+        assert off['ra'].Q_t.shape == (N, 0)
+        assert torch.isinf(off['se_a']).all()
+        total_only = _nominal(g, np.zeros_like(s), a, t, va, vt, C, device)
+        assert torch.allclose(off['tstat'], total_only['tstat'])
+        assert torch.allclose(off['slope'], total_only['slope_t'])
+        assert torch.allclose(off['se'], total_only['se_t'])
+        on = _nominal(g, s, a, t, va, vt, C, device, ase=None)
+        assert int((on['wa'] > 0).sum()) == 4
+        assert torch.isfinite(on['se_a']).any()
+
+    def test_zero_weight_residualizer_is_the_identity(self, device):
+        N = 12
+        w = torch.zeros(N, dtype=torch.float64, device=device)
+        C = torch.randn(N, 3, dtype=torch.float64, device=device)
+        M = torch.randn(4, N, dtype=torch.float64, device=device)
+        res = WeightedResidualizer(C, w)
+        assert res.Q_t.shape == (N, 0)
+        assert torch.equal(res.transform(M), M)
+        assert res.dof == N - 1 - 4
+
+    def test_map_cis_runs_with_a_switched_off_allelic_channel(self):
+        """A phenotype with one allele-specific sample goes through map_cis
+        on its total channel alone: finite p-values, infinite allelic SE, and
+        the planted association in the other phenotype is still found."""
+        d = _make_dataset(seed=106, n_samples=60)
+        sparse = d['A_df'].index[1]
+        A, Va = d['A_df'].copy(), d['Va_df'].copy()
+        A.loc[sparse, A.columns[1:]] = 0.0
+        Va.loc[sparse, Va.columns[1:]] = 0.0
+        rng = np.random.RandomState(8)
+        cov_df = pd.DataFrame(rng.normal(size=(60, 3)), index=A.columns, columns=list('xyz'))
+        res = map_cis(d['genotype_df'], d['variant_df'], A, d['T_df'], Va, d['Vt_df'],
+                      d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=200,
+                      seed=3, covariates_df=cov_df, ase_covariates_df=None, verbose=False)
+        row = res.loc[sparse]
+        assert 0 < row['pval_nominal'] <= 1 and 0 < row['pval_perm'] <= 1
+        assert np.isinf(row['slope_a_se'])
+        assert np.isfinite(row['slope_t_se'])
+        assert res.loc[d['causal_pheno'], 'variant_id'] == d['causal_variant']
+
+
+class TestWhitenedResidualPermutation:
+
+    def test_permutes_only_within_informative_samples(self, device):
+        N, nperm = 10, 200
+        rng = np.random.RandomState(0)
+        r = torch.tensor(rng.normal(size=N), dtype=torch.float64, device=device)
+        inf = torch.tensor([1, 1, 0, 1, 0, 1, 1, 0, 1, 1], dtype=torch.bool, device=device)
+        perm = torch.tensor(np.array([rng.permutation(N) for _ in range(nperm)]),
+                            dtype=torch.long, device=device)
+        out = _permute_within_informative(r, inf, perm)
+        assert out.shape == (nperm, N)
+        # non-informative entries untouched
+        assert torch.equal(out[:, ~inf], r[~inf].unsqueeze(0).expand(nperm, -1))
+        # each row is a permutation of the informative entries
+        ref = torch.sort(r[inf]).values
+        for row in out:
+            assert torch.allclose(torch.sort(row[inf]).values, ref)
+        # most informative entries move
+        moved = (out[:, inf] != r[inf].unsqueeze(0)).float().mean().item()
+        assert moved > 0.7
+        # with every sample informative this is the plain permutation
+        all_inf = torch.ones(N, dtype=torch.bool, device=device)
+        assert torch.equal(_permute_within_informative(r, all_inf, perm), r[perm])
+
+    def test_map_cis_rejects_robust_se(self):
+        d = _make_dataset(seed=107)
+        with pytest.raises(ValueError, match='robust'):
+            map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                    d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                    xR_df=d['xR_df'], nperm=10, se_mode='robust', verbose=False)
+
+
+class TestOrientHaplotypes:
+
+    def test_depth_weighted_sign_and_uniform_fallback(self):
+        # sites x samples. Sample 0 is het at two sites with opposite phase;
+        # site 0 carries 30 of its reads, site 1 five.
+        sign = np.array([[+1, -1, 0], [-1, -1, 0]])
+        depth = np.array([[30, 10, 0], [5, 10, 0]])
+        assert orient_haplotypes(sign, depth).tolist() == [1, -1, 0]
+        assert orient_haplotypes(sign).tolist() == [0, -1, 0]       # uniform: sample 0 cancels
+        assert orient_haplotypes(np.zeros((0, 3))).tolist() == [0, 0, 0]
+        assert orient_haplotypes(np.array([1, 0, -1])).tolist() == [1, 0, -1]
+
+    def test_diagnostic_sees_planted_bias_only_through_the_right_orientation(self):
+        """Reference bias planted at every site with reads: the depth-weighted
+        orientation exposes it (pooled reference fraction above 0.5, flagged);
+        orienting every gene by one unrelated site, as a row-index bug would,
+        shows nothing."""
+        rng = np.random.RandomState(0)
+        G, N, S = 40, 60, 3
+        yL = np.zeros((G, N)); yR = np.zeros((G, N))
+        sign = np.zeros((G, S, N)); depth = np.zeros((G, S, N))
+        for g in range(G):
+            reads = np.array([60, 15, 4])          # per-site depth, site 0 deepest
+            for v in range(S):
+                het = rng.rand(N) < 0.6
+                s = np.where(het, rng.choice([-1, 1], N), 0)
+                n = rng.poisson(reads[v], N) * het
+                ref = rng.binomial(n, 0.62)          # 62% of reads to REF: mapping bias
+                alt = n - ref
+                # ALT on L when s > 0
+                yL[g] += np.where(s > 0, alt, ref) * het
+                yR[g] += np.where(s > 0, ref, alt) * het
+                sign[g, v] = s; depth[g, v] = n
+        right = np.stack([orient_haplotypes(sign[g], depth[g]) for g in range(G)])
+        d = reference_bias_diagnostic(yL, yR, right)
+        assert d['flag'] and d['ref_fraction'] > 0.55, d['message']
+        # one fixed, unrelated site per gene (the shallowest) -- the bias mass sits elsewhere
+        wrong = sign[:, 2, :]
+        d2 = reference_bias_diagnostic(yL, yR, wrong)
+        assert d2['ref_fraction'] < d['ref_fraction'] - 0.05, (d2['ref_fraction'], d['ref_fraction'])
+
+
+class TestPermutedNullScale:
+
+    def test_permuted_null_matches_the_known_variance(self, device):
+        """The observed xy = s_res . e has variance xx (s_res is orthogonal to
+        the null design and e is whitened). Permuting the raw null residuals,
+        whose variance is 1 - h_ii, gives a null short by about (N - p)/N;
+        leverage-standardized residuals restore Var(xy_perm) = xx. With 18
+        columns on 60 samples the deficit is 0.70, far outside permutation
+        noise at 20,000 draws."""
+        N, p, nperm = 60, 17, 20000
+        rng = np.random.RandomState(4)
+        C = torch.tensor(rng.normal(size=(N, p)), dtype=torch.float64, device=device)
+        w = torch.tensor(rng.uniform(0.5, 2.0, N), dtype=torch.float64, device=device)
+        res = WeightedResidualizer(C, w)
+        # a null whitened response and one predictor
+        e = res.transform(torch.tensor(rng.normal(size=(1, N)), dtype=torch.float64, device=device))[0]
+        s = torch.tensor(rng.choice([-1.0, 0.0, 1.0], N), dtype=torch.float64, device=device) * w
+        s_res = res.transform(s.unsqueeze(0))[0]
+        xx = float((s_res * s_res).sum())
+        perm = torch.tensor(np.array([rng.permutation(N) for _ in range(nperm)]),
+                            dtype=torch.long, device=device)
+        inf = torch.ones(N, dtype=torch.bool, device=device)
+        # average over several null draws of e so the ratio is not one residual's luck
+        raw, std = [], []
+        for _ in range(8):
+            e = res.transform(torch.tensor(rng.normal(size=(1, N)), dtype=torch.float64, device=device))[0]
+            xy_raw = _permute_within_informative(e, inf, perm) @ s_res
+            xy_std = _permute_within_informative(_leverage_standardized(e, res), inf, perm) @ s_res
+            raw.append(float(xy_raw.var()) / xx)
+            std.append(float(xy_std.var()) / xx)
+        raw, std = float(np.mean(raw)), float(np.mean(std))
+        expected_deficit = (N - (p + 1)) / N                    # 0.70
+        assert abs(raw - expected_deficit) < 0.08, (raw, expected_deficit)
+        assert abs(std - 1.0) < 0.08, std
+
+
+def _heteroskedastic_dataset(seed, n_samples=80, beta=0.6, tau=0.05):
+    """_make_dataset with a planted effect on phenotype 0, heteroskedastic
+    inferential variances and between-sample variance tau, so tau estimated
+    under the null absorbs the planted signal."""
+    d = _make_dataset(seed=seed, n_samples=n_samples)
+    rng = np.random.RandomState(seed + 1)
+    N = n_samples
+    xL, xR, g = d['xL_df'].values, d['xR_df'].values, d['genotype_df'].values
+    for k, pid in enumerate(d['A_df'].index):
+        va = rng.uniform(0.01, 0.2, N); vt = rng.uniform(0.01, 0.2, N)
+        a = np.sqrt(va + tau) * rng.normal(size=N); t = 2.0 + np.sqrt(vt + tau) * rng.normal(size=N)
+        if k == 0:
+            a = a + beta * (xL[0] - xR[0]); t = t + beta * g[0] / 2
+        d['A_df'].loc[pid] = a.astype(np.float32); d['T_df'].loc[pid] = t.astype(np.float32)
+        d['Va_df'].loc[pid] = va.astype(np.float32); d['Vt_df'].loc[pid] = vt.astype(np.float32)
+    return d
+
+
+class TestLeadRefit:
+    """The lead refit is a KNOWN-VARIANCE feature, so these pin se_mode='model'.
+
+    It exists because appending the window maximum to the tau design removes
+    more residual sum of squares than the one degree of freedom it is
+    charged, so the null-design tau comes back low and the reported
+    statistic is inflated. Under se_mode='fitted' (the default since
+    2026-09-21) that inflation is largely absorbed by sigma_hat instead, so
+    the refit moves the reported p-value far less -- which is a real
+    consequence of the default change, not a regression.
+    """
+
+    def _run(self, d, refit, cov_df=None):
+        return map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'], d['Va_df'],
+                       d['Vt_df'], d['pos_df'], xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=300,
+                       seed=5, covariates_df=cov_df, ase_covariates_df=None, verbose=False,
+                       tau_refit=refit, tau_mode='estimate', se_mode='model')
+
+    def test_refit_changes_only_the_reported_scale(self):
+        """Same lead, same pval_perm and pval_beta to the bit (the scan is
+        untouched); on the planted gene tau falls and pval_nominal shrinks;
+        the tau columns record both estimates."""
+        d = _heteroskedastic_dataset(seed=201)
+        rng = np.random.RandomState(3)
+        cov_df = pd.DataFrame(rng.normal(size=(80, 4)), index=d['A_df'].columns, columns=list('wxyz'))
+        off = self._run(d, False, cov_df); on = self._run(d, True, cov_df)
+        assert (off['variant_id'] == on['variant_id']).all()
+        assert np.array_equal(off['pval_perm'].values.astype(float), on['pval_perm'].values.astype(float))
+        assert np.array_equal(off['pval_beta'].values.astype(float), on['pval_beta'].values.astype(float))
+        assert (~off['tau_refit'].astype(bool)).all() and on['tau_refit'].astype(bool).all()
+        assert np.allclose(off['tau_a'].astype(float), off['tau_a_null'].astype(float))
+        assert np.allclose(on['tau_a_null'].astype(float), off['tau_a_null'].astype(float))
+        pid = d['causal_pheno']
+        assert on.loc[pid, 'tau_a'] < on.loc[pid, 'tau_a_null']
+        assert on.loc[pid, 'tau_t'] < on.loc[pid, 'tau_t_null']
+        assert on.loc[pid, 'pval_nominal'] < off.loc[pid, 'pval_nominal'] / 10
+        assert on.loc[pid, 'slope_se'] < off.loc[pid, 'slope_se']
+        # the null phenotypes move little: tau within 30% and p within a factor of 3
+        for q in d['A_df'].index[1:]:
+            assert abs(on.loc[q, 'tau_a'] - off.loc[q, 'tau_a']) <= 0.3 * off.loc[q, 'tau_a'] + 1e-3
+            assert on.loc[q, 'pval_nominal'] > off.loc[q, 'pval_nominal'] / 3
+
+    def test_refit_matches_a_manual_refit(self, device):
+        """_estimate_tau with [covariates, lead column] -> weights -> the null
+        residualizer -> _wls_regression reproduces map_cis's refit slope and
+        SE at the lead in both channels."""
+        d = _heteroskedastic_dataset(seed=202)
+        rng = np.random.RandomState(4)
+        cov_df = pd.DataFrame(rng.normal(size=(80, 3)), index=d['A_df'].columns, columns=list('xyz'))
+        on = self._run(d, True, cov_df)
+        pid = d['causal_pheno']; lead = on.loc[pid, 'variant_id']
+        T = lambda x: torch.tensor(np.asarray(x, dtype=np.float32), dtype=torch.float32)
+        a, t = T(d['A_df'].loc[pid]), T(d['T_df'].loc[pid])
+        va, vt = T(d['Va_df'].loc[pid]), T(d['Vt_df'].loc[pid])
+        s = T(d['xL_df'].loc[lead].values - d['xR_df'].loc[lead].values)
+        g2 = T(d['genotype_df'].loc[lead].values / 2); C = T(cov_df.values)
+        ka = va > 1e-12
+        tau_a = _estimate_tau(a[ka], va[ka], s[ka].unsqueeze(1), 'cpu', intercept=False)
+        tau_t = _estimate_tau(t, vt, torch.cat([C, g2.unsqueeze(1)], 1), 'cpu')
+        wa = torch.sqrt(1.0 / (va.clamp(min=1e-8) + tau_a)); wt = torch.sqrt(1.0 / (vt.clamp(min=1e-8) + tau_t))
+        sl_a, se_a = _wls_regression((a * wa).unsqueeze(0), (s * wa).unsqueeze(0),
+                                      WeightedResidualizer(None, wa, intercept=False))
+        sl_t, se_t = _wls_regression((t * wt).unsqueeze(0), (g2 * wt).unsqueeze(0), WeightedResidualizer(C, wt))
+        assert np.isclose(float(tau_a), on.loc[pid, 'tau_a'], rtol=1e-4)
+        assert np.isclose(float(tau_t), on.loc[pid, 'tau_t'], rtol=1e-4)
+        assert np.isclose(float(sl_a[0]), on.loc[pid, 'slope_a'], rtol=1e-4)
+        assert np.isclose(float(se_a[0]), on.loc[pid, 'slope_a_se'], rtol=1e-4)
+        assert np.isclose(float(sl_t[0]), on.loc[pid, 'slope_t'], rtol=1e-4)
+        assert np.isclose(float(se_t[0]), on.loc[pid, 'slope_t_se'], rtol=1e-4)
+        ia, it = 1 / float(se_a[0]) ** 2, 1 / float(se_t[0]) ** 2
+        comb = (float(sl_a[0]) * ia + float(sl_t[0]) * it) / (ia + it)
+        assert np.isclose(comb, on.loc[pid, 'slope'], rtol=1e-4)
+        assert np.isclose(1 / np.sqrt(ia + it), on.loc[pid, 'slope_se'], rtol=1e-4)
+
+    def test_refit_keeps_a_barely_identifiable_channel_on_the_null_tau(self):
+        """An allelic channel with exactly design columns + 2 informative
+        samples is on for the scan; the refit's extra column would need one
+        more, so that channel keeps its null tau and the flag is False."""
+        d = _heteroskedastic_dataset(seed=203)
+        A, Va = d['A_df'].copy(), d['Va_df'].copy()
+        sparse = A.index[1]
+        A.loc[sparse, A.columns[2:]] = 0.0; Va.loc[sparse, Va.columns[2:]] = 0.0    # 2 informative = through-origin + 2
+        d['A_df'], d['Va_df'] = A, Va
+        on = self._run(d, True)
+        row = on.loc[sparse]
+        assert np.isclose(row['tau_a'], row['tau_a_null'])      # allelic: null tau kept
+        assert row['tau_refit']                                  # the total channel was refit
+        assert row['tau_t'] != row['tau_t_null']
+        assert np.isfinite(row['pval_nominal']) and 0 < row['pval_perm'] <= 1
+
+
+# ---------------------------------------------------------------------------
+#  Count cutoffs (mixQTL-style donor admission)
+# ---------------------------------------------------------------------------
+
+class TestCountCutoffMasks:
+    """count_cutoff_masks: which donors each cutoff admits.
+
+    The cutoffs exist so hapmixQTL can be run on the SAME donor set mixQTL
+    admits, for a matched comparison. They are never applied by default.
+    """
+
+    def test_no_cutoffs_admits_everyone(self):
+        yL = np.array([[0.0, 5.0, 3000.0]])
+        yR = np.array([[0.0, 7.0, 2000.0]])
+        keep_a, keep_t = count_cutoff_masks(yL, yR)
+        assert keep_a.all() and keep_t.all()
+        assert keep_a.shape == yL.shape and keep_a.dtype == bool
+
+    def test_floor_and_ceiling_are_independent(self):
+        """Each cutoff is skipped when None, so a floor can be used alone."""
+        yL = np.array([[10.0, 60.0, 2000.0]])
+        yR = np.array([[10.0, 80.0, 900.0]])
+        floor_only, _ = count_cutoff_masks(yL, yR, asc_cutoff=50)
+        ceil_only, _ = count_cutoff_masks(yL, yR, asc_cap=1000)
+        both, _ = count_cutoff_masks(yL, yR, asc_cutoff=50, asc_cap=1000)
+        assert list(floor_only[0]) == [False, True, True]
+        assert list(ceil_only[0]) == [True, True, False]
+        assert list(both[0]) == [False, True, False]
+
+    def test_both_haplotypes_must_pass(self):
+        """mixQTL's asc gate is on y1 AND y2, not on their sum."""
+        yL = np.array([[100.0, 100.0]])
+        yR = np.array([[100.0, 1.0]])
+        keep_a, _ = count_cutoff_masks(yL, yR, asc_cutoff=50)
+        assert list(keep_a[0]) == [True, False]
+
+    def test_total_cutoff_reads_yT_not_yL_plus_yR(self):
+        """The homozygous-but-expressed case, which is the whole reason yT
+        is a separate argument.
+
+        A donor homozygous across the gene has no surviving _R transcript
+        after Salmon's deduplicated index, so the ingest credits NEITHER
+        haplotype and yL + yR is 0 -- while the gene is well expressed and
+        yT is large. Thresholding the wrong quantity silently drops it from
+        the TOTAL channel, where it is perfectly good data.
+        """
+        yL = np.array([[0.0]])
+        yR = np.array([[0.0]])
+        yT = np.array([[5000.0]])
+        _, keep_t = count_cutoff_masks(yL, yR, yT, trc_cutoff=100)
+        assert keep_t[0, 0], 'a well-expressed homozygous donor must stay in'
+        # and the documented failure mode, if yT is not supplied
+        _, keep_wrong = count_cutoff_masks(yL, yR, trc_cutoff=100)
+        assert not keep_wrong[0, 0]
+
+    def test_gibbs_draws_are_averaged(self):
+        """Draws [features, samples, draws] collapse to posterior means."""
+        draws = np.stack([np.full((1, 2), 40.0), np.full((1, 2), 80.0)], axis=2)
+        keep_a, _ = count_cutoff_masks(draws, draws, asc_cutoff=50)
+        assert keep_a.all(), 'mean of 40 and 80 is 60, which clears 50'
+
+
+class TestCountCutoffsInChannels:
+    """The masks reaching _prepare_channels, and what they must guarantee."""
+
+    def _fixture(self, device, n=60, seed=771):
+        rng = _make_gaussian_seed(seed)
+        g = rng.choice([0.0, 1.0, 2.0], n)
+        s = rng.choice([-1.0, 0.0, 1.0], n)
+        t = 1.1 + 0.5 * (g / 2) + rng.normal(0, 0.2, n)
+        a = 0.4 * s + rng.normal(0, 0.2, n)
+        va = rng.uniform(0.05, 0.4, n)
+        vt = rng.uniform(0.05, 0.4, n)
+        return g, s, a, t, va, vt
+
+    def _prep(self, device, a, t, va, vt, keep_a=None, keep_t=None):
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        B = lambda x: None if x is None else torch.tensor(x, dtype=torch.bool,
+                                                          device=device)
+        return _prepare_channels(T(a), T(t), T(va), T(vt), None, 'estimate',
+                                 device, ase_covariates_t=None,
+                                 keep_a_t=B(keep_a), keep_t_t=B(keep_t))
+
+    def test_all_true_masks_match_no_masks(self, device):
+        """Passing masks that exclude nobody must change nothing at all."""
+        g, s, a, t, va, vt = self._fixture(device)
+        base = self._prep(device, a, t, va, vt)
+        allt = self._prep(device, a, t, va, vt,
+                          keep_a=np.ones(len(a), bool), keep_t=np.ones(len(a), bool))
+        assert torch.allclose(base[0], allt[0], atol=0, rtol=0)
+        assert torch.allclose(base[1], allt[1], atol=0, rtol=0)
+
+    def test_excluding_only_uninformative_samples_changes_nothing(self, device):
+        """A mask that removes exactly the zero-coverage donors is a no-op,
+        because the degenerate-weight guard already removed them. This pins
+        that the mask COMPOSES with that guard rather than double-counting."""
+        g, s, a, t, va, vt = self._fixture(device)
+        va = va.copy()
+        va[:8] = 0.0                      # no allele-specific coverage
+        a = a.copy()
+        a[:8] = 0.0
+        base = self._prep(device, a, t, va, vt)
+        masked = self._prep(device, a, t, va, vt, keep_a=(va > 1e-12))
+        assert torch.allclose(base[0], masked[0], atol=0, rtol=0)
+
+    def test_excluded_donor_gets_exactly_zero_weight_in_both_channels(self, device):
+        """The operative guarantee: an excluded donor contributes nothing.
+
+        The total channel is the one worth pinning -- it has no zero-count
+        guard of its own, so without explicit zeroing an excluded donor would
+        keep the finite weight 1/(1e-8 + tau_t).
+        """
+        g, s, a, t, va, vt = self._fixture(device)
+        ka = np.ones(len(a), bool); ka[3] = False
+        kt = np.ones(len(a), bool); kt[5] = False
+        wa, wt, _, _ = self._prep(device, a, t, va, vt, keep_a=ka, keep_t=kt)
+        assert float(wa[3]) == 0.0
+        assert float(wt[5]) == 0.0
+        assert float(wa[4]) > 0.0 and float(wt[4]) > 0.0
+
+    def test_excluding_an_informative_donor_moves_the_fit(self, device):
+        """Sanity: the mask is not silently inert on real data."""
+        g, s, a, t, va, vt = self._fixture(device)
+        base = self._prep(device, a, t, va, vt)
+        ka = np.ones(len(a), bool); ka[:10] = False
+        masked = self._prep(device, a, t, va, vt, keep_a=ka)
+        assert not torch.allclose(base[0], masked[0])
+
+    def test_tau_is_estimated_without_the_excluded_donors(self, device):
+        """tau must never be fitted on donors the weights then exclude.
+
+        Excluding a donor must give the same tau as deleting it outright.
+        """
+        g, s, a, t, va, vt = self._fixture(device, n=70, seed=904)
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        ka = np.ones(len(a), bool); ka[:12] = False
+        _, _, _, _, info_mask = _prepare_channels(
+            T(a), T(t), T(va), T(vt), None, 'estimate', device,
+            ase_covariates_t=None, return_info=True,
+            keep_a_t=torch.tensor(ka, dtype=torch.bool, device=device))
+        _, _, _, _, info_del = _prepare_channels(
+            T(a[12:]), T(t[12:]), T(va[12:]), T(vt[12:]), None, 'estimate',
+            device, ase_covariates_t=None, return_info=True)
+        assert np.isclose(info_mask['tau_a'], info_del['tau_a'], rtol=1e-10)
+
+
+class TestKeepFrameValidation:
+    """Misaligned admission masks must raise, not silently mask the wrong
+    donors -- the same defect class as the phase-column bug."""
+
+    def _frames(self):
+        A = pd.DataFrame(np.zeros((3, 4)), index=['g1', 'g2', 'g3'],
+                         columns=['s1', 's2', 's3', 's4'])
+        return A, pd.DataFrame(np.ones((3, 4), bool), index=A.index,
+                               columns=A.columns)
+
+    def test_aligned_frames_pass(self):
+        A, keep = self._frames()
+        _assert_keep_frames(keep, keep, A)
+        _assert_keep_frames(None, None, A)
+
+    def test_wrong_shape_raises(self):
+        A, keep = self._frames()
+        with pytest.raises(ValueError, match='shape'):
+            _assert_keep_frames(keep.iloc[:, :3], None, A)
+
+    def test_reordered_samples_raise(self):
+        A, keep = self._frames()
+        with pytest.raises(ValueError, match='columns'):
+            _assert_keep_frames(keep[['s2', 's1', 's3', 's4']], None, A)
+
+    def test_reordered_phenotypes_raise(self):
+        A, keep = self._frames()
+        with pytest.raises(ValueError, match='rows'):
+            _assert_keep_frames(keep.loc[['g2', 'g1', 'g3']], None, A)
+
+
+class TestInputContract:
+    """Every case was accepted silently before 2026-10-01, most changing the
+    lead or dropping a channel (implementation_audit_20260914 sec 1-2)."""
+
+    @staticmethod
+    def _corrupt(d, case):
+        if case in ('A', 'T', 'Va', 'Vt'):
+            d[f'{case}_df'].iloc[0, 0] = np.nan
+        elif case == 'negative_Va':
+            d['Va_df'].iloc[0, 0] = -1.0
+        elif case == 'Va_columns_reordered':
+            d['Va_df'] = d['Va_df'].iloc[:, ::-1].copy()
+        elif case == 'phase_rows_reordered':
+            d['xL_df'] = d['xL_df'].iloc[::-1].copy()
+            d['xR_df'] = d['xR_df'].iloc[::-1].copy()
+        elif case == 'one_phase_frame':
+            d['xR_df'] = None
+        elif case == 'phase_nan':
+            d['xL_df'].iloc[0, 0] = np.nan
+        elif case == 'duplicated_covariate':
+            c = np.random.RandomState(42).normal(size=d['A_df'].shape[1])
+            d['cov'] = pd.DataFrame({'c': c, 'same_c': c}, index=d['A_df'].columns)
+        return d
+
+    @pytest.mark.parametrize('case, match', [
+        ('A', 'A_df has 1 missing'), ('T', 'T_df has 1 missing'),
+        ('Va', 'Va_df has 1 missing'), ('Vt', 'Vt_df has 1 missing'),
+        ('negative_Va', 'Va_df has 1 missing, non-finite or negative'),
+        ('Va_columns_reordered', 'Va_df columns'),
+        ('phase_rows_reordered', 'xL_df rows'),
+        ('one_phase_frame', 'both phase frames'),
+        ('phase_nan', 'xL_df has missing'),
+        ('duplicated_covariate', 'rank 2 of 3'),
+    ])
+    def test_invalid_input_raises(self, case, match):
+        d = self._corrupt(_make_dataset(seed=100), case)
+        with pytest.raises(ValueError, match=match):
+            map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                    d['Va_df'], d['Vt_df'], d['pos_df'], xL_df=d['xL_df'],
+                    xR_df=d['xR_df'], covariates_df=d.get('cov'), nperm=20,
+                    seed=42, verbose=False)
+
+    def test_zero_weights_that_make_a_covariate_constant_raise(self):
+        """Full rank over all donors, but the indicator is 1 on every donor
+        that carries weight, so it duplicates the intercept there."""
+        rng = np.random.RandomState(42)
+        ind = (np.arange(20) < 15).astype(float)
+        C = torch.tensor(np.column_stack([rng.normal(size=20), ind]))
+        WeightedResidualizer(C, torch.ones(20, dtype=torch.float64))
+        with pytest.raises(ValueError, match='1 of 3 columns dependent'):
+            WeightedResidualizer(C, torch.tensor(ind))
+
+
+class TestLeadInfluence:
+
+    def test_names_the_dominant_donor_and_matches_its_exclusion(self, temp_dir):
+        """A null gene with one heterozygote's record dominating the allelic
+        channel: map_cis must name that donor, and loo_pval_nominal must equal
+        map_nominal's p at the same lead with that donor excluded by mask."""
+        d = _make_dataset(seed=100)
+        keep = [d['A_df'].index[1]]
+        for k in ('A_df', 'T_df', 'Va_df', 'Vt_df', 'pos_df'):
+            d[k] = d[k].loc[keep].copy()
+        s = d['xL_df'].iloc[5] - d['xR_df'].iloc[5]
+        donor = s.index[s != 0][0]
+        d['A_df'].loc[keep[0], donor] = np.float32(6.0 * s[donor])
+        d['Va_df'].loc[keep[0], donor] = np.float32(1e-3)
+        args = (d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                d['Va_df'], d['Vt_df'], d['pos_df'])
+        row = map_cis(*args, xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=100,
+                      seed=42, verbose=False).iloc[0]
+        assert row['loo_donor'] == donor
+        assert row['loo_pval_nominal'] > 10 * row['pval_nominal']
+        mask = pd.DataFrame(True, index=d['A_df'].index, columns=d['A_df'].columns)
+        mask[donor] = False
+        map_nominal(*args, xL_df=d['xL_df'], xR_df=d['xR_df'], prefix='loo',
+                    output_dir=temp_dir, verbose=False, keep_a_df=mask, keep_t_df=mask)
+        pairs = pd.read_parquet(Path(temp_dir) / 'loo.hapmixqtl_pairs.chr1.parquet')
+        ref = pairs.loc[pairs['variant_id'] == row['variant_id'], 'pval_nominal'].iloc[0]
+        assert np.isclose(row['loo_pval_nominal'], ref, rtol=1e-4)
+
+
+class TestCountCutoffsEndToEnd:
+    """The masks through map_cis, which is how a matched-donor run uses them."""
+
+    def _run(self, d, keep_a=None, keep_t=None):
+        return map_cis(d['genotype_df'], d['variant_df'], d['A_df'], d['T_df'],
+                       d['Va_df'], d['Vt_df'], d['pos_df'],
+                       xL_df=d['xL_df'], xR_df=d['xR_df'], nperm=100,
+                       verbose=False, seed=42,
+                       keep_a_df=keep_a, keep_t_df=keep_t)
+
+    def test_all_true_masks_reproduce_the_unmasked_run(self):
+        """The default path must be untouched: masks admitting everyone give
+        bit-for-bit the same slopes as passing no masks at all."""
+        d = _make_dataset(seed=100)
+        A = d['A_df']
+        full = pd.DataFrame(np.ones(A.shape, bool), index=A.index, columns=A.columns)
+        base = self._run(d)
+        allt = self._run(d, keep_a=full, keep_t=full)
+        assert np.allclose(base.slope.values, allt.slope.values, atol=0, rtol=0)
+        assert np.allclose(base.slope_se.values, allt.slope_se.values, atol=0, rtol=0)
+
+    def test_a_real_cutoff_changes_the_result(self):
+        d = _make_dataset(seed=100)
+        A = d['A_df']
+        rng = np.random.RandomState(42)
+        part = pd.DataFrame(rng.rand(*A.shape) > 0.25, index=A.index, columns=A.columns)
+        base = self._run(d)
+        cut = self._run(d, keep_a=part, keep_t=part)
+        assert not np.allclose(base.slope.values, cut.slope.values)
+
+    def test_misaligned_mask_raises_rather_than_masking_the_wrong_donors(self):
+        d = _make_dataset(seed=100)
+        A = d['A_df']
+        bad = pd.DataFrame(np.ones(A.shape, bool), index=A.index,
+                           columns=A.columns[::-1])
+        with pytest.raises(ValueError, match='columns'):
+            self._run(d, keep_a=bad)
+
+
+# ---------------------------------------------------------------------------
+#  se_mode='fitted': the estimated-dispersion standard error
+# ---------------------------------------------------------------------------
+
+class TestFittedSE:
+    """Var(eps_i) = sigma^2 * v_i, i.e. weights as a SHAPE with a fitted scale.
+
+    This is mixQTL's Eq 11 treatment. It is the one configuration in which
+    the absolute scale of the Gibbs draws does not have to be right, and
+    hapmixQTL had no way to express it before: se_mode was 'model'
+    (known-variance) or 'robust' (HC1 sandwich), neither of which is
+    sigma_hat/sqrt(xx).
+    """
+
+    def _pieces(self, device, n=50, seed=515, n_zero=0):
+        rng = _make_gaussian_seed(seed)
+        s = rng.choice([-1.0, 0.0, 1.0], n)
+        a = 0.35 * s + rng.normal(0, 0.25, n)
+        w = rng.uniform(0.5, 40.0, n)
+        if n_zero:                       # donors with no allelic information
+            w[:n_zero] = 0.0
+            a[:n_zero] = 0.0
+        return s, a, w
+
+    def _hapmix(self, device, s, a, w, **kw):
+        T = lambda x: torch.tensor(x, dtype=torch.float64, device=device)
+        sqrt_w = T(np.sqrt(w))
+        res = WeightedResidualizer(None, sqrt_w, intercept=False)
+        y_star = (T(a) * sqrt_w).reshape(1, -1)
+        x_star = (T(s) * sqrt_w).reshape(1, -1)
+        b, se = _wls_regression(y_star, x_star, res, **kw)
+        return float(b[0]), float(se[0])
+
+    def test_matches_mixqtl_independent_implementation(self, device):
+        """Cross-check against the mixQTL port's own through-origin WLS.
+
+        Two independently written routines, same model: agreement to 1e-12
+        is a real check on the formula and the degrees of freedom, not a
+        restatement.
+        """
+        from tensorqtl.mixqtl_replication import _simple_regression_through_origin
+        s, a, w = self._pieces(device)
+        b_h, se_h = self._hapmix(device, s, a, w, fitted=True)
+        b_m, se_m = _simple_regression_through_origin(a, s[:, None], w)
+        assert np.isclose(b_h, b_m[0], rtol=1e-12)
+        assert np.isclose(se_h, se_m[0], rtol=1e-12)
+
+    def test_is_invariant_to_the_absolute_scale_of_the_weights(self, device):
+        """The defining property: sigma_hat absorbs any constant on w.
+
+        This is exactly what the known-variance SE does NOT do, and the whole
+        reason the configuration exists.
+        """
+        s, a, w = self._pieces(device, seed=616)
+        b1, se1 = self._hapmix(device, s, a, w, fitted=True)
+        b2, se2 = self._hapmix(device, s, a, w * 1e6, fitted=True)
+        assert np.isclose(b1, b2, rtol=1e-10)
+        assert np.isclose(se1, se2, rtol=1e-10)
+        # the known-variance SE, by contrast, must move by sqrt(1e6)
+        _, k1 = self._hapmix(device, s, a, w)
+        _, k2 = self._hapmix(device, s, a, w * 1e6)
+        assert np.isclose(k1 / k2, 1e3, rtol=1e-6)
+
+    def test_degrees_of_freedom_count_informative_donors_only(self, device):
+        """Zero-weight donors contribute no residual, so they must not be
+        charged degrees of freedom -- that would shrink sigma_hat and
+        understate the SE."""
+        from tensorqtl.mixqtl_replication import _simple_regression_through_origin
+        s, a, w = self._pieces(device, n=60, seed=717, n_zero=18)
+        b_h, se_h = self._hapmix(device, s, a, w, fitted=True)
+        b_m, se_m = _simple_regression_through_origin(a, s[:, None], w)
+        assert np.isclose(se_h, se_m[0], rtol=1e-12), 'dof must use n_eff, not N'
+
+    def test_fitted_takes_precedence_over_robust(self, device):
+        s, a, w = self._pieces(device, seed=818)
+        _, se_f = self._hapmix(device, s, a, w, fitted=True)
+        _, se_fr = self._hapmix(device, s, a, w, fitted=True, robust=True)
+        assert np.isclose(se_f, se_fr, rtol=1e-12)
+
+    def test_default_path_is_untouched(self, device):
+        """se_mode='model' must be bit-for-bit what it always was."""
+        s, a, w = self._pieces(device, seed=919)
+        b0, se0 = self._hapmix(device, s, a, w)
+        b1, se1 = self._hapmix(device, s, a, w, fitted=False, robust=False)
+        assert b0 == b1 and se0 == se1
+
+    def test_map_nominal_accepts_se_mode_fitted(self, tmp_path):
+        """End to end, and the fitted SE must differ from the known-variance
+        one on real-shaped data while the slope stays identical."""
+        d = _make_dataset(seed=100)
+        common = dict(genotype_df=d['genotype_df'], variant_df=d['variant_df'],
+                      A_df=d['A_df'], T_df=d['T_df'], Va_df=d['Va_df'],
+                      Vt_df=d['Vt_df'], phenotype_pos_df=d['pos_df'],
+                      xL_df=d['xL_df'], xR_df=d['xR_df'], verbose=False)
+        read = lambda p: pd.concat([pd.read_parquet(f) for f in
+                                    sorted(Path(p).glob('*.parquet'))],
+                                   ignore_index=True)
+        dm, df_ = tmp_path / 'mod', tmp_path / 'fit'
+        dm.mkdir(); df_.mkdir()
+        map_nominal(prefix='m', output_dir=str(dm), se_mode='model', **common)
+        map_nominal(prefix='f', output_dir=str(df_), se_mode='fitted', **common)
+        mod, fit = read(dm), read(df_)
+        key = ['phenotype_id', 'variant_id']
+        cols = ['slope', 'slope_se', 'slope_a', 'slope_t']
+        mg = mod[key + cols].merge(fit[key + cols], on=key, suffixes=('_m', '_f'))
+        assert len(mg) == 90, len(mg)   # 3 phenotypes x 30 variants
+
+        # Each CHANNEL's point estimate is xy/xx and cannot depend on how its
+        # uncertainty is reported.
+        assert np.allclose(mg.slope_a_m, mg.slope_a_f, atol=0, rtol=0)
+        assert np.allclose(mg.slope_t_m, mg.slope_t_f, atol=0, rtol=0)
+        # ...but the COMBINED estimate does move, and that is not a defect.
+        # calculate_hapmixqtl_nominal combines by inverse-variance
+        # meta-analysis on the two channels' SEs. Under the known-variance
+        # form 1/se^2 = xx, so it collapses to the pooled score
+        # (xy_a + xy_t)/(xx_a + xx_t); under a fitted sigma each channel
+        # carries its own scale and the channels get reweighted against each
+        # other. That difference IS mechanism 4 of the disagreement plan.
+        assert not np.allclose(mg.slope_m, mg.slope_f)
+        assert not np.allclose(mg.slope_se_m, mg.slope_se_f)

@@ -11,6 +11,8 @@ version = "1.0.10"
 dependencies = [
     "numpy",
     "pandas",
+    "pandas-plink",
+    "pyarrow",
     "Pgenlib>=0.90.1",
     "qtl",
     "scipy",
