@@ -104,3 +104,22 @@ Column | Description
 `pip` | Posterior inclusion probability
 `af` | In-sample ALT allele frequency of the variant
 `cs_id` | Credible-set index (the SuSiE single-effect `L` this variant belongs to)
+
+#### Mode `cis_egenes_knockoff`
+Knockoff-calibrated eGene FDR for standard *cis*-QTL phenotypes (wraps `susie.map_egenes_knockoffs`). Writes three files:
+
+`${prefix}.cis_knockoff_egenes.txt.gz` — one row per phenotype. With the recommended/default `--statistic kfc`:
+
+Column | Description
+--- | ---
+`phenotype_id` | Phenotype ID
+`knockoff_qvalue` | Per-gene knockoff q-value from the empirical mirror-null selection (`ko.mirror_select_egenes`)
+`selected` | Boolean; `True` if the gene is called an eGene at the target FDR (`--fdr`, default 0.05; the validated target is 0.10)
+
+With the legacy `--statistic maxpip` (not calibrated; see README caveat), or with `selection='calibrated'`/`'qvalue'`/`'pvalue'` in the Python API, the score column is named `qvalue` or `pvalue` instead of `knockoff_qvalue`; with `selection='ebh'` it is named `evalue`.
+
+`${prefix}.cis_knockoff_egenes.SuSiE_summary.parquet` — SuSiE credible sets for the selected eGenes only, in the same format as the `cis_susie` `SuSiE_summary.parquet` above (omitted when no eGenes are selected).
+
+`${prefix}.cis_knockoff_egenes.diagnostics.pickle` — a dict with `W_per_draw` (per-gene statistic per knockoff draw), `gene_ids`, `scores`, `selection`, and selection metadata.
+
+The two-channel hapmixQTL analog `hapmixqtl.map_egenes_knockoffs` is Python-only (no `--mode`); it returns `(egene_df, diagnostics)` directly (same `egene_df` schema, no separate localization step). See the README section "Knockoff-calibrated eGene FDR".

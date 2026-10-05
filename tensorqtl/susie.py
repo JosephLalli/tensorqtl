@@ -11,6 +11,7 @@ import torch
 import numpy as np
 import pandas as pd
 from collections import defaultdict
+import math
 import sys
 import os
 import time
@@ -62,7 +63,10 @@ def init_setup(n, p, L, scaled_prior_variance, varY, residual_variance=None,
     if prior_weights is None:
         prior_weights = torch.full([p], 1/p, dtype=torch.float32).to(device)
     else:
-        prior_weights = prior_weights / sum(prior_weights)
+        # accept tensor/numpy/list and land on `device` so s['pi'] matches the
+        # rest of the internal state (which is allocated on `device` below).
+        prior_weights = torch.as_tensor(prior_weights, dtype=torch.float32, device=device)
+        prior_weights = prior_weights / prior_weights.sum()
     if len(prior_weights) != p:
         raise ValueError('Prior weights must have length p.')
     if (p < L):
@@ -208,6 +212,154 @@ def optimize_prior_variance(optimize_V, betahat, shat2, prior_weights,
     return V
 
 
+# =============================================================================
+# SuSiE-NIG: Normal-Inverse-Gamma residual-variance prior
+#
+# Port of susieR-2.0 `estimate_residual_method="NIG"` (Denault et al. 2025,
+# bioRxiv 10.1101/2025.05.16.654543). Standard SuSiE plugs a single point
+# estimate of sigma^2 into every single-effect Bayes factor. NIG instead puts a
+# Normal-Inverse-Gamma prior jointly on (beta_j, sigma^2), integrates sigma^2 out
+# analytically per SER, and carries an Inverse-Gamma posterior for sigma^2 through
+# the Bayes factor and posterior moments. This improves credible-set coverage at
+# SMALL n (susieR recommends NIG when n < ~80); as n grows the IG posterior
+# concentrates and NIG converges to the plug-in estimator, so the benefit fades.
+#
+# Individual-data sufficient statistics (match susieR individual_data_methods.R):
+#   xx  = predictor weights = colSums(X^2)      (= xattr['d'])
+#   xy  = X'R  (standardized-X crossproduct with the current residual R)
+#   yy  = sum(R^2)
+#   sxy = xy / sqrt(xx*yy), clamped to [-1, 1]
+#   tau = 1  (individual data)
+#   s0  = V  (per-effect prior variance, in units of sigma^2)
+#   a0,b0 = alpha0, beta0  (IG prior shape/scale; susieR default 1/sqrt(n))
+# Faithful line-for-line port of the susie_utils.R NIG kernels; verified against
+# susieR 0.16.5 (see tests/test_susieinf.py companion checks).
+# =============================================================================
+def _nig_lbf(n, xx, yy, sxy, s0, a0, b0, tau=1.0):
+    """compute_lbf_NIG: per-variant log Bayes factor under the NIG prior."""
+    r0 = s0 / (s0 + tau / xx)
+    rss = yy * (1 - r0 * sxy**2)
+    a1 = a0 + n
+    b1 = b0 + rss
+    return -(torch.log(1 + s0 * xx / tau) + a1 * torch.log(b1 / (b0 + yy))) / 2
+
+
+def _nig_posterior_moments(n, xx, xy, yy, sxy, s0, a0, b0, tau=1.0):
+    """compute_posterior_moments_NIG: post_mean, post_mean2, and rv (IG posterior
+    mean of sigma^2) per variant."""
+    r0 = s0 / (s0 + tau / xx)
+    rss = yy * (1 - r0 * sxy**2)
+    a1 = a0 + n
+    b1 = b0 + rss
+    bhat = xy / xx
+    post_mean = r0 * bhat
+    post_var = b1 / (a1 - 2) * r0 * tau / xx
+    post_mean2 = post_var + post_mean**2
+    rv = (b1 / 2) / (a1 / 2 - 1)
+    return post_mean, post_mean2, rv
+
+
+def _nig_prior_variance_em(n, xx, xy, yy, sxy, pip, s0, a0, b0, tau=1.0):
+    """update_prior_variance_NIG_EM: EM update of the per-effect prior variance
+    under the NIG marginal (accounts for the IG-distributed sigma^2)."""
+    r0 = s0 / (s0 + tau / xx)
+    rss = yy * (1 - r0 * sxy**2)
+    a1 = a0 + n
+    b1 = b0 + rss
+    bhat = xy / xx
+    post_mean = r0 * bhat
+    post_var = r0 * tau / xx
+    # u = gamma(1/2)/beta(a1/2,1/2) = Gamma((a1+1)/2)/Gamma(a1/2); 1/beta(a1/2,1)=a1/2
+    u = math.exp(math.lgamma((a1 + 1) / 2) - math.lgamma(a1 / 2))
+    mb = post_mean * torch.sqrt(2 / b1) * u
+    vb = post_var + post_mean**2 * (2 / b1) * (a1 / 2 - u**2)
+    return (pip * (vb + mb**2)).sum()
+
+
+def _inv_gamma_factor(a, b):
+    """inv_gamma_factor: a*log(b) - lgamma(a) (scalars)."""
+    return a * math.log(b) - math.lgamma(a)
+
+
+def _nig_null_loglik(n, yy, a0, b0):
+    """compute_null_loglik_NIG (yy scalar)."""
+    yy = float(yy)
+    return (-n * math.log(2 * math.pi) / 2
+            + _inv_gamma_factor(a0 / 2, b0 / 2)
+            - _inv_gamma_factor((a0 + n) / 2, (b0 + yy) / 2))
+
+
+def _nig_eloglik(n, ER2, alpha, V, xx, a0, b0, tau=1.0):
+    """nig_eloglik: variational expected log-likelihood, used as the L>1 objective
+    (gIBSS has no coherent per-effect ELBO)."""
+    ER2 = float(ER2)
+    a_post = (a0 + n) / 2
+    b_post = (b0 + ER2) / 2
+    B = torch.zeros((), device=alpha.device, dtype=alpha.dtype)
+    for l in range(alpha.shape[0]):
+        r0_l = V[l] / (V[l] + tau / xx)
+        B = B + (alpha[l] * r0_l * tau).sum()
+    A = ER2 - (b_post / (a_post - 1)) * B
+    digamma_apost = torch.digamma(torch.tensor(a_post, dtype=alpha.dtype))
+    return (-n / 2 * math.log(2 * math.pi)
+            - n / 2 * (math.log(b_post) - digamma_apost)
+            - 0.5 * (A * a_post / b_post + B))
+
+
+def _single_effect_regression_nig(Y_t, X_t, xattr, V, prior_weights, a0, b0, optimize_V):
+    """NIG single-effect regression (individual data). Mirrors the standard SER's
+    softmax over per-variant Bayes factors, but the lbf, posterior moments, and EM
+    prior-variance update come from the NIG kernels. Returns the same fields as the
+    Gaussian SER plus 'rv' (PIP-weighted IG posterior mean of sigma^2) and
+    'marginal_loglik' (the L=1 objective).
+
+    Computed in float64 regardless of the caller's dtype: NIG is a small-n method
+    (tiny compute) whose marginal-likelihood convergence at tol~1e-6 needs float64
+    granularity (float32's ~1e-5 noise on the objective never converges on a flat
+    null). Returned tensors cast back to the model's dtype on assignment."""
+    device = Y_t.device
+    n = X_t.shape[0]
+    Y_t = Y_t.double()
+    d = xattr['d'].double()
+    prior_weights = prior_weights.double()
+    V = V.double() if torch.is_tensor(V) else torch.tensor(float(V), dtype=torch.float64)
+    Xty = compute_Xty(X_t.double(), Y_t, xattr['scaled_center'].double(), xattr['scaled_scale'].double())
+    yy = (Y_t * Y_t).sum()
+    sxy = torch.nan_to_num(Xty / torch.sqrt(d * yy), nan=0.0).clamp(-1, 1)
+    tau = 1.0
+
+    lbf = _nig_lbf(n, d, yy, sxy, V, a0, b0, tau)
+    maxlbf = lbf.max()
+    w_weighted = torch.exp(lbf - maxlbf) * prior_weights
+    weighted_sum_w = w_weighted.sum()
+    alpha = w_weighted / weighted_sum_w
+    lbf_model = maxlbf + torch.log(weighted_sum_w)
+
+    if V <= 0:
+        post_mean = torch.zeros_like(d)
+        post_mean2 = torch.zeros_like(d)
+        rv_vec = torch.ones_like(d)
+    else:
+        post_mean, post_mean2, rv_vec = _nig_posterior_moments(n, d, Xty, yy, sxy, V, a0, b0, tau)
+    rv_l = (alpha * rv_vec).sum()
+    marginal_loglik = lbf_model + _nig_null_loglik(n, yy, a0, b0)
+
+    if optimize_V == 'EM' and V > 0:
+        V = _nig_prior_variance_em(n, d, Xty, yy, sxy, alpha, V, a0, b0, tau)
+
+    return {
+        'alpha': alpha,
+        'mu': post_mean,
+        'mu2': post_mean2,
+        'lbf': lbf,
+        'lbf_model': lbf_model,
+        'V': V,
+        'rv': rv_l,
+        'marginal_loglik': marginal_loglik,
+        'loglik': torch.tensor(0.0, device=device),  # unused by the NIG objective
+    }
+
+
 def SER_posterior_e_loglik(X_t, xattr, Y_t, s2, Eb, Eb2):
     n = X_t.shape[0]
     return -0.5*n*torch.log(2*np.pi*s2) - (0.5/s2) * ((Y_t*Y_t).sum() - 2*(Y_t.squeeze()*compute_Xb(X_t, Eb, xattr['scaled_center'], xattr['scaled_scale'])).sum() + (xattr['d']*Eb2).sum())
@@ -215,10 +367,15 @@ def SER_posterior_e_loglik(X_t, xattr, Y_t, s2, Eb, Eb2):
 
 def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weights=None,
                              optimize_V='EM', check_null_threshold=0,
-                             prior_variance_floor=0.0):
+                             prior_variance_floor=0.0,
+                             use_nig=False, nig_a0=None, nig_b0=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # assert optimize_V in ["none", "optim", "uniroot", "EM", "simple"]
+
+    if use_nig:
+        return _single_effect_regression_nig(Y_t, X_t, xattr, V, prior_weights,
+                                              nig_a0, nig_b0, optimize_V)
 
     Xty = compute_Xty(X_t, Y_t, xattr['scaled_center'], xattr['scaled_scale'])
     betahat = (1/xattr['d']) * Xty
@@ -280,7 +437,8 @@ def single_effect_regression(Y_t, X_t, xattr, V, residual_variance=1, prior_weig
 
 def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
                        estimate_prior_method='EM', check_null_threshold=0,
-                       prior_variance_floor=0.0):
+                       prior_variance_floor=0.0,
+                       use_nig=False, nig_a0=None, nig_b0=None):
     """
 
     """
@@ -300,7 +458,8 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
         res = single_effect_regression(R_t, X_t, xattr, s['V'][l],
                                        residual_variance=s['sigma2'], prior_weights=s['pi'],
                                        optimize_V=estimate_prior_method,
-                                       prior_variance_floor=prior_variance_floor)
+                                       prior_variance_floor=prior_variance_floor,
+                                       use_nig=use_nig, nig_a0=nig_a0, nig_b0=nig_b0)
 
         # update the variational estimate of the posterior mean
         s['mu'][l] = res['mu']
@@ -309,7 +468,15 @@ def update_each_effect(X_t, xattr, Y_t, s, estimate_prior_variance=False,
         s['V'][l] = res['V']
         s['lbf'][l] = res['lbf_model']
         s['lbf_variable'][l] = res['lbf']
-        s['KL'][l] = -res['loglik'] + SER_posterior_e_loglik(X_t, xattr, R_t, s['sigma2'], res['alpha']*res['mu'], res['alpha']*res['mu2'])
+        if use_nig:
+            # NIG integrates sigma^2 out: the KL is not used by the NIG objective
+            # (L=1 uses marginal_loglik, L>1 uses nig_eloglik). Track rv (PIP-
+            # weighted IG posterior mean of sigma^2) and the per-effect marginal.
+            s['rv'][l] = res['rv']
+            s['marginal_loglik'][l] = res['marginal_loglik']
+            s['KL'][l] = 0.0
+        else:
+            s['KL'][l] = -res['loglik'] + SER_posterior_e_loglik(X_t, xattr, R_t, s['sigma2'], res['alpha']*res['mu'], res['alpha']*res['mu2'])
         s['Xr'] = s['Xr'] + compute_Xb(X_t, (s['alpha'][l,:] * s['mu'][l,:]), xattr['scaled_center'], xattr['scaled_scale'])
     return(s)
 
@@ -431,9 +598,55 @@ def get_purity(pos, X, Xcorr, squared=False, n=100):
         return float(value.min()), float(value.mean()), float(value.median())
 
 
+def _abs_corr_members_to_all(members, X=None, Xcorr=None):
+    """Absolute correlation of each CS member against all p variants -> (len(members), p).
+
+    With a precomputed Xcorr, index directly. From individual-level X (n x p) we
+    standardize columns (Pearson correlation is shift/scale invariant, so the raw
+    genotype columns give the same answer) and take z[:,members].T @ z / (n-1).
+    """
+    if Xcorr is not None:
+        return Xcorr[members].abs().clamp(max=1.0)
+    n = X.shape[0]
+    Xc = X - X.mean(0)
+    sd = torch.sqrt((Xc*Xc).sum(0) / (n - 1))
+    sd[sd == 0] = 1
+    z = Xc / sd
+    corr = (z[:, members].T @ z) / (n - 1)
+    return corr.abs().clamp(max=1.0)
+
+
+def extend_cs_by_correlation(cs, threshold, null_index, X=None, Xcorr=None):
+    """susieR-2.0 `cs_extension_corr`: absorb into each CS every variant whose
+    |corr| to ANY current member exceeds `threshold` (recommended 0.99). Runs
+    before purity, so it changes CS membership and the reported purity numbers.
+    Off by default upstream; only called when cs_extension_corr is set."""
+    if len(cs) == 0:
+        return cs
+    device = cs[0].device
+    extended = []
+    for members in cs:
+        corr_rows = _abs_corr_members_to_all(members, X=X, Xcorr=Xcorr)  # (m, p)
+        in_tight = torch.where((corr_rows > threshold).any(0))[0].to(device)
+        if null_index > 0:
+            in_tight = in_tight[in_tight != null_index]
+        extended.append(torch.unique(torch.cat([members, in_tight])))  # sorted, unique
+    return extended
+
+
 def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
+                 median_abs_corr=None, cs_extension_corr=None,
                  dedup=True, squared=False):
-    """"""
+    """Extract credible sets.
+
+    susieR-2.0 additions (both default-off, so the default call is unchanged):
+      median_abs_corr:   keep a CS if min|corr| >= min_abs_corr OR
+                         median|corr| >= median_abs_corr (OR-linked, so it can
+                         only ADMIT extra CSs whose bulk is tight but whose
+                         minimum is dragged down by one weak member).
+      cs_extension_corr: before purity, absorb near-perfect proxies (|corr| >
+                         threshold to a member) into each CS.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if X is not None and Xcorr is not None:
@@ -468,6 +681,10 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
     else:
         cs = [cs[k] for k,i in enumerate(include_mask) if i]
 
+        # susieR-2.0 cs_extension_corr: absorb near-perfect proxies before purity
+        if cs_extension_corr is not None:
+            cs = extend_cs_by_correlation(cs, cs_extension_corr, null_index, X=X, Xcorr=Xcorr)
+
         purity = []
         for i in range(len(cs)):
             if null_index > 0 and null_index in cs[i]:
@@ -480,8 +697,20 @@ def susie_get_cs(res, X=None, Xcorr=None, coverage=0.95, min_abs_corr=0.5,
             cols = ['min_abs_corr', 'mean_abs_corr', 'median_abs_corr']
         purity = pd.DataFrame(purity, columns=cols)
 
-        threshold = min_abs_corr**2 if squared else min_abs_corr
-        is_pure = np.where(purity.values[:,0] >= threshold)[0]
+        # susieR-2.0: keep a CS if it passes the min OR the median criterion.
+        # Default (min_abs_corr=0.5, median_abs_corr=None) reduces to the pre-2.0
+        # min-only filter. Both None -> keep every non-null CS (null CS has -9).
+        if min_abs_corr is None and median_abs_corr is None:
+            keep = purity.values[:, 0] > -1
+        else:
+            keep = np.zeros(len(purity), dtype=bool)
+            if min_abs_corr is not None:
+                thr = min_abs_corr**2 if squared else min_abs_corr
+                keep = keep | (purity.values[:, 0] >= thr)
+            if median_abs_corr is not None:
+                thr = median_abs_corr**2 if squared else median_abs_corr
+                keep = keep | (purity.values[:, 2] >= thr)
+        is_pure = np.where(keep)[0]
         if len(is_pure) > 0:
             include_idx = torch.where(include_mask)[0]
             cs = [cs[k] for k in is_pure]
@@ -508,40 +737,103 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
           estimate_prior_method='EM',
           check_null_threshold=0, prior_tol=1e-9, prior_variance_floor=0.0,
           residual_variance_upperbound=np.inf,
+          estimate_residual_method=None, nig_alpha0=None, nig_beta0=None,
           # s_init=None,
           coverage=0.95, min_abs_corr=0.5,
+          median_abs_corr=None, cs_extension_corr=None,
           compute_univariate_zscore=False,
           na_rm=False, max_iter=100, tol=0.001,
           verbose=False, track_fit=False):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Normalize caller-provided inputs onto the compute device. susie() allocates
+    # all of its internal state (alpha/mu/Xr/...) on `device`, so inputs built on a
+    # different device (e.g. CPU tensors handed in directly) must be moved here or
+    # they collide with that state in the first matmul (compute_Xb). map_* callers
+    # already build on `device`, making this a no-op for them.
+    X_t = X_t.to(device)
+    y_t = y_t.to(device)
+
     n, p = X_t.shape
     mean_y = y_t.mean()
+
+    # SuSiE-NIG (small-n residual-variance prior). Integrates sigma^2 out, so the
+    # per-effect prior variance V is in units of sigma^2 (initialized with varY=1)
+    # and the standard residual-variance update is disabled.
+    use_nig = estimate_residual_method == 'NIG'
+    if use_nig:
+        a0 = float(nig_alpha0) if nig_alpha0 is not None else 1.0/math.sqrt(n)
+        b0 = float(nig_beta0)  if nig_beta0  is not None else 1.0/math.sqrt(n)
+        if a0 <= 0 or b0 <= 0:
+            raise ValueError("NIG requires alpha0 > 0 and beta0 > 0 (proper IG prior).")
+        # susieR uses tol=1e-6 for NIG unless the user overrides the default.
+        if tol == 0.001:
+            tol = 1e-6
+    else:
+        a0 = b0 = None
 
     if intercept:
         y_t = y_t - mean_y
 
     xattr = get_x_attributes(X_t, center=intercept, scale=standardize)
 
-    # initialize susie fit
-    s = init_setup(n, p, L, scaled_prior_variance, y_t.var(unbiased=True),
+    # initialize susie fit (NIG: V is in units of sigma^2, so scale by varY=1)
+    varY_init = torch.tensor(1.0).to(device) if use_nig else y_t.var(unbiased=True)
+    s = init_setup(n, p, L, scaled_prior_variance, varY_init,
                    residual_variance=residual_variance,
                    prior_weights=prior_weights, null_weight=null_weight)
     s = init_finalize(s)
+    if use_nig:
+        s['rv'] = torch.ones(s['alpha'].shape[0]).to(device)
+        s['marginal_loglik'] = torch.full([s['alpha'].shape[0]], np.nan, dtype=torch.float64).to(device)
 
     # initialize elbo to NA
     elbo = torch.full([max_iter + 1], np.nan).to(device)
     elbo[0] = -np.inf;
+    nig_obj_prev = -np.inf   # float64 running objective for NIG convergence
     tracking = []
     for i in range(1, max_iter+1):
+
+        if use_nig:
+            prev_pip = 1 - torch.prod(1 - s['alpha'], dim=0)
 
         s = update_each_effect(X_t, xattr, y_t, s,
                                estimate_prior_variance=estimate_prior_variance,
                                estimate_prior_method=estimate_prior_method,
                                check_null_threshold=0,
-                               prior_variance_floor=prior_variance_floor)
-        elbo[i] = get_objective(X_t, xattr, y_t, s)
+                               prior_variance_floor=prior_variance_floor,
+                               use_nig=use_nig, nig_a0=a0, nig_b0=b0)
+
+        if use_nig:
+            # NIG objective: L=1 has a coherent marginal likelihood and converges
+            # on it; L>1 (gIBSS) has no coherent ELBO, so susieR reports the
+            # variational expected log-likelihood and converges on PIP change.
+            # Residual variance is integrated out -> no sigma2 update in the loop.
+            if s['alpha'].shape[0] == 1:
+                cur_obj = float(s['marginal_loglik'][0])   # float64 objective
+                elbo[i] = cur_obj                          # (float32) reporting only
+                converged = (cur_obj - nig_obj_prev) < tol
+                nig_obj_prev = cur_obj
+            else:
+                er2 = get_ER2(X_t, xattr, y_t, s)
+                elbo[i] = _nig_eloglik(n, er2, s['alpha'], s['V'], xattr['d'], a0, b0)
+                pip_new = 1 - torch.prod(1 - s['alpha'], dim=0)
+                converged = bool((pip_new - prev_pip).abs().max() < tol)
+            if verbose:
+                print(f'Objective (iter {i}): {elbo[i]}')
+            if converged:
+                s['converged'] = True
+                break
+            continue
+
+        # get_ER2 (the dominant O(L*N*p) matmul via compute_MXt) feeds BOTH the
+        # objective and the residual-variance update, and s is unchanged between
+        # them, so compute it once. elbo[i] is get_objective(...) inlined with the
+        # reused er2; sigma2 update is estimate_residual_variance_fct(...) = er2/n.
+        er2 = get_ER2(X_t, xattr, y_t, s)
+        # exactly get_objective(...) with er2 reused (same op order as eloglik):
+        elbo[i] = -(n/2) * torch.log(2*np.pi*s['sigma2']) - (1/(2*s['sigma2'])) * er2 - (s['KL']).sum()
         if verbose:
             print(f'Objective (iter {i}): {elbo[i]}')
         if (elbo[i] - elbo[i-1]) < tol:
@@ -549,7 +841,7 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
             break
 
         if estimate_residual_variance:
-            s['sigma2'] = estimate_residual_variance_fct(X_t, xattr, y_t, s)
+            s['sigma2'] = (1/n) * er2  # == estimate_residual_variance_fct(...)
             if s['sigma2'] > residual_variance_upperbound:
                 s['sigma2'] = residual_variance_upperbound
             if verbose:
@@ -561,6 +853,13 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
     if 'converged' not in s:
         print(f"\n    WARNING: IBSS algorithm did not converge in {max_iter} iterations!")
         s['converged'] = False
+
+    if use_nig:
+        # susieR finalize: scale the (sigma^2-unit) prior variance back to y-units
+        # by the residual-variance mode, and report the IG posterior mean of sigma^2.
+        er2_final = get_ER2(X_t, xattr, y_t, s)
+        s['sigma2'] = float((b0 + er2_final) / (a0 + n - 2))
+        s['V'] = s['V'] * s['rv']
 
     if intercept:
         s['intercept'] = mean_y - (xattr['scaled_center'] * ((s['alpha']*s['mu']).sum(0)/xattr['scaled_scale'])).sum()
@@ -577,7 +876,8 @@ def susie(X_t, y_t, L=10, scaled_prior_variance=0.2,
 
     # SuSiE CS and PIP
     if coverage is not None and min_abs_corr is not None:
-        s['sets'] = susie_get_cs(s, coverage=coverage, X=X_t, min_abs_corr=min_abs_corr)
+        s['sets'] = susie_get_cs(s, coverage=coverage, X=X_t, min_abs_corr=min_abs_corr,
+                                 median_abs_corr=median_abs_corr, cs_extension_corr=cs_extension_corr)
         s['pip'] = susie_get_pip(s, prune_by_cs=False, prior_tol=prior_tol).cpu().numpy()
 
     return s

@@ -262,3 +262,62 @@ summary_df, susie_res = hapmixqtl.map_susie(
     covariates_df=covariates_df, L=10, summary_only=False)
 ```
 
+#### Knockoff-calibrated eGene FDR
+This calls eGenes (phenotypes with a *cis* signal) at a knockoff-controlled false discovery rate, robust to SuSiE's own PIP miscalibration. For each phenotype, the *cis* genotype design is augmented with knockoff copies, a gene-level statistic is computed from `[X, X_knockoff]`, and genes are selected genome-wide at the target FDR before ordinary SuSiE localizes credible sets within the selected genes. The standard *cis*-QTL path is available as the `cis_egenes_knockoff` CLI mode and as `tensorqtl.susie.map_egenes_knockoffs`; the two-channel hapmixQTL variant (`tensorqtl.hapmixqtl.map_egenes_knockoffs`) is more experimental and Python-only (see below).
+
+**Detection power vs. the standard `cis` mode — read before choosing a mode.** This knockoff path is FDR-valid but is *not* the most powerful way to call eGenes. A head-to-head comparison on real HPRC v2.0 genotypes (N=232) found the standard permutation-based `cis` mode (`cis.map_cis` + `tensorqtl.calculate_qvalues`, i.e. the "*cis*-QTL mapping: permutations" mode above) calibrated and consistently more powerful for eGene detection than this knockoff `kfc` path, standard SuSiE, and SuSiE-inf, across every regime tested — see `docs/calibration_findings.md`, section 9, for the full comparison and mechanism. Recommendation: call eGenes with the standard `cis` mode; use the knockoff/SuSiE machinery here for FDR-robust *localization* within already-detected eGenes, not as the primary detection step.
+
+From the command line (defaults are the HPRC-validated `kfc` + Gaussian configuration, so only `--fdr` is required):
+```bash
+python3 -m tensorqtl ${plink_prefix_path} ${expression_bed} ${prefix} \
+    --covariates ${covariates_file} --mode cis_egenes_knockoff --fdr 0.10
+```
+This writes `${prefix}.cis_knockoff_egenes.txt.gz` (one row per phenotype: `phenotype_id`, `knockoff_qvalue`, `selected`), `${prefix}.cis_knockoff_egenes.SuSiE_summary.parquet` (SuSiE credible sets for the selected eGenes, same format as `cis_susie`), and `${prefix}.cis_knockoff_egenes.diagnostics.pickle`. The generator, statistic, offset, shrinkage, and draw count are exposed as `--knockoff`, `--statistic`, `--knockoff_offset`, `--shrink`, and `--n_knockoffs`.
+
+Two gene-level statistics are available (`--statistic` / `statistic=`):
+* `'kfc'` (**default; recommended among the knockoff statistics — but see the detection-power note above, the standard `cis` mode is recommended over either knockoff statistic**) — a continuous statistic `W_g = -log10(min cis p, real) − -log10(min cis p, knockoff)`, selected genome-wide by the empirical mirror-null knockoff+ threshold. This is the only knockoff path validated end-to-end on real genotypes (HPRC v2.0, N=232): it **controls FDR below the 0.10 target (conservative) with real power** — see `docs/calibration_findings.md`, "Real-data (HPRC) validation", for the measured FDR/power values and their Monte-Carlo caveats, and section 9 for why it detects materially fewer true eGenes than the standard `cis` mode at matched FDR.
+* `'maxpip'` (**legacy, not calibrated**) — `W_g = maxPIP(original) − maxPIP(knockoff)` from an augmented SuSiE fit. Under a null gene, SuSiE's prior variance collapses to exactly 0, producing a point mass at `W=0` that breaks the knockoff-null assumption used for selection; retained only for continuity (`docs/knockoff_susie_design.md`, "STATUS" §3.2). Do not use it for FDR claims unless also setting `susie(..., prior_variance_floor=...)` to remove the atom.
+
+The same standard *cis* path from Python (this is exactly what the CLI mode wraps):
+```python
+from tensorqtl import susie
+egene_df, localize_summary_df, diagnostics = susie.map_egenes_knockoffs(
+    genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df,
+    fdr=0.1, statistic='kfc', knockoff='gaussian', shrink=0.1, knockoff_offset=1)
+```
+`knockoff='gaussian', shrink=0.1` is the generator validated for the `kfc` statistic on real LD; it is the CLI default. The module default `knockoff='hmm'` (chromosome-coherent HMM knockoffs) instead targets the legacy `maxpip` path, where whole-chromosome coherence is the point. `egene_df` has one row per phenotype: `phenotype_id`, `knockoff_qvalue`, `selected` (boolean). `localize_summary_df` (from the default `localize=True`) holds ordinary SuSiE credible sets for the selected eGenes, in the same format as `cis_susie`'s summary output.
+
+hapmixQTL phenotypes — the two-channel analog, Python-only. Because the ASE channel needs phase, this path always uses chromosome-coherent phased haplotype knockoffs rather than Gaussian:
+```python
+from tensorqtl import hapmixqtl
+egene_df, diagnostics = hapmixqtl.map_egenes_knockoffs(
+    genotype_df, variant_df, A_df, T_df, Va_df, Vt_df, phenotype_pos_df,
+    xL_df, xR_df, covariates_df=covariates_df, fdr=0.1, statistic='kfc')
+```
+Because the phased-HMM knockoff is unbiased but lower-power than Gaussian for this statistic on real LD (`docs/calibration_findings.md`, "Real-data (HPRC) validation"), expect this path to be more conservative than the standard *cis* `'kfc'` path above. Both functions require genotypes sorted by chromosome then position (the standard tensorQTL layout), since each chromosome must occupy a contiguous row block.
+
+#### SuSiE-inf (fine-mapping with an infinitesimal effect)
+`tensorqtl.susieinf` is a faithful port of SuSiE-inf (Cui, Kanai, ... Finucane, *Nat Genet* 2024) — the same algorithm susieR ≥2.0 exposes as `susie(..., unmappable_effects = "inf")`. It adds a Gaussian polygenic random-effect term (`tau^2`) alongside the sparse credible sets, so a diffuse polygenic background is absorbed into `tau^2` instead of distorting the sparse fit — improving PIP calibration when the cis architecture is not truly sparse. It is a *localization* method (use it downstream of a detection step; per `docs/calibration_findings.md` section 9, the standard `cis` mode is the more powerful eGene *detector*), and under a polygenic background it is preferred over ordinary SuSiE.
+```python
+from tensorqtl import susieinf
+# individual-level convenience wrapper (residualizes on covariates, builds z/LD internally):
+fit = susieinf.susie_inf_from_data(X, y, L=10, covariates=cov, method='moments')
+fit['pip']   # max PIP per variant;  fit['cs'] credible sets;  fit['tausq'] infinitesimal variance
+# or directly from summary statistics (z = X'y/sqrt(n), meansq = ||y||^2/n, LD = X'X/n):
+fit = susieinf.susie_inf(z, meansq, n, L=10, LD=LD, method='moments', est_tausq=True)
+```
+The implementation is verified numerically identical to the FinucaneLab reference (max PIP difference ≤ 3e-13, `tau^2`/`sigma^2`/credible sets to machine precision across null/single/polygenic architectures and both `'moments'` and `'MLE'` variance estimators; `tests/test_susieinf.py`). `'moments'` (method-of-moments, closed form) is recommended and is the default; `'MLE'` uses L-BFGS-B on the negative ELBO.
+
+#### SuSiE-NIG (small-sample residual-variance prior)
+`susie(..., estimate_residual_method='NIG')` ports susieR 2.0's Normal-Inverse-Gamma residual-variance prior (Denault et al. 2025), for improved credible-set coverage at **small sample sizes**. Ordinary SuSiE plugs a single point estimate of the residual variance `sigma^2` into every single-effect Bayes factor; when `n` is small that estimate is itself uncertain, and the resulting overconfidence can produce spurious credible sets (susieR's own small-sample example: n=47, default SuSiE returns 10 CSs explaining >99% of variance — an overfit — vs 1 CS with NIG). NIG instead places an NIG prior jointly on `(beta_j, sigma^2)`, integrates `sigma^2` out analytically per single-effect regression, and carries an Inverse-Gamma posterior for `sigma^2` through the Bayes factor and posterior moments. susieR recommends it for `n < ~80`; as `n` grows the IG posterior concentrates and NIG converges to the ordinary plug-in estimator, so there is no benefit (and no harm) at large `n`.
+```python
+from tensorqtl import susie
+fit = susie.susie(X_t, y_t, L=1, estimate_residual_method='NIG')   # nig_alpha0/nig_beta0 default 1/sqrt(n)
+```
+Off by default (`estimate_residual_method=None`) — the standard path is then bit-identical. `L=1` uses the coherent marginal-likelihood objective and is the recommended/validated mode for the small-sample coverage use case; `L>1` (gIBSS) has no coherent ELBO and converges on PIP change. Note that under a true null the EM prior-variance update decays `V` geometrically toward 0, which can take many iterations to converge — the PIP stays correctly diffuse throughout, but you may need a larger `max_iter` for null phenotypes. The NIG kernels are verified numerically identical to susieR 0.16.5's own internal functions (max abs diff 2.8e-14), and the end-to-end L=1 fit matches an IBSS driver built from those kernels (max |Δalpha| ≤ 8e-7, iteration counts identical, across null/single/weak/two-signal fixtures; `tests/test_nig.py`).
+
+#### Credible-set purity options (susieR 2.0)
+`susie(...)` and `susie_get_cs(...)` accept two susieR-2.0 credible-set refinements, both **off by default** (so the default output is unchanged):
+- `median_abs_corr=<float>`: keep a credible set if `min|corr| ≥ min_abs_corr` **OR** `median|corr| ≥ median_abs_corr`. Because it is OR-linked, it can only *admit* additional CSs whose bulk correlation is high but whose minimum is dragged down by a single weakly-correlated member.
+- `cs_extension_corr=<float>` (susieR recommends 0.99): before purity is computed, absorb into each CS every variant whose `|corr|` to any current member exceeds the threshold — pulling near-perfect proxies of the selected variants into the reported set.
+

@@ -229,7 +229,8 @@ def map_trans(genotype_df, phenotype_df, covariates_df=None, interaction_s=None,
                     dof = residualizer.dof - 2
 
                     rss_t = (torch.matmul(X_t, b_t) - p0_t.t()).pow(2).sum(1)  # ng x np
-                    b_se_t = torch.sqrt(Xinv[:, torch.eye(3, dtype=torch.uint8).bool()].unsqueeze(-1).repeat([1,1,nps]) * rss_t.unsqueeze(1).repeat([1,3,1]) / dof)
+                    # broadcast instead of materializing two [ng,3,nps] .repeat() tensors (bit-identical)
+                    b_se_t = torch.sqrt(Xinv[:, torch.eye(3, dtype=torch.uint8).bool()].unsqueeze(-1) * rss_t.unsqueeze(1) / dof)
                     tstat_t = (b_t.double() / b_se_t.double()).float()  # (ng x 3 x np)
                     tstat_g_t =  tstat_t[:,0,:]  # genotypes x phenotypes
                     tstat_i_t =  tstat_t[:,1,:]
