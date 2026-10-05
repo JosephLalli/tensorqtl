@@ -13,6 +13,7 @@ dependencies = [
     "pandas",
     "pandas-plink",
     "pyarrow",
+    "h5py",
     "Pgenlib>=0.90.1",
     "qtl",
     "scipy",
